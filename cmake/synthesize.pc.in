@@ -1,0 +1,11 @@
+prefix=${pcfiledir}/../..
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: synthesize
+Description: Native GGML/GGUF text-to-speech inference library
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lsynthesize
+Libs.private: @SYNTH_PKGCONFIG_PRIVATE_LIBS@
+Cflags: -I${includedir} @SYNTH_PKGCONFIG_DEFINES@

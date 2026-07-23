@@ -1,0 +1,167 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "preset-base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "cuda-base",
+      "hidden": true,
+      "cacheVariables": {
+        "SYNTH_CUDA": "ON",
+        "SYNTH_CUDA_TF32": "OFF",
+        "SYNTH_METAL": "OFF",
+        "SYNTH_VULKAN": "OFF",
+        "GGML_NATIVE": "OFF"
+      }
+    },
+    {
+      "name": "development-base",
+      "hidden": true,
+      "generator": "Unix Makefiles",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "SYNTH_BUILD_SHARED": "OFF",
+        "SYNTH_BUILD_CLI": "ON",
+        "SYNTH_BUILD_TESTS": "ON",
+        "SYNTH_BUILD_PYTHON_TESTS": "ON",
+        "SYNTH_BUILD_INTEGRATION_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "release-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SYNTH_BUILD_SHARED": "ON",
+        "SYNTH_BUILD_CLI": "OFF",
+        "SYNTH_BUILD_TESTS": "OFF",
+        "SYNTH_BUILD_PYTHON_TESTS": "OFF",
+        "SYNTH_BUILD_INTEGRATION_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "dev-dgx-spark",
+      "displayName": "DGX Spark CUDA development",
+      "description": "Daily Linux AArch64 CPU/CUDA development with strict FP32 and native GB10 cubins.",
+      "inherits": ["preset-base", "cuda-base", "development-base"],
+      "cacheVariables": {
+        "CMAKE_CUDA_ARCHITECTURES": "121a-real"
+      }
+    },
+    {
+      "name": "dev-dgx-spark-uvm",
+      "displayName": "DGX Spark isolated UVM research",
+      "description": "Non-release UVM experiments. Enable UVM only through the matching isolated test preset.",
+      "inherits": "dev-dgx-spark",
+      "cacheVariables": {
+        "SYNTH_BUILD_CLI": "OFF",
+        "SYNTH_BUILD_PYTHON_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "release-linux-aarch64-cu13",
+      "displayName": "Linux AArch64 CUDA 13 Provider release",
+      "description": "Release posture for the manylinux_2_28 AArch64 cu13 Provider with the complete native target set.",
+      "inherits": ["preset-base", "cuda-base", "release-base"],
+      "cacheVariables": {
+        "CMAKE_CUDA_ARCHITECTURES": "121a-real",
+        "SYNTH_INTERNAL_RELEASE_CUDA_PLATFORM": "linux-aarch64"
+      }
+    },
+    {
+      "name": "dev-linux-x86_64-cuda",
+      "displayName": "Linux x86-64 CUDA development",
+      "description": "Daily RTX 4070 SUPER development with strict FP32 and native Ada cubins.",
+      "inherits": ["preset-base", "cuda-base", "development-base"],
+      "cacheVariables": {
+        "CMAKE_CUDA_ARCHITECTURES": "89-real"
+      }
+    },
+    {
+      "name": "release-linux-x86_64-cu13",
+      "displayName": "Linux x86-64 CUDA 13 Provider release",
+      "description": "Release posture for the manylinux_2_28 x86-64 cu13 Provider with the complete native target set.",
+      "inherits": ["preset-base", "cuda-base", "release-base"],
+      "cacheVariables": {
+        "CMAKE_CUDA_ARCHITECTURES": "75-real;80-real;86-real;89-real;90-real;100-real;120a-real",
+        "SYNTH_INTERNAL_RELEASE_CUDA_PLATFORM": "linux-x86_64"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev-dgx-spark",
+      "configurePreset": "dev-dgx-spark"
+    },
+    {
+      "name": "dev-dgx-spark-uvm",
+      "configurePreset": "dev-dgx-spark-uvm"
+    },
+    {
+      "name": "release-linux-aarch64-cu13",
+      "configurePreset": "release-linux-aarch64-cu13",
+      "targets": ["synthesize", "synthesize-check-release-cubins"]
+    },
+    {
+      "name": "dev-linux-x86_64-cuda",
+      "configurePreset": "dev-linux-x86_64-cuda"
+    },
+    {
+      "name": "release-linux-x86_64-cu13",
+      "configurePreset": "release-linux-x86_64-cu13",
+      "targets": ["synthesize", "synthesize-check-release-cubins"]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "dev-dgx-spark",
+      "configurePreset": "dev-dgx-spark",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "dev-dgx-spark-uvm",
+      "configurePreset": "dev-dgx-spark-uvm",
+      "environment": {
+        "GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"
+      },
+      "filter": {
+        "include": {
+          "label": "unit"
+        }
+      },
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "dev-linux-x86_64-cuda",
+      "configurePreset": "dev-linux-x86_64-cuda",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    }
+  ]
+}

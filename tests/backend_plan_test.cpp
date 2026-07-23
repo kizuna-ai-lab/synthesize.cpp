@@ -1,0 +1,167 @@
+#include "backend-plan.h"
+#include "test-assert.h"
+
+#include "ggml-backend.h"
+#include "ggml.h"
+
+#include <cmath>
+#include <cstring>
+#include <memory>
+#include <vector>
+
+int main() {
+    std::unique_ptr<synth::BackendPlan> plan;
+    SYNTH_TEST_CHECK(synth::BackendPlan::create(nullptr, false, plan) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(plan == nullptr);
+
+    ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    SYNTH_TEST_CHECK(cpu != nullptr);
+    SYNTH_TEST_CHECK(synth::BackendPlan::create(cpu, false, plan) == SYNTH_OK);
+    SYNTH_TEST_CHECK(plan != nullptr);
+    SYNTH_TEST_CHECK(plan->primary_device() == cpu);
+    SYNTH_TEST_CHECK(plan->scheduler_backend_count() == 1);
+    SYNTH_TEST_CHECK(plan->scheduler_device(0) == cpu);
+    SYNTH_TEST_CHECK(plan->scheduler_device(1) == nullptr);
+
+    ggml_init_params parameters{};
+    parameters.mem_size = 1024 * 1024;
+    parameters.no_alloc = true;
+    ggml_context * context = ggml_init(parameters);
+    SYNTH_TEST_CHECK(context != nullptr);
+    ggml_tensor * left = ggml_new_tensor_1d(context, GGML_TYPE_F32, 1);
+    ggml_tensor * right = ggml_new_tensor_1d(context, GGML_TYPE_F32, 1);
+    ggml_tensor * sum = ggml_add(context, left, right);
+    ggml_cgraph * graph = ggml_new_graph_custom(context, 16, false);
+    ggml_build_forward_expand(graph, sum);
+
+    ggml_backend_sched_t scheduler = plan->create_scheduler(16);
+    SYNTH_TEST_CHECK(scheduler != nullptr);
+    SYNTH_TEST_CHECK(!plan->assign_to_primary(nullptr, sum));
+    SYNTH_TEST_CHECK(!plan->assign_to_primary(scheduler, nullptr));
+    SYNTH_TEST_CHECK(plan->assign_to_primary(scheduler, sum));
+    SYNTH_TEST_CHECK(ggml_backend_sched_alloc_graph(scheduler, graph));
+    const synth::BackendPlacement placement = plan->inspect_placement(scheduler, graph);
+    SYNTH_TEST_CHECK(placement.node_count == 1);
+    SYNTH_TEST_CHECK(placement.primary_node_count == 1);
+    SYNTH_TEST_CHECK(placement.cpu_fallback_node_count == 0);
+    SYNTH_TEST_CHECK(placement.accelerator_node_count == 0);
+    SYNTH_TEST_CHECK(placement.other_node_count == 0);
+    SYNTH_TEST_CHECK(placement.unassigned_node_count == 0);
+    SYNTH_TEST_CHECK(placement.split_count == 1);
+    const float left_value = 1.25f;
+    const float right_value = 2.75f;
+    ggml_backend_tensor_set(left, &left_value, 0, sizeof(left_value));
+    ggml_backend_tensor_set(right, &right_value, 0, sizeof(right_value));
+    plan->set_threads(2);
+    SYNTH_TEST_CHECK(ggml_backend_sched_graph_compute(scheduler, graph) == GGML_STATUS_SUCCESS);
+    float sum_value = 0.0f;
+    ggml_backend_tensor_get(sum, &sum_value, 0, sizeof(sum_value));
+    SYNTH_TEST_CHECK(std::fabs(sum_value - 4.0f) < 1.0e-6f);
+    ggml_backend_sched_free(scheduler);
+    ggml_free(context);
+
+    ggml_context * view_context = ggml_init(parameters);
+    SYNTH_TEST_CHECK(view_context != nullptr);
+    ggml_tensor * view_input = ggml_new_tensor_2d(view_context, GGML_TYPE_F32, 2, 3);
+    ggml_set_input(view_input);
+    ggml_tensor * transpose = ggml_transpose(view_context, view_input);
+    ggml_tensor * contiguous = ggml_cont(view_context, transpose);
+    ggml_cgraph * view_graph = ggml_new_graph_custom(view_context, 16, false);
+    ggml_build_forward_expand(view_graph, contiguous);
+    ggml_backend_sched_t view_scheduler = plan->create_scheduler(16);
+    SYNTH_TEST_CHECK(view_scheduler != nullptr);
+    SYNTH_TEST_CHECK(ggml_backend_sched_alloc_graph(view_scheduler, view_graph));
+    const synth::BackendPlacement view_placement = plan->inspect_placement(view_scheduler, view_graph);
+    SYNTH_TEST_CHECK(view_placement.node_count == 2);
+    SYNTH_TEST_CHECK(view_placement.view_node_count == 1);
+    SYNTH_TEST_CHECK(view_placement.primary_node_count == 1);
+    SYNTH_TEST_CHECK(view_placement.cpu_fallback_node_count == 0);
+    ggml_backend_sched_free(view_scheduler);
+    ggml_free(view_context);
+
+    std::unique_ptr<synth::BackendPlan> accelerated;
+    SYNTH_TEST_CHECK(synth::BackendPlan::create(cpu, true, accelerated) == SYNTH_OK);
+    SYNTH_TEST_CHECK(accelerated != nullptr && accelerated->primary_device() == cpu);
+    SYNTH_TEST_CHECK(accelerated->scheduler_backend_count() >= 1);
+    const size_t last = accelerated->scheduler_backend_count() - 1;
+    SYNTH_TEST_CHECK(accelerated->scheduler_device(last) == cpu);
+    for (size_t i = 0; i < last; ++i) {
+        SYNTH_TEST_CHECK(ggml_backend_dev_type(accelerated->scheduler_device(i)) == GGML_BACKEND_DEVICE_TYPE_ACCEL);
+    }
+
+    ggml_backend_dev_t cuda = nullptr;
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t candidate = ggml_backend_dev_get(i);
+        ggml_backend_reg_t registry = ggml_backend_dev_backend_reg(candidate);
+        const char * registry_name = registry == nullptr ? nullptr : ggml_backend_reg_name(registry);
+        if ((ggml_backend_dev_type(candidate) == GGML_BACKEND_DEVICE_TYPE_GPU ||
+             ggml_backend_dev_type(candidate) == GGML_BACKEND_DEVICE_TYPE_IGPU) &&
+            registry_name != nullptr && std::strncmp(registry_name, "CUDA", 4) == 0) {
+            cuda = candidate;
+            break;
+        }
+    }
+    if (cuda != nullptr) {
+        std::unique_ptr<synth::BackendPlan> gpu;
+        SYNTH_TEST_CHECK(synth::BackendPlan::create(cuda, false, gpu) == SYNTH_OK);
+        SYNTH_TEST_CHECK(gpu != nullptr && gpu->primary_device() == cuda);
+        SYNTH_TEST_CHECK(gpu->scheduler_backend_count() == 2);
+        SYNTH_TEST_CHECK(gpu->scheduler_device(0) == cuda);
+        SYNTH_TEST_CHECK(ggml_backend_dev_type(gpu->scheduler_device(1)) == GGML_BACKEND_DEVICE_TYPE_CPU);
+
+        ggml_context * gpu_context = ggml_init(parameters);
+        SYNTH_TEST_CHECK(gpu_context != nullptr);
+        ggml_tensor * gpu_left = ggml_new_tensor_1d(gpu_context, GGML_TYPE_F32, 1);
+        ggml_tensor * gpu_right = ggml_new_tensor_1d(gpu_context, GGML_TYPE_F32, 1);
+        ggml_set_input(gpu_left);
+        ggml_set_input(gpu_right);
+        ggml_tensor * gpu_sum = ggml_add(gpu_context, gpu_left, gpu_right);
+        ggml_cgraph * gpu_graph = ggml_new_graph_custom(gpu_context, 16, false);
+        ggml_build_forward_expand(gpu_graph, gpu_sum);
+        ggml_backend_sched_t gpu_scheduler = gpu->create_scheduler(16);
+        SYNTH_TEST_CHECK(gpu_scheduler != nullptr);
+        SYNTH_TEST_CHECK(gpu->assign_to_primary(gpu_scheduler, gpu_sum));
+        SYNTH_TEST_CHECK(ggml_backend_sched_alloc_graph(gpu_scheduler, gpu_graph));
+        const synth::BackendPlacement gpu_placement = gpu->inspect_placement(gpu_scheduler, gpu_graph);
+        SYNTH_TEST_CHECK(gpu_placement.node_count == 1);
+        SYNTH_TEST_CHECK(gpu_placement.primary_node_count == 1);
+        SYNTH_TEST_CHECK(gpu_placement.cpu_fallback_node_count == 0);
+        ggml_backend_sched_free(gpu_scheduler);
+        ggml_free(gpu_context);
+
+        constexpr int64_t matrix_size = 64;
+        ggml_context * precision_context = ggml_init(parameters);
+        SYNTH_TEST_CHECK(precision_context != nullptr);
+        ggml_tensor * precision_left =
+            ggml_new_tensor_2d(precision_context, GGML_TYPE_F32, matrix_size, matrix_size);
+        ggml_tensor * precision_right =
+            ggml_new_tensor_2d(precision_context, GGML_TYPE_F32, matrix_size, matrix_size);
+        ggml_set_input(precision_left);
+        ggml_set_input(precision_right);
+        ggml_tensor * precision_product = ggml_mul_mat(precision_context, precision_left, precision_right);
+        ggml_cgraph * precision_graph = ggml_new_graph_custom(precision_context, 16, false);
+        ggml_build_forward_expand(precision_graph, precision_product);
+        ggml_backend_sched_t precision_scheduler = gpu->create_scheduler(16);
+        SYNTH_TEST_CHECK(precision_scheduler != nullptr);
+        SYNTH_TEST_CHECK(gpu->assign_to_primary(precision_scheduler, precision_product));
+        SYNTH_TEST_CHECK(ggml_backend_sched_alloc_graph(precision_scheduler, precision_graph));
+        const std::vector<float> precision_input(matrix_size * matrix_size, 1.0001f);
+        ggml_backend_tensor_set(precision_left, precision_input.data(), 0,
+                                precision_input.size() * sizeof(float));
+        ggml_backend_tensor_set(precision_right, precision_input.data(), 0,
+                                precision_input.size() * sizeof(float));
+        SYNTH_TEST_CHECK(ggml_backend_sched_graph_compute(precision_scheduler, precision_graph) ==
+                         GGML_STATUS_SUCCESS);
+        float precision_value = 0.0f;
+        ggml_backend_tensor_get(precision_product, &precision_value, 0, sizeof(precision_value));
+#if SYNTH_TEST_CUDA_TF32
+        SYNTH_TEST_CHECK(std::isfinite(precision_value));
+#else
+        const float precision_expected = matrix_size * 1.0001f * 1.0001f;
+        SYNTH_TEST_CHECK(std::fabs(precision_value - precision_expected) < 1.0e-3f);
+#endif
+        ggml_backend_sched_free(precision_scheduler);
+        ggml_free(precision_context);
+    }
+    return 0;
+}

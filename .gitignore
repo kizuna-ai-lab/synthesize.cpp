@@ -1,0 +1,18 @@
+# Downloaded model inputs and generated validation payloads.
+/models/
+/build/
+/build-*/
+/dist/
+/wheelhouse/
+CMakeUserPresets.json
+.idea/
+**/.venv/
+**/__pycache__/
+*.pyc
+
+# Reproducible generated porting reports; committed intake records live under
+# reports/porting/.
+/reports/convert/
+/reports/reference/
+/reports/validate/
+/reports/bench/

@@ -1,0 +1,4 @@
+"""Adapter release contract generated from the public C header by CMake."""
+
+VERSION = "@PROJECT_VERSION@"
+PUBLIC_HEADER_HASH = "@SYNTH_ADAPTER_PUBLIC_HEADER_HASH@"

@@ -1,0 +1,6 @@
+SYNTHESIZE_1 {
+    global:
+        synth_*;
+    local:
+        *;
+};

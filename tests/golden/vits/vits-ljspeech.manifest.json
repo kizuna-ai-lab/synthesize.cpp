@@ -1,0 +1,567 @@
+{
+  "$schema": "../../../docs/schemas/synthesize-golden-manifest-v1.schema.json",
+  "schema": "synthesize-golden-manifest-v1",
+  "suite_version": 1,
+  "family": "vits",
+  "variant": "vits-ljspeech",
+  "source": {
+    "repository": "https://github.com/jaywalnut310/vits",
+    "revision": "2e561ba58618d021b5b8323d3765880f7e0ecfdb",
+    "artifacts": [
+      {
+        "role": "checkpoint",
+        "locator": "https://drive.google.com/uc?id=1q86w74Ygw2hNzYP9cWkeClGT5X25PvBT",
+        "sha256": "c94fb49d08ba90c598de16e7d5dec8d26bf225c1cf193a4fba05eb2dbda5a561"
+      },
+      {
+        "role": "config",
+        "locator": "https://raw.githubusercontent.com/jaywalnut310/vits/2e561ba58618d021b5b8323d3765880f7e0ecfdb/configs/ljs_base.json",
+        "repository_path": "configs/ljs_base.json",
+        "sha256": "ae18673015c1346c82af442a73f05297216655a4d931dc8d8315a6cef429832e"
+      },
+      {
+        "role": "source",
+        "locator": "https://github.com/jaywalnut310/vits/archive/2e561ba58618d021b5b8323d3765880f7e0ecfdb.tar.gz",
+        "sha256": "95a3730fd37cc73783014cbe7762b730248737931213652ad1279c40c2dc13d6"
+      },
+      {
+        "role": "license",
+        "locator": "https://raw.githubusercontent.com/jaywalnut310/vits/2e561ba58618d021b5b8323d3765880f7e0ecfdb/LICENSE",
+        "repository_path": "LICENSE",
+        "sha256": "3d8165162cef96f686f02146ac2e4ae80db5797296a99c658befa424ee64727b"
+      }
+    ]
+  },
+  "reference": {
+    "implementation": "jaywalnut310/vits@2e561ba58618d021b5b8323d3765880f7e0ecfdb",
+    "framework": "pytorch-2.7.1+cpu",
+    "runner": "scripts/dump_reference_vits_pytorch.py",
+    "environment_lock": "scripts/envs/vits/uv.lock",
+    "dtype": "float32",
+    "device": "cpu"
+  },
+  "package_contract": {
+    "native_audio": {
+      "sample_rate_hz": 22050,
+      "channels": 1,
+      "sample_format": "f32le"
+    },
+    "input_kinds": ["phonemes_utf8", "token_ids"],
+    "frontend": {
+      "provider": "synthesize.symbol_map",
+      "contract_version": 1,
+      "phoneme_mapping": "unicode_scalar"
+    },
+    "language_tags": ["en"],
+    "voices": {
+      "mode": "fixed-default",
+      "default_id": null,
+      "preset_ids": []
+    },
+    "stochastic": true,
+    "speaking_rate_range": [0.8, 1.25],
+    "max_input_tokens": 512,
+    "max_output_frames": 1323000
+  },
+  "tolerance_file": "tests/tolerances/vits.json",
+  "case_artifact_root": "build/goldens/vits/vits-ljspeech",
+  "cases": [
+    {
+      "id": "ljs-upstream-default",
+      "origin": {
+        "kind": "upstream_example",
+        "locator": "https://github.com/jaywalnut310/vits/blob/2e561ba58618d021b5b8323d3765880f7e0ecfdb/inference.ipynb"
+      },
+      "coverage": ["upstream-example", "baseline", "repeatability"],
+      "input": {
+        "kind": "token_ids",
+        "language_tag": "en",
+        "source_text": "VITS is Awesome!",
+        "artifact": {"name": "input.token_ids", "path": "input/token_ids.i32", "format": "i32le"}
+      },
+      "voice": {"kind": "package_default"},
+      "request": {"seed_u64": "0", "speaking_rate": 1.0, "max_output_frames": 0},
+      "oracle": {
+        "parameters": {"noise_scale": 0.667, "noise_scale_w": 0.8, "length_scale": 1.0},
+        "stochastic_inputs": [
+          {"name": "random.duration_noise", "path": "random/duration_noise.f32", "format": "f32le"},
+          {"name": "random.latent_noise", "path": "random/latent_noise.f32", "format": "f32le"}
+        ]
+      },
+      "checks": ["tensor_parity", "structural_exactness", "waveform_regression", "finite_pcm", "request_repeatability", "result_metadata", "backend_placement", "resource_cleanup"],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {"name": "text.m_p", "path": "text/m_p.f32", "format": "f32le"},
+          {"name": "text.logs_p", "path": "text/logs_p.f32", "format": "f32le"},
+          {"name": "text.mask", "path": "text/mask.f32", "format": "f32le"},
+          {"name": "duration.logw", "path": "duration/logw.f32", "format": "f32le"},
+          {"name": "duration.w_ceil", "path": "duration/w_ceil.f32", "format": "f32le"},
+          {"name": "duration.y_length", "path": "duration/y_length.i64", "format": "i64le"},
+          {"name": "duration.attention", "path": "duration/attention.f32", "format": "f32le"},
+          {"name": "prior.m_p_expanded", "path": "prior/m_p_expanded.f32", "format": "f32le"},
+          {"name": "prior.logs_p_expanded", "path": "prior/logs_p_expanded.f32", "format": "f32le"},
+          {"name": "latent.z_p", "path": "latent/z_p.f32", "format": "f32le"},
+          {"name": "flow.z", "path": "flow/z.f32", "format": "f32le"},
+          {"name": "audio.pcm", "path": "audio/pcm.f32", "format": "f32le"},
+          {"name": "result", "path": "result.json", "format": "json"},
+          {"name": "metadata", "path": "metadata.json", "format": "json"}
+        ]
+      }
+    },
+    {
+      "id": "ljs-minimal",
+      "origin": {"kind": "project_coverage", "locator": "docs/porting/families/vits.md#ljspeech-variant"},
+      "coverage": ["minimal-sequence", "padding"],
+      "input": {
+        "kind": "token_ids",
+        "language_tag": "en",
+        "source_text": "A.",
+        "artifact": {"name": "input.token_ids", "path": "input/token_ids.i32", "format": "i32le"}
+      },
+      "voice": {"kind": "package_default"},
+      "request": {"seed_u64": "0", "speaking_rate": 1.0, "max_output_frames": 0},
+      "oracle": {
+        "parameters": {"noise_scale": 0.667, "noise_scale_w": 0.8, "length_scale": 1.0},
+        "stochastic_inputs": [
+          {"name": "random.duration_noise", "path": "random/duration_noise.f32", "format": "f32le"},
+          {"name": "random.latent_noise", "path": "random/latent_noise.f32", "format": "f32le"}
+        ]
+      },
+      "checks": ["tensor_parity", "structural_exactness", "waveform_regression", "finite_pcm", "result_metadata", "backend_placement", "resource_cleanup"],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {"name": "text.m_p", "path": "text/m_p.f32", "format": "f32le"},
+          {"name": "text.logs_p", "path": "text/logs_p.f32", "format": "f32le"},
+          {"name": "text.mask", "path": "text/mask.f32", "format": "f32le"},
+          {"name": "duration.logw", "path": "duration/logw.f32", "format": "f32le"},
+          {"name": "duration.w_ceil", "path": "duration/w_ceil.f32", "format": "f32le"},
+          {"name": "duration.y_length", "path": "duration/y_length.i64", "format": "i64le"},
+          {"name": "duration.attention", "path": "duration/attention.f32", "format": "f32le"},
+          {"name": "prior.m_p_expanded", "path": "prior/m_p_expanded.f32", "format": "f32le"},
+          {"name": "prior.logs_p_expanded", "path": "prior/logs_p_expanded.f32", "format": "f32le"},
+          {"name": "latent.z_p", "path": "latent/z_p.f32", "format": "f32le"},
+          {"name": "flow.z", "path": "flow/z.f32", "format": "f32le"},
+          {"name": "audio.pcm", "path": "audio/pcm.f32", "format": "f32le"},
+          {"name": "result", "path": "result.json", "format": "json"},
+          {"name": "metadata", "path": "metadata.json", "format": "json"}
+        ]
+      }
+    },
+    {
+      "id": "ljs-short",
+      "origin": {"kind": "project_coverage", "locator": "docs/porting/families/vits.md#ljspeech-variant"},
+      "coverage": ["short-sequence"],
+      "input": {
+        "kind": "token_ids",
+        "language_tag": "en",
+        "source_text": "Hello, world!",
+        "artifact": {"name": "input.token_ids", "path": "input/token_ids.i32", "format": "i32le"}
+      },
+      "voice": {"kind": "package_default"},
+      "request": {"seed_u64": "0", "speaking_rate": 1.0, "max_output_frames": 0},
+      "oracle": {
+        "parameters": {"noise_scale": 0.667, "noise_scale_w": 0.8, "length_scale": 1.0},
+        "stochastic_inputs": [
+          {"name": "random.duration_noise", "path": "random/duration_noise.f32", "format": "f32le"},
+          {"name": "random.latent_noise", "path": "random/latent_noise.f32", "format": "f32le"}
+        ]
+      },
+      "checks": ["tensor_parity", "structural_exactness", "waveform_regression", "finite_pcm", "result_metadata", "backend_placement", "resource_cleanup"],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {"name": "text.m_p", "path": "text/m_p.f32", "format": "f32le"},
+          {"name": "text.logs_p", "path": "text/logs_p.f32", "format": "f32le"},
+          {"name": "text.mask", "path": "text/mask.f32", "format": "f32le"},
+          {"name": "duration.logw", "path": "duration/logw.f32", "format": "f32le"},
+          {"name": "duration.w_ceil", "path": "duration/w_ceil.f32", "format": "f32le"},
+          {"name": "duration.y_length", "path": "duration/y_length.i64", "format": "i64le"},
+          {"name": "duration.attention", "path": "duration/attention.f32", "format": "f32le"},
+          {"name": "prior.m_p_expanded", "path": "prior/m_p_expanded.f32", "format": "f32le"},
+          {"name": "prior.logs_p_expanded", "path": "prior/logs_p_expanded.f32", "format": "f32le"},
+          {"name": "latent.z_p", "path": "latent/z_p.f32", "format": "f32le"},
+          {"name": "flow.z", "path": "flow/z.f32", "format": "f32le"},
+          {"name": "audio.pcm", "path": "audio/pcm.f32", "format": "f32le"},
+          {"name": "result", "path": "result.json", "format": "json"},
+          {"name": "metadata", "path": "metadata.json", "format": "json"}
+        ]
+      }
+    },
+    {
+      "id": "ljs-punctuation",
+      "origin": {"kind": "project_coverage", "locator": "docs/porting/families/vits.md#ljspeech-variant"},
+      "coverage": ["punctuation-shaped-sequence"],
+      "input": {
+        "kind": "token_ids",
+        "language_tag": "en",
+        "source_text": "Wait... really? Yes!",
+        "artifact": {"name": "input.token_ids", "path": "input/token_ids.i32", "format": "i32le"}
+      },
+      "voice": {"kind": "package_default"},
+      "request": {"seed_u64": "0", "speaking_rate": 1.0, "max_output_frames": 0},
+      "oracle": {
+        "parameters": {"noise_scale": 0.667, "noise_scale_w": 0.8, "length_scale": 1.0},
+        "stochastic_inputs": [
+          {"name": "random.duration_noise", "path": "random/duration_noise.f32", "format": "f32le"},
+          {"name": "random.latent_noise", "path": "random/latent_noise.f32", "format": "f32le"}
+        ]
+      },
+      "checks": ["tensor_parity", "structural_exactness", "waveform_regression", "finite_pcm", "result_metadata", "backend_placement", "resource_cleanup"],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {"name": "text.m_p", "path": "text/m_p.f32", "format": "f32le"},
+          {"name": "text.logs_p", "path": "text/logs_p.f32", "format": "f32le"},
+          {"name": "text.mask", "path": "text/mask.f32", "format": "f32le"},
+          {"name": "duration.logw", "path": "duration/logw.f32", "format": "f32le"},
+          {"name": "duration.w_ceil", "path": "duration/w_ceil.f32", "format": "f32le"},
+          {"name": "duration.y_length", "path": "duration/y_length.i64", "format": "i64le"},
+          {"name": "duration.attention", "path": "duration/attention.f32", "format": "f32le"},
+          {"name": "prior.m_p_expanded", "path": "prior/m_p_expanded.f32", "format": "f32le"},
+          {"name": "prior.logs_p_expanded", "path": "prior/logs_p_expanded.f32", "format": "f32le"},
+          {"name": "latent.z_p", "path": "latent/z_p.f32", "format": "f32le"},
+          {"name": "flow.z", "path": "flow/z.f32", "format": "f32le"},
+          {"name": "audio.pcm", "path": "audio/pcm.f32", "format": "f32le"},
+          {"name": "result", "path": "result.json", "format": "json"},
+          {"name": "metadata", "path": "metadata.json", "format": "json"}
+        ]
+      }
+    },
+    {
+      "id": "ljs-normalization",
+      "origin": {"kind": "project_coverage", "locator": "docs/porting/families/vits.md#ljspeech-variant"},
+      "coverage": ["normalization-shaped-sequence"],
+      "input": {
+        "kind": "token_ids",
+        "language_tag": "en",
+        "source_text": "Dr. Smith paid $12.50 on January 3rd.",
+        "artifact": {"name": "input.token_ids", "path": "input/token_ids.i32", "format": "i32le"}
+      },
+      "voice": {"kind": "package_default"},
+      "request": {"seed_u64": "0", "speaking_rate": 1.0, "max_output_frames": 0},
+      "oracle": {
+        "parameters": {"noise_scale": 0.667, "noise_scale_w": 0.8, "length_scale": 1.0},
+        "stochastic_inputs": [
+          {"name": "random.duration_noise", "path": "random/duration_noise.f32", "format": "f32le"},
+          {"name": "random.latent_noise", "path": "random/latent_noise.f32", "format": "f32le"}
+        ]
+      },
+      "checks": ["tensor_parity", "structural_exactness", "waveform_regression", "finite_pcm", "result_metadata", "backend_placement", "resource_cleanup"],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {"name": "text.m_p", "path": "text/m_p.f32", "format": "f32le"},
+          {"name": "text.logs_p", "path": "text/logs_p.f32", "format": "f32le"},
+          {"name": "text.mask", "path": "text/mask.f32", "format": "f32le"},
+          {"name": "duration.logw", "path": "duration/logw.f32", "format": "f32le"},
+          {"name": "duration.w_ceil", "path": "duration/w_ceil.f32", "format": "f32le"},
+          {"name": "duration.y_length", "path": "duration/y_length.i64", "format": "i64le"},
+          {"name": "duration.attention", "path": "duration/attention.f32", "format": "f32le"},
+          {"name": "prior.m_p_expanded", "path": "prior/m_p_expanded.f32", "format": "f32le"},
+          {"name": "prior.logs_p_expanded", "path": "prior/logs_p_expanded.f32", "format": "f32le"},
+          {"name": "latent.z_p", "path": "latent/z_p.f32", "format": "f32le"},
+          {"name": "flow.z", "path": "flow/z.f32", "format": "f32le"},
+          {"name": "audio.pcm", "path": "audio/pcm.f32", "format": "f32le"},
+          {"name": "result", "path": "result.json", "format": "json"},
+          {"name": "metadata", "path": "metadata.json", "format": "json"}
+        ]
+      }
+    },
+    {
+      "id": "ljs-medium",
+      "origin": {"kind": "project_coverage", "locator": "docs/porting/families/vits.md#ljspeech-variant"},
+      "coverage": ["medium-sequence", "broad-symbol-use"],
+      "input": {
+        "kind": "token_ids",
+        "language_tag": "en",
+        "source_text": "The quick brown fox jumps over the lazy dog.",
+        "artifact": {"name": "input.token_ids", "path": "input/token_ids.i32", "format": "i32le"}
+      },
+      "voice": {"kind": "package_default"},
+      "request": {"seed_u64": "0", "speaking_rate": 1.0, "max_output_frames": 0},
+      "oracle": {
+        "parameters": {"noise_scale": 0.667, "noise_scale_w": 0.8, "length_scale": 1.0},
+        "stochastic_inputs": [
+          {"name": "random.duration_noise", "path": "random/duration_noise.f32", "format": "f32le"},
+          {"name": "random.latent_noise", "path": "random/latent_noise.f32", "format": "f32le"}
+        ]
+      },
+      "checks": ["tensor_parity", "structural_exactness", "waveform_regression", "finite_pcm", "result_metadata", "backend_placement", "resource_cleanup"],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {"name": "text.m_p", "path": "text/m_p.f32", "format": "f32le"},
+          {"name": "text.logs_p", "path": "text/logs_p.f32", "format": "f32le"},
+          {"name": "text.mask", "path": "text/mask.f32", "format": "f32le"},
+          {"name": "duration.logw", "path": "duration/logw.f32", "format": "f32le"},
+          {"name": "duration.w_ceil", "path": "duration/w_ceil.f32", "format": "f32le"},
+          {"name": "duration.y_length", "path": "duration/y_length.i64", "format": "i64le"},
+          {"name": "duration.attention", "path": "duration/attention.f32", "format": "f32le"},
+          {"name": "prior.m_p_expanded", "path": "prior/m_p_expanded.f32", "format": "f32le"},
+          {"name": "prior.logs_p_expanded", "path": "prior/logs_p_expanded.f32", "format": "f32le"},
+          {"name": "latent.z_p", "path": "latent/z_p.f32", "format": "f32le"},
+          {"name": "flow.z", "path": "flow/z.f32", "format": "f32le"},
+          {"name": "audio.pcm", "path": "audio/pcm.f32", "format": "f32le"},
+          {"name": "result", "path": "result.json", "format": "json"},
+          {"name": "metadata", "path": "metadata.json", "format": "json"}
+        ]
+      }
+    },
+    {
+      "id": "ljs-repetition",
+      "origin": {"kind": "project_coverage", "locator": "docs/porting/families/vits.md#ljspeech-variant"},
+      "coverage": ["repeated-tokens", "repeated-durations"],
+      "input": {
+        "kind": "token_ids",
+        "language_tag": "en",
+        "source_text": "No, no, no; yes, yes, yes.",
+        "artifact": {"name": "input.token_ids", "path": "input/token_ids.i32", "format": "i32le"}
+      },
+      "voice": {"kind": "package_default"},
+      "request": {"seed_u64": "0", "speaking_rate": 1.0, "max_output_frames": 0},
+      "oracle": {
+        "parameters": {"noise_scale": 0.667, "noise_scale_w": 0.8, "length_scale": 1.0},
+        "stochastic_inputs": [
+          {"name": "random.duration_noise", "path": "random/duration_noise.f32", "format": "f32le"},
+          {"name": "random.latent_noise", "path": "random/latent_noise.f32", "format": "f32le"}
+        ]
+      },
+      "checks": ["tensor_parity", "structural_exactness", "waveform_regression", "finite_pcm", "result_metadata", "backend_placement", "resource_cleanup"],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {"name": "text.m_p", "path": "text/m_p.f32", "format": "f32le"},
+          {"name": "text.logs_p", "path": "text/logs_p.f32", "format": "f32le"},
+          {"name": "text.mask", "path": "text/mask.f32", "format": "f32le"},
+          {"name": "duration.logw", "path": "duration/logw.f32", "format": "f32le"},
+          {"name": "duration.w_ceil", "path": "duration/w_ceil.f32", "format": "f32le"},
+          {"name": "duration.y_length", "path": "duration/y_length.i64", "format": "i64le"},
+          {"name": "duration.attention", "path": "duration/attention.f32", "format": "f32le"},
+          {"name": "prior.m_p_expanded", "path": "prior/m_p_expanded.f32", "format": "f32le"},
+          {"name": "prior.logs_p_expanded", "path": "prior/logs_p_expanded.f32", "format": "f32le"},
+          {"name": "latent.z_p", "path": "latent/z_p.f32", "format": "f32le"},
+          {"name": "flow.z", "path": "flow/z.f32", "format": "f32le"},
+          {"name": "audio.pcm", "path": "audio/pcm.f32", "format": "f32le"},
+          {"name": "result", "path": "result.json", "format": "json"},
+          {"name": "metadata", "path": "metadata.json", "format": "json"}
+        ]
+      }
+    },
+    {
+      "id": "ljs-long",
+      "origin": {"kind": "project_coverage", "locator": "docs/porting/families/vits.md#ljspeech-variant"},
+      "coverage": ["long-sequence", "allocation-growth"],
+      "input": {
+        "kind": "token_ids",
+        "language_tag": "en",
+        "source_text": "A small speech synthesis library should produce the same finite waveform whenever its model, input, controls, and random seed are unchanged.",
+        "artifact": {"name": "input.token_ids", "path": "input/token_ids.i32", "format": "i32le"}
+      },
+      "voice": {"kind": "package_default"},
+      "request": {"seed_u64": "0", "speaking_rate": 1.0, "max_output_frames": 0},
+      "oracle": {
+        "parameters": {"noise_scale": 0.667, "noise_scale_w": 0.8, "length_scale": 1.0},
+        "stochastic_inputs": [
+          {"name": "random.duration_noise", "path": "random/duration_noise.f32", "format": "f32le"},
+          {"name": "random.latent_noise", "path": "random/latent_noise.f32", "format": "f32le"}
+        ]
+      },
+      "checks": ["tensor_parity", "structural_exactness", "waveform_regression", "finite_pcm", "result_metadata", "backend_placement", "resource_cleanup"],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {"name": "text.m_p", "path": "text/m_p.f32", "format": "f32le"},
+          {"name": "text.logs_p", "path": "text/logs_p.f32", "format": "f32le"},
+          {"name": "text.mask", "path": "text/mask.f32", "format": "f32le"},
+          {"name": "duration.logw", "path": "duration/logw.f32", "format": "f32le"},
+          {"name": "duration.w_ceil", "path": "duration/w_ceil.f32", "format": "f32le"},
+          {"name": "duration.y_length", "path": "duration/y_length.i64", "format": "i64le"},
+          {"name": "duration.attention", "path": "duration/attention.f32", "format": "f32le"},
+          {"name": "prior.m_p_expanded", "path": "prior/m_p_expanded.f32", "format": "f32le"},
+          {"name": "prior.logs_p_expanded", "path": "prior/logs_p_expanded.f32", "format": "f32le"},
+          {"name": "latent.z_p", "path": "latent/z_p.f32", "format": "f32le"},
+          {"name": "flow.z", "path": "flow/z.f32", "format": "f32le"},
+          {"name": "audio.pcm", "path": "audio/pcm.f32", "format": "f32le"},
+          {"name": "result", "path": "result.json", "format": "json"},
+          {"name": "metadata", "path": "metadata.json", "format": "json"}
+        ]
+      }
+    },
+    {
+      "id": "ljs-seed-one",
+      "origin": {"kind": "project_coverage", "locator": "docs/porting/families/vits.md#ljspeech-variant"},
+      "coverage": ["alternate-stochastic-path", "seed-one"],
+      "input": {
+        "kind": "token_ids",
+        "language_tag": "en",
+        "source_text": "VITS is Awesome!",
+        "artifact": {"name": "input.token_ids", "path": "input/token_ids.i32", "format": "i32le"}
+      },
+      "voice": {"kind": "package_default"},
+      "request": {"seed_u64": "1", "speaking_rate": 1.0, "max_output_frames": 0},
+      "oracle": {
+        "parameters": {"noise_scale": 0.667, "noise_scale_w": 0.8, "length_scale": 1.0},
+        "stochastic_inputs": [
+          {"name": "random.duration_noise", "path": "random/duration_noise.f32", "format": "f32le"},
+          {"name": "random.latent_noise", "path": "random/latent_noise.f32", "format": "f32le"}
+        ]
+      },
+      "checks": ["tensor_parity", "structural_exactness", "waveform_regression", "finite_pcm", "result_metadata", "backend_placement", "resource_cleanup"],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {"name": "text.m_p", "path": "text/m_p.f32", "format": "f32le"},
+          {"name": "text.logs_p", "path": "text/logs_p.f32", "format": "f32le"},
+          {"name": "text.mask", "path": "text/mask.f32", "format": "f32le"},
+          {"name": "duration.logw", "path": "duration/logw.f32", "format": "f32le"},
+          {"name": "duration.w_ceil", "path": "duration/w_ceil.f32", "format": "f32le"},
+          {"name": "duration.y_length", "path": "duration/y_length.i64", "format": "i64le"},
+          {"name": "duration.attention", "path": "duration/attention.f32", "format": "f32le"},
+          {"name": "prior.m_p_expanded", "path": "prior/m_p_expanded.f32", "format": "f32le"},
+          {"name": "prior.logs_p_expanded", "path": "prior/logs_p_expanded.f32", "format": "f32le"},
+          {"name": "latent.z_p", "path": "latent/z_p.f32", "format": "f32le"},
+          {"name": "flow.z", "path": "flow/z.f32", "format": "f32le"},
+          {"name": "audio.pcm", "path": "audio/pcm.f32", "format": "f32le"},
+          {"name": "result", "path": "result.json", "format": "json"},
+          {"name": "metadata", "path": "metadata.json", "format": "json"}
+        ]
+      }
+    },
+    {
+      "id": "ljs-seed-forty-two",
+      "origin": {"kind": "project_coverage", "locator": "docs/porting/families/vits.md#ljspeech-variant"},
+      "coverage": ["alternate-stochastic-path", "seed-forty-two"],
+      "input": {
+        "kind": "token_ids",
+        "language_tag": "en",
+        "source_text": "VITS is Awesome!",
+        "artifact": {"name": "input.token_ids", "path": "input/token_ids.i32", "format": "i32le"}
+      },
+      "voice": {"kind": "package_default"},
+      "request": {"seed_u64": "42", "speaking_rate": 1.0, "max_output_frames": 0},
+      "oracle": {
+        "parameters": {"noise_scale": 0.667, "noise_scale_w": 0.8, "length_scale": 1.0},
+        "stochastic_inputs": [
+          {"name": "random.duration_noise", "path": "random/duration_noise.f32", "format": "f32le"},
+          {"name": "random.latent_noise", "path": "random/latent_noise.f32", "format": "f32le"}
+        ]
+      },
+      "checks": ["tensor_parity", "structural_exactness", "waveform_regression", "finite_pcm", "result_metadata", "backend_placement", "resource_cleanup"],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {"name": "text.m_p", "path": "text/m_p.f32", "format": "f32le"},
+          {"name": "text.logs_p", "path": "text/logs_p.f32", "format": "f32le"},
+          {"name": "text.mask", "path": "text/mask.f32", "format": "f32le"},
+          {"name": "duration.logw", "path": "duration/logw.f32", "format": "f32le"},
+          {"name": "duration.w_ceil", "path": "duration/w_ceil.f32", "format": "f32le"},
+          {"name": "duration.y_length", "path": "duration/y_length.i64", "format": "i64le"},
+          {"name": "duration.attention", "path": "duration/attention.f32", "format": "f32le"},
+          {"name": "prior.m_p_expanded", "path": "prior/m_p_expanded.f32", "format": "f32le"},
+          {"name": "prior.logs_p_expanded", "path": "prior/logs_p_expanded.f32", "format": "f32le"},
+          {"name": "latent.z_p", "path": "latent/z_p.f32", "format": "f32le"},
+          {"name": "flow.z", "path": "flow/z.f32", "format": "f32le"},
+          {"name": "audio.pcm", "path": "audio/pcm.f32", "format": "f32le"},
+          {"name": "result", "path": "result.json", "format": "json"},
+          {"name": "metadata", "path": "metadata.json", "format": "json"}
+        ]
+      }
+    },
+    {
+      "id": "ljs-rate-slow",
+      "origin": {"kind": "project_coverage", "locator": "docs/porting/families/vits.md#ljspeech-variant"},
+      "coverage": ["speaking-rate-slow-boundary"],
+      "input": {
+        "kind": "token_ids",
+        "language_tag": "en",
+        "source_text": "The quick brown fox jumps over the lazy dog.",
+        "artifact": {"name": "input.token_ids", "path": "input/token_ids.i32", "format": "i32le"}
+      },
+      "voice": {"kind": "package_default"},
+      "request": {"seed_u64": "0", "speaking_rate": 0.8, "max_output_frames": 0},
+      "oracle": {
+        "parameters": {"noise_scale": 0.667, "noise_scale_w": 0.8, "length_scale": 1.25},
+        "stochastic_inputs": [
+          {"name": "random.duration_noise", "path": "random/duration_noise.f32", "format": "f32le"},
+          {"name": "random.latent_noise", "path": "random/latent_noise.f32", "format": "f32le"}
+        ]
+      },
+      "checks": ["tensor_parity", "structural_exactness", "waveform_regression", "finite_pcm", "result_metadata", "backend_placement", "resource_cleanup"],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {"name": "text.m_p", "path": "text/m_p.f32", "format": "f32le"},
+          {"name": "text.logs_p", "path": "text/logs_p.f32", "format": "f32le"},
+          {"name": "text.mask", "path": "text/mask.f32", "format": "f32le"},
+          {"name": "duration.logw", "path": "duration/logw.f32", "format": "f32le"},
+          {"name": "duration.w_ceil", "path": "duration/w_ceil.f32", "format": "f32le"},
+          {"name": "duration.y_length", "path": "duration/y_length.i64", "format": "i64le"},
+          {"name": "duration.attention", "path": "duration/attention.f32", "format": "f32le"},
+          {"name": "prior.m_p_expanded", "path": "prior/m_p_expanded.f32", "format": "f32le"},
+          {"name": "prior.logs_p_expanded", "path": "prior/logs_p_expanded.f32", "format": "f32le"},
+          {"name": "latent.z_p", "path": "latent/z_p.f32", "format": "f32le"},
+          {"name": "flow.z", "path": "flow/z.f32", "format": "f32le"},
+          {"name": "audio.pcm", "path": "audio/pcm.f32", "format": "f32le"},
+          {"name": "result", "path": "result.json", "format": "json"},
+          {"name": "metadata", "path": "metadata.json", "format": "json"}
+        ]
+      }
+    },
+    {
+      "id": "ljs-rate-fast",
+      "origin": {"kind": "project_coverage", "locator": "docs/porting/families/vits.md#ljspeech-variant"},
+      "coverage": ["speaking-rate-fast-boundary"],
+      "input": {
+        "kind": "token_ids",
+        "language_tag": "en",
+        "source_text": "The quick brown fox jumps over the lazy dog.",
+        "artifact": {"name": "input.token_ids", "path": "input/token_ids.i32", "format": "i32le"}
+      },
+      "voice": {"kind": "package_default"},
+      "request": {"seed_u64": "0", "speaking_rate": 1.25, "max_output_frames": 0},
+      "oracle": {
+        "parameters": {"noise_scale": 0.667, "noise_scale_w": 0.8, "length_scale": 0.8},
+        "stochastic_inputs": [
+          {"name": "random.duration_noise", "path": "random/duration_noise.f32", "format": "f32le"},
+          {"name": "random.latent_noise", "path": "random/latent_noise.f32", "format": "f32le"}
+        ]
+      },
+      "checks": ["tensor_parity", "structural_exactness", "waveform_regression", "finite_pcm", "result_metadata", "backend_placement", "resource_cleanup"],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {"name": "text.m_p", "path": "text/m_p.f32", "format": "f32le"},
+          {"name": "text.logs_p", "path": "text/logs_p.f32", "format": "f32le"},
+          {"name": "text.mask", "path": "text/mask.f32", "format": "f32le"},
+          {"name": "duration.logw", "path": "duration/logw.f32", "format": "f32le"},
+          {"name": "duration.w_ceil", "path": "duration/w_ceil.f32", "format": "f32le"},
+          {"name": "duration.y_length", "path": "duration/y_length.i64", "format": "i64le"},
+          {"name": "duration.attention", "path": "duration/attention.f32", "format": "f32le"},
+          {"name": "prior.m_p_expanded", "path": "prior/m_p_expanded.f32", "format": "f32le"},
+          {"name": "prior.logs_p_expanded", "path": "prior/logs_p_expanded.f32", "format": "f32le"},
+          {"name": "latent.z_p", "path": "latent/z_p.f32", "format": "f32le"},
+          {"name": "flow.z", "path": "flow/z.f32", "format": "f32le"},
+          {"name": "audio.pcm", "path": "audio/pcm.f32", "format": "f32le"},
+          {"name": "result", "path": "result.json", "format": "json"},
+          {"name": "metadata", "path": "metadata.json", "format": "json"}
+        ]
+      }
+    }
+  ],
+  "relations": [
+    {
+      "kind": "artifact_differs",
+      "phase": "public_request",
+      "cases": ["ljs-upstream-default", "ljs-seed-one", "ljs-seed-forty-two"],
+      "artifact": "audio.pcm"
+    },
+    {
+      "kind": "frame_count_order",
+      "phase": "public_request",
+      "cases": ["ljs-rate-slow", "ljs-medium", "ljs-rate-fast"],
+      "order": "decreasing"
+    }
+  ]
+}

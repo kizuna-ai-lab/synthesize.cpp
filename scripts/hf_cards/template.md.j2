@@ -1,0 +1,142 @@
+---
+license: {{ license }}
+license_name: {{ license_name | tojson }}
+license_link: {{ license_link }}
+library_name: {{ library_name }}
+pipeline_tag: {{ pipeline_tag }}
+language:
+{%- for language in languages %}
+  - {{ language }}
+{%- endfor %}
+tags:
+{%- for tag in tags %}
+  - {{ tag }}
+{%- endfor %}
+synthesize_cpp:
+  model_family: {{ model_family }}
+  validation_level: {{ validation.level }}
+  quality_evaluation: {{ validation.quality_evaluation }}
+  sample_rate_hz: {{ capabilities.sample_rate_hz }}
+  voice_count: {{ capabilities.voice_count }}
+  input_kinds:
+{%- for input_kind in capabilities.input_kinds %}
+    - {{ input_kind }}
+{%- endfor %}
+  frontend_provider: {{ capabilities.frontend_provider }}
+  profiles:
+{%- for quant in quants %}
+    - {{ quant.name }}
+{%- endfor %}
+---
+
+# {{ display_name }}: synthesize.cpp GGUF
+
+GGUF conversions of the official
+[{{ source.checkpoint_name | default(display_name) }} checkpoint]({{ source.checkpoint_url }}) for
+[synthesize.cpp](https://github.com/handy-computer/synthesize.cpp).
+
+Ported from [jaywalnut310/vits]({{ source.repository }}) revision
+[`{{ source.revision }}`]({{ source.repository }}/tree/{{ source.revision }}) and
+validated on {{ validation.date }} against {{ validation.reference }}.
+
+{{ summary }}
+
+## Downloads
+
+| Profile | Download | Size | Tensor storage | SHA-256 |
+| --- | --- | ---: | --- | --- |
+{%- for quant in quants %}
+| {{ quant.name }} | [{{ quant.filename }}](https://huggingface.co/{{ target_repo }}/resolve/main/{{ quant.filename }}) | {{ quant.size }} ({{ "{:,}".format(quant.size_bytes) }} bytes) | {{ quant.tensor_types }} | `{{ quant.sha256 }}` |
+{%- endfor %}
+
+All profiles use the same VITS architecture and public synthesize.cpp API. The
+profile name describes a versioned storage policy, not the language or Execution
+Backend.
+
+## Validation status
+
+`validation_level: {{ validation.level }}`
+
+Seven graph stages were replayed for {{ validation.cases_per_stage }} cases on
+{{ validation.platforms | join(", ") }}. Duration structure was exact in every
+case. CUDA placement contained zero executable CPU fallback nodes.
+
+| Profile | CPU max PCM drift | DGX Spark CUDA max PCM drift | RTX 4070 SUPER CUDA max PCM drift |
+| --- | ---: | ---: | ---: |
+{%- for quant in quants %}
+| {{ quant.name }} | {{ quant.validation.cpu_pcm_max_abs }} | {{ quant.validation.dgx_pcm_max_abs }} | {{ quant.validation.rtx_pcm_max_abs }} |
+{%- endfor %}
+
+{% if validation.quality_evaluation == "not_run" -%}
+**Quality evaluation has not been run.** These results establish that the port,
+{{ "Voice selection" if capabilities.voice_mode | default("preset_catalog") == "preset_catalog" else "the fixed-Voice request path" }},
+deterministic request path, and CPU/CUDA execution work. They do
+not claim perceptual equivalence, naturalness, intelligibility, or speaker
+similarity.
+{%- endif %}
+
+## Voices and input
+
+{% if capabilities.voice_mode | default("preset_catalog") == "preset_catalog" -%}
+This package exposes {{ capabilities.voice_count }} preset speaker IDs,
+`{{ capabilities.voice_ids }}`. It produces {{ capabilities.sample_rate_hz }} Hz
+mono F32 audio. No default speaker is invented; every request must select a
+Voice.
+{%- else -%}
+This package has one fixed package-default Voice and does not expose a preset
+speaker catalog. It produces {{ capabilities.sample_rate_hz }} Hz mono F32
+audio. Callers omit Voice selection; the package always uses its trained Voice.
+{%- endif %}
+
+This package accepts UTF-8 phoneme strings through the built-in
+`synthesize.symbol_map` frontend, and also accepts exact token IDs. The frontend
+validates UTF-8, maps each Unicode scalar through the symbol table embedded in
+the GGUF, and applies the model's blank-insertion rule.
+
+The built-in frontend does not perform grapheme-to-phoneme conversion or text
+normalization. Callers starting from raw text must currently run a compatible
+G2P frontend externally. The runtime does not silently invoke eSpeak or download
+a frontend.
+
+## Usage
+
+Build synthesize.cpp and synthesize a deterministic request:
+
+```bash
+git clone https://github.com/handy-computer/synthesize.cpp.git
+cd synthesize.cpp
+cmake -S . -B build -DSYNTH_BUILD_CLI=ON
+cmake --build build -j
+
+hf download {{ target_repo }} {{ model_slug }}-{{ usage.profile }}.gguf \
+  --local-dir models/{{ model_slug }}
+
+build/bin/synthesize-cli \
+  --model models/{{ model_slug }}/{{ model_slug }}-{{ usage.profile }}.gguf \
+  --output output.wav \
+  --phonemes "{{ usage.phonemes }}" \
+  --language {{ languages[0] }} \
+{% if capabilities.voice_mode | default("preset_catalog") == "preset_catalog" %}  --voice {{ usage.voice }} \
+{% endif %}  --seed 0
+```
+
+The same local GGUF can be loaded through the public C ABI and wrapped by C++,
+Rust, or Python. Model loading never contacts Hugging Face.
+
+## License and checkpoint provenance
+
+The pinned VITS source repository is MIT licensed:
+[license at the ported revision]({{ license_link }}). The official checkpoint is
+published by the VITS author in the repository's linked Google Drive folder, but
+does not carry a separate checkpoint-license statement.
+
+{{ publication_note }}
+
+---
+
+## Original upstream project card
+
+> Reproduced from [the pinned upstream repository card]({{ source.card_url }})
+> for offline provenance. The upstream repository remains authoritative.
+
+{{ upstream_card }}

@@ -1,0 +1,8 @@
+{
+  "schema": "synthesize-tolerances-v1",
+  "family": "vits",
+  "status": "measurements-recorded-thresholds-deferred",
+  "reference_stage": "source-f32-cpu",
+  "stages": {},
+  "note": "The complete source-F32 CPU path has recorded every required probe, including PCM. Numerical acceptance thresholds and perceptual quality evaluation remain deferred; no placeholder tolerance or quality score is claimed."
+}

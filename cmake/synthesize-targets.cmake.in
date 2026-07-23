@@ -1,0 +1,18 @@
+if(NOT TARGET synthesize::synthesize)
+    find_library(SYNTHESIZE_LIBRARY
+        NAMES @SYNTH_INSTALLED_LIBRARY_NAME@
+        REQUIRED
+        HINTS "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@"
+        NO_DEFAULT_PATH)
+
+    add_library(synthesize::synthesize UNKNOWN IMPORTED)
+    set_target_properties(synthesize::synthesize PROPERTIES
+        IMPORTED_LOCATION "${SYNTHESIZE_LIBRARY}"
+        IMPORTED_LINK_INTERFACE_LANGUAGES "CXX"
+        INTERFACE_INCLUDE_DIRECTORIES
+            "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@")
+    if(@SYNTH_BUILD_SHARED@)
+        set_property(TARGET synthesize::synthesize APPEND PROPERTY
+            INTERFACE_COMPILE_DEFINITIONS SYNTH_SHARED)
+    endif()
+endif()

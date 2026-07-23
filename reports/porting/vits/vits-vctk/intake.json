@@ -1,0 +1,247 @@
+{
+  "schema": "synthesize-port-intake-v1",
+  "recorded_on": "2026-07-23",
+  "family": "vits",
+  "variant": "vits-vctk",
+  "status": "validated_f32_f16_q8_mixed_cpu_and_cuda_13_3",
+  "publication_status": "published",
+  "source": {
+    "repository": "https://github.com/jaywalnut310/vits",
+    "revision": "2e561ba58618d021b5b8323d3765880f7e0ecfdb",
+    "archive": {
+      "locator": "https://github.com/jaywalnut310/vits/archive/2e561ba58618d021b5b8323d3765880f7e0ecfdb.tar.gz",
+      "size_bytes": 3426617,
+      "sha256": "95a3730fd37cc73783014cbe7762b730248737931213652ad1279c40c2dc13d6"
+    },
+    "config": {
+      "path": "configs/vctk_base.json",
+      "size_bytes": 1344,
+      "sha256": "85d00f84166ee9d078419e3c3a061341b172a27e3c1f57669d2290fac77dd253"
+    },
+    "license": {
+      "path": "LICENSE",
+      "spdx": "MIT",
+      "sha256": "3d8165162cef96f686f02146ac2e4ae80db5797296a99c658befa424ee64727b"
+    }
+  },
+  "checkpoint": {
+    "official_folder": "https://drive.google.com/drive/folders/1ksarh-cJf3F5eKJjLVWY0X1j1qsQqiS2",
+    "file_id": "11aHOlhnxzjpdWDpsz1vFDCzbeEfoIxru",
+    "locator": "https://drive.google.com/uc?id=11aHOlhnxzjpdWDpsz1vFDCzbeEfoIxru",
+    "filename": "pretrained_vctk.pth",
+    "local_ignored_path": "models/upstream/vits-vctk/pretrained_vctk.pth",
+    "size_bytes": 159123481,
+    "sha256": "ab981615c443d935fc3a89b08137df544a1175bad99bcbbc9f59e7c3d4930043",
+    "container": "pytorch-zip",
+    "model_tensor_entries": 858,
+    "parameter_count": 39700208,
+    "restricted_load_weights_only": true
+  },
+  "architecture": {
+    "speaker_count": 109,
+    "conditioning_channels": 256,
+    "preset_voice_ids": "speaker-000..speaker-108",
+    "package_default_voice": null,
+    "conditioning_paths": [
+      "stochastic_duration_predictor",
+      "reverse_acoustic_flow",
+      "waveform_decoder"
+    ]
+  },
+  "license_audit": {
+    "source_code": {
+      "spdx": "MIT",
+      "status": "confirmed"
+    },
+    "checkpoint_weights": {
+      "spdx": null,
+      "evidence": "The pinned upstream repository links the official Drive checkpoint, but neither the repository nor the checkpoint folder states separate weight redistribution terms.",
+      "status": "not_explicitly_stated"
+    },
+    "project_policy": {
+      "local_conversion_and_validation": "allowed_to_continue",
+      "missing_separate_checkpoint_terms": "treated_as_no_additional_restriction",
+      "project_hugging_face_upload": "authorized_by_maintainer_on_2026-07-23"
+    }
+  },
+  "reference_environment": {
+    "host": "DGX Spark",
+    "os": "Ubuntu 24.04",
+    "architecture": "aarch64",
+    "python": "3.12.13",
+    "torch": "2.7.1+cpu",
+    "environment": "scripts/envs/vits/pyproject.toml",
+    "environment_sha256": "fbe17c47c29187e12189a7404f56f9343db2ac335de1c1ee5b400fe703ea3406",
+    "lockfile": "scripts/envs/vits/uv.lock",
+    "lockfile_sha256": "f0fe97d035c5a8972755883f42fd0090a3da8a702990273228294e332451ec1f"
+  },
+  "oracle_dump": {
+    "runner": "scripts/dump_reference_vits_pytorch.py",
+    "manifest": "tests/golden/vits/vits-vctk.manifest.json",
+    "manifest_sha256": "89102e8dd801d3450a3b37cbbd5db314c33bb449de231c6dd5b6b9587aa95cd8",
+    "case_count": 12,
+    "artifacts_per_case": 18,
+    "generated_file_count": 216,
+    "all_pcm_finite": true,
+    "upstream_example": {
+      "case_id": "vctk-upstream-speaker-004",
+      "speaker_index": 4,
+      "frames": 19456,
+      "pcm_sha256": "61221f247b73042597622e11ca5c1c6e7e547604f88a4f204042f8814eb303cd"
+    }
+  },
+  "conversion": {
+    "runner": "scripts/convert-vits.py",
+    "profile": "F32",
+    "generated_report": "reports/convert/vits/vits-vctk-F32.json",
+    "output": {
+      "path": "models/vits-vctk/vits-vctk-F32.gguf",
+      "size_bytes": 120407360,
+      "sha256": "cc947a9a4f0907b5015e264998ebd58277f60d08eb1f965edb92e6f6169203bc",
+      "tensor_count": 473,
+      "all_tensors_f32": true
+    },
+    "tensor_groups": {
+      "text_encoder": 111,
+      "duration_predictor": 116,
+      "flow": 88,
+      "decoder": 157,
+      "voice": 1
+    },
+    "accounting": {
+      "source_entries": 858,
+      "logical_tensors_after_weight_norm": 713,
+      "emitted_source_entries": 585,
+      "skipped_logical_tensors": 240,
+      "skipped_source_entries": 273,
+      "weight_norm_fusions": 112
+    },
+    "deterministic_runs": 2,
+    "byte_identical": true
+  },
+  "quantization": {
+    "tool": "build/bin/synthesize-quantize",
+    "source_profile": "F32",
+    "profiles": [
+      {
+        "profile": "F16",
+        "profile_version": 1,
+        "generated_report": "reports/convert/vits/vits-vctk-F16.json",
+        "path": "models/vits-vctk/vits-vctk-F16.gguf",
+        "size_bytes": 74208032,
+        "sha256": "88506dc57c82fd580a1c8fc57573cdf4ad97a6752da8f511ebce3df1a91e6d05",
+        "tensor_types": {
+          "F32": 350,
+          "F16": 123
+        },
+        "deterministic_runs": 2,
+        "byte_identical": true
+      },
+      {
+        "profile": "Q8_MIXED",
+        "profile_version": 1,
+        "generated_report": "reports/convert/vits/vits-vctk-Q8_MIXED.json",
+        "path": "models/vits-vctk/vits-vctk-Q8_MIXED.gguf",
+        "size_bytes": 55047200,
+        "sha256": "6f45d73da1d98384365988088d93f8d7341607217114764de06e3bddadc96af1",
+        "tensor_types": {
+          "F32": 350,
+          "F16": 4,
+          "Q8_0": 119
+        },
+        "deterministic_runs": 2,
+        "byte_identical": true
+      }
+    ]
+  },
+  "validation": {
+    "summary": "reports/validate/vits/vits-vctk-cpu-cuda-13.3-linux.json",
+    "cpu": {
+      "host": "DGX Spark",
+      "backend": "CPU",
+      "threads": 1,
+      "case_count_per_stage": 12,
+      "duration_structure_exact": true,
+      "worst_pcm_max_abs": 0.0001765284687280655,
+      "worst_pcm_mean_abs": 6.892712686442375e-07
+    },
+    "cuda_13_3": [
+      {
+        "host": "DGX Spark",
+        "gpu": "NVIDIA GB10",
+        "compute_capability": "12.1",
+        "native_cubin": "sm_121a",
+        "driver": "580.159.03",
+        "duration_structure_exact": true,
+        "worst_pcm_max_abs": 0.000433504581451416,
+        "worst_pcm_mean_abs": 1.7108070971715684e-06
+      },
+      {
+        "host": "Linux RTX 4070 SUPER",
+        "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+        "compute_capability": "8.9",
+        "native_cubin": "sm_89",
+        "driver": "580.173.02",
+        "duration_structure_exact": true,
+        "worst_pcm_max_abs": 0.018391460180282593,
+        "worst_pcm_mean_abs": 1.7847591355772559e-06
+      }
+    ],
+    "quantized_profiles": [
+      {
+        "profile": "F16",
+        "summary": "reports/validate/vits/vits-vctk-F16-cpu-cuda-13.3-linux.json",
+        "duration_structure_exact_on_all_platforms": true,
+        "cuda_cpu_fallback_nodes": 0,
+        "quality_evaluation": "not_run"
+      },
+      {
+        "profile": "Q8_MIXED",
+        "summary": "reports/validate/vits/vits-vctk-Q8_MIXED-cpu-cuda-13.3-linux.json",
+        "duration_structure_exact_on_all_platforms": true,
+        "cuda_cpu_fallback_nodes": 0,
+        "quality_evaluation": "not_run"
+      }
+    ],
+    "quality_evaluation": "not_run"
+  },
+  "automated_tests": {
+    "release_cpu_unit": "43/43 passed",
+    "asan_ubsan_unit": "43/43 passed",
+    "asan_ubsan_real_models": "F16 and Q8_MIXED public API passed",
+    "dgx_cuda_unit": "39/39 passed",
+    "rtx_cuda_unit": "40/40 passed (includes host quantizer CLI help contract)",
+    "vctk_registered_integration": "8/8 passed",
+    "python_unit": "93/93 passed"
+  },
+  "shipment": {
+    "target_repo": "jiangzhuo9357/vits-vctk-gguf",
+    "card_spec": "scripts/hf_cards/vits-vctk.yaml",
+    "generated_card": "models/vits-vctk/README.md",
+    "payload_layout": "flat README.md plus F32, F16, and Q8_MIXED GGUF files",
+    "artifact_size_and_sha256_check": "passed",
+    "card_reproducibility_check": "passed",
+    "previous_organization_upload_attempt": {
+      "target_repo": "handy-computer/vits-vctk-gguf",
+      "date": "2026-07-23",
+      "authenticated_user": "jiangzhuo9357",
+      "result": "blocked",
+      "http_status": 403,
+      "reason": "authenticated user cannot create a model under the handy-computer namespace"
+    },
+    "published": {
+      "date": "2026-07-23",
+      "repository": "https://huggingface.co/jiangzhuo9357/vits-vctk-gguf",
+      "revision": "eb27a41f7a01dbe3ec88dabcd834844e9383a5e7",
+      "visibility": "public",
+      "remote_file_list_verified": true,
+      "remote_readme_exact_match": true,
+      "remote_gguf_size_and_sha256_verified": true
+    }
+  },
+  "datasets": {
+    "downloaded": [],
+    "required_for_port_validation": false
+  },
+  "next_stage": "publication_complete_quality_evaluation_remains_deferred"
+}

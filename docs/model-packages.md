@@ -1,0 +1,137 @@
+# Model Package Format
+
+Status: Confirmed, last updated on 2026-07-22.
+
+## Package Boundary
+
+Each model variant has one primary GGUF containing every tensor required by its synthesis inference graph and the immutable metadata needed to interpret those tensors. Optional Sidecar Resources are permitted for frontend dictionaries, normalization data, attribution, license text, and other declarative resources that are unsuitable for embedding in GGUF.
+
+A Text Frontend Provider is installed code, not a model resource. The package declares the provider identity and required resources but cannot supply or load provider binaries.
+
+## Primary GGUF
+
+The primary GGUF is authoritative for:
+
+- architecture and format versions;
+- tensor names, shapes, types, and quantization information;
+- inference hyperparameters and audio configuration;
+- symbol or token tables required by the synthesis graph;
+- speaker and voice metadata required for inference;
+- required Text Frontend Provider identity and Sidecar Resource descriptors;
+- source, license, conversion, and provenance metadata.
+
+Splitting one synthesis graph's tensors across multiple GGUF shards is outside the initial format.
+
+## General Synthesis Capabilities
+
+The primary GGUF declares supported input forms, native output sample rate and channel count, the positive maximum final input-token count, the positive maximum native output-frame count, whether synthesis may consume randomness, and any validated non-default speaking-rate range. These values are semantic Model Variant metadata shared by its validated precision and quantization packages rather than inferred from tensor shapes at runtime.
+
+Text input also depends on the required Text Frontend Provider being available when the model is loaded. The Loaded Model capability snapshot therefore reports currently usable input forms, while package-declared but unavailable text input fails with an explicit frontend error. Native Streaming Synthesis is additionally conditioned on the selected Execution Backend and is exposed only for a validated package-backend combination.
+
+## Preset Voice Catalog
+
+The primary GGUF declares the immutable Preset Voice Catalog as an ordered set of entries. Each entry has a non-empty UTF-8 identifier unique within the Model Variant, an optional human-readable display name, and append-only flags. The converter preserves identifiers across F32, F16, and quantized Model Packages representing the same logical Model Variant; a display name and array index are not stable selection identities.
+
+At most one entry is marked as the Preset Voice default. A Model Variant may instead have an unnamed package default that is not selectable by identifier, including a fixed single-speaker Voice, so a usable default does not imply a non-empty Catalog. The package does not place runtime Voice Profiles in this metadata and does not infer language, gender, age, or accent attributes for Catalog entries.
+
+## Language Capability Catalog
+
+The primary GGUF declares at least one validated language capability as a canonical, unique BCP 47 tag with append-only flags. At most one entry is the package default. The converter preserves the exact capability set across quantized Model Packages that represent the same validated Model Variant and never derives entries from an architecture name, tokenizer vocabulary, training dataset label, or Preset Voice metadata.
+
+A base tag may declare narrow same-language regional fallback. The flag is invalid on a locale-specific tag and does not authorize script, variant, extension, private-use, or cross-language fallback. Catalog order is immutable within a Loaded Model but is not a persistent identity; callers persist canonical tags.
+
+## Voice Profile Compatibility
+
+A Model Package that accepts Serialized Profiles declares its Profile Schema, Profile Schema version, and 32-byte Profile Compatibility ID in the primary GGUF. The compatibility ID represents the meaning and consumer contract of prepared Voice conditioning, not the bytes of this quantized Model Package. Validated F32, F16, and quantized packages derived from the same compatibility-critical source may therefore share the identifier across Execution Backends.
+
+The converter computes the identifier as SHA-256 over the Model Family's canonical compatibility manifest, including upstream checkpoint provenance and fingerprints of Voice-conditioning configuration and source weights. If compatibility cannot be demonstrated, the converter emits a distinct identifier. Model loading never infers profile compatibility from filenames, architecture labels, tensor dimensions, `general.uuid`, or approximate metadata.
+
+A package that supports Reference Audio also declares the Voice encoder's target sample rate and channel count, minimum and maximum Reference Frame Equivalents per clip, maximum total Reference Frame Equivalents, and maximum reference count. These are mandatory nonzero safety and capability values rather than advisory UI metadata. The runtime derives each equivalent from input duration with checked arithmetic before conversion; it does not treat the value as the exact number of frames that the private resampler must emit. Validation is identical for every Execution Backend.
+
+## Sidecar Rules
+
+Every Sidecar Resource is identified declaratively with a package-relative path, content type, size, checksum, purpose, and applicable license metadata. The primary GGUF's parent directory is the Package Root. Package loading resolves declared Sidecar Resources relative to that directory and rejects missing or mismatched resources and paths that escape it; it does not discover resources by scanning the directory.
+
+Sidecars cannot contain executable code, shared libraries, scripts that the runtime executes, or instructions to fetch resources from a network. The runtime performs no implicit network access; resource acquisition is an explicit operation outside model loading.
+
+## Publication and Acquisition
+
+Official runnable models follow transcribe.cpp's Hugging Face layout while using
+the maintainer's `jiangzhuo9357` personal namespace. The released artifact is the
+converted primary GGUF plus every declared Sidecar Resource needed by
+synthesize.cpp; an upstream framework checkpoint is conversion input and is not
+presented as a runnable synthesize.cpp model.
+
+### Repository Layout
+
+Each Model Variant has one repository named
+`jiangzhuo9357/<variant-slug>-gguf`. All published precision and Quantization
+Profiles are flat files at its root using the llama.cpp-style
+`<variant-slug>-<QUANT>.gguf` convention, such as `F32`, `F16`, or `Q8_MIXED`.
+The filename carries the stable profile name while GGUF metadata carries its
+version and exact tensor assignment. Variants, quantizations, and Execution
+Backends do not receive nested repositories or backend-specific copies.
+
+The root also contains `README.md` and any license or attribution material required
+by the source model. When a TTS package needs Sidecar Resources, they are flat,
+stable-named root files shared by the applicable GGUFs; each primary GGUF remains
+authoritative for their paths, sizes, and checksums. This is the only TTS-specific
+extension to transcribe.cpp's otherwise self-contained GGUF repository layout.
+
+### Model Cards and Evidence
+
+The source tree keeps one YAML model-card specification per variant and renders the
+Hugging Face `README.md` beside the generated GGUFs before upload, following
+transcribe.cpp's `scripts/hf_cards/` workflow. Its metadata declares the upstream
+base model, license, `library_name: synthesize.cpp`, text-to-speech pipeline,
+languages, and relevant tags. A project-specific `synthesize_cpp` metadata block
+declares the Validation Level and quality-evaluation status, and may carry
+available quality, performance, and capability summaries.
+
+The committed contracts, generated payloads, report paths, and eight porting stages
+are defined in `model-porting.md`.
+
+The rendered card records the pinned upstream revision and date, the synthesize.cpp
+revision and reference implementation used for validation, its Validation Level,
+an explicit quality-evaluation status, a direct-download table for every published
+Quantization Profile, usage, license, and the pinned upstream model card for
+offline reference. A corresponding source-controlled
+`docs/models/<variant-slug>.md` contains the Port Validation Suite evidence,
+operational measurements, reproduction instructions, and any available quality
+results. Direct links use
+`jiangzhuo9357/<variant-slug>-gguf/resolve/main/<variant-slug>-<QUANT>.gguf`, as
+in transcribe.cpp.
+
+Committed golden manifests pin source and reference revisions and Port Validation
+Suite cases; converter reports record input and output SHA-256 values. Generated
+tensors, GGUFs, validation payloads, and benchmark reports stay outside Git. As in
+transcribe.cpp,
+the Hugging Face repository does not add a separate package index, `SHA256SUMS`, or
+release-record bundle: the model-card validation sentence and Hugging Face revision
+history identify what was published.
+
+Publication uses the same prepared-directory operation as transcribe.cpp:
+`hf upload jiangzhuo9357/<variant-slug>-gguf models/<variant-slug> .`. License
+metadata in the card does not create or alter redistribution rights. The project
+records the available upstream evidence verbatim. When an official checkpoint has
+no separately stated weight terms, the maintainer's default publication policy is
+to treat that absence as imposing no additional restriction beyond the published
+source-model terms. The generated card must disclose both the missing separate
+statement and this project-policy assumption. Contrary evidence still blocks or
+removes the affected artifact.
+
+Acquisition is explicit and occurs before model loading. Documentation and CI use
+the Hugging Face CLI to download selected files and cache canary files where
+appropriate:
+
+```bash
+hf download jiangzhuo9357/<variant-slug>-gguf <filename> \
+  --local-dir models/<variant-slug>
+```
+
+A caller downloads its chosen GGUF and all declared Sidecars into one local Package
+Root.
+The core library, CLI inference path, Rust Adapter, and Python Adapter neither
+contact Hugging Face nor accept a repository identifier in place of a local
+primary-GGUF path. No workflow uses remote code or `trust_remote_code` to load a
+Published Model Package.

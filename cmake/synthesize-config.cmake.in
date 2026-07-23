@@ -1,0 +1,33 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+if(NOT @SYNTH_BUILD_SHARED@)
+    if(@SYNTH_CUDA@)
+        find_dependency(CUDAToolkit 13.3 EXACT)
+    endif()
+    find_dependency(ggml CONFIG)
+    find_dependency(Threads)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/synthesize-targets.cmake")
+
+if(NOT @SYNTH_BUILD_SHARED@)
+    set(_synth_static_private_libraries ggml::ggml Threads::Threads)
+    if(@SYNTH_CUDA@)
+        list(APPEND _synth_static_private_libraries
+            CUDA::cudart CUDA::cublas CUDA::cuda_driver)
+    endif()
+    if(UNIX)
+        list(APPEND _synth_static_private_libraries ${CMAKE_DL_LIBS} m)
+        if(APPLE)
+            list(APPEND _synth_static_private_libraries c++)
+        else()
+            list(APPEND _synth_static_private_libraries stdc++)
+        endif()
+    endif()
+    set_property(TARGET synthesize::synthesize APPEND PROPERTY
+        INTERFACE_LINK_LIBRARIES "${_synth_static_private_libraries}")
+    unset(_synth_static_private_libraries)
+endif()
+
+check_required_components(synthesize)

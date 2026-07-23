@@ -1,0 +1,50 @@
+[build-system]
+requires = ["scikit-build-core==1.0.3"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "synthesize-cpp-native-cu13"
+dynamic = ["version"]
+description = "CUDA 13 native runtime Provider for synthesize-cpp"
+readme = "README.md"
+requires-python = ">=3.11"
+license-files = ["THIRD_PARTY_NOTICES.md", "LICENSE-ggml"]
+dependencies = [
+  "nvidia-cuda-runtime==13.3.29",
+  "nvidia-cublas==13.6.0.2",
+]
+
+[project.entry-points."synthesize_cpp.native"]
+cu13 = "synthesize_cpp_native_cu13:descriptor"
+
+[[tool.dynamic-metadata]]
+field = "version"
+provider = "scikit_build_core.metadata.regex"
+input = "../../include/synthesize.h"
+regex = '(?sx) SYNTH_VERSION_MAJOR \s+ (?P<major>\d+) .*? SYNTH_VERSION_MINOR \s+ (?P<minor>\d+) .*? SYNTH_VERSION_PATCH \s+ (?P<patch>\d+)'
+result = "{major}.{minor}.{patch}"
+
+[tool.scikit-build]
+build-dir = "../../build/python-provider/cu13/{wheel_tag}"
+cmake.source-dir = "../.."
+cmake.version = ">=3.24"
+ninja.version = "==1.13.0"
+wheel.py-api = "py3"
+wheel.install-dir = "synthesize_cpp_native_cu13"
+wheel.packages = ["synthesize_cpp_native_cu13"]
+install.components = ["wheel"]
+cmake.args = [
+  "-DSYNTH_BUILD_PYTHON_PROVIDER=ON",
+  "-DSYNTH_PYTHON_PROVIDER_ID=cu13",
+  "-DSYNTH_BUILD_SHARED=ON",
+  "-DSYNTH_GGML_BACKEND_DL=ON",
+  "-DSYNTH_BUILD_CLI=OFF",
+  "-DSYNTH_BUILD_TESTS=OFF",
+  "-DSYNTH_BUILD_PYTHON_TESTS=OFF",
+  "-DSYNTH_BUILD_INTEGRATION_TESTS=OFF",
+  "-DSYNTH_CUDA=ON",
+  "-DSYNTH_METAL=OFF",
+  "-DSYNTH_VULKAN=OFF",
+  "-DGGML_NATIVE=OFF",
+  "-DGGML_CUDA_NCCL=OFF",
+]

@@ -1,0 +1,623 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://handy.computer/schemas/synthesize-golden-manifest-v1.schema.json",
+  "title": "synthesize.cpp Golden Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "suite_version",
+    "family",
+    "variant",
+    "source",
+    "reference",
+    "package_contract",
+    "tolerance_file",
+    "case_artifact_root",
+    "cases",
+    "relations"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "synthesize-golden-manifest-v1"
+    },
+    "suite_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "family": {
+      "$ref": "#/$defs/key"
+    },
+    "variant": {
+      "$ref": "#/$defs/key"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "reference": {
+      "$ref": "#/$defs/reference"
+    },
+    "package_contract": {
+      "$ref": "#/$defs/packageContract"
+    },
+    "tolerance_file": {
+      "$ref": "#/$defs/relativePath"
+    },
+    "case_artifact_root": {
+      "$ref": "#/$defs/relativePath"
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 12,
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/case"
+      }
+    },
+    "relations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/relation"
+      }
+    }
+  },
+  "$defs": {
+    "key": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "caseId": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "gitRevision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "u64": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+    },
+    "sourceArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "locator", "sha256"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": [
+            "checkpoint",
+            "config",
+            "source",
+            "frontend-resource",
+            "license"
+          ]
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repository_path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "revision", "artifacts"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "format": "uri"
+        },
+        "revision": {
+          "$ref": "#/$defs/gitRevision"
+        },
+        "artifacts": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/sourceArtifact"
+          }
+        }
+      }
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "implementation",
+        "framework",
+        "runner",
+        "environment_lock",
+        "dtype",
+        "device"
+      ],
+      "properties": {
+        "implementation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "framework": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runner": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "environment_lock": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "dtype": {
+          "type": "string",
+          "enum": ["float32", "float16", "bfloat16"]
+        },
+        "device": {
+          "type": "string",
+          "enum": ["cpu", "cuda", "metal", "vulkan"]
+        }
+      }
+    },
+    "nativeAudio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sample_rate_hz", "channels", "sample_format"],
+      "properties": {
+        "sample_rate_hz": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "channels": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sample_format": {
+          "const": "f32le"
+        }
+      }
+    },
+    "frontend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "contract_version"],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_version": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "voices": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "preset_ids"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["fixed-default", "preset-catalog"]
+        },
+        "default_id": {
+          "type": ["string", "null"]
+        },
+        "preset_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "packageContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "native_audio",
+        "input_kinds",
+        "frontend",
+        "language_tags",
+        "voices",
+        "stochastic",
+        "speaking_rate_range",
+        "max_input_tokens",
+        "max_output_frames"
+      ],
+      "properties": {
+        "native_audio": {
+          "$ref": "#/$defs/nativeAudio"
+        },
+        "input_kinds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["text_utf8", "phonemes_utf8", "token_ids"]
+          }
+        },
+        "frontend": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/frontend"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "language_tags": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 2
+          }
+        },
+        "voices": {
+          "$ref": "#/$defs/voices"
+        },
+        "stochastic": {
+          "type": "boolean"
+        },
+        "speaking_rate_range": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "max_input_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_output_frames": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "generatedArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "path", "format"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "format": {
+          "type": "string",
+          "enum": ["i32le", "i64le", "f32le", "json"]
+        }
+      }
+    },
+    "caseInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "language_tag"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["text_utf8", "phonemes_utf8", "token_ids"]
+        },
+        "language_tag": {
+          "type": ["string", "null"]
+        },
+        "source_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "token_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "artifact": {
+          "$ref": "#/$defs/generatedArtifact"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "text_utf8"
+            }
+          },
+          "required": ["text"]
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "phonemes_utf8"
+            }
+          },
+          "required": ["text"]
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "token_ids"
+            }
+          },
+          "oneOf": [
+            {
+              "required": ["token_ids"]
+            },
+            {
+              "required": ["artifact"]
+            }
+          ]
+        }
+      ]
+    },
+    "voice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["package_default", "preset_voice"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "oracle_id": {
+          "type": ["integer", "string"]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "package_default"
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "preset_voice"
+            }
+          },
+          "required": ["id", "oracle_id"]
+        }
+      ]
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seed_u64", "speaking_rate", "max_output_frames"],
+      "properties": {
+        "seed_u64": {
+          "$ref": "#/$defs/u64"
+        },
+        "speaking_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "max_output_frames": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "oracle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parameters", "stochastic_inputs"],
+      "properties": {
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["number", "integer", "string", "boolean", "null"]
+          }
+        },
+        "stochastic_inputs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/generatedArtifact"
+          }
+        }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "artifacts"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/generatedArtifact"
+          }
+        }
+      }
+    },
+    "origin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "locator"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["upstream_example", "project_coverage"]
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "origin",
+        "coverage",
+        "input",
+        "voice",
+        "request",
+        "oracle",
+        "checks",
+        "expected"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/caseId"
+        },
+        "origin": {
+          "$ref": "#/$defs/origin"
+        },
+        "coverage": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "input": {
+          "$ref": "#/$defs/caseInput"
+        },
+        "voice": {
+          "$ref": "#/$defs/voice"
+        },
+        "request": {
+          "$ref": "#/$defs/request"
+        },
+        "oracle": {
+          "$ref": "#/$defs/oracle"
+        },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "tensor_parity",
+              "structural_exactness",
+              "waveform_regression",
+              "finite_pcm",
+              "request_repeatability",
+              "result_metadata",
+              "backend_placement",
+              "resource_cleanup"
+            ]
+          }
+        },
+        "expected": {
+          "$ref": "#/$defs/expected"
+        }
+      }
+    },
+    "relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "phase", "cases"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["artifact_differs", "frame_count_order"]
+        },
+        "phase": {
+          "type": "string",
+          "enum": ["oracle_replay", "public_request"]
+        },
+        "cases": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/caseId"
+          }
+        },
+        "artifact": {
+          "type": "string",
+          "minLength": 1
+        },
+        "order": {
+          "type": "string",
+          "enum": ["increasing", "decreasing"]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "artifact_differs"
+              }
+            }
+          },
+          "then": {
+            "required": ["artifact"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "frame_count_order"
+              }
+            }
+          },
+          "then": {
+            "required": ["order"]
+          }
+        }
+      ]
+    }
+  }
+}

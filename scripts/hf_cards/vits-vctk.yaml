@@ -1,0 +1,105 @@
+# Hugging Face card specification for jiangzhuo9357/vits-vctk-gguf.
+
+model_slug: vits-vctk
+display_name: VITS VCTK 109-speaker
+model_family: vits
+target_repo: jiangzhuo9357/vits-vctk-gguf
+
+source:
+  repository: https://github.com/jaywalnut310/vits
+  revision: 2e561ba58618d021b5b8323d3765880f7e0ecfdb
+  card_url: https://github.com/jaywalnut310/vits/blob/2e561ba58618d021b5b8323d3765880f7e0ecfdb/README.md
+  card_path: models/upstream/vits-source/README.md
+  checkpoint_name: VITS VCTK
+  checkpoint_url: https://drive.google.com/drive/folders/1ksarh-cJf3F5eKJjLVWY0X1j1qsQqiS2
+
+license: other
+license_name: vits-mit-source-checkpoint-terms-unspecified
+license_link: https://github.com/jaywalnut310/vits/blob/2e561ba58618d021b5b8323d3765880f7e0ecfdb/LICENSE
+library_name: synthesize.cpp
+pipeline_tag: text-to-speech
+languages:
+  - en
+tags:
+  - gguf
+  - synthesize.cpp
+  - text-to-speech
+  - tts
+  - vits
+  - vctk
+  - multi-speaker
+  - cpu
+  - cuda
+
+summary: |
+  A self-contained 109-speaker VITS inference package converted from the
+  official VCTK checkpoint. It supports CPU and CUDA execution through the same
+  public library interface and exposes stable Voice IDs from `speaker-000`
+  through `speaker-108`.
+
+capabilities:
+  sample_rate_hz: 22050
+  voice_count: 109
+  voice_ids: speaker-000..speaker-108
+  voice_mode: preset_catalog
+  input_kinds:
+    - phonemes_utf8
+    - token_ids
+  frontend_provider: synthesize.symbol_map
+
+validation:
+  level: port_validated
+  quality_evaluation: not_run
+  date: 2026-07-23
+  reference: the pinned upstream PyTorch implementation
+  implementation_revision: workspace-snapshot-2026-07-23
+  cases_per_stage: 12
+  stages: 7
+  platforms:
+    - DGX Spark CPU
+    - NVIDIA GB10 CUDA 13.3
+    - NVIDIA RTX 4070 SUPER CUDA 13.3
+
+publication_note: |
+  The synthesize.cpp maintainer has chosen to publish these converted artifacts
+  on the explicit project-policy assumption that the absence of separate
+  checkpoint terms imposes no additional redistribution restriction. Users who
+  require a different legal interpretation should review the upstream source
+  and checkpoint provenance before redistribution.
+
+usage:
+  profile: F16
+  voice: speaker-004
+  phonemes: "ˈeɪ."
+
+quants:
+  - name: F32
+    filename: vits-vctk-F32.gguf
+    size: 120.4 MB
+    size_bytes: 120407552
+    sha256: b9e69b257cc600679a45e4197614f36ec678156180e2d366f7e1dcb6668b2be0
+    tensor_types: 473 F32
+    validation:
+      cpu_pcm_max_abs: 0.0002596639
+      dgx_pcm_max_abs: 0.025091962
+      rtx_pcm_max_abs: 0.0183914602
+  - name: F16
+    filename: vits-vctk-F16.gguf
+    size: 74.2 MB
+    size_bytes: 74208224
+    sha256: ff11efb1106834efb3609647e68642b48a58dbbdbabbc776d3afd83cf46085af
+    tensor_types: 350 F32 + 123 F16
+    validation:
+      cpu_pcm_max_abs: 0.06752773
+      dgx_pcm_max_abs: 0.24737186
+      rtx_pcm_max_abs: 0.19204060
+  - name: Q8_MIXED
+    filename: vits-vctk-Q8_MIXED.gguf
+    size: 55.0 MB
+    size_bytes: 55047392
+    sha256: 149438d3a6c817ca6e4ab803a67207a41f62097cc8f586520355610801fb0542
+    tensor_types: 350 F32 + 4 F16 + 119 Q8_0
+    validation:
+      cpu_pcm_max_abs: 0.77982019
+      dgx_pcm_max_abs: 0.57462588
+      rtx_pcm_max_abs: 0.62477511

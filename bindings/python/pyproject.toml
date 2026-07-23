@@ -1,0 +1,34 @@
+[build-system]
+requires = ["scikit-build-core==1.0.3"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "synthesize-cpp"
+dynamic = ["version"]
+description = "Stable Python Adapter for the synthesize.cpp text-to-speech runtime"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["synthesize-cpp-native==0.1.0.*"]
+
+[project.optional-dependencies]
+cu13 = ["synthesize-cpp-native-cu13==0.1.0.*"]
+vulkan = ["synthesize-cpp-native-vulkan==0.1.0.*"]
+
+[[tool.dynamic-metadata]]
+field = "version"
+provider = "scikit_build_core.metadata.regex"
+input = "../../include/synthesize.h"
+regex = '(?sx) SYNTH_VERSION_MAJOR \s+ (?P<major>\d+) .*? SYNTH_VERSION_MINOR \s+ (?P<minor>\d+) .*? SYNTH_VERSION_PATCH \s+ (?P<patch>\d+)'
+result = "{major}.{minor}.{patch}"
+
+[tool.scikit-build]
+build-dir = "../../build/python-api/{wheel_tag}"
+cmake.source-dir = "."
+cmake.version = ">=3.24"
+ninja.version = "==1.13.0"
+wheel.py-api = "cp311"
+wheel.packages = ["src/synthesize_cpp"]
+install.components = ["wheel"]
+
+[tool.uv]
+package = false

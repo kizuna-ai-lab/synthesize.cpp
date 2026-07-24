@@ -209,6 +209,21 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — Stage 4 slice 8: acoustic text encoder
+
+Added `text-encoder.{h,cpp}`: an embedding, then three convolution blocks with a
+layer norm and leaky activation, then a bidirectional LSTM.
+
+This is a second, separate encoder. PL-BERT conditions prosody; this one
+produces the features the decoder consumes after alignment expansion. Its layer
+norm normalizes over channels within a frame, the opposite axis from the
+prosody stack's AdaIN, which is why it is compared against a host reference
+rather than checked for shapes alone. Agreement is 1e-5.
+
+The builder rejects an even convolution kernel, since only an odd kernel with
+half-width padding preserves the sequence length the alignment expansion
+assumes.
+
 ## 2026-07-26 — Stage 4 slice 7: prosody F0 and energy stack
 
 - Added `prosody.{h,cpp}` with the AdaIN residual block and the F0/energy

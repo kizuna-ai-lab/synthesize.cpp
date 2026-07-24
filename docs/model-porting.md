@@ -1,6 +1,6 @@
 # Model Porting and Publication Workflow
 
-Status: Confirmed, last updated on 2026-07-22.
+Status: Confirmed, last updated on 2026-07-24.
 
 This workflow follows transcribe.cpp's artifact discipline and publication layout.
 TTS uses a compact Port Validation Suite to establish model support first; its
@@ -70,7 +70,7 @@ scripts/envs/<family>/pyproject.toml
 scripts/envs/<family>/uv.lock
 scripts/convert-<family>.py
 scripts/dump_reference_<family>_<framework>.py
-scripts/validate.py
+scripts/validate-<family>-<stage>.py
 scripts/bench/
 scripts/hf_cards/generate.py
 scripts/hf_cards/template.md.j2
@@ -157,8 +157,10 @@ PCM, resolved seed and Voice metadata, output format, frame count, and structure
 operation result. For stochastic families, the reference runner also emits named
 random input tensors that an internal validation-only seam replays in both graphs;
 the ordinary public request path separately validates seed reporting and
-repeatability. `scripts/validate.py` drives reference generation, C++ generation,
-tensor comparison, and deterministic audio regression from the same manifest.
+repeatability. Per-stage `scripts/validate-<family>-<stage>.py` validators, as in
+the seven `validate-vits-*.py` scripts, drive reference generation, C++
+generation, tensor comparison, and deterministic audio regression from the same
+manifest.
 
 ## Conversion and Quantization Split
 

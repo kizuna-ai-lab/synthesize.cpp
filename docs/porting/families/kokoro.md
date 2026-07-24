@@ -131,9 +131,9 @@ The oracle additionally emits the replay inputs `source.rand_ini` `[1, 9]` and
 `source.noise` `[600Y/300 * 300, 9]`, which are stochastic inputs rather than
 compared probes.
 
-## kokoro-v1_0 Variant
+## kokoro-v1-0 Variant
 
-`kokoro-v1_0` exposes all 54 upstream voicepacks as stable Preset Voice
+`kokoro-v1-0` exposes all 54 upstream voicepacks as stable Preset Voice
 identifiers matching their upstream names, such as `af_heart` and `bm_george`.
 No package default Voice is invented; every request selects one explicitly. All
 cases use language `en`, oracle-resolved token IDs, and no caller output-frame
@@ -176,7 +176,7 @@ acquired files; placeholders or hashes copied from an unverified mirror are
 forbidden. No training corpus is needed to materialize these cases.
 
 The intake packet is recorded in
-[`reports/porting/kokoro/kokoro-v1_0/intake.json`](../../../reports/porting/kokoro/kokoro-v1_0/intake.json).
+[`reports/porting/kokoro/kokoro-v1-0/intake.json`](../../../reports/porting/kokoro/kokoro-v1-0/intake.json).
 Its source, weights, configuration, voicepack, and license evidence are pinned
 and verified, and its measured stochastic behavior is the basis for the replay
 contract above.

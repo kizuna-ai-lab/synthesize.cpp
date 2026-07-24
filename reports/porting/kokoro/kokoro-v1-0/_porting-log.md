@@ -1,4 +1,4 @@
-# kokoro-v1_0 Porting Log
+# kokoro-v1-0 Porting Log
 
 ## 2026-07-25 — Intake and oracle smoke
 
@@ -95,3 +95,48 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
 - **Text input.** Not claimed. The package advertises phoneme and token-ID
   input only; misaki and espeak-ng remain offline validation tooling and are
   never runtime dependencies.
+
+## 2026-07-25 — Golden Manifest and reference dump
+
+- Adopted the schema-legal variant slug `kokoro-v1-0`; the manifest `key`
+  pattern forbids the underscore in the upstream checkpoint filename.
+- Added the 15-case `kokoro-v1-0` Golden Manifest at `suite_version` 1. Its
+  first case is the upstream `__main__` example; the remainder cover minimal,
+  punctuation, normalization, repetition, and long sequences, three additional
+  voices, two alternate seeds, and both speaking-rate boundaries.
+- Resolved token IDs are committed **inline** rather than as generated
+  artifacts. The manifest is therefore self-contained, and replay no longer
+  depends on misaki, spaCy, or espeak-ng being installed.
+- Declared the package contract: 24,000 Hz mono F32, phoneme and token-ID
+  input, `synthesize.symbol_map` with `unicode_scalar` mapping and the
+  `wrap_pad_token` padding rule, language `en`, all 54 preset voices with no
+  package default, stochastic, speaking rate 0.80 to 1.25, 512 max input
+  tokens, and 1,440,000 max output frames (60 seconds).
+- Added `scripts/dump_reference_kokoro_pytorch.py`. It reimplements no Kokoro
+  arithmetic: it drives the pinned upstream modules stage by stage to capture
+  intermediates, and injects the three harmonic-source random draws so the same
+  values can be replayed in C++. Every case is verified against an unmodified
+  `KModel.forward_with_tokens` under the same injected randomness, and a
+  mismatch aborts the dump.
+- Dumped all 15 cases. Every case matched `forward_with_tokens` bit-exactly,
+  produced exactly `y_length * 600` finite samples, and wrote its 16 probes plus
+  2 replay inputs. Re-running a case reproduces byte-identical PCM.
+- Verified the declared relations against the dumped payloads: the three
+  upstream-text seed cases have distinct PCM, the four voice cases have distinct
+  PCM, and the slow/default/fast rate cases emit 95,400, 78,000, and 64,200
+  frames respectively. The three seed cases share `y_length` 198, confirming
+  that randomness reaches only the source module.
+- Recorded `tests/tolerances/kokoro.json` with status `not-yet-measured`. No
+  placeholder threshold is claimed.
+
+### Repository defect found and fixed
+
+Authoring this manifest exposed that neither committed VITS manifest satisfied
+the committed schema: `package_contract.frontend` set `additionalProperties` to
+false while every manifest carried `phoneme_mapping`. Nothing detected it
+because no test compared a manifest with the schema. The schema now accepts the
+phoneme mapping plus an optional padding rule, and a registered
+family-independent test `synthesize-golden-manifest-contract` validates every
+manifest under `tests/golden/` together with the loader rules from
+`docs/port-validation.md`. The test was confirmed to fail against the previous
+schema.

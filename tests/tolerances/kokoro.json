@@ -1,0 +1,8 @@
+{
+  "schema": "synthesize-tolerances-v1",
+  "family": "kokoro",
+  "status": "not-yet-measured",
+  "reference_stage": "source-f32-cpu",
+  "stages": {},
+  "note": "No Kokoro probe has been measured yet. Tolerances are measured from the first working reference and C++ implementation, reviewed, and committed before support is declared; a port must not weaken a tolerance to accept its own failing output. Perceptual quality evaluation remains deferred under ADR 0017."
+}

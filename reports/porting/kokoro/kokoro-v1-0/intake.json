@@ -2,7 +2,7 @@
   "schema": "synthesize-port-intake-v1",
   "recorded_on": "2026-07-25",
   "family": "kokoro",
-  "variant": "kokoro-v1_0",
+  "variant": "kokoro-v1-0",
   "status": "intake_complete_oracle_smoke_passed",
   "publication_status": "not_started",
   "source": {

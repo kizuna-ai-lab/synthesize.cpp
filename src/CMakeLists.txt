@@ -9,6 +9,7 @@ add_library(synthesize
     synthesis-request.cpp
     text-frontend.cpp
     voice-profile.cpp
+    arch/kokoro/catalog.cpp
     arch/kokoro/operations.cpp
     arch/kokoro/weights.cpp
     arch/vits/acoustic-flow.cpp

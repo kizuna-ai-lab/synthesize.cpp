@@ -336,6 +336,70 @@ class SkipAndCountTest(unittest.TestCase):
         self.assertEqual(converter.compute_size_label(5_000), "5K")
 
 
+class TensorNameTest(unittest.TestCase):
+    def test_albert_path_is_shortened(self) -> None:
+        source = (
+            "bert.encoder.albert_layer_groups.0.albert_layers.0."
+            "full_layer_layer_norm.weight"
+        )
+        self.assertEqual(converter.canonical_name(source), "bert.layer.full_layer_layer_norm.weight")
+
+    def test_other_names_are_untouched(self) -> None:
+        for name in (
+            "bert.embeddings.word_embeddings.weight",
+            "predictor.shared.weight_ih_l0_reverse",
+            "decoder.generator.resblocks.5.convs2.2.weight",
+            "voice.af_heart",
+        ):
+            self.assertEqual(converter.canonical_name(name), name)
+
+    def test_rename_is_injective_over_the_albert_group(self) -> None:
+        sources = [
+            converter.ALBERT_SOURCE_PREFIX + suffix
+            for suffix in (
+                "attention.query.weight",
+                "attention.key.weight",
+                "attention.LayerNorm.bias",
+                "ffn_output.weight",
+                "full_layer_layer_norm.bias",
+            )
+        ]
+        mapped = [converter.canonical_name(name) for name in sources]
+        self.assertEqual(len(set(mapped)), len(sources))
+        self.assertTrue(all(name.startswith(converter.ALBERT_CANONICAL_PREFIX) for name in mapped))
+
+    def test_over_long_names_are_rejected(self) -> None:
+        # GGML truncates at a fixed field width, so an over-long name produces a
+        # GGUF that the runtime cannot open. The converter must refuse to write.
+        import numpy as np
+
+        long_name = "a" * converter.GGML_MAX_NAME
+        outputs = [
+            converter.OutputTensor(
+                long_name, (long_name,), long_name, np.zeros(1, dtype="float32"), "identity"
+            )
+        ]
+        with self.assertRaises(converter.ConverterError):
+            converter.check_name_lengths(outputs)
+
+    def test_names_at_the_limit_are_accepted(self) -> None:
+        import numpy as np
+
+        name = "b" * (converter.GGML_MAX_NAME - 1)
+        outputs = [converter.OutputTensor(name, (name,), name, np.zeros(1, dtype="float32"), "identity")]
+        converter.check_name_lengths(outputs)
+
+    def test_every_upstream_name_fits_after_renaming(self) -> None:
+        # The full checkpoint path set, reconstructed from the committed report
+        # when it exists, must survive the mapping within the field width.
+        report = PROJECT_ROOT / "reports/convert/kokoro/kokoro-v1-0-F32.json"
+        if not report.is_file():
+            self.skipTest("converter report is a generated artifact")
+        payload = json.loads(report.read_text(encoding="utf-8"))
+        for tensor in payload["tensors"]:
+            self.assertLess(len(tensor["name"]), converter.GGML_MAX_NAME, tensor["name"])
+
+
 class VoicepackTest(unittest.TestCase):
     def _manifest_with(self, tmp: Path, ids: list[str], digests: dict[str, str]) -> dict:
         return {

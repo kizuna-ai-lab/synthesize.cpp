@@ -209,6 +209,45 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-25 — Stage 4 slice 3: tensor catalog, and a converter defect
+
+- Added `src/arch/kokoro/catalog.cpp`, resolving all 511 tensors across the
+  six namespaces. Shapes are derived from the package hyper-parameters rather
+  than hardcoded, so a package whose metadata and tensors disagree is rejected
+  at load time. Optional members are contract-driven: an `AdainResBlk1d` has a
+  learned shortcut only when it changes channel count, and a depthwise pool only
+  when it upsamples.
+- The catalog resolved the real converted GGUF on the first attempt once the
+  naming defect below was fixed, so every derived width was correct, including
+  the decoder's `dim_in` actually being `hidden_dim` rather than the config's
+  `dim_in`.
+
+### Converter defect: over-long tensor names
+
+Loading the real GGUF failed immediately with `tensor name 5 is too long:
+75 >= 64`. GGML stores names in a fixed 64-byte field, and the decision to keep
+upstream paths verbatim produced 14 ALBERT names of up to 79 characters. The
+converter had written the file without complaint because `gguf-py` does not
+enforce the limit, so the package was unloadable by our own runtime and nothing
+had caught it.
+
+Two fixes. Upstream's `bert.encoder.albert_layer_groups.0.albert_layers.0.`
+prefix is now shortened to `bert.layer.`; the group and layer indices carry no
+information because the package declares a single shared layer group, and the
+rename is recorded per tensor in the converter report as `+rename`. More
+importantly the converter now refuses to write any name that reaches the limit,
+so the class of defect cannot recur for a future family.
+
+The regenerated artifact is 352,813,952 bytes with SHA-256
+`23cde0e3b2a3082fa97a84aed746d8c0cee79eca1ee9599c6e13b7e94ba0328b`, and two
+complete runs still produce it byte for byte.
+
+Registered tests: `synthesize-kokoro-catalog-test` resolves a small but
+structurally faithful synthetic package and asserts rejection for a missing
+tensor, a wrong shape, a wrong dtype, and an unexpected trailing axis. The
+converter suite gained coverage of the rename, its injectivity over the ALBERT
+group, and the name-length gate at and past the limit.
+
 ## 2026-07-25 — LSTM spike, and a corrected decision
 
 The earlier host-seam decision rested on an estimate that unrolling would

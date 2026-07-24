@@ -72,6 +72,21 @@ CHECKPOINT_NAMESPACES = (
     "text_encoder",
 )
 
+# GGML stores tensor names in a fixed 64-byte field, so an emitted name must be
+# at most 63 characters. Upstream's ALBERT path alone is 50 characters before
+# the parameter, which overruns the field; the group and layer indices carry no
+# information because the package declares a single shared layer group.
+GGML_MAX_NAME = 64
+ALBERT_SOURCE_PREFIX = "bert.encoder.albert_layer_groups.0.albert_layers.0."
+ALBERT_CANONICAL_PREFIX = "bert.layer."
+
+
+def canonical_name(source_name: str) -> str:
+    """Map a checkpoint path to the name stored in the GGUF."""
+    if source_name.startswith(ALBERT_SOURCE_PREFIX):
+        return ALBERT_CANONICAL_PREFIX + source_name[len(ALBERT_SOURCE_PREFIX) :]
+    return source_name
+
 
 class ConverterError(RuntimeError):
     """A source, manifest, tensor-map, or GGUF contract violation."""
@@ -380,9 +395,11 @@ def prepare_output_tensors(
             array = f32_numpy(item.tensor)
         except (TypeError, ValueError) as error:
             raise ConverterError(f"{item.name}: {error}") from error
-        outputs.append(
-            OutputTensor(item.name, item.source_names, item.name, array, item.transform)
-        )
+        destination = canonical_name(item.name)
+        transform   = item.transform
+        if destination != item.name:
+            transform = f"{transform}+rename"
+        outputs.append(OutputTensor(destination, item.source_names, item.name, array, transform))
 
     if len(skipped) != EXPECTED_SKIPPED:
         raise ConverterError(f"expected {EXPECTED_SKIPPED} skipped tensors, got {len(skipped)}")
@@ -393,7 +410,18 @@ def prepare_output_tensors(
     outputs.sort(key=lambda item: item.name)
     if len({item.name for item in outputs}) != len(outputs):
         raise ConverterError("canonical mapping produced duplicate GGUF tensor names")
+    check_name_lengths(outputs)
     return outputs, skipped
+
+
+def check_name_lengths(outputs: list[OutputTensor]) -> None:
+    """GGML truncates at a fixed field width, so an over-long name is unloadable."""
+    too_long = [item.name for item in outputs if len(item.name) >= GGML_MAX_NAME]
+    if too_long:
+        raise ConverterError(
+            f"{len(too_long)} tensor name(s) reach GGML's {GGML_MAX_NAME}-byte limit, "
+            f"starting with {too_long[0]!r} ({len(too_long[0])} characters)"
+        )
 
 
 def load_voicepacks(

@@ -129,7 +129,9 @@ endif()
 
 synth_add_unit_test(synthesize-kokoro-metadata-test kokoro_metadata_test.cpp)
 synth_add_unit_test(synthesize-kokoro-lstm-test kokoro_lstm_test.cpp)
+synth_add_unit_test(synthesize-kokoro-catalog-test kokoro_catalog_test.cpp)
 set_tests_properties(synthesize-kokoro-metadata-test synthesize-kokoro-lstm-test
+    synthesize-kokoro-catalog-test
     PROPERTIES LABELS "unit;kokoro")
 
 synth_add_unit_test(synthesize-vits-text-encoder-host-test vits_text_encoder_host_test.cpp)
@@ -484,6 +486,7 @@ add_custom_target(synthesize-check-unit
         synthesize-backend-module-test
         synthesize-kokoro-metadata-test
         synthesize-kokoro-lstm-test
+        synthesize-kokoro-catalog-test
         synthesize-vits-text-encoder-host-test
         synthesize-vits-metadata-test
         synthesize-vits-weights-test

@@ -127,6 +127,9 @@ if(SYNTH_BUILD_SHARED AND UNIX AND NOT APPLE)
     set_tests_properties(synthesize-shared-exports PROPERTIES LABELS "unit;abi")
 endif()
 
+synth_add_unit_test(synthesize-kokoro-metadata-test kokoro_metadata_test.cpp)
+set_tests_properties(synthesize-kokoro-metadata-test PROPERTIES LABELS "unit;kokoro")
+
 synth_add_unit_test(synthesize-vits-text-encoder-host-test vits_text_encoder_host_test.cpp)
 synth_add_unit_test(synthesize-vits-metadata-test vits_metadata_test.cpp)
 synth_add_unit_test(synthesize-vits-weights-test vits_weights_test.cpp)
@@ -477,6 +480,7 @@ add_custom_target(synthesize-check-unit
         synthesize-voice-profile-api-test
         synthesize-backend-device-test
         synthesize-backend-module-test
+        synthesize-kokoro-metadata-test
         synthesize-vits-text-encoder-host-test
         synthesize-vits-metadata-test
         synthesize-vits-weights-test

@@ -1,0 +1,43 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+struct gguf_context;
+
+namespace synth {
+
+// Typed, fail-closed reads of GGUF key/value metadata.
+//
+// Every Model Family validates the same way: a key must exist, carry the exact
+// declared type, and — for arrays — hold well-formed elements. A miss is a
+// package contract violation rather than a defaulted value, so each accessor
+// returns false and reports the offending key with the family tag supplied at
+// construction.
+class GgufMetadata {
+  public:
+    GgufMetadata(const gguf_context * gguf, std::string family) : gguf_(gguf), family_(std::move(family)) {}
+
+    bool u32(const std::string & key, uint32_t & value) const;
+    bool u64(const std::string & key, uint64_t & value) const;
+    bool f32(const std::string & key, float & value) const;
+    bool boolean(const std::string & key, bool & value) const;
+    bool string(const std::string & key, std::string & value) const;
+
+    // Rejects the array unless every element is strictly positive, which is the
+    // only form the graph builders can consume for shapes and rates.
+    bool positive_i32_array(const std::string & key, std::vector<uint32_t> & value) const;
+    bool string_array(const std::string & key, std::vector<std::string> & value) const;
+
+    // Reads a string and requires it to equal `expected`.
+    bool require_string(const std::string & key, const char * expected) const;
+
+  private:
+    void report(const std::string & key, const char * detail) const;
+
+    const gguf_context * gguf_ = nullptr;
+    std::string          family_;
+};
+
+}  // namespace synth

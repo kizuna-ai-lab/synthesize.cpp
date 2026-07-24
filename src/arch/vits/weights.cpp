@@ -1,6 +1,7 @@
 #include "weights.h"
 
 #include "ggml.h"
+#include "gguf-metadata.h"
 #include "gguf.h"
 
 #include <cmath>
@@ -34,72 +35,30 @@ bool flow_dilations_fit(uint32_t kernel_size, uint32_t dilation_rate, uint32_t l
     return true;
 }
 
+// Typed metadata reads are shared with every other Model Family; these keep the
+// family's existing call shape while the validation itself lives in one place.
+GgufMetadata metadata(const gguf_context * gguf) {
+    return GgufMetadata(gguf, "vits");
+}
+
 bool read_u32(const gguf_context * gguf, const char * key, uint32_t & value) {
-    const int64_t id = gguf_find_key(gguf, key);
-    if (id < 0 || gguf_get_kv_type(gguf, id) != GGUF_TYPE_UINT32) {
-        std::fprintf(stderr, "vits: missing or invalid uint32 metadata %s\n", key);
-        return false;
-    }
-    value = gguf_get_val_u32(gguf, id);
-    return true;
+    return metadata(gguf).u32(key, value);
 }
 
 bool read_u64(const gguf_context * gguf, const char * key, uint64_t & value) {
-    const int64_t id = gguf_find_key(gguf, key);
-    if (id < 0 || gguf_get_kv_type(gguf, id) != GGUF_TYPE_UINT64) {
-        std::fprintf(stderr, "vits: missing or invalid uint64 metadata %s\n", key);
-        return false;
-    }
-    value = gguf_get_val_u64(gguf, id);
-    return true;
+    return metadata(gguf).u64(key, value);
 }
 
 bool read_f32(const gguf_context * gguf, const char * key, float & value) {
-    const int64_t id = gguf_find_key(gguf, key);
-    if (id < 0 || gguf_get_kv_type(gguf, id) != GGUF_TYPE_FLOAT32) {
-        std::fprintf(stderr, "vits: missing or invalid float32 metadata %s\n", key);
-        return false;
-    }
-    value = gguf_get_val_f32(gguf, id);
-    return true;
+    return metadata(gguf).f32(key, value);
 }
 
 bool read_bool(const gguf_context * gguf, const char * key, bool & value) {
-    const int64_t id = gguf_find_key(gguf, key);
-    if (id < 0 || gguf_get_kv_type(gguf, id) != GGUF_TYPE_BOOL) {
-        std::fprintf(stderr, "vits: missing or invalid bool metadata %s\n", key);
-        return false;
-    }
-    value = gguf_get_val_bool(gguf, id);
-    return true;
+    return metadata(gguf).boolean(key, value);
 }
 
 bool read_positive_i32_array(const gguf_context * gguf, const std::string & key, std::vector<uint32_t> & value) {
-    const int64_t id = gguf_find_key(gguf, key.c_str());
-    if (id < 0 || gguf_get_kv_type(gguf, id) != GGUF_TYPE_ARRAY || gguf_get_arr_type(gguf, id) != GGUF_TYPE_INT32) {
-        std::fprintf(stderr, "vits: missing or invalid int32 array metadata %s\n", key.c_str());
-        return false;
-    }
-    const size_t n    = gguf_get_arr_n(gguf, id);
-    const void * data = gguf_get_arr_data(gguf, id);
-    if (n > 0 && data == nullptr) {
-        std::fprintf(stderr, "vits: invalid int32 array metadata %s\n", key.c_str());
-        return false;
-    }
-    if (n == 0) {
-        value.clear();
-        return true;
-    }
-    const auto * first = static_cast<const int32_t *>(data);
-    value.resize(n);
-    for (size_t index = 0; index < n; ++index) {
-        if (first[index] <= 0) {
-            std::fprintf(stderr, "vits: int32 array metadata %s must contain positive values\n", key.c_str());
-            return false;
-        }
-        value[index] = static_cast<uint32_t>(first[index]);
-    }
-    return true;
+    return metadata(gguf).positive_i32_array(key, value);
 }
 
 bool read_decoder_dilations(const gguf_context *                 gguf,
@@ -157,52 +116,15 @@ bool decoder_hparams_fit(const HParams & hparams) {
 }
 
 bool require_string(const gguf_context * gguf, const char * key, const char * expected) {
-    const int64_t id = gguf_find_key(gguf, key);
-    if (id < 0 || gguf_get_kv_type(gguf, id) != GGUF_TYPE_STRING) {
-        std::fprintf(stderr, "vits: missing or invalid string metadata %s\n", key);
-        return false;
-    }
-    const char * value = gguf_get_val_str(gguf, id);
-    if (value == nullptr || std::string(value) != expected) {
-        std::fprintf(stderr, "vits: metadata %s must equal %s\n", key, expected);
-        return false;
-    }
-    return true;
+    return metadata(gguf).require_string(key, expected);
 }
 
 bool read_string(const gguf_context * gguf, const std::string & key, std::string & value) {
-    const int64_t id = gguf_find_key(gguf, key.c_str());
-    if (id < 0 || gguf_get_kv_type(gguf, id) != GGUF_TYPE_STRING) {
-        std::fprintf(stderr, "vits: missing or invalid string metadata %s\n", key.c_str());
-        return false;
-    }
-    const char * stored = gguf_get_val_str(gguf, id);
-    if (stored == nullptr) {
-        std::fprintf(stderr, "vits: invalid string metadata %s\n", key.c_str());
-        return false;
-    }
-    value = stored;
-    return true;
+    return metadata(gguf).string(key, value);
 }
 
 bool read_string_array(const gguf_context * gguf, const std::string & key, std::vector<std::string> & value) {
-    const int64_t id = gguf_find_key(gguf, key.c_str());
-    if (id < 0 || gguf_get_kv_type(gguf, id) != GGUF_TYPE_ARRAY || gguf_get_arr_type(gguf, id) != GGUF_TYPE_STRING) {
-        std::fprintf(stderr, "vits: missing or invalid string array metadata %s\n", key.c_str());
-        return false;
-    }
-    const size_t count = gguf_get_arr_n(gguf, id);
-    value.clear();
-    value.reserve(count);
-    for (size_t index = 0; index < count; ++index) {
-        const char * item = gguf_get_arr_str(gguf, id, index);
-        if (item == nullptr) {
-            std::fprintf(stderr, "vits: invalid string array metadata %s\n", key.c_str());
-            return false;
-        }
-        value.emplace_back(item);
-    }
-    return true;
+    return metadata(gguf).string_array(key, value);
 }
 
 bool read_frontend_metadata(const gguf_context * gguf, HParams & hparams) {

@@ -168,6 +168,47 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   digest/shape/missing-file/incomplete-pin rejection, and size labels. The
   generated GGUF and converter report remain ignored artifacts.
 
+## 2026-07-25 — Stage 4 slice 1: shared metadata reader and Kokoro hparams
+
+- Extended the shared `synthesize.symbol_map` frontend rather than adding a
+  Kokoro-specific one. The interleave-or-not boolean became a
+  `SymbolPaddingRule` of `None`, `InterleavedBlank`, or `WrapPadToken`, and the
+  dense symbol table now tolerates empty entries so a sparse vocabulary can
+  reserve embedding rows. VITS keeps its behavior, derived from the metadata it
+  already stores.
+- Introduced `src/gguf-metadata.{h,cpp}` for typed, fail-closed GGUF reads and
+  migrated VITS onto it by reducing its eight private helpers to one-line
+  delegations, which keeps all 66 existing call sites untouched and deletes
+  about 130 lines of logic that Kokoro would otherwise have duplicated.
+- Added `src/arch/kokoro/weights.{h,cpp}` with `read_hparams`. Beyond typed
+  reads it enforces the contract: identity and architecture version, a known
+  quantization profile, phoneme-plus-token input only, mandatory speaking-rate
+  and stochastic capabilities, mono audio, an ordered rate range containing 1.0,
+  even hidden width for the bidirectional split, an odd text-encoder kernel, a
+  single shared ALBERT group, a centered even-length iSTFT whose hop divides the
+  transform, resblock kernels that are odd with in-range padding, and a source
+  module whose sampling rate matches native output.
+- Cross-checked derived quantities instead of trusting declarations: the
+  `2 * prod(upsample_rates) * hop` chain must equal the declared 600 samples per
+  duration step, and the source upsample scale must be exactly half of it.
+- Enforced the Voice contract in metadata: the style table must hold a decoder
+  and prosody half per row with contiguous offsets, must address the declared
+  maximum input, and no catalog entry may claim a package default because the
+  variant has none. `resolve_style_row` implements the
+  `final_token_count - 3` rule with bounds checks at both ends.
+- Rejected `instance_norm_affine = true`, which would reference AdaIN tensors
+  the converter never emits.
+- Added the registered `synthesize-kokoro-metadata-test`: it parses a small but
+  structurally faithful synthetic package, checks the resolved hparams and every
+  style-row boundary, and then asserts rejection for about sixty individual
+  metadata mutations. A negative control confirmed the rejection helper
+  discriminates rather than always reporting failure.
+- Found that `synthesize-check-unit` carries an explicit DEPENDS list, so a new
+  unit test silently never builds in a clean tree until it is registered there.
+  The sanitizer tree caught this as a "Not Run" result; the new test is now
+  listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
+  pass.
+
 ### Repository defect found and fixed
 
 Authoring this manifest exposed that neither committed VITS manifest satisfied

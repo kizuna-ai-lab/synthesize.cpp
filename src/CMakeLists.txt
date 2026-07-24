@@ -1,5 +1,6 @@
 add_library(synthesize
     audio-delivery.cpp
+    gguf-metadata.cpp
     backend-device.cpp
     backend-module.cpp
     backend-plan.cpp
@@ -8,6 +9,7 @@ add_library(synthesize
     synthesis-request.cpp
     text-frontend.cpp
     voice-profile.cpp
+    arch/kokoro/weights.cpp
     arch/vits/acoustic-flow.cpp
     arch/vits/acoustic-flow-host.cpp
     arch/vits/duration-path.cpp

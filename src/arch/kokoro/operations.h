@@ -8,6 +8,28 @@ struct ggml_tensor;
 
 namespace synth::kokoro {
 
+struct LinearWeights;
+struct NormWeights;
+
+// x * gamma + beta over the feature axis, which is ne[0] in this family's
+// [features, time] layout.
+ggml_tensor * layer_norm(ggml_context * context, ggml_tensor * input, const NormWeights & weights, float epsilon);
+
+ggml_tensor * linear(ggml_context * context, ggml_tensor * input, const LinearWeights & weights);
+
+// Adaptive layer norm: normalize without learned affine, then apply a scale and
+// shift projected from the style vector. Upstream stores the projection as one
+// linear whose output is split in half, and applies (1 + gamma) rather than
+// gamma, so a zero projection is the identity.
+ggml_tensor * ada_layer_norm(ggml_context *        context,
+                             ggml_tensor *         input,
+                             ggml_tensor *         style,
+                             const LinearWeights & projection,
+                             float                 epsilon);
+
+// Broadcasts a [features] vector across `length` time steps.
+ggml_tensor * broadcast_over_time(ggml_context * context, ggml_tensor * vector, int64_t length);
+
 // Weights of one LSTM direction, in the layout PyTorch stores them: the four
 // gate blocks are stacked input, forget, cell, output along the row axis.
 struct LstmDirectionWeights {

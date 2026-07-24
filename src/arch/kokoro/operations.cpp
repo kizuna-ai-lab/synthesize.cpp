@@ -1,11 +1,43 @@
 #include "operations.h"
 
 #include "ggml.h"
+#include "weights.h"
 
 #include <cstdio>
 #include <initializer_list>
 
 namespace synth::kokoro {
+
+ggml_tensor * layer_norm(ggml_context * context, ggml_tensor * input, const NormWeights & weights, float epsilon) {
+    ggml_tensor * normalized = ggml_norm(context, input, epsilon);
+    normalized               = ggml_mul(context, normalized, weights.weight);
+    return ggml_add(context, normalized, weights.bias);
+}
+
+ggml_tensor * linear(ggml_context * context, ggml_tensor * input, const LinearWeights & weights) {
+    return ggml_add(context, ggml_mul_mat(context, weights.weight, input), weights.bias);
+}
+
+ggml_tensor * broadcast_over_time(ggml_context * context, ggml_tensor * vector, int64_t length) {
+    ggml_tensor * shape = ggml_new_tensor_2d(context, GGML_TYPE_F32, vector->ne[0], length);
+    return ggml_repeat(context, ggml_reshape_2d(context, vector, vector->ne[0], 1), shape);
+}
+
+ggml_tensor * ada_layer_norm(ggml_context *        context,
+                             ggml_tensor *         input,
+                             ggml_tensor *         style,
+                             const LinearWeights & projection,
+                             float                 epsilon) {
+    const int64_t channels = input->ne[0];
+    ggml_tensor * both     = linear(context, style, projection);
+    ggml_tensor * gamma    = ggml_view_1d(context, both, channels, 0);
+    ggml_tensor * beta     = ggml_view_1d(context, both, channels, size_t(channels) * ggml_element_size(both));
+
+    ggml_tensor * normalized = ggml_norm(context, input, epsilon);
+    // Upstream applies (1 + gamma), so the projection biases toward identity.
+    normalized               = ggml_add(context, normalized, ggml_mul(context, normalized, gamma));
+    return ggml_add(context, normalized, beta);
+}
 
 namespace {
 

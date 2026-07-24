@@ -209,6 +209,35 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — Stage 4 slice 5: duration path and its host seam
+
+- Extracted `layer_norm`, `linear`, `ada_layer_norm` and a time broadcast into
+  `operations`, so the PL-BERT and duration stages share one implementation.
+- Verified `AdaLayerNorm` semantics against the pinned module rather than
+  reading them off the source: its four transposes cancel, so the net operation
+  is a channel layer norm **without learned affine**, followed by
+  `(1 + gamma) * x + beta` where both come from one projection of the style
+  vector split in half. Applying `1 + gamma` means a zero projection is the
+  identity. Its epsilon is 1e-5, fixed by the module rather than declared by
+  the package.
+- Added `duration.{h,cpp}`. The encoder alternates a bidirectional LSTM with
+  that adaptive norm and re-concatenates the style vector after each one, which
+  is why `duration.d` is `hidden_dim + style_dim` wide rather than `hidden_dim`.
+  The builder advertises its node count so callers can size graphs without
+  guessing, and it refuses to build unless every LSTM has a persistent store.
+- Added `duration-host.{h,cpp}`, the seam that turns a distribution into a
+  concrete length the later graphs need as a static shape. It sums the sigmoid
+  over the duration bins, divides by the speaking rate, rounds, and clamps to at
+  least one step so no token is ever dropped.
+- The output limit is checked **before** the alignment is allocated, because
+  that allocation is the product of token count and frame count. A non-finite
+  logit is reported rather than propagated into a length.
+- The test compares the graph against a host reference of the whole encoder
+  including the LSTM and adaptive norm, agreeing to 1e-5, and then checks the
+  seam's structure directly: every frame is attributed to exactly one token, the
+  tokens appear in ascending order, a faster rate never lengthens the output and
+  a slower rate never shortens it, and the limit rejects before allocating.
+
 ## 2026-07-25 — Stage 4 slice 4: PL-BERT encoder
 
 - Added `src/arch/kokoro/plbert.{h,cpp}`. Semantics were read from the pinned

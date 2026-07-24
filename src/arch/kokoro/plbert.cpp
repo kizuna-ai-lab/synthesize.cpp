@@ -1,6 +1,7 @@
 #include "plbert.h"
 
 #include "ggml.h"
+#include "operations.h"
 #include "weights.h"
 
 #include <cmath>
@@ -9,18 +10,6 @@
 namespace synth::kokoro {
 
 namespace {
-
-// Tensors carry features along ne[0] and tokens along ne[1], so ggml_norm
-// normalizes exactly the feature axis PyTorch's LayerNorm does.
-ggml_tensor * layer_norm(ggml_context * context, ggml_tensor * input, const NormWeights & weights, float epsilon) {
-    ggml_tensor * normalized = ggml_norm(context, input, epsilon);
-    normalized               = ggml_mul(context, normalized, weights.weight);
-    return ggml_add(context, normalized, weights.bias);
-}
-
-ggml_tensor * linear(ggml_context * context, ggml_tensor * input, const LinearWeights & weights) {
-    return ggml_add(context, ggml_mul_mat(context, weights.weight, input), weights.bias);
-}
 
 // One ALBERT layer: post-norm attention, then post-norm feed-forward.
 ggml_tensor * albert_layer(ggml_context *             context,

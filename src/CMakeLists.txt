@@ -11,6 +11,7 @@ add_library(synthesize
     voice-profile.cpp
     arch/kokoro/catalog.cpp
     arch/kokoro/operations.cpp
+    arch/kokoro/plbert.cpp
     arch/kokoro/weights.cpp
     arch/vits/acoustic-flow.cpp
     arch/vits/acoustic-flow-host.cpp

@@ -209,6 +209,41 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-25 — Stage 4 slice 4: PL-BERT encoder
+
+- Added `src/arch/kokoro/plbert.{h,cpp}`. Semantics were read from the pinned
+  transformers implementation rather than assumed: embeddings sum the word,
+  absolute-position and type-zero rows before a LayerNorm, the encoder projects
+  the 128-wide embedding to 768, and each layer is post-norm, applying the norm
+  after adding the residual for both attention and feed-forward.
+- The stored layer group is replayed for all 12 hidden layers, matching the
+  package's `shared_layer_groups = 1`.
+- Confirmed from the resolved `AlbertConfig` that the activation is `gelu_new`,
+  the layer-norm epsilon is 1e-12, and both dropout probabilities are zero.
+  `ggml_gelu` implements exactly the `gelu_new` tanh form.
+- No attention mask is built. Kokoro synthesizes one unpadded sequence at a
+  time, so upstream's mask is all-visible; the intake measured `text_mask` as
+  entirely false. The host seam owns never presenting a padded batch.
+
+### GGML's GELU is a half-precision table
+
+The graph initially disagreed with the reference by `3.6e-4`, which looked like
+a defect. It is not: `GGML_GELU_FP16` is defined, so the CPU kernel evaluates
+`f16(gelu(f16(x)))` through a lookup table rather than the exact activation.
+Re-running the reference with that same table semantics shrinks the deviation to
+`5.4e-5`, and matching GGML's association order changes nothing further, so the
+remainder is ordinary accumulation-order noise carried through three layers.
+
+The test asserts both: agreement with the exact activation within a threshold
+that still catches real defects, and that modelling the table shrinks the
+deviation by more than three times. The second assertion is what distinguishes
+"the backend approximates" from "the graph is wrong".
+
+This matters beyond this slice. Every Golden probe downstream of a GELU inherits
+a deviation from PyTorch on the order of `1e-4` on CPU that no amount of graph
+correctness can remove, so Stage 5 tolerances must be measured with this in mind
+rather than set from an expectation of float-exactness.
+
 ## 2026-07-25 — Stage 4 slice 3: tensor catalog, and a converter defect
 
 - Added `src/arch/kokoro/catalog.cpp`, resolving all 511 tensors across the

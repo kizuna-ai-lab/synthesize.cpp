@@ -209,3 +209,18 @@ Candidate host seams, mirroring the VITS duration seam, are the duration
 rounding and alignment construction, and the harmonic source generation plus its
 STFT. Both are host-side by nature: they consume a resolved length or produce a
 fixed excitation, and neither needs to be a backend graph node for correctness.
+
+### Recorded decision: LSTM placement
+
+The five bidirectional LSTMs run on a **host seam** for the first port. GGML has
+no LSTM operator, and the alternative of unrolling one graph node group per time
+step does not scale on this architecture: `predictor.shared` runs over frames
+rather than tokens, so the 376-step `kokoro-long` case would already build about
+7,500 nodes and the package's 60-second output limit would allow roughly 48,000.
+
+This follows the project's CPU-correctness-first sequence and keeps the graph
+sizes bounded. It is explicitly a starting point, not the end state: the LSTM
+stages stay on CPU, so the eventual CUDA claim will report real executable CPU
+fallback for them until the placement is revisited. Moving them into the graph,
+by unrolling the four token-length LSTMs or adding a dedicated operator, is a
+separate slice with its own validation and measurements.

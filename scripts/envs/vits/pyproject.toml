@@ -5,6 +5,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "cython==0.29.37",
     "gguf==0.19.0",
+    "jsonschema==4.26.0",
     "numpy==1.26.4",
     "phonemizer==3.3.0",
     "scipy==1.13.1",

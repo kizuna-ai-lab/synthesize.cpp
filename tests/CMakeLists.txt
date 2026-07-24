@@ -103,6 +103,20 @@ if(SYNTH_BUILD_PYTHON_TESTS)
     set_tests_properties(synthesize-python-api-wheel-test PROPERTIES
         LABELS "unit;abi;packaging;python"
         TIMEOUT 240)
+    # Family-independent contract check over every committed Golden Manifest.
+    # It runs in the VITS environment only because that environment currently
+    # owns the repository's locked Python tooling; the test itself is not
+    # VITS-specific and validates whatever families exist under tests/golden/.
+    add_test(
+        NAME synthesize-golden-manifest-contract
+        COMMAND ${SYNTH_UV_EXECUTABLE} run
+            --project ${CMAKE_SOURCE_DIR}/scripts/envs/vits
+            --locked python -m unittest
+            tests.python.test_golden_manifests)
+    set_tests_properties(synthesize-golden-manifest-contract PROPERTIES
+        LABELS "unit;python;golden"
+        TIMEOUT 120
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 if(SYNTH_BUILD_SHARED AND UNIX AND NOT APPLE)
     add_test(NAME synthesize-shared-exports

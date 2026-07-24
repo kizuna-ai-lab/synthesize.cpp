@@ -204,6 +204,14 @@
         "contract_version": {
           "type": "integer",
           "minimum": 1
+        },
+        "phoneme_mapping": {
+          "type": "string",
+          "enum": ["unicode_scalar", "delimited_symbol"]
+        },
+        "padding_rule": {
+          "type": "string",
+          "enum": ["interleaved_blank", "wrap_pad_token"]
         }
       }
     },

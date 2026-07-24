@@ -102,7 +102,7 @@
       ],
       "dtype": "float32",
       "total_bytes": 28264709,
-      "selection_rule": "row index = final_token_count - 3 (upstream uses len(ids)-1 on the unpadded id list)",
+      "selection_rule": "row index = final_token_count - 3; upstream KPipeline uses pack[len(ps)-1] on the phoneme string before vocabulary filtering, which is equivalent because the project frontend rejects unmapped scalars instead of dropping them",
       "files": [
         {
           "id": "af_alloy",

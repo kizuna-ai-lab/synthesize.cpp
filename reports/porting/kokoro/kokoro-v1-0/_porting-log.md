@@ -209,6 +209,39 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — Stage 4 slice 7: prosody F0 and energy stack
+
+- Added `prosody.{h,cpp}` with the AdaIN residual block and the F0/energy
+  stacks. Both curves leave this stage at twice the frame rate because the
+  middle block upsamples; the decoder halves them again with a strided
+  convolution.
+- AdaIN normalizes over **time within each channel**, a different axis from the
+  adaptive layer norm in the duration path, which normalizes over channels
+  within each frame. Getting these two the same way round is the kind of error
+  a shape-only test would not catch, so the block is compared numerically.
+- The block averages its residual and shortcut branches by scaling their sum by
+  `1/sqrt(2)`. The shortcut must double the length by nearest-neighbour
+  repetition exactly where the residual doubles it by the transposed pool.
+
+### Two GGML constraints resolved
+
+`ggml_conv_1d` asserts that its kernel is F16, because its im2col buffer is
+half precision. Downcasting the weights of a source-F32 accuracy artifact is
+not acceptable, so the family uses the same im2col-and-matrix-multiply
+decomposition the VITS port established, keeping the kernel in F32.
+
+That decomposition also settled a layout question. The first draft of the
+convolution operators used `[time, channels]`, because that is what
+`ggml_conv_1d` consumes directly, which would have left two layouts in the
+codebase with transposes at the boundary. Since the F32 path transposes
+internally anyway, every Kokoro stage now uses `[features, time]` like VITS,
+and `operations.h` states that as the single convention.
+
+The residual block is checked against a host reference across four shapes: the
+three the prosody stack actually uses, plus a channel-changing block that does
+not upsample, agreeing to 1e-4. A block that claims to upsample without a pool
+is rejected as a catalog defect rather than silently skipping the upsample.
+
 ## 2026-07-26 — Stage 4 slice 6: depthwise transposed convolution
 
 The prosody stack's upsampling block and the decoder both need a depthwise

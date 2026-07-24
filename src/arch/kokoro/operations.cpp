@@ -23,6 +23,79 @@ ggml_tensor * broadcast_over_time(ggml_context * context, ggml_tensor * vector, 
     return ggml_repeat(context, ggml_reshape_2d(context, vector, vector->ne[0], 1), shape);
 }
 
+ggml_tensor * conv1d(ggml_context * context,
+                     ggml_tensor *  input,
+                     ggml_tensor *  weight,
+                     ggml_tensor *  bias,
+                     int            padding,
+                     int            dilation) {
+    if (context == nullptr || input == nullptr || weight == nullptr) {
+        return nullptr;
+    }
+    const int64_t in_channels  = weight->ne[1];
+    const int64_t out_channels = weight->ne[2];
+    if (input->ne[0] != in_channels) {
+        return nullptr;
+    }
+    // im2col wants the time axis first; the result is returned channel-first.
+    ggml_tensor * time_major = ggml_cont(context, ggml_transpose(context, input));
+    ggml_tensor * columns =
+        ggml_im2col(context, weight, time_major, 1, 0, padding, 0, dilation, 0, false, weight->type);
+    ggml_tensor * kernel_2d = ggml_reshape_2d(context, weight, weight->ne[0] * weight->ne[1], out_channels);
+    ggml_tensor * output =
+        ggml_mul_mat(context, kernel_2d, ggml_reshape_2d(context, columns, columns->ne[0], columns->ne[1]));
+    output = ggml_reshape_2d(context, output, out_channels, columns->ne[1]);
+    if (bias != nullptr) {
+        output = ggml_add(context, output, bias);
+    }
+    return ggml_cont(context, output);
+}
+
+ggml_tensor * instance_norm(ggml_context * context, ggml_tensor * input, float epsilon) {
+    // ggml_norm reduces ne[0], which holds channels here, so the time axis is
+    // moved there and back to normalize each channel across time.
+    ggml_tensor * time_major = ggml_cont(context, ggml_transpose(context, input));
+    ggml_tensor * normalized = ggml_norm(context, time_major, epsilon);
+    return ggml_cont(context, ggml_transpose(context, normalized));
+}
+
+ggml_tensor * adain(ggml_context *        context,
+                    ggml_tensor *         input,
+                    ggml_tensor *         style,
+                    const LinearWeights & projection,
+                    float                 epsilon) {
+    const int64_t channels = input->ne[0];
+    ggml_tensor * both     = linear(context, style, projection);
+    ggml_tensor * gamma    = ggml_view_1d(context, both, channels, 0);
+    ggml_tensor * beta     = ggml_view_1d(context, both, channels, size_t(channels) * ggml_element_size(both));
+
+    ggml_tensor * normalized = instance_norm(context, input, epsilon);
+    normalized               = ggml_add(context, normalized, ggml_mul(context, normalized, gamma));
+    return ggml_add(context, normalized, beta);
+}
+
+ggml_tensor * upsample_nearest_2x(ggml_context * context, ggml_tensor * input) {
+    const int64_t channels = input->ne[0];
+    const int64_t length   = input->ne[1];
+    // Repeating a unit axis between channels and time duplicates each frame.
+    ggml_tensor * spread   = ggml_reshape_3d(context, input, channels, 1, length);
+    ggml_tensor * doubled  = ggml_new_tensor_3d(context, GGML_TYPE_F32, channels, 2, length);
+    doubled                = ggml_repeat(context, spread, doubled);
+    return ggml_reshape_2d(context, ggml_cont(context, doubled), channels, 2 * length);
+}
+
+ggml_tensor * snake(ggml_context * context, ggml_tensor * input, ggml_tensor * alpha) {
+    if (alpha == nullptr) {
+        return nullptr;
+    }
+    // Alpha is stored as [1, channels, 1]; one value per channel is needed.
+    ggml_tensor * per_channel = ggml_reshape_1d(context, alpha, alpha->ne[1]);
+    ggml_tensor * scaled      = ggml_mul(context, input, per_channel);
+    ggml_tensor * sine        = ggml_sin(context, scaled);
+    ggml_tensor * squared     = ggml_mul(context, sine, sine);
+    return ggml_add(context, input, ggml_div(context, squared, per_channel));
+}
+
 int64_t depthwise_transpose_conv1d_length(int64_t length,
                                           int64_t kernel,
                                           int64_t stride,
@@ -41,8 +114,8 @@ ggml_tensor * depthwise_transpose_conv1d(ggml_context * context,
     if (context == nullptr || input == nullptr || weight == nullptr || stride < 1) {
         return nullptr;
     }
-    const int64_t length   = input->ne[0];
-    const int64_t channels = input->ne[1];
+    const int64_t channels = input->ne[0];
+    const int64_t length   = input->ne[1];
     const int64_t kernel   = weight->ne[0];
     if (kernel < 1 || weight->ne[1] != 1 || weight->ne[2] != channels) {
         return nullptr;
@@ -55,29 +128,30 @@ ggml_tensor * depthwise_transpose_conv1d(ggml_context * context,
         return nullptr;
     }
 
-    // Insert stride - 1 zeros after every sample: reshaping to [1, length,
-    // channels] and padding the fastest axis interleaves them exactly.
-    ggml_tensor * spread = ggml_reshape_3d(context, input, 1, length, channels);
+    // Insert stride - 1 zeros after every frame: padding a unit axis between
+    // channels and time interleaves them exactly.
+    ggml_tensor * spread = ggml_reshape_3d(context, input, channels, 1, length);
     if (stride > 1) {
-        spread = ggml_pad(context, spread, int(stride - 1), 0, 0, 0);
+        spread = ggml_pad(context, spread, 0, int(stride - 1), 0, 0);
     }
-    spread = ggml_reshape_2d(context, ggml_cont(context, spread), stride * length, channels);
+    spread = ggml_reshape_2d(context, ggml_cont(context, spread), channels, stride * length);
 
-    // Widen so every tap's window stays in range.
-    ggml_tensor * padded = ggml_pad_ext(context, spread, int(left), int(right), 0, 0, 0, 0, 0, 0);
+    // Widen along time so every tap's window stays in range.
+    ggml_tensor * padded = ggml_pad_ext(context, spread, 0, 0, int(left), int(right), 0, 0, 0, 0);
 
     ggml_tensor * accumulated = nullptr;
     for (int64_t tap = 0; tap < kernel; ++tap) {
-        ggml_tensor * window = ggml_view_2d(context, padded, out_length, channels, padded->nb[1],
-                                            size_t(kernel - 1 - tap) * padded->nb[0]);
+        ggml_tensor * window = ggml_view_2d(context, padded, channels, out_length, padded->nb[1],
+                                            size_t(kernel - 1 - tap) * padded->nb[1]);
         // One scalar per channel for this tap, strided across the kernel axis.
         ggml_tensor * scale =
             ggml_cont(context, ggml_view_2d(context, weight, 1, channels, weight->nb[2], size_t(tap) * weight->nb[0]));
+        scale              = ggml_reshape_1d(context, scale, channels);
         ggml_tensor * term = ggml_mul(context, ggml_cont(context, window), scale);
         accumulated        = accumulated == nullptr ? term : ggml_add(context, accumulated, term);
     }
     if (bias != nullptr) {
-        accumulated = ggml_add(context, accumulated, ggml_reshape_2d(context, bias, 1, channels));
+        accumulated = ggml_add(context, accumulated, bias);
     }
     return accumulated;
 }

@@ -14,6 +14,7 @@ add_library(synthesize
     arch/kokoro/duration-host.cpp
     arch/kokoro/operations.cpp
     arch/kokoro/plbert.cpp
+    arch/kokoro/prosody.cpp
     arch/kokoro/weights.cpp
     arch/vits/acoustic-flow.cpp
     arch/vits/acoustic-flow-host.cpp

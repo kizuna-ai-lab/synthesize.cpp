@@ -38,6 +38,7 @@ Context make_context() {
 }
 
 // y[c][o] = sum over i, k of x[c][i] * w[c][k] where o == i * stride - padding + k.
+// Tensors are [channels, time], so element (c, t) sits at t * channels + c.
 std::vector<float> reference(const std::vector<float> & x,
                              const std::vector<float> & w,
                              int64_t                    length,
@@ -55,7 +56,7 @@ std::vector<float> reference(const std::vector<float> & x,
                 if (o < 0 || o >= out_length) {
                     continue;
                 }
-                out[size_t(c) * out_length + o] += x[size_t(c) * length + i] * w[size_t(c) * kernel + k];
+                out[size_t(o) * channels + c] += x[size_t(i) * channels + c] * w[size_t(c) * kernel + k];
             }
         }
     }
@@ -98,7 +99,7 @@ bool run_case(const Case & shape, float & max_diff) {
 
     Context        holder = make_context();
     ggml_context * ctx    = holder.get();
-    ggml_tensor *  input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, shape.length, shape.channels);
+    ggml_tensor *  input  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, shape.channels, shape.length);
     ggml_tensor *  weight = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, shape.kernel, 1, shape.channels);
     ggml_tensor *  bias   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, shape.channels);
 
@@ -116,7 +117,7 @@ bool run_case(const Case & shape, float & max_diff) {
     ggml_tensor * out =
         synth::kokoro::depthwise_transpose_conv1d(graph_holder.get(), input, weight, shape.with_bias ? bias : nullptr,
                                                   shape.stride, shape.padding, shape.output_padding);
-    if (out == nullptr || out->ne[0] != out_length || out->ne[1] != shape.channels) {
+    if (out == nullptr || out->ne[0] != shape.channels || out->ne[1] != out_length) {
         ggml_backend_buffer_free(buffer);
         ggml_backend_free(backend);
         return false;
@@ -136,9 +137,9 @@ bool run_case(const Case & shape, float & max_diff) {
     std::vector<float> expected = reference(x, w, shape.length, shape.channels, shape.kernel, shape.stride,
                                             shape.padding, shape.output_padding, out_length);
     if (shape.with_bias) {
-        for (int64_t c = 0; c < shape.channels; ++c) {
-            for (int64_t o = 0; o < out_length; ++o) {
-                expected[size_t(c) * out_length + o] += b[size_t(c)];
+        for (int64_t o = 0; o < out_length; ++o) {
+            for (int64_t c = 0; c < shape.channels; ++c) {
+                expected[size_t(o) * shape.channels + c] += b[size_t(c)];
             }
         }
     }

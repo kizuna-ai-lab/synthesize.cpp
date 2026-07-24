@@ -8,6 +8,10 @@ struct ggml_tensor;
 
 namespace synth::kokoro {
 
+// Every stage keeps tensors as [features, time], matching the VITS family, so
+// there is one layout in the codebase. Convolution transposes internally where
+// GGML needs the time axis first.
+
 struct LinearWeights;
 struct NormWeights;
 
@@ -30,6 +34,37 @@ ggml_tensor * ada_layer_norm(ggml_context *        context,
 // Broadcasts a [features] vector across `length` time steps.
 ggml_tensor * broadcast_over_time(ggml_context * context, ggml_tensor * vector, int64_t length);
 
+// Convolution that preserves F32 weights.
+//
+// ggml_conv_1d asserts on an F32 kernel because its im2col buffer is F16, so
+// this uses the same im2col-and-matrix-multiply decomposition the VITS family
+// uses rather than downcasting the accuracy artifact. `bias` may be null.
+ggml_tensor * conv1d(ggml_context * context,
+                     ggml_tensor *  input,
+                     ggml_tensor *  weight,
+                     ggml_tensor *  bias,
+                     int            padding,
+                     int            dilation);
+
+// Instance norm: each channel is normalized across time, which is a different
+// axis from layer norm's normalization across channels.
+ggml_tensor * instance_norm(ggml_context * context, ggml_tensor * input, float epsilon);
+
+// AdaIN: instance norm without learned affine, then a
+// scale and shift projected from the style vector. As with the adaptive layer
+// norm, upstream applies (1 + gamma) so a zero projection is the identity.
+ggml_tensor * adain(ggml_context *        context,
+                    ggml_tensor *         input,
+                    ggml_tensor *         style,
+                    const LinearWeights & projection,
+                    float                 epsilon);
+
+// Nearest-neighbour doubling along the time axis.
+ggml_tensor * upsample_nearest_2x(ggml_context * context, ggml_tensor * input);
+
+// x + (1/a) * sin(a * x)^2, the Snake activation, with one alpha per channel.
+ggml_tensor * snake(ggml_context * context, ggml_tensor * input, ggml_tensor * alpha);
+
 // Depthwise transposed 1-D convolution, one filter per channel.
 //
 // GGML's transposed convolution has no grouping and forbids internal padding,
@@ -39,7 +74,7 @@ ggml_tensor * broadcast_over_time(ggml_context * context, ggml_tensor * vector, 
 // avoids reversing the stored kernel, so the package stays byte-faithful to the
 // checkpoint and no weight preparation happens at load time.
 //
-// `input` is [length, channels] and `weight` is [kernel, 1, channels], the
+// `input` is [channels, length] and `weight` is [kernel, 1, channels], the
 // layout GGML reports for PyTorch's [channels, 1, kernel]. `bias` may be null.
 ggml_tensor * depthwise_transpose_conv1d(ggml_context * context,
                                          ggml_tensor *  input,

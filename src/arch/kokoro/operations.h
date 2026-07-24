@@ -30,6 +30,32 @@ ggml_tensor * ada_layer_norm(ggml_context *        context,
 // Broadcasts a [features] vector across `length` time steps.
 ggml_tensor * broadcast_over_time(ggml_context * context, ggml_tensor * vector, int64_t length);
 
+// Depthwise transposed 1-D convolution, one filter per channel.
+//
+// GGML's transposed convolution has no grouping and forbids internal padding,
+// so this is built from the scatter definition instead. Inserting `stride - 1`
+// zeros between input samples turns the scatter into a plain correlation, and
+// each kernel tap then contributes one shifted, per-channel scaled copy. That
+// avoids reversing the stored kernel, so the package stays byte-faithful to the
+// checkpoint and no weight preparation happens at load time.
+//
+// `input` is [length, channels] and `weight` is [kernel, 1, channels], the
+// layout GGML reports for PyTorch's [channels, 1, kernel]. `bias` may be null.
+ggml_tensor * depthwise_transpose_conv1d(ggml_context * context,
+                                         ggml_tensor *  input,
+                                         ggml_tensor *  weight,
+                                         ggml_tensor *  bias,
+                                         int64_t        stride,
+                                         int64_t        padding,
+                                         int64_t        output_padding);
+
+// Output length of depthwise_transpose_conv1d.
+int64_t depthwise_transpose_conv1d_length(int64_t length,
+                                          int64_t kernel,
+                                          int64_t stride,
+                                          int64_t padding,
+                                          int64_t output_padding);
+
 // Weights of one LSTM direction, in the layout PyTorch stores them: the four
 // gate blocks are stacked input, forget, cell, output along the row axis.
 struct LstmDirectionWeights {

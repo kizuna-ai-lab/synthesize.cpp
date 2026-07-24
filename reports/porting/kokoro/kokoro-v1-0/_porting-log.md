@@ -209,6 +209,29 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — Stage 4 slice 6: depthwise transposed convolution
+
+The prosody stack's upsampling block and the decoder both need a depthwise
+transposed convolution, and GGML supplies no usable primitive:
+`ggml_conv_transpose_1d` has no grouping and asserts that internal padding is
+zero, while `ggml_conv_1d_dw` is a forward convolution.
+
+Rather than reversing the stored kernel, which would either make the GGUF
+disagree with the checkpoint or add weight preparation at load time, the
+operation is assembled from the scatter definition. Inserting `stride - 1`
+zeros between input samples turns the scatter into a plain correlation, and
+each kernel tap then contributes one shifted copy scaled by a per-channel
+value read as a strided view of the stored weight. The package therefore stays
+byte-faithful and nothing is preprocessed.
+
+The test compares against the scatter definition itself across seven shapes:
+Kokoro's own kernel 3, stride 2, padding 1, output padding 1 pool, which
+exactly doubles the length, plus unit stride, unit kernel, a wider kernel,
+stride 3, a single-sample input, and the bias and bias-free forms. Agreement is
+1e-5. It also pins that padding wider than the kernel is refused rather than
+clamped, and that a kernel whose channel count disagrees with the input is
+rejected as a catalog defect.
+
 ## 2026-07-26 — Stage 4 slice 5: duration path and its host seam
 
 - Extracted `layer_norm`, `linear`, `ada_layer_norm` and a time broadcast into

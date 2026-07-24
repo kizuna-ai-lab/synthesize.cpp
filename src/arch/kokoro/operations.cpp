@@ -23,6 +23,65 @@ ggml_tensor * broadcast_over_time(ggml_context * context, ggml_tensor * vector, 
     return ggml_repeat(context, ggml_reshape_2d(context, vector, vector->ne[0], 1), shape);
 }
 
+int64_t depthwise_transpose_conv1d_length(int64_t length,
+                                          int64_t kernel,
+                                          int64_t stride,
+                                          int64_t padding,
+                                          int64_t output_padding) {
+    return (length - 1) * stride - 2 * padding + kernel + output_padding;
+}
+
+ggml_tensor * depthwise_transpose_conv1d(ggml_context * context,
+                                         ggml_tensor *  input,
+                                         ggml_tensor *  weight,
+                                         ggml_tensor *  bias,
+                                         int64_t        stride,
+                                         int64_t        padding,
+                                         int64_t        output_padding) {
+    if (context == nullptr || input == nullptr || weight == nullptr || stride < 1) {
+        return nullptr;
+    }
+    const int64_t length   = input->ne[0];
+    const int64_t channels = input->ne[1];
+    const int64_t kernel   = weight->ne[0];
+    if (kernel < 1 || weight->ne[1] != 1 || weight->ne[2] != channels) {
+        return nullptr;
+    }
+
+    const int64_t out_length = depthwise_transpose_conv1d_length(length, kernel, stride, padding, output_padding);
+    const int64_t left       = kernel - 1 - padding;
+    const int64_t right      = kernel + output_padding - stride - padding;
+    if (out_length < 1 || left < 0 || right < 0) {
+        return nullptr;
+    }
+
+    // Insert stride - 1 zeros after every sample: reshaping to [1, length,
+    // channels] and padding the fastest axis interleaves them exactly.
+    ggml_tensor * spread = ggml_reshape_3d(context, input, 1, length, channels);
+    if (stride > 1) {
+        spread = ggml_pad(context, spread, int(stride - 1), 0, 0, 0);
+    }
+    spread = ggml_reshape_2d(context, ggml_cont(context, spread), stride * length, channels);
+
+    // Widen so every tap's window stays in range.
+    ggml_tensor * padded = ggml_pad_ext(context, spread, int(left), int(right), 0, 0, 0, 0, 0, 0);
+
+    ggml_tensor * accumulated = nullptr;
+    for (int64_t tap = 0; tap < kernel; ++tap) {
+        ggml_tensor * window = ggml_view_2d(context, padded, out_length, channels, padded->nb[1],
+                                            size_t(kernel - 1 - tap) * padded->nb[0]);
+        // One scalar per channel for this tap, strided across the kernel axis.
+        ggml_tensor * scale =
+            ggml_cont(context, ggml_view_2d(context, weight, 1, channels, weight->nb[2], size_t(tap) * weight->nb[0]));
+        ggml_tensor * term = ggml_mul(context, ggml_cont(context, window), scale);
+        accumulated        = accumulated == nullptr ? term : ggml_add(context, accumulated, term);
+    }
+    if (bias != nullptr) {
+        accumulated = ggml_add(context, accumulated, ggml_reshape_2d(context, bias, 1, channels));
+    }
+    return accumulated;
+}
+
 ggml_tensor * ada_layer_norm(ggml_context *        context,
                              ggml_tensor *         input,
                              ggml_tensor *         style,

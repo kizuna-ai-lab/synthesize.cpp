@@ -209,6 +209,50 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-25 — LSTM spike, and a corrected decision
+
+The earlier host-seam decision rested on an estimate that unrolling would
+produce unmanageable graphs. A spike at the family's real shapes disproved it,
+so the decision was reversed to in-graph unrolling. The measurements and the
+accumulation comparison are recorded in the family note; the reasoning is here.
+
+- Surveyed three GGML ports. encodec.cpp unrolls but issues a GEMV per step on
+  the input side. TTS.cpp, which is itself a Kokoro port, batches the input
+  projection over the whole sequence but splits the four gates into four
+  per-step GEMVs and accumulates with a per-step `ggml_concat` chain that copies
+  the whole accumulated tensor every step. parakeet.cpp runs one graph per step
+  with state on the host, which is forced by autoregressive beam-search decoding
+  and does not apply here: every Kokoro LSTM has its full input before it runs.
+- The shipped design takes the batched input projection from TTS.cpp and the
+  fused four-gate hidden GEMV from encodec.cpp.
+- Graph size is not the constraint the earlier estimate assumed. At the
+  60-second output limit the unrolled bidirectional chain is 110,404 nodes but
+  builds in 20.7 ms and runs in 111 ms on CPU and 151 ms on CUDA. The longest
+  committed case, `Y=376`, is 17,300 nodes and under 24 ms on either backend.
+- A four-thread host implementation with the same batched input projection needs
+  815 ms for the 60-second case, so in-graph is about seven times faster and
+  additionally keeps the stage on the backend.
+
+### The accumulation hazard the spike caught
+
+Writing per-step outputs is where this goes wrong, and it goes wrong quietly.
+`ggml_set_1d_inplace` into an allocator-managed tensor produced correct results
+on CPU to 1e-6 and **wrong results on CUDA**, off by 1.8 in a tanh-bounded
+signal. A balanced `ggml_concat` tree over per-step views was self-consistent
+across both backends and wrong on both. Moving the seed and output tensors to
+graph inputs broke CPU as well.
+
+Only writing each step with `ggml_cpy` into disjoint views of a tensor held in a
+persistent backend buffer, the llama.cpp KV-cache pattern, is correct on both:
+1e-6 on CPU and 9e-6 on CUDA, the latter being ordinary cross-backend float
+accumulation order. It also cuts the 60-second compute buffer from 26.9 MiB to
+9.4 MiB, since the allocator is then left with only the per-step intermediates.
+
+The lesson is recorded as a standing requirement: the LSTM builder's test must
+run on every Execution Backend the package claims. A CPU-only gate would have
+accepted the first strategy and shipped a CUDA package that produced wrong
+audio.
+
 ### Repository defect found and fixed
 
 Authoring this manifest exposed that neither committed VITS manifest satisfied

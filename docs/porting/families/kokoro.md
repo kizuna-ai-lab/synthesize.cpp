@@ -212,15 +212,54 @@ fixed excitation, and neither needs to be a backend graph node for correctness.
 
 ### Recorded decision: LSTM placement
 
-The five bidirectional LSTMs run on a **host seam** for the first port. GGML has
-no LSTM operator, and the alternative of unrolling one graph node group per time
-step does not scale on this architecture: `predictor.shared` runs over frames
-rather than tokens, so the 376-step `kokoro-long` case would already build about
-7,500 nodes and the package's 60-second output limit would allow roughly 48,000.
+The five bidirectional LSTMs are **unrolled in the graph**, so every stage stays
+on the selected Execution Backend. GGML has no LSTM operator, so each time step
+contributes its own node group.
 
-This follows the project's CPU-correctness-first sequence and keeps the graph
-sizes bounded. It is explicitly a starting point, not the end state: the LSTM
-stages stay on CPU, so the eventual CUDA claim will report real executable CPU
-fallback for them until the placement is revisited. Moving them into the graph,
-by unrolling the four token-length LSTMs or adding a dedicated operator, is a
-separate slice with its own validation and measurements.
+The design combines what the surveyed GGML ports do separately. The input-side
+projection is one batched GEMM over the whole sequence, as in TTS.cpp, rather
+than a GEMV per step as in encodec.cpp. The four gates stay fused in a single
+hidden-side GEMV, as in encodec.cpp, rather than being split into four as in
+TTS.cpp. parakeet.cpp's one-graph-per-step design is not applicable: it is forced
+by autoregressive decoding with beam search, whereas every Kokoro LSTM receives
+its complete input sequence before it runs.
+
+A spike measured this design at the family's real shapes (`D=640`, `H=256`) on
+DGX Spark. Graph size is not the constraint the earlier estimate assumed:
+
+| Case | Nodes | Build | CPU run | CUDA run | Compute buffer |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `T=146` longest committed tokens | 6,720 | 1.2 ms | 7.6 ms | 9.2 ms | 0.6 MiB |
+| `Y=376` longest committed frames | 17,300 | 2.2 ms | 19.8 ms | 23.6 ms | 1.5 MiB |
+| `T=512` package token limit | 23,556 | 4.4 ms | 27.1 ms | 31.9 ms | 2.0 MiB |
+| `Y=2400` 60-second output limit | 110,404 | 20.7 ms | 111.4 ms | 150.7 ms | 9.4 MiB |
+
+A four-thread host implementation of the same math, with the input projection
+batched identically, needs 815 ms for the 60-second case, so the in-graph form is
+roughly seven times faster while also keeping the work on the backend.
+
+### Recorded decision: LSTM output accumulation
+
+Per-step hidden states are written with `ggml_cpy` into disjoint views of an
+output tensor held in a **persistent backend buffer**, the pattern llama.cpp uses
+for KV-cache writes. The writes are independent, and the graph allocator owns
+nothing that the chain aliases.
+
+This is not a stylistic choice. The spike compared four accumulation strategies
+and three of them were silently wrong:
+
+| Accumulation | CPU | CUDA |
+| --- | --- | --- |
+| `ggml_set_1d_inplace` into an allocator-managed tensor | correct, 1e-6 | **wrong, 1.8** |
+| balanced `ggml_concat` tree over per-step views | wrong | wrong |
+| seed and output tensors as graph inputs | wrong | wrong |
+| `ggml_cpy` into persistent-buffer views | correct, 1e-6 | correct, 9e-6 |
+
+The first row is the dangerous one: it passes a CPU-only gate and fails only on
+CUDA. Holding the output in a persistent buffer also shrinks the 60-second
+compute buffer from 26.9 MiB to 9.4 MiB, because the allocator then handles only
+the small per-step intermediates.
+
+Consequently the LSTM builder carries a registered test that compares it against
+a host reference, and that test must be re-run on every Execution Backend the
+package claims rather than trusted from the CPU gate alone.

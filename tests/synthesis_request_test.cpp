@@ -35,20 +35,20 @@ synth::vits::ModelInfo multispeaker_model_info() {
 
 synth::vits::ModelInfo frontend_model_info() {
     synth::vits::ModelInfo info = model_info();
-    info.input_flags = SYNTH_INPUT_SUPPORT_PHONEMES_UTF8 | SYNTH_INPUT_SUPPORT_TOKEN_IDS;
+    info.input_flags            = SYNTH_INPUT_SUPPORT_PHONEMES_UTF8 | SYNTH_INPUT_SUPPORT_TOKEN_IDS;
     synth::SymbolMapFrontendConfig config;
     config.provider_id      = "synthesize.symbol_map";
     config.contract_version = 1;
     config.mapping_mode     = synth::SymbolMappingMode::UnicodeScalar;
     config.symbols          = { "_", "a", "ˈ", "ɪ", "t", "s", "a" };
     config.blank_id         = 0;
-    config.add_blank        = true;
+    config.padding_rule     = synth::SymbolPaddingRule::InterleavedBlank;
     std::unique_ptr<synth::TextFrontend> frontend;
     if (synth::make_symbol_map_frontend(config, frontend) != SYNTH_OK) {
         return {};
     }
-    info.text_frontend = std::shared_ptr<const synth::TextFrontend>(std::move(frontend));
-    info.vocab_size    = config.symbols.size();
+    info.text_frontend    = std::shared_ptr<const synth::TextFrontend>(std::move(frontend));
+    info.vocab_size       = config.symbols.size();
     info.max_input_tokens = 16;
     return info;
 }
@@ -141,10 +141,10 @@ int main() {
     request.voice_id_size = 0;
 
     const synth::vits::ModelInfo frontend_info = frontend_model_info();
-    const std::string phonemes = "aˈɪts";
-    request.input_kind        = SYNTH_INPUT_PHONEMES_UTF8;
-    request.input_data        = phonemes.data();
-    request.input_count       = phonemes.size();
+    const std::string            phonemes      = "aˈɪts";
+    request.input_kind                         = SYNTH_INPUT_PHONEMES_UTF8;
+    request.input_data                         = phonemes.data();
+    request.input_count                        = phonemes.size();
     SYNTH_TEST_CHECK(synth::prepare_synthesis_request(frontend_info, &request, prepared) == SYNTH_OK);
     SYNTH_TEST_CHECK(prepared.token_ids == std::vector<int32_t>({ 0, 6, 0, 2, 0, 3, 0, 4, 0, 5, 0 }));
 
@@ -155,8 +155,7 @@ int main() {
     const char invalid_utf8[] = { static_cast<char>(0xc0), static_cast<char>(0xaf) };
     request.input_data        = invalid_utf8;
     request.input_count       = sizeof(invalid_utf8);
-    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(frontend_info, &request, prepared) ==
-                     SYNTH_ERR_TEXT_FRONTEND);
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(frontend_info, &request, prepared) == SYNTH_ERR_TEXT_FRONTEND);
     request.input_kind  = SYNTH_INPUT_TEXT_UTF8;
     request.input_data  = phonemes.data();
     request.input_count = phonemes.size();

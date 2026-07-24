@@ -216,6 +216,7 @@ bool read_frontend_metadata(const gguf_context * gguf, HParams & hparams) {
 
     std::string mapping_mode;
     std::string lookup_policy;
+    bool        upstream_add_blank = false;
     if (hparams.input_flags != (SYNTH_INPUT_SUPPORT_PHONEMES_UTF8 | SYNTH_INPUT_SUPPORT_TOKEN_IDS) ||
         !read_string(gguf, "synthesize.frontend.provider", hparams.frontend_config.provider_id) ||
         !read_u32(gguf, "synthesize.frontend.contract_version", hparams.frontend_config.contract_version) ||
@@ -223,12 +224,14 @@ bool read_frontend_metadata(const gguf_context * gguf, HParams & hparams) {
         !read_string_array(gguf, "synthesize.vits.symbols", hparams.frontend_config.symbols) ||
         !read_string(gguf, "synthesize.vits.symbols.lookup_policy", lookup_policy) ||
         !read_u32(gguf, "synthesize.vits.symbols.blank_id", hparams.frontend_config.blank_id) ||
-        !read_bool(gguf, "synthesize.vits.symbols.upstream_add_blank", hparams.frontend_config.add_blank) ||
+        !read_bool(gguf, "synthesize.vits.symbols.upstream_add_blank", upstream_add_blank) ||
         mapping_mode != "unicode_scalar" || lookup_policy != "last_index_wins" ||
         hparams.frontend_config.symbols.size() != hparams.vocab_size) {
         return false;
     }
     hparams.frontend_config.mapping_mode = SymbolMappingMode::UnicodeScalar;
+    hparams.frontend_config.padding_rule =
+        upstream_add_blank ? SymbolPaddingRule::InterleavedBlank : SymbolPaddingRule::None;
     std::unique_ptr<TextFrontend> frontend;
     return make_symbol_map_frontend(hparams.frontend_config, frontend) == SYNTH_OK;
 }

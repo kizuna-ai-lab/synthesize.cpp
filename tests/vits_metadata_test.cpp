@@ -150,15 +150,14 @@ int main() {
     const synth::vits::HParams expected = synth::test::small_vits_hparams();
     SYNTH_TEST_CHECK(output.quantization_profile == synth::vits::QuantizationProfile::F32);
     SYNTH_TEST_CHECK(output.quantization_profile_version == 1);
-    SYNTH_TEST_CHECK(output.input_flags ==
-                     (SYNTH_INPUT_SUPPORT_PHONEMES_UTF8 | SYNTH_INPUT_SUPPORT_TOKEN_IDS));
+    SYNTH_TEST_CHECK(output.input_flags == (SYNTH_INPUT_SUPPORT_PHONEMES_UTF8 | SYNTH_INPUT_SUPPORT_TOKEN_IDS));
     SYNTH_TEST_CHECK(output.frontend_present);
     SYNTH_TEST_CHECK(output.frontend_config.provider_id == "synthesize.symbol_map");
     SYNTH_TEST_CHECK(output.frontend_config.contract_version == 1);
     SYNTH_TEST_CHECK(output.frontend_config.mapping_mode == synth::SymbolMappingMode::UnicodeScalar);
-    SYNTH_TEST_CHECK(output.frontend_config.symbols ==
-                     std::vector<std::string>({ "_", "a", "b", "c", "d" }));
-    SYNTH_TEST_CHECK(output.frontend_config.blank_id == 0 && output.frontend_config.add_blank);
+    SYNTH_TEST_CHECK(output.frontend_config.symbols == std::vector<std::string>({ "_", "a", "b", "c", "d" }));
+    SYNTH_TEST_CHECK(output.frontend_config.blank_id == 0 &&
+                     output.frontend_config.padding_rule == synth::SymbolPaddingRule::InterleavedBlank);
     SYNTH_TEST_CHECK(output.capability_flags == expected.capability_flags);
     SYNTH_TEST_CHECK(output.output_sample_rate == expected.output_sample_rate);
     SYNTH_TEST_CHECK(output.output_channel_count == expected.output_channel_count);
@@ -230,8 +229,8 @@ int main() {
     SYNTH_TEST_CHECK(rejected([](gguf_context * context) { gguf_set_val_u32(context, "general.file_type", 1); }));
     SYNTH_TEST_CHECK(
         rejected([](gguf_context * context) { gguf_set_val_u32(context, "synthesize.capabilities.input_flags", 0); }));
-    SYNTH_TEST_CHECK(rejected(
-        [](gguf_context * context) { gguf_set_val_str(context, "synthesize.frontend.provider", "unknown"); }));
+    SYNTH_TEST_CHECK(
+        rejected([](gguf_context * context) { gguf_set_val_str(context, "synthesize.frontend.provider", "unknown"); }));
     SYNTH_TEST_CHECK(rejected([](gguf_context * context) {
         gguf_set_val_str(context, "synthesize.frontend.phoneme_mapping", "delimited_symbol");
     }));

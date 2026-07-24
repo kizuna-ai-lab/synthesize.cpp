@@ -128,7 +128,9 @@ if(SYNTH_BUILD_SHARED AND UNIX AND NOT APPLE)
 endif()
 
 synth_add_unit_test(synthesize-kokoro-metadata-test kokoro_metadata_test.cpp)
-set_tests_properties(synthesize-kokoro-metadata-test PROPERTIES LABELS "unit;kokoro")
+synth_add_unit_test(synthesize-kokoro-lstm-test kokoro_lstm_test.cpp)
+set_tests_properties(synthesize-kokoro-metadata-test synthesize-kokoro-lstm-test
+    PROPERTIES LABELS "unit;kokoro")
 
 synth_add_unit_test(synthesize-vits-text-encoder-host-test vits_text_encoder_host_test.cpp)
 synth_add_unit_test(synthesize-vits-metadata-test vits_metadata_test.cpp)
@@ -481,6 +483,7 @@ add_custom_target(synthesize-check-unit
         synthesize-backend-device-test
         synthesize-backend-module-test
         synthesize-kokoro-metadata-test
+        synthesize-kokoro-lstm-test
         synthesize-vits-text-encoder-host-test
         synthesize-vits-metadata-test
         synthesize-vits-weights-test

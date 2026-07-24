@@ -1,0 +1,117 @@
+#include "operations.h"
+
+#include "ggml.h"
+
+#include <cstdio>
+#include <initializer_list>
+
+namespace synth::kokoro {
+
+namespace {
+
+// Nodes emitted per unrolled step, per direction. Kept next to the builder so
+// the two stay in step; the test asserts the prediction against the real graph.
+constexpr uint64_t kNodesPerStep              = 23;
+// The batched input projection plus its bias, per direction, and the final
+// concatenation of the two directions.
+constexpr uint64_t kNodesPerDirectionPrologue = 2;
+constexpr uint64_t kNodesEpilogue             = 1;
+
+// Unrolls one direction, writing each step into a disjoint view of `store`.
+void build_direction(ggml_context *               context,
+                     ggml_cgraph *                graph,
+                     ggml_tensor *                input,
+                     const LstmDirectionWeights & weights,
+                     ggml_tensor *                zero_state,
+                     ggml_tensor *                store,
+                     uint32_t                     hidden,
+                     uint32_t                     length,
+                     bool                         reverse) {
+    const int64_t h = static_cast<int64_t>(hidden);
+
+    // One matrix multiply covers the whole sequence: the input contribution to
+    // every gate at every step, shaped [4 * hidden, length].
+    ggml_tensor * gates = ggml_add(context, ggml_mul_mat(context, weights.weight_ih, input), weights.bias_ih);
+
+    ggml_tensor * state_h = zero_state;
+    ggml_tensor * state_c = zero_state;
+
+    for (uint32_t step = 0; step < length; ++step) {
+        const uint32_t index = reverse ? length - 1 - step : step;
+
+        ggml_tensor * gate_slice = ggml_view_1d(context, gates, 4 * h, static_cast<size_t>(index) * gates->nb[1]);
+        // The four gates share one fused hidden-side multiply.
+        ggml_tensor * pre        = ggml_add(
+            context, gate_slice, ggml_add(context, ggml_mul_mat(context, weights.weight_hh, state_h), weights.bias_hh));
+
+        const size_t  stride = static_cast<size_t>(h) * sizeof(float);
+        ggml_tensor * gate_i = ggml_sigmoid(context, ggml_cont(context, ggml_view_1d(context, pre, h, 0)));
+        ggml_tensor * gate_f = ggml_sigmoid(context, ggml_cont(context, ggml_view_1d(context, pre, h, stride)));
+        ggml_tensor * gate_g = ggml_tanh(context, ggml_cont(context, ggml_view_1d(context, pre, h, 2 * stride)));
+        ggml_tensor * gate_o = ggml_sigmoid(context, ggml_cont(context, ggml_view_1d(context, pre, h, 3 * stride)));
+
+        state_c = ggml_add(context, ggml_mul(context, gate_f, state_c), ggml_mul(context, gate_i, gate_g));
+        state_h = ggml_mul(context, gate_o, ggml_tanh(context, state_c));
+
+        // Disjoint write into a persistent store. Accumulating through aliased
+        // in-place views instead is silently wrong on CUDA.
+        ggml_tensor * slot = ggml_view_1d(context, store, h, static_cast<size_t>(index) * store->nb[1]);
+        ggml_build_forward_expand(graph, ggml_cpy(context, state_h, slot));
+    }
+}
+
+}  // namespace
+
+uint64_t bidirectional_lstm_node_count(uint64_t length) {
+    return 2 * (kNodesPerDirectionPrologue + length * kNodesPerStep) + kNodesEpilogue;
+}
+
+ggml_tensor * build_bidirectional_lstm(ggml_context *      context,
+                                       ggml_cgraph *       graph,
+                                       ggml_tensor *       input,
+                                       const LstmWeights & weights,
+                                       const LstmScratch & scratch,
+                                       uint32_t            length) {
+    if (context == nullptr || graph == nullptr || input == nullptr || length == 0) {
+        return nullptr;
+    }
+    if (weights.hidden == 0 || weights.input_dim == 0) {
+        return nullptr;
+    }
+    for (const ggml_tensor * tensor :
+         { weights.forward.weight_ih, weights.forward.weight_hh, weights.forward.bias_ih, weights.forward.bias_hh,
+           weights.reverse.weight_ih, weights.reverse.weight_hh, weights.reverse.bias_ih, weights.reverse.bias_hh,
+           scratch.zero_state, scratch.forward_store, scratch.reverse_store }) {
+        if (tensor == nullptr) {
+            return nullptr;
+        }
+    }
+
+    const int64_t h = static_cast<int64_t>(weights.hidden);
+    if (input->ne[0] != static_cast<int64_t>(weights.input_dim) || input->ne[1] != static_cast<int64_t>(length)) {
+        std::fprintf(stderr, "kokoro: LSTM input must be [input_dim, length]\n");
+        return nullptr;
+    }
+    if (scratch.zero_state->ne[0] != h) {
+        std::fprintf(stderr, "kokoro: LSTM zero state must be [hidden]\n");
+        return nullptr;
+    }
+    for (const ggml_tensor * store : { scratch.forward_store, scratch.reverse_store }) {
+        if (store->ne[0] != h || store->ne[1] != static_cast<int64_t>(length)) {
+            std::fprintf(stderr, "kokoro: LSTM output store must be [hidden, length]\n");
+            return nullptr;
+        }
+    }
+
+    build_direction(context, graph, input, weights.forward, scratch.zero_state, scratch.forward_store, weights.hidden,
+                    length, false);
+    build_direction(context, graph, input, weights.reverse, scratch.zero_state, scratch.reverse_store, weights.hidden,
+                    length, true);
+
+    // PyTorch concatenates the two directions along the feature axis.
+    ggml_tensor * output = ggml_concat(context, scratch.forward_store, scratch.reverse_store, 0);
+    ggml_build_forward_expand(graph, output);
+    return output;
+}
+
+}  // namespace synth::kokoro

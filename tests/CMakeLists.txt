@@ -231,6 +231,11 @@ set_tests_properties(
 
 if(SYNTH_BUILD_PYTHON_TESTS)
     find_program(SYNTH_UV_EXECUTABLE uv REQUIRED)
+    # Despite the legacy name this discovers the whole locked Python unit
+    # suite, which now covers family-independent packaging and manifest checks
+    # plus the VITS and Kokoro converter contracts. The VITS environment owns
+    # the repository's locked tooling; a family whose tests need environment
+    # specific dependencies gets its own registration.
     add_test(
         NAME synthesize-vits-python-unit
         COMMAND ${SYNTH_UV_EXECUTABLE} run
@@ -239,8 +244,8 @@ if(SYNTH_BUILD_PYTHON_TESTS)
             -s ${CMAKE_CURRENT_SOURCE_DIR}/python
             -p test_*.py)
     set_tests_properties(synthesize-vits-python-unit PROPERTIES
-        LABELS "unit;python;vits"
-        TIMEOUT 120
+        LABELS "unit;python;vits;kokoro"
+        TIMEOUT 180
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 

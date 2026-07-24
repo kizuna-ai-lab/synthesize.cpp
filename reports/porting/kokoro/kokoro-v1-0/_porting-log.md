@@ -129,6 +129,45 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
 - Recorded `tests/tolerances/kokoro.json` with status `not-yet-measured`. No
   placeholder threshold is claimed.
 
+## 2026-07-25 — Source-F32 GGUF conversion
+
+- Added the manifest-driven `scripts/convert-kokoro.py`. Its external interface
+  is `--manifest`, `--config`, `--checkpoint`, `--voices-dir`, and `--outfile`;
+  callers control no tensor mapping, layout, metadata, or quantization.
+- The converter verifies the checkpoint, config, and all 54 voicepacks against
+  the digests pinned in the manifest before reading them, which is a stronger
+  provenance check than the VITS converter's Git-revision comparison because
+  the Kokoro weights live in a separate repository from the source.
+- Canonical GGUF tensor names are the upstream paths with the DataParallel
+  `module.` prefix stripped, so every tensor stays traceable to its checkpoint
+  entry without inventing a parallel naming scheme.
+- Fused all 89 dimension-0 weight-normalization pairs with the upstream
+  formula. Skipped exactly two tensors, `bert.pooler.weight` and
+  `bert.pooler.bias`, because `CustomAlbert` returns the last hidden state and
+  never calls the pooler. All 548 checkpoint entries are accounted for:
+  178 fused sources plus 370 plain, minus 2 skipped, giving 457 model tensors.
+- Embedded the 54 voicepacks as `voice.<id>` tensors, squeezing the singleton
+  batch dimension to a `[510, 256]` style table. Total 511 GGUF tensors:
+  bert 23, bert_encoder 2, predictor 106, decoder 305, text_encoder 21,
+  voice 54.
+- Recorded that `AdaIN1d`'s `InstanceNorm1d(affine=True)` parameters are absent
+  from the checkpoint. `KModel` loads with `strict=False`, so they stay at their
+  defaults of weight 1 and bias 0, making the operation a plain instance norm
+  with eps 1e-5. The package declares
+  `synthesize.kokoro.adain.instance_norm_affine = false` so the C++ module does
+  not look for tensors that do not exist.
+- The GGUF is reopened after writing and every metadata field, tensor name,
+  type, reversed GGML shape, and payload byte is verified against the prepared
+  source arrays.
+- Two complete runs produced the identical 352,814,592-byte file with SHA-256
+  `1fe650e99276466aca6cf3f71c30bd8df63878f40d32a18bb3a4ab655238e920`.
+- Added 28 registered converter unit tests covering manifest identity and
+  package-contract drift, config dimension drift, sparse-vocabulary
+  densification, weight-norm fusion and its unpaired/collision/wrong-shape and
+  wrong-count rejections, skip rules, emitted-count accounting, voicepack
+  digest/shape/missing-file/incomplete-pin rejection, and size labels. The
+  generated GGUF and converter report remain ignored artifacts.
+
 ### Repository defect found and fixed
 
 Authoring this manifest exposed that neither committed VITS manifest satisfied

@@ -1,8 +1,16 @@
-foreach(variable SYNTH_CLI SYNTH_MODEL SYNTH_OUTPUT_DIR)
+# One check for every Model Family. What differs between them is the token IDs
+# a package accepts and whether it needs a Voice named, so those are inputs
+# rather than a second copy of this file.
+foreach(variable SYNTH_CLI SYNTH_MODEL SYNTH_OUTPUT_DIR SYNTH_TOKEN_IDS)
     if(NOT DEFINED ${variable})
         message(FATAL_ERROR "${variable} is required")
     endif()
 endforeach()
+
+set(voice_arguments "")
+if(DEFINED SYNTH_VOICE AND NOT SYNTH_VOICE STREQUAL "")
+    set(voice_arguments --voice "${SYNTH_VOICE}")
+endif()
 
 file(MAKE_DIRECTORY "${SYNTH_OUTPUT_DIR}")
 set(first "${SYNTH_OUTPUT_DIR}/cli-seed-42-a.wav")
@@ -16,7 +24,8 @@ function(run_synthesis output seed)
         COMMAND "${SYNTH_CLI}"
             --model "${SYNTH_MODEL}"
             --output "${output}"
-            --token-ids "0,156,0,47,0,102,0,4,0"
+            --token-ids "${SYNTH_TOKEN_IDS}"
+            ${voice_arguments}
             --seed "${seed}"
             --backend cpu
         RESULT_VARIABLE result
@@ -57,6 +66,7 @@ execute_process(
         --model "${SYNTH_MODEL}"
         --output "${unsupported}"
         --text "Hello"
+        ${voice_arguments}
         --backend cpu
     RESULT_VARIABLE unsupported_result
     OUTPUT_VARIABLE unsupported_stdout

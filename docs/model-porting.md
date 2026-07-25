@@ -178,10 +178,21 @@ tensor-and-waveform parity gate.
 ## Deferred Quality Evaluation
 
 The Quality Evaluation Suite is not implemented and is not a prerequisite for a
-`port_validated` Published Model Package. Until it is commissioned, every Model
-Page and generated HF README reports `quality_evaluation: not_run` and makes no
-claim about perceptual quality, quantization transparency, or ranking against
-another Model Variant. This deferred tooling does not block adding model families.
+`port_validated` Published Model Package. Every Model Page and generated HF
+README reports `quality_evaluation: not_run` and makes no claim about perceptual
+quality, quantization transparency, or ranking against another Model Variant.
+This deferred tooling does not block adding model families.
+
+As of 2026-07-26 the project has no capability to run it — no rated listening
+comparison, no evaluator panel, no corpus — and none is expected for a long
+time. `quality_evaluated` is therefore not a near-term level for any Model
+Variant, and this section should not be read as work that is merely scheduled.
+
+Informal listening by the maintainer is worth recording when it happens, because
+it is evidence that a measured agreement is not hiding an audible disagreement.
+It is recorded for exactly what it is — how many listeners, how many cases,
+informal — and never as a quality evaluation or as grounds for changing a
+Validation Level.
 
 When activated, TTS corpus quality will retain transcribe.cpp's evidence flow while
 remaining multidimensional rather than producing one universal TTS quality score.

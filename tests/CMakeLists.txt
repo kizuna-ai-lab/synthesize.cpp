@@ -358,11 +358,27 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             COMMAND ${CMAKE_COMMAND}
                 -DSYNTH_CLI=$<TARGET_FILE:synthesize-cli>
                 -DSYNTH_MODEL=${SYNTH_VITS_TEST_MODEL}
+                -DSYNTH_TOKEN_IDS=0,156,0,47,0,102,0,4,0
                 -DSYNTH_OUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/fixtures/cli-real
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/check-cli-real.cmake)
         set_tests_properties(synthesize-vits-cli PROPERTIES
             LABELS "integration;cli;vits"
             TIMEOUT 300)
+        if(EXISTS "${SYNTH_KOKORO_TEST_MODEL}")
+            # Kokoro's catalog has no package default, so the CLI must be given
+            # a Voice; that difference is exactly what this run covers.
+            add_test(NAME synthesize-kokoro-cli
+                COMMAND ${CMAKE_COMMAND}
+                    -DSYNTH_CLI=$<TARGET_FILE:synthesize-cli>
+                    -DSYNTH_MODEL=${SYNTH_KOKORO_TEST_MODEL}
+                    -DSYNTH_TOKEN_IDS=0,50,83,54,156,31,3,16,65,156,87,123,54,46,5,0
+                    -DSYNTH_VOICE=af_heart
+                    -DSYNTH_OUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/fixtures/cli-real-kokoro
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/check-cli-real.cmake)
+            set_tests_properties(synthesize-kokoro-cli PROPERTIES
+                LABELS "integration;cli;kokoro"
+                TIMEOUT 600)
+        endif()
     endif()
     # Kokoro's Golden validators drive one runner selected by stage name; see
     # tests/kokoro_stages_real.cpp for why the family has one adapter and not

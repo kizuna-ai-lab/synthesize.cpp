@@ -239,6 +239,28 @@ any GPU claim.
 
 This stage validates support, not comparative quality.
 
+### Stage 7.5: Adapters
+
+The CLI and every language binding are adapters over the same C interface, so a
+family that reaches the interface reaches them. That is exactly why they are
+easy to leave untested: nothing fails, and the family ships through the wrapper
+most callers actually use without a single registered run against it.
+
+Every new Model Family, and every new Model Variant whose package contract
+differs from an existing one, registers:
+
+- a CLI run against a real package, through the shared
+  `tests/check-cli-real.cmake`; and
+- a binding synthesis run against a real package, through the shared
+  `tests/python/api_wheel_family_smoke.py`.
+
+Both are parameterized rather than copied, so adding a family means adding an
+invocation with that family's token IDs, sample rate, samples per frame, and
+Voice requirement. A property that is not true of every family — VITS seeds its
+duration predictor, so its output length varies with the seed, while Kokoro
+draws only after the durations are resolved — is declared by the invocation
+rather than asserted for all of them.
+
 ### Stage 8: Ship
 
 Prepare the publication artifacts:
@@ -366,6 +388,7 @@ For a new Model Family, the minimum committed set is:
 - `scripts/dump_reference_<family>_<framework>.py`
 - `scripts/validate-<family>-<stage>.py` for each validated graph stage
 - `scripts/hf_cards/<variant>.yaml`
+- a registered CLI run and a registered binding synthesis run for the family
 
 For a new Model Variant, the work usually reuses the existing family documents
 and scripts and adds only the variant-specific entries and reports.

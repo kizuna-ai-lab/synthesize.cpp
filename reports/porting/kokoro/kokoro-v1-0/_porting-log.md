@@ -209,6 +209,51 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — Stage 5: per-stage validators and measured tolerances
+
+Six registered validators now drive the runner over all 15 manifest cases in
+the locked environment, under the `integration`, `kokoro`, and `golden` labels.
+They share `scripts/kokoro_validation_common.py`, because the stages take
+identical arguments and differ only in which probes they compare; putting the
+case resolution, runner invocation, and report writing in one place is what
+keeps six scripts from drifting apart.
+
+Worst case across the whole suite, source-F32 on CPU:
+
+| probe | max abs | mean abs |
+| --- | --- | --- |
+| `text.t_en`, `text.asr` | 2.53e-6 | 9.9e-8 |
+| `bert.hidden` | 1.70e-5 | 1.40e-6 |
+| `prosody.n` | 2.17e-5 | 1.72e-6 |
+| `duration.d`, `prosody.en` | 3.45e-5 | 4.5e-7 |
+| `text.d_en` | 3.59e-5 | 3.74e-6 |
+| `duration.logits` | 2.86e-4 | 1.13e-5 |
+| `prosody.f0` | 2.58e-3 | 7.82e-5 |
+| `source.har` (complex) | 9.50e-2 | 2.15e-3 |
+| `audio.pcm` | correlation ≥ 0.9874, spectrogram correlation ≥ 0.9981 |
+
+`duration.pred_dur`, `duration.y_length`, and `duration.alignment` are exact on
+every case. They are declared structural, so the validator fails outright on a
+difference rather than recording one: they decide the output length, and a
+length that is merely close is a different utterance.
+
+Two probes needed comparison rules of their own rather than a wider threshold.
+`source.har` is compared as a complex value, since the stored phase is
+meaningless wherever its magnitude is near zero. `audio.pcm` is reported as
+correlation and spectral distance, because the excitation phase is a cumulative
+sum over the utterance and therefore chaotic in F0 by construction — a
+sample-wise threshold on it would be a number with no meaning attached.
+`tests/tolerances/kokoro.json` now records all of this as measurements with
+thresholds still deferred; no placeholder acceptance number is claimed.
+
+### Gap recorded rather than papered over
+
+There is no `validate-kokoro-decoder.py`, because the oracle dump contains no
+decoder probe — the reference records the source spectrum and then the audio.
+The decoder is covered end to end by the waveform stage, but not stage-locally.
+Closing that needs a new probe in the dumper, which changes the artifact set and
+so bumps `suite_version`; it is deliberately not folded into this slice.
+
 ## 2026-07-26 — First end-to-end run on the real package
 
 Added `tests/kokoro_stages_real.cpp`, the runner the Stage 5 validators will

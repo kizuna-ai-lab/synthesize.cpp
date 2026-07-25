@@ -349,6 +349,31 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             LABELS "integration;cli;vits"
             TIMEOUT 300)
     endif()
+    # Kokoro's Golden validators drive one runner selected by stage name; see
+    # tests/kokoro_stages_real.cpp for why the family has one adapter and not
+    # seven. The decoder has no validator of its own because the oracle dumps no
+    # decoder probe; it is covered end to end by the waveform stage.
+    set(_synth_kokoro_golden_sentinel
+        "${CMAKE_SOURCE_DIR}/build/goldens/kokoro/kokoro-upstream-default/audio/pcm.f32")
+    if(EXISTS "${SYNTH_KOKORO_TEST_MODEL}" AND EXISTS "${_synth_kokoro_golden_sentinel}")
+        foreach(_synth_kokoro_stage plbert duration prosody text-encoder source waveform)
+            add_test(
+                NAME synthesize-kokoro-${_synth_kokoro_stage}-golden
+                COMMAND ${SYNTH_UV_EXECUTABLE} run
+                    --project ${CMAKE_SOURCE_DIR}/scripts/envs/kokoro
+                    --locked python
+                        ${CMAKE_SOURCE_DIR}/scripts/validate-kokoro-${_synth_kokoro_stage}.py
+                    --manifest ${CMAKE_SOURCE_DIR}/tests/golden/kokoro/kokoro-v1-0.manifest.json
+                    --model ${SYNTH_KOKORO_TEST_MODEL}
+                    --runner $<TARGET_FILE:synthesize-kokoro-stages>
+                    --threads 1)
+            set_tests_properties(synthesize-kokoro-${_synth_kokoro_stage}-golden PROPERTIES
+                LABELS "integration;kokoro;golden"
+                TIMEOUT 3600
+                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+        endforeach()
+    endif()
+
     add_test(
         NAME synthesize-vits-text-encoder-golden
         COMMAND ${SYNTH_UV_EXECUTABLE} run

@@ -122,6 +122,8 @@ set(SYNTH_VITS_TEST_MODEL "${CMAKE_SOURCE_DIR}/models/vits-ljspeech/vits-ljspeec
     CACHE FILEPATH "Local VITS F32 GGUF used by integration tests")
 set(SYNTH_VITS_VCTK_TEST_MODEL "${CMAKE_SOURCE_DIR}/models/vits-vctk/vits-vctk-F32.gguf"
     CACHE FILEPATH "Local multi-speaker VITS VCTK F32 GGUF used by integration tests")
+set(SYNTH_KOKORO_TEST_MODEL "${CMAKE_SOURCE_DIR}/models/kokoro-v1-0/kokoro-v1-0-F32.gguf"
+    CACHE FILEPATH "Local Kokoro F32 GGUF used by integration tests")
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/SynthesizeReleaseCudaPolicy.cmake)
 synth_validate_release_cuda_targets()

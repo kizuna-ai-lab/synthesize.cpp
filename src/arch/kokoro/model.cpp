@@ -852,8 +852,11 @@ synth_status_t Model::run_decoder(const std::vector<int32_t> & token_ids,
     if (status != SYNTH_OK) {
         return status;
     }
-    output.frames   = state.source.frames;
-    output.spectrum = spectrum;
+    output.frames = state.source.frames;
+    // The graph leaves the spectrum feature-fastest; the probe keeps the frame
+    // index contiguous, as the other feature-major stage outputs do.
+    transpose_to_feature_major(spectrum, uint64_t(implementation_->hparams.istftnet.gen_istft_n_fft) + 2,
+                               state.source.frames, output.spectrum);
     return SYNTH_OK;
 }
 

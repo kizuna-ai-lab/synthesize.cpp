@@ -64,8 +64,8 @@ struct SourceOutput {
 
 struct DecoderOutput {
     uint64_t           frames = 0;
-    // [n_fft + 2, frames] as the graph leaves it: log magnitudes then pre-sine
-    // angles, both still unapplied.
+    // [n_fft + 2, frames]: log magnitudes then pre-sine angles, both still
+    // unapplied, since the inverse transform is where they belong.
     std::vector<float> spectrum;
 };
 

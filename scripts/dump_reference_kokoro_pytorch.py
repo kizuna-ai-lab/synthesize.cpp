@@ -205,8 +205,31 @@ def run_case(model, case: dict, voices_dir: pathlib.Path, out_dir: pathlib.Path)
         raise SystemExit(f"{case['id']}: unexpected source draw counts {calls}")
 
     # ---- stage 6: full decoder through the same injected randomness -------
-    with injected_source_randomness(draws):
-        audio = model.decoder(asr, f0_pred, n_pred, style_decoder).squeeze()
+    #
+    # The generator's last convolution is captured on the way past. Its output
+    # is what leaves the C++ graph: the magnitude half is still a logarithm and
+    # the phase half a pre-sine angle, both applied by the inverse transform.
+    # Probing here rather than after those activations keeps the comparison on
+    # the quantity the port actually produces.
+    decoder_spectrum = {}
+
+    def capture_spectrum(_module, _inputs, output):
+        decoder_spectrum["value"] = output.detach().clone()
+
+    handle = generator_module.conv_post.register_forward_hook(capture_spectrum)
+    try:
+        with injected_source_randomness(draws):
+            audio = model.decoder(asr, f0_pred, n_pred, style_decoder).squeeze()
+    finally:
+        handle.remove()
+    if "value" not in decoder_spectrum:
+        raise SystemExit(f"{case['id']}: the generator's final convolution was never reached")
+    spectrum = decoder_spectrum["value"]
+    if spectrum.shape[1] != generator_module.post_n_fft + 2:
+        raise SystemExit(
+            f"{case['id']}: decoder spectrum has {spectrum.shape[1]} rows, "
+            f"expected {generator_module.post_n_fft + 2}"
+        )
 
     # ---- verification against the unmodified upstream entry point ---------
     with injected_source_randomness(draws):
@@ -243,6 +266,7 @@ def run_case(model, case: dict, voices_dir: pathlib.Path, out_dir: pathlib.Path)
         "text/t_en.f32": write_f32(out_dir / "text/t_en.f32", t_en),
         "text/asr.f32": write_f32(out_dir / "text/asr.f32", asr),
         "source/har.f32": write_f32(out_dir / "source/har.f32", har),
+        "decoder/spectrum.f32": write_f32(out_dir / "decoder/spectrum.f32", spectrum),
         "audio/pcm.f32": write_f32(out_dir / "audio/pcm.f32", audio),
         "random/rand_ini.f32": write_f32(out_dir / "random/rand_ini.f32", draws["rand_ini"]),
         "random/source_noise.f32": write_f32(
@@ -282,6 +306,7 @@ def run_case(model, case: dict, voices_dir: pathlib.Path, out_dir: pathlib.Path)
             "text.t_en": list(t_en.shape),
             "text.asr": list(asr.shape),
             "source.har": list(har.shape),
+            "decoder.spectrum": list(spectrum.shape),
             "audio.pcm": list(audio.shape),
         },
     }

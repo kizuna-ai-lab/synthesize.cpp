@@ -209,6 +209,54 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — The decoder gap closed, and a listening pass
+
+### Informal listening: no audible defect
+
+The project owner listened to eight of the fifteen cases through a comparison
+page that switches between the PyTorch reference and this port mid-playback at
+the same offset, across F32, F16, Q8_MIXED, and CUDA, and reported no problem
+with any of them.
+
+That is worth recording precisely for what it is and is not. It is one listener,
+informally, on eight cases, and it says no audible defect was found. It is not a
+quality evaluation in the sense ADR 0017 defers: no rated comparison, no panel,
+no score. The package's Validation Level stays `port_validated`. What the pass
+does establish is that the measured agreement is not hiding an audible one — a
+useful thing to know before shipping, and the reason the page was built.
+
+### The decoder now has a probe of its own
+
+The previous slice recorded that there was no `validate-kokoro-decoder.py`
+because the oracle dumped no decoder probe, leaving the decoder covered only end
+to end through the waveform. That gap is now closed.
+
+The dumper hooks the generator's final convolution rather than reading the
+inverse transform's inputs, because that is where the C++ graph stops: the
+magnitude half is still a logarithm and the phase half a pre-sine angle, and
+both activations belong with the transform. Probing after them would have
+compared a quantity the port never produces.
+
+Adding an artifact changes what validation proves, so `suite_version` goes to 2
+and all fifteen cases were re-dumped. The five existing stages reproduce their
+previous measurements digit for digit, which is what confirms the re-dump was
+faithful rather than merely successful.
+
+### A flat comparison would have measured nothing
+
+The first run reported a maximum absolute difference of 0.61 on the raw rows.
+That number is close to meaningless: the log-magnitude rows reach about -69,
+which is a magnitude of 1e-30, and a difference of 0.61 between two numerically
+silent bins is noise about noise. The probe is therefore compared as the complex
+value the inverse transform consumes — exponential and sine applied — with the
+raw halves still recorded so a change in the graph's own output stays visible.
+
+Worst case over the suite is 3.97 against a reference peak magnitude of 24.19,
+with a mean of 0.027. That is the harmonic source's inherited phase divergence
+arriving where it was expected to.
+
+Seven Golden validators are now registered, one per graph stage.
+
 ## 2026-07-26 — Stage 7: CUDA backend validation
 
 The family runs on CUDA. All 14 Kokoro unit tests pass on a `dev-dgx-spark`

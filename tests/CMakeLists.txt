@@ -366,12 +366,11 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     endif()
     # Kokoro's Golden validators drive one runner selected by stage name; see
     # tests/kokoro_stages_real.cpp for why the family has one adapter and not
-    # seven. The decoder has no validator of its own because the oracle dumps no
-    # decoder probe; it is covered end to end by the waveform stage.
+    # seven.
     set(_synth_kokoro_golden_sentinel
         "${CMAKE_SOURCE_DIR}/build/goldens/kokoro/kokoro-upstream-default/audio/pcm.f32")
     if(EXISTS "${SYNTH_KOKORO_TEST_MODEL}" AND EXISTS "${_synth_kokoro_golden_sentinel}")
-        foreach(_synth_kokoro_stage plbert duration prosody text-encoder source waveform)
+        foreach(_synth_kokoro_stage plbert duration prosody text-encoder source decoder waveform)
             add_test(
                 NAME synthesize-kokoro-${_synth_kokoro_stage}-golden
                 COMMAND ${SYNTH_UV_EXECUTABLE} run

@@ -11,6 +11,11 @@ element-wise difference is not enough everywhere:
 - The harmonic source's spectrum is stored as magnitudes followed by phases. A
   phase is meaningless where its magnitude is near zero, so the two halves are
   recombined into a complex value and compared as one quantity.
+- The decoder's spectrum leaves the graph as a logarithm and a pre-sine angle.
+  Its logarithms reach about -69, which is a bin that is numerically silent, and
+  a flat difference over those rows measures nothing. The two halves are given
+  their activations and compared as the complex value the inverse transform
+  actually consumes.
 - The waveform cannot be compared sample-wise. The excitation's phase is a
   cumulative sum over the whole utterance, which makes it chaotic in F0 by
   construction, so agreement is stated as correlation and spectral distance.
@@ -199,6 +204,32 @@ def compare_spectrum(reference: Path, candidate: Path) -> dict[str, Any]:
     }
 
 
+def compare_log_spectrum(reference: Path, candidate: Path) -> dict[str, Any]:
+    """Applies the exponential and the sine, then compares as one complex value."""
+    expected, actual = _load_pair(reference, candidate, "<f4")
+    _finite(actual, candidate)
+    rows = 22
+    if expected.size % rows:
+        raise ValidationError(f"{reference} is not a {rows}-row spectrum")
+    bins = rows // 2
+    a = actual.astype(np.float64).reshape(rows, -1)
+    b = expected.astype(np.float64).reshape(rows, -1)
+    ca = np.exp(a[:bins]) * np.exp(1j * np.sin(a[bins:]))
+    cb = np.exp(b[:bins]) * np.exp(1j * np.sin(b[bins:]))
+    difference = np.abs(ca - cb)
+    return {
+        "elements": int(expected.size),
+        "max_abs": float(difference.max(initial=0.0)),
+        "mean_abs": float(difference.mean()) if difference.size else 0.0,
+        "reference_magnitude_max": float(np.abs(cb).max(initial=0.0)),
+        # The raw halves are still reported, so a change in the graph's output
+        # is visible even when the applied value hides it.
+        "log_magnitude_max_abs": float(np.abs(a[:bins] - b[:bins]).max(initial=0.0)),
+        "angle_max_abs": float(np.abs(a[bins:] - b[bins:]).max(initial=0.0)),
+        "exact": bool(np.array_equal(expected, actual)),
+    }
+
+
 def compare_waveform(reference: Path, candidate: Path) -> dict[str, Any]:
     expected, actual = _load_pair(reference, candidate, "<f4")
     _finite(actual, candidate)
@@ -227,6 +258,7 @@ COMPARERS: dict[str, Callable[[Path, Path], dict[str, Any]]] = {
     "f32": compare_f32,
     "i64": compare_i64,
     "spectrum": compare_spectrum,
+    "log_spectrum": compare_log_spectrum,
     "waveform": compare_waveform,
 }
 

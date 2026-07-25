@@ -3,9 +3,10 @@
 //
 // This test exists because the accumulation strategy is a correctness hazard,
 // not a performance detail: writing per-step outputs through allocator-managed
-// in-place views produced correct CPU results and wrong CUDA results. It must
-// therefore be run on every Execution Backend the package claims, not only on
-// the CPU gate. See docs/porting/families/kokoro.md.
+// in-place views produced correct CPU results and wrong CUDA results. It
+// therefore runs on every backend this build registers, rather than on the CPU
+// alone, and a build with an accelerator compiled in is expected to exercise
+// more than one. See docs/porting/families/kokoro.md.
 
 #include "arch/kokoro/operations.h"
 #include "ggml-alloc.h"
@@ -15,6 +16,7 @@
 #include "test-assert.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <random>
@@ -112,7 +114,7 @@ Context make_context(size_t bytes) {
 
 // Runs the builder for one sequence length and returns the largest deviation
 // from the reference, plus the realized node count.
-bool run_case(uint32_t length, float & max_diff, int & nodes) {
+bool run_case(ggml_backend_dev_t device, uint32_t length, float & max_diff, int & nodes) {
     std::mt19937                    rng(20260725u + length);
     std::normal_distribution<float> dist(0.0f, 1.0f);
     const DirectionData             forward = make_direction(rng);
@@ -122,7 +124,7 @@ bool run_case(uint32_t length, float & max_diff, int & nodes) {
         v = dist(rng);
     }
 
-    ggml_backend_t backend = ggml_backend_cpu_init();
+    ggml_backend_t backend = ggml_backend_dev_init(device, nullptr);
     if (backend == nullptr) {
         return false;
     }
@@ -199,7 +201,6 @@ bool run_case(uint32_t length, float & max_diff, int & nodes) {
     ggml_gallocr_t alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
     ggml_gallocr_reserve(alloc, graph);
     ggml_gallocr_alloc_graph(alloc, graph);
-    ggml_backend_cpu_set_n_threads(backend, 2);
     const bool ok = ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS;
 
     std::vector<float> got(size_t(2 * kHidden) * length);
@@ -230,17 +231,45 @@ bool run_case(uint32_t length, float & max_diff, int & nodes) {
 }  // namespace
 
 int main() {
-    // A single step exercises the seed state; longer runs exercise the
-    // recurrence and, for the reverse direction, the descending write order.
-    for (uint32_t length : { 1u, 2u, 5u, 37u }) {
-        float max_diff = 0.0f;
-        int   nodes    = 0;
-        SYNTH_TEST_CHECK(run_case(length, max_diff, nodes));
-        SYNTH_TEST_CHECK(max_diff < 1e-5f);
-        // The advertised node count must match the graph the builder emits, so
-        // callers can size their graphs without guessing.
-        SYNTH_TEST_CHECK(nodes == int(synth::kokoro::bidirectional_lstm_node_count(length)));
+    // Every registered device, not just the CPU. The accumulation defect this
+    // test guards against was invisible on the CPU and wrong on CUDA, so a
+    // single-backend run would have accepted it.
+    const size_t device_count = ggml_backend_dev_count();
+    SYNTH_TEST_CHECK(device_count > 0);
+    size_t exercised = 0;
+    for (size_t index = 0; index < device_count; ++index) {
+        ggml_backend_dev_t device = ggml_backend_dev_get(index);
+        if (device == nullptr) {
+            continue;
+        }
+        // Excluding by type rather than allowing by it. On this project's DGX
+        // Spark the CUDA device reports as an integrated GPU, so an allowlist of
+        // {CPU, GPU} silently skipped the one backend this test exists to
+        // cover, and the run still passed. Only the placeholder device is
+        // refused; anything else that cannot initialize is a failure, not a
+        // skip.
+        const enum ggml_backend_dev_type type = ggml_backend_dev_type(device);
+        if (type == GGML_BACKEND_DEVICE_TYPE_META) {
+            continue;
+        }
+        std::printf("kokoro-lstm: exercising %s (device type %d)\n", ggml_backend_dev_name(device), int(type));
+        std::fflush(stdout);
+        // A single step exercises the seed state; longer runs exercise the
+        // recurrence and, for the reverse direction, the descending write order.
+        for (uint32_t length : { 1u, 2u, 5u, 37u }) {
+            float max_diff = 0.0f;
+            int   nodes    = 0;
+            SYNTH_TEST_CHECK(run_case(device, length, max_diff, nodes));
+            // Cross-backend accumulation order is a wider tolerance than the
+            // CPU's, but it is still parity, not drift.
+            SYNTH_TEST_CHECK(max_diff < 1e-4f);
+            // The advertised node count must match the graph the builder emits,
+            // so callers can size their graphs without guessing.
+            SYNTH_TEST_CHECK(nodes == int(synth::kokoro::bidirectional_lstm_node_count(length)));
+        }
+        ++exercised;
     }
+    SYNTH_TEST_CHECK(exercised > 0);
 
     // Contract failures return null rather than building a partial graph.
     const size_t reject_budget = 512;

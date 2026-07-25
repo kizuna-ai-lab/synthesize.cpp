@@ -306,6 +306,7 @@ def run_stage(
             str(voice_index(manifest, case)),
             repr(speaking_rate(case)),
             str(args.threads),
+            args.backend,
         ]
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
         if completed.returncode != 0:

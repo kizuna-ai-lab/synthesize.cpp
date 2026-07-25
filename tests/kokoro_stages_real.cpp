@@ -8,6 +8,7 @@
 // argument handling.
 
 #include "arch/kokoro/kokoro.h"
+#include "backend-device.h"
 #include "synthesize.h"
 
 #include <cstdint>
@@ -49,11 +50,12 @@ template <typename T> bool write_values(const std::filesystem::path & path, cons
 }  // namespace
 
 int main(int argc, char ** argv) {
-    if (argc != 9) {
+    if (argc != 9 && argc != 10) {
         std::cerr << "usage: synthesize-kokoro-stages STAGE MODEL.gguf token_ids.i32 RANDOM_DIR OUT_DIR "
-                     "VOICE_INDEX SPEAKING_RATE THREADS\n";
+                     "VOICE_INDEX SPEAKING_RATE THREADS [BACKEND]\n";
         return 2;
     }
+    const std::string           backend     = argc == 10 ? argv[9] : "cpu";
     const std::string           stage       = argv[1];
     const std::filesystem::path model_path  = argv[2];
     const std::filesystem::path tokens_path = argv[3];
@@ -78,7 +80,19 @@ int main(int argc, char ** argv) {
     }
 
     std::unique_ptr<synth::kokoro::Model> model;
-    const synth_status_t                  loaded = synth::kokoro::Model::load_cpu(model_path.string(), model);
+    synth_status_t                        loaded = SYNTH_ERR_INVALID_ARG;
+    if (backend == "cpu") {
+        loaded = synth::kokoro::Model::load_cpu(model_path.string(), model);
+    } else if (backend == "cuda") {
+        ggml_backend_dev_t device = nullptr;
+        loaded                    = synth::resolve_requested_device(SYNTH_BACKEND_CUDA, -1, &device);
+        if (loaded == SYNTH_OK) {
+            loaded = synth::kokoro::Model::load(model_path.string(), device, true, model);
+        }
+    } else {
+        std::cerr << "unknown backend " << backend << "\n";
+        return 2;
+    }
     if (loaded != SYNTH_OK || model == nullptr) {
         std::cerr << "failed to load model: status " << loaded << "\n";
         return 4;

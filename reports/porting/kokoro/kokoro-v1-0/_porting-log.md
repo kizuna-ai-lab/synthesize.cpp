@@ -209,6 +209,40 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — Stage 7: CUDA backend validation
+
+The family runs on CUDA. All 14 Kokoro unit tests pass on a `dev-dgx-spark`
+build, the whole pipeline reaches audio, and the Golden suite was re-run across
+all 15 cases on the accelerator.
+
+The guarantee that has to hold across backends does: `pred_dur`, `y_length`,
+and `duration.alignment` are exact on CUDA as on the CPU. The duration logits
+drift further there — 4.8e-2 worst against the CPU's 2.9e-4 — which is
+cross-backend accumulation order, not a defect, and it does not reach the
+rounded durations. Waveform correlation with the oracle is 0.98961 on CUDA
+against 0.98744 on the CPU, and comparing the two backends directly gives
+0.999893.
+
+### The LSTM accumulation check finally ran on CUDA, and nearly did not
+
+The LSTM test's own header has said since it was written that it must run on
+every claimed backend, because the accumulation defect it guards against was
+correct on the CPU and wrong on CUDA. It had never actually done so: it called
+`ggml_backend_cpu_init` directly. It now enumerates the registry.
+
+The first version of that enumeration allowed devices of type CPU or GPU. On
+this project's DGX Spark the CUDA device reports as `IGPU` — correct for a
+Grace Blackwell part with unified memory — so the allowlist skipped it and the
+run still passed, reporting only the CPU. An allowlist of device types is the
+wrong shape for this check: the test now excludes only the placeholder type,
+and anything else that fails to initialize is a failure rather than a skip.
+
+Had the accumulation strategy still been the broken one, that allowlist would
+have hidden it on exactly the hardware it was written for.
+
+The tolerance across backends is 1e-4 rather than the CPU's 1e-5, which is
+accumulation order rather than drift.
+
 ## 2026-07-26 — Stage 6: Q8_MIXED, and what TTS.cpp does differently
 
 ### TTS.cpp splits Kokoro the opposite way

@@ -12,6 +12,7 @@
 // loading a package is that check.
 
 #include "arch/kokoro/quantization.h"
+#include "ggml.h"
 #include "test-assert.h"
 
 #include <string>
@@ -110,6 +111,37 @@ int main() {
              "unexpected.tensor",
          }) {
         SYNTH_TEST_CHECK(tensor_role(name) == TensorRole::Unknown);
+    }
+
+    // A convolution kernel's packed row is kernel * in_channels; a linear
+    // weight is already a matrix, so its row is its leading extent. A packed
+    // tensor has lost its rank, so its leading extent is the row directly.
+    {
+        const int64_t conv[]   = { 3, 256, 256, 1 };
+        const int64_t linear[] = { 128, 1028, 1, 1 };
+        const int64_t packed[] = { 768, 256, 1, 1 };
+        SYNTH_TEST_CHECK(synth::kokoro::packed_row_length(conv, 3, false) == 768);
+        SYNTH_TEST_CHECK(synth::kokoro::packed_row_length(linear, 2, false) == 128);
+        SYNTH_TEST_CHECK(synth::kokoro::packed_row_length(packed, 2, true) == 768);
+        SYNTH_TEST_CHECK(synth::kokoro::packed_row_length(nullptr, 3, false) == 0);
+        SYNTH_TEST_CHECK(synth::kokoro::packed_row_length(conv, 0, false) == 0);
+    }
+
+    // The decoder concatenates the two prosody curves and the narrow encoder
+    // residual onto its feature stream, which lands these channel counts two
+    // short of a multiple of thirty-two. Those weights carry the halved type
+    // instead of being dropped from the profile.
+    {
+        const int64_t block       = ggml_blck_size(GGML_TYPE_Q8_0);
+        const int64_t aligned[]   = { 3, 256, 256, 1 };
+        const int64_t unaligned[] = { 3, 1090, 1024, 1 };
+        const int64_t shortcut[]  = { 1, 514, 1024, 1 };
+        const int64_t style[]     = { 128, 2180, 1, 1 };
+        SYNTH_TEST_CHECK(synth::kokoro::matrix_is_block_quantizable(aligned, 3, false, block));
+        SYNTH_TEST_CHECK(!synth::kokoro::matrix_is_block_quantizable(unaligned, 3, false, block));
+        SYNTH_TEST_CHECK(!synth::kokoro::matrix_is_block_quantizable(shortcut, 3, false, block));
+        SYNTH_TEST_CHECK(synth::kokoro::matrix_is_block_quantizable(style, 2, false, block));
+        SYNTH_TEST_CHECK(!synth::kokoro::matrix_is_block_quantizable(aligned, 3, false, 0));
     }
     return 0;
 }

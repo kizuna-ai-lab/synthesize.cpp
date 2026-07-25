@@ -1,7 +1,7 @@
 {
   "case_count": 15,
   "family": "kokoro",
-  "note": "Measured on the complete source-F32 CPU path over all 15 manifest cases. Numerical acceptance thresholds and perceptual quality evaluation remain deferred; no placeholder tolerance or quality score is claimed. The structural probes duration.pred_dur, duration.y_length and duration.alignment are exact on every case, and the validators already fail rather than record a difference there. audio.pcm cannot carry a sample-wise threshold: the excitation phase is a cumulative sum over the utterance and so is chaotic in F0 by construction, which is why correlation and spectrogram correlation are recorded instead. source.har is compared as a complex value for the same reason, since a phase is meaningless where its magnitude is near zero. The F16 profile leaves PL-BERT, the prosody and duration path, the acoustic text encoder, and the Voice tables at the reference dtype, so every stage up to and including the harmonic source reproduces the F32 measurements exactly; only the waveform differs, and by less than the spread between cases. See src/arch/kokoro/quantization.h for why the split falls there.",
+  "note": "Measured on the complete source-F32 CPU path over all 15 manifest cases. Numerical acceptance thresholds and perceptual quality evaluation remain deferred; no placeholder tolerance or quality score is claimed. The structural probes duration.pred_dur, duration.y_length and duration.alignment are exact on every case, and the validators already fail rather than record a difference there. audio.pcm cannot carry a sample-wise threshold: the excitation phase is a cumulative sum over the utterance and so is chaotic in F0 by construction, which is why correlation and spectrogram correlation are recorded instead. source.har is compared as a complex value for the same reason, since a phase is meaningless where its magnitude is near zero. The F16 profile leaves PL-BERT, the prosody and duration path, the acoustic text encoder, and the Voice tables at the reference dtype, so every stage up to and including the harmonic source reproduces the F32 measurements exactly; only the waveform differs, and by less than the spread between cases. See src/arch/kokoro/quantization.h for why the split falls there. Q8_MIXED behaves the same way: every stage through the harmonic source is unchanged, and the durations and alignment stay exact, because the quantized tensors are all downstream of them. Twelve decoder matrices carry the halved type instead of a block-quantized one because their packed row is not a whole number of blocks; the decoder concatenates the two prosody curves and the narrow encoder residual onto its feature stream, which lands those channel counts two short of a multiple of thirty-two.",
   "profiles": {
     "F16": {
       "stages": {
@@ -282,6 +282,149 @@
               "measured_reference_rms": 0.034145907229351784,
               "measured_rms_error": 0.005483335621900648,
               "measured_spectrogram_correlation": 0.9981373557486777,
+              "worst_case": "kokoro-voice-last"
+            }
+          },
+          "threads": 8
+        }
+      }
+    },
+    "Q8_MIXED": {
+      "stages": {
+        "duration": {
+          "backend": "CPU",
+          "probes": {
+            "duration.alignment": {
+              "elements": 15444,
+              "exact_on_every_case": true,
+              "measured_max_abs": 0.0,
+              "measured_mean_abs": 0.0,
+              "worst_case": "kokoro-upstream-default"
+            },
+            "duration.d": {
+              "elements": 93440,
+              "exact_on_every_case": false,
+              "measured_max_abs": 3.450363874435425e-05,
+              "measured_mean_abs": 4.5173234199977094e-07,
+              "worst_case": "kokoro-long"
+            },
+            "duration.logits": {
+              "elements": 3800,
+              "exact_on_every_case": false,
+              "measured_max_abs": 0.000286102294921875,
+              "measured_mean_abs": 1.1280315290940436e-05,
+              "worst_case": "kokoro-normalization"
+            },
+            "duration.pred_dur": {
+              "elements": 78,
+              "exact_on_every_case": true,
+              "measured_max_abs": 0.0,
+              "measured_mean_abs": 0.0,
+              "worst_case": "kokoro-upstream-default"
+            },
+            "duration.y_length": {
+              "elements": 1,
+              "exact_on_every_case": true,
+              "measured_max_abs": 0.0,
+              "measured_mean_abs": 0.0,
+              "worst_case": "kokoro-upstream-default"
+            }
+          },
+          "threads": 8
+        },
+        "plbert": {
+          "backend": "CPU",
+          "probes": {
+            "bert.hidden": {
+              "elements": 38400,
+              "exact_on_every_case": false,
+              "measured_max_abs": 1.704692840576172e-05,
+              "measured_mean_abs": 1.399117430480601e-06,
+              "worst_case": "kokoro-medium"
+            },
+            "text.d_en": {
+              "elements": 38912,
+              "exact_on_every_case": false,
+              "measured_max_abs": 3.5881996154785156e-05,
+              "measured_mean_abs": 3.73710902753627e-06,
+              "worst_case": "kokoro-normalization"
+            }
+          },
+          "threads": 8
+        },
+        "prosody": {
+          "backend": "CPU",
+          "probes": {
+            "prosody.en": {
+              "elements": 240640,
+              "exact_on_every_case": false,
+              "measured_max_abs": 3.450363874435425e-05,
+              "measured_mean_abs": 4.166999834775739e-07,
+              "worst_case": "kokoro-long"
+            },
+            "prosody.f0": {
+              "elements": 752,
+              "exact_on_every_case": false,
+              "measured_max_abs": 0.0025787353515625,
+              "measured_mean_abs": 7.819059302416095e-05,
+              "worst_case": "kokoro-long"
+            },
+            "prosody.n": {
+              "elements": 752,
+              "exact_on_every_case": false,
+              "measured_max_abs": 2.1696090698242188e-05,
+              "measured_mean_abs": 1.7240167932307466e-06,
+              "worst_case": "kokoro-long"
+            }
+          },
+          "threads": 8
+        },
+        "source": {
+          "backend": "CPU",
+          "probes": {
+            "source.har": {
+              "elements": 992662,
+              "exact_on_every_case": false,
+              "measured_magnitude_max_abs": 0.09503346681594849,
+              "measured_max_abs": 0.09503346681594851,
+              "measured_mean_abs": 0.0021450136771855284,
+              "worst_case": "kokoro-long"
+            }
+          },
+          "threads": 8
+        },
+        "text-encoder": {
+          "backend": "CPU",
+          "probes": {
+            "text.asr": {
+              "elements": 94208,
+              "exact_on_every_case": false,
+              "measured_max_abs": 2.5331974029541016e-06,
+              "measured_mean_abs": 9.283769977669296e-08,
+              "worst_case": "kokoro-normalization"
+            },
+            "text.t_en": {
+              "elements": 38912,
+              "exact_on_every_case": false,
+              "measured_max_abs": 2.5331974029541016e-06,
+              "measured_mean_abs": 9.860251127922307e-08,
+              "worst_case": "kokoro-normalization"
+            }
+          },
+          "threads": 8
+        },
+        "waveform": {
+          "backend": "CPU",
+          "probes": {
+            "audio.pcm": {
+              "elements": 46200,
+              "exact_on_every_case": false,
+              "measured_correlation": 0.9847899310843714,
+              "measured_max_abs": 0.19286981225013733,
+              "measured_mean_abs": 0.0014298022111459863,
+              "measured_reference_rms": 0.034145907229351784,
+              "measured_rms_error": 0.006007834553271983,
+              "measured_spectrogram_correlation": 0.9977993133345053,
               "worst_case": "kokoro-voice-last"
             }
           },

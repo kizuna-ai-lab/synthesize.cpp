@@ -99,8 +99,7 @@ CatalogRole classify_kokoro_generator(const std::vector<std::string_view> & toke
         one_of(tokens[4], { "weight", "bias" })) {
         return CatalogRole::Sensitive;
     }
-    if (tokens.size() == 5 && tokens[base] == "ups" && is_index(tokens[3]) &&
-        one_of(tokens[4], { "weight", "bias" })) {
+    if (tokens.size() == 5 && tokens[base] == "ups" && is_index(tokens[3]) && one_of(tokens[4], { "weight", "bias" })) {
         return tokens[4] == "weight" ? CatalogRole::TransposeWeight : CatalogRole::Sensitive;
     }
     if (tokens.size() == 5 && tokens[base] == "noise_convs" && is_index(tokens[3]) &&
@@ -148,8 +147,7 @@ CatalogRole classify_kokoro_structural(const std::vector<std::string_view> & tok
     if (tokens[0] == "voice" && tokens.size() == 2 && !tokens[1].empty()) {
         return CatalogRole::Sensitive;
     }
-    if (tokens[0] == "bert" || tokens[0] == "bert_encoder" || tokens[0] == "predictor" ||
-        tokens[0] == "text_encoder") {
+    if (tokens[0] == "bert" || tokens[0] == "bert_encoder" || tokens[0] == "predictor" || tokens[0] == "text_encoder") {
         return CatalogRole::Sensitive;
     }
     return CatalogRole::Unknown;
@@ -169,6 +167,24 @@ CatalogRole classify(const std::string & name) {
 
 TensorRole tensor_role(const std::string & name) {
     return classify(name);
+}
+
+int64_t packed_row_length(const int64_t * ne, int dimensions, bool quantized) {
+    if (ne == nullptr || dimensions < 1) {
+        return 0;
+    }
+    if (quantized || dimensions < 3) {
+        return ne[0];
+    }
+    return ne[0] * ne[1];
+}
+
+bool matrix_is_block_quantizable(const int64_t * ne, int dimensions, bool quantized, int64_t block_size) {
+    if (block_size <= 0) {
+        return false;
+    }
+    const int64_t row = packed_row_length(ne, dimensions, quantized);
+    return row > 0 && row % block_size == 0;
 }
 
 }  // namespace synth::kokoro

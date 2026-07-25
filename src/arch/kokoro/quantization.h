@@ -35,4 +35,20 @@ enum class TensorRole {
 // runtime change cannot quietly acquire one.
 TensorRole tensor_role(const std::string & name);
 
+// The row length a matrix weight would have once flattened for the multiply.
+//
+// A convolution kernel is packed to [kernel * in_channels, out_channels]; a
+// linear weight is already in that form. `quantized` says which of the two the
+// caller is holding, since a packed tensor has lost its logical rank.
+int64_t packed_row_length(const int64_t * ne, int dimensions, bool quantized);
+
+// Whether a matrix weight can host block-quantized rows at all.
+//
+// Kokoro's decoder concatenates the two prosody curves and the narrow encoder
+// residual onto its feature stream, which lands several channel counts two
+// short of a multiple of thirty-two. Those weights fall back to the halved type
+// rather than being excluded from the profile, and this predicate is shared so
+// the offline tool and the runtime cannot disagree about which ones they are.
+bool matrix_is_block_quantizable(const int64_t * ne, int dimensions, bool quantized, int64_t block_size);
+
 }  // namespace synth::kokoro

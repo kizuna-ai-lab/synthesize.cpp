@@ -209,6 +209,83 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — Stage 6: Q8_MIXED, and what TTS.cpp does differently
+
+### TTS.cpp splits Kokoro the opposite way
+
+`TTS.cpp` also ports Kokoro and also quantizes it, and its split is the mirror
+image of this one. `kokoro_is_quantizable` returns true only for `albert`,
+`text_encoder.lstm`, and five named parts of the duration predictor; everything
+under the decoder and generator falls through untouched. It excludes the same
+small things this port does — voice tensors, biases, gammas, betas, alphas,
+embeddings, norms — but quantizes the front end and leaves the audio path alone.
+
+The reason is visible in their compatible-parts list: it contains no
+convolution blocks. A convolution kernel's leading axis is the kernel width,
+three or seven wide, so it cannot host a 32-wide quantization block without
+being packed first. Their split is what GGML can quantize without that work.
+Ours is what error propagation allows. Their README also records that Kokoro
+quantization was never measured — the quality findings there are about Parler,
+and the quantize documentation still says only Parler is supported.
+
+So the disagreement was worth measuring rather than assuming. A spike
+reproduced their split here: quantize the front end to Q8_0 and leave the
+decoder at the reference dtype.
+
+| probe | this port's split | TTS.cpp's split |
+| --- | --- | --- |
+| `bert.hidden` | 1.70e-5 | 1.37e-1 |
+| `text.d_en` | 3.59e-5 | 2.64e-1 |
+| `duration.logits` | 2.86e-4 | 2.72e0 |
+| `pred_dur` | exact | 6 of 78 tokens differ |
+| `y_length` | 198, exact | 200 |
+
+The last row is the one that decides it. The utterance comes out 1,200 samples
+— 50 ms — longer than the reference, which means every downstream probe has a
+different shape and tensor parity stops being defined at all. The Golden
+manifest declares the durations a structural check, so that split cannot pass
+this suite. It is a reasonable choice for a project whose validation is
+perceptual; it is not one for a project that claims tensor parity.
+
+The spike also broke on `bert.layer.full_layer_layer_norm.weight`, which slipped
+through a `token == "LayerNorm"` exclusion and was quantized into an elementwise
+multiply. That is the failure mode substring rules have: TTS.cpp's are
+suffix-based (`!name.ends_with("norm")`), and a name that spells the same thing
+differently walks straight past. This port's classifier matches exhaustively on
+token count and exact token names, so an unrecognised name is Unknown — an
+error — rather than silently defaulted. The whole-package validator added in the
+previous slice reported the mismatch precisely, where GGML had aborted.
+
+### The profile itself
+
+216.1 MB against 352.8 MB, a 39% reduction. Every stage through the harmonic
+source is unchanged from F32, and the durations and alignment stay exact,
+because everything quantized is downstream of them. Worst-case waveform
+correlation over the suite is 0.98479 against F32's 0.98744, with spectrogram
+correlation 0.99780 against 0.99814.
+
+Three things had to be built:
+
+- The convolution builder now consumes a packed kernel. A block-quantized
+  kernel is stored flattened to `[kernel * in_channels, out_channels]`, so the
+  input supplies the channel count and a separate shape tensor drives the column
+  extraction, the same construction the VITS family uses.
+- Twelve decoder matrices, 71.2 MB, cannot host blocks at all: the decoder
+  concatenates the two prosody curves and the narrow encoder residual onto its
+  feature stream, which lands channel counts like 1090, 514, and 1028 exactly
+  two short of a multiple of thirty-two. They carry the halved type instead of
+  being dropped from the profile. The predicate that decides this is shared
+  between the tool and the runtime for the same reason the classifier is.
+- Anything that needed a kernel's logical width had to stop reading `ne[0]`.
+  A packed kernel's leading extent is `kernel * in_channels`, so the generator
+  was computing a padding of 1792 and rejecting its own weights. `conv_kernel_size`
+  now derives it from the channel count.
+
+One near-miss worth recording: the two-dimensional rule and the block-alignment
+fallback were first written to apply to every family, which changed what the
+VITS quantizer produced and was caught by its own test. Both are now scoped to
+Kokoro, and the VITS packages it produces are byte-identical to before.
+
 ## 2026-07-26 — Stage 6: the F16 Quantization Profile
 
 The quantizer was VITS-only by construction: it refused any other architecture

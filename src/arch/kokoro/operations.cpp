@@ -23,6 +23,16 @@ ggml_tensor * broadcast_over_time(ggml_context * context, ggml_tensor * vector, 
     return ggml_repeat(context, ggml_reshape_2d(context, vector, vector->ne[0], 1), shape);
 }
 
+int64_t conv_kernel_size(const ggml_tensor * weight, int64_t in_channels) {
+    if (weight == nullptr || in_channels < 1) {
+        return 0;
+    }
+    if (!ggml_is_quantized(weight->type)) {
+        return weight->ne[1] == in_channels ? weight->ne[0] : 0;
+    }
+    return weight->ne[0] % in_channels == 0 ? weight->ne[0] / in_channels : 0;
+}
+
 ggml_tensor * conv1d(ggml_context * context,
                      ggml_tensor *  input,
                      ggml_tensor *  weight,
@@ -33,16 +43,40 @@ ggml_tensor * conv1d(ggml_context * context,
     if (context == nullptr || input == nullptr || weight == nullptr || stride < 1) {
         return nullptr;
     }
-    const int64_t in_channels  = weight->ne[1];
-    const int64_t out_channels = weight->ne[2];
-    if (input->ne[0] != in_channels) {
+    // A block-quantized kernel is stored already flattened to the
+    // [kernel * in_channels, out_channels] matrix the multiply consumes, since
+    // a 32-wide block cannot straddle the kernel axis. Its logical shape is
+    // then no longer readable from the tensor, so the input supplies the
+    // channel count and a separate shape tensor drives the column extraction.
+    const bool    packed       = ggml_is_quantized(weight->type);
+    const int64_t in_channels  = input->ne[0];
+    int64_t       kernel_size  = 0;
+    int64_t       out_channels = 0;
+    if (packed) {
+        if (in_channels <= 0 || weight->ne[0] % in_channels != 0) {
+            return nullptr;
+        }
+        kernel_size  = weight->ne[0] / in_channels;
+        out_channels = weight->ne[1];
+    } else {
+        if (weight->ne[1] != in_channels) {
+            return nullptr;
+        }
+        kernel_size  = weight->ne[0];
+        out_channels = weight->ne[2];
+    }
+    if (kernel_size < 1 || out_channels < 1) {
         return nullptr;
     }
+
     // im2col wants the time axis first; the result is returned channel-first.
     ggml_tensor * time_major = ggml_cont(context, ggml_transpose(context, input));
-    ggml_tensor * columns =
-        ggml_im2col(context, weight, time_major, stride, 0, padding, 0, dilation, 0, false, weight->type);
-    ggml_tensor * kernel_2d = ggml_reshape_2d(context, weight, weight->ne[0] * weight->ne[1], out_channels);
+    ggml_tensor * shape_kernel =
+        packed ? ggml_new_tensor_3d(context, GGML_TYPE_F32, kernel_size, in_channels, out_channels) : weight;
+    ggml_tensor * columns = ggml_im2col(context, shape_kernel, time_major, stride, 0, padding, 0, dilation, 0, false,
+                                        packed ? GGML_TYPE_F32 : weight->type);
+    ggml_tensor * kernel_2d =
+        packed ? weight : ggml_reshape_2d(context, weight, weight->ne[0] * weight->ne[1], out_channels);
     ggml_tensor * output =
         ggml_mul_mat(context, kernel_2d, ggml_reshape_2d(context, columns, columns->ne[0], columns->ne[1]));
     output = ggml_reshape_2d(context, output, out_channels, columns->ne[1]);

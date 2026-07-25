@@ -131,9 +131,12 @@ ggml_tensor * build_generator(ggml_context *           context,
             weights.noise_res[stage].convs1.front().weight == nullptr) {
             return nullptr;
         }
-        const uint32_t noise_kernel = uint32_t(weights.noise_res[stage].convs1.front().weight->ne[0]);
+        const int64_t noise_kernel = conv_kernel_size(weights.noise_res[stage].convs1.front().weight, source->ne[0]);
+        if (noise_kernel < 1) {
+            return nullptr;
+        }
         source = build_adain_resblock1(context, source, style, weights.noise_res[stage], kNoiseDilations,
-                                       kNoiseDilationCount, noise_kernel, hparams.adain_eps);
+                                       kNoiseDilationCount, uint32_t(noise_kernel), hparams.adain_eps);
         if (source == nullptr) {
             return nullptr;
         }
@@ -175,8 +178,8 @@ ggml_tensor * build_generator(ggml_context *           context,
     }
 
     current                   = ggml_leaky_relu(context, current, kFinalSlope, false);
-    const int64_t post_kernel = weights.conv_post.weight->ne[0];
-    if (post_kernel % 2 == 0) {
+    const int64_t post_kernel = conv_kernel_size(weights.conv_post.weight, current->ne[0]);
+    if (post_kernel < 1 || post_kernel % 2 == 0) {
         return nullptr;
     }
     return conv1d(context, current, weights.conv_post.weight, weights.conv_post.bias, 1, same_padding(post_kernel, 1),

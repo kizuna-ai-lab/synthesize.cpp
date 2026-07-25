@@ -1,5 +1,6 @@
 #include "quantize.h"
 
+#include "arch/kokoro/quantization.h"
 #include "ggml.h"
 #include "gguf.h"
 #include "policy.h"
@@ -160,6 +161,22 @@ bool quantize_file(const std::string & input_path,
         TargetSpec target{};
         if (!resolve_target_spec(*profile, name, target)) {
             return fail(error_out, "unknown " + architecture + " tensor: " + std::string(name));
+        }
+        // A matrix weight whose packed row is not a whole number of blocks
+        // falls back to the halved type rather than failing the run. The
+        // predicate is shared with the runtime so both agree which ones those
+        // are; see src/arch/kokoro/quantization.h.
+        // Kokoro's matrix weights include two-dimensional projections, which
+        // are already the matrix the multiply wants; packing one would flatten
+        // it into a single meaningless row. VITS only ever marks convolution
+        // kernels, so this does not change what it produces.
+        if (architecture == "kokoro" && target.layout == TensorLayout::PackedMatrix && ggml_n_dims(tensor) < 3) {
+            target.layout = TensorLayout::Native;
+        }
+        if (architecture == "kokoro" && ggml_is_quantized(target.type) &&
+            !synth::kokoro::matrix_is_block_quantizable(tensor->ne, ggml_n_dims(tensor), false,
+                                                        ggml_blck_size(target.type))) {
+            target = { profile->transpose_weight_type, TensorLayout::Native };
         }
         std::array<int64_t, 4> target_ne     = { tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3] };
         int                    target_n_dims = ggml_n_dims(tensor);

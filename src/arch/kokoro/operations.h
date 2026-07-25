@@ -47,6 +47,14 @@ ggml_tensor * conv1d(ggml_context * context,
                      int            padding,
                      int            dilation);
 
+// The logical kernel width of a convolution weight.
+//
+// A block-quantized kernel is stored flattened to [kernel * in_channels,
+// out_channels], so its leading extent is no longer the kernel width. Anything
+// that needs the width must ask for it rather than read ne[0]. Returns 0 when
+// the weight and the channel count disagree.
+int64_t conv_kernel_size(const ggml_tensor * weight, int64_t in_channels);
+
 // Transposed 1-D convolution across all channels, the generator's upsampler.
 //
 // GGML's own transposed convolution has no padding, so this reuses the scatter

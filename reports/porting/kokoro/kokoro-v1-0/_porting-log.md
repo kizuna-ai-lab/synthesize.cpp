@@ -209,6 +209,75 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — The two "measured but not explained" items, explained
+
+Both open numerical questions are now closed, and one of them corrects an
+earlier entry of this log.
+
+### The CUDA drift is TF32, not accumulation order
+
+The Stage 7 entry attributed the ~1000× larger CUDA intermediate drift to
+"accumulation order on small matrix multiplies". That was wrong, and the number
+itself said so: 1.9e-3 relative is four orders of magnitude above what FP32
+reduction reordering produces, and exactly the magnitude of a 10-bit mantissa.
+
+The mechanism, read from the vendored source and then confirmed empirically:
+
+- `ggml_cuda_should_use_mmf` (mmf.cu:133) routes every F32 matrix multiply with
+  `src1_ncols <= 16` on Ampere-or-newer devices to GGML's own tensor-core
+  kernels;
+- those kernels execute `mma.sync...f32.tf32.tf32.f32` (mma.cuh:1089) — the
+  hardware truncates FP32 inputs to TF32's 10-bit mantissa;
+- `GGML_CUDA_DISABLE_TF32`, which is what `SYNTH_CUDA_TF32=OFF` sets, guards
+  only the cuBLAS math mode (common.cuh:1478) and never reaches them.
+
+A token-count sweep of the PL-BERT stage, CPU versus CUDA on the same F32
+package, puts the cliff exactly at the dispatch boundary:
+
+| tokens | relative deviation |
+| --- | --- |
+| 4–16 | 1.0e-3 … 2.1e-3 |
+| 17–32 | 1.9e-6 … 5.3e-6 |
+
+That boundary also explains what the Stage 7 entry misread as evidence against
+a defect: the deviation "shrinking with sequence length" was the switch from
+the TF32 kernel to strict-FP32 cuBLAS, and every worst case in the CUDA grid
+being `kokoro-minimal` (6 tokens) is the same fact. The 0.99 Hz CUDA deviation
+in `prosody.f0` is TF32 noise carried through the duration stage's 6-column
+matmuls, and the CUDA `source.har` divergence of 0.334 is that noise amplified
+by the phase conditioning below.
+
+No build option or environment variable in the vendored ggml revision disables
+the path: `GGML_CUDA_FORCE_CUBLAS` gates the quantized kernels only, and no
+`getenv` reaches mmf. The choices are to accept it with the guarantee scoped —
+done, in `docs/backends.md` and `CLAUDE.md` — or to re-vendor if upstream grows
+a gate. The durations stay exact across all 45 CUDA runs, which is the
+guarantee the suite enforces; the scoped wording now says precisely that.
+
+The same mechanism plausibly contributes to the VITS CUDA PCM drift (its Golden
+inputs are 9 tokens, under the threshold); recorded here as a suspicion for
+that family, not a claim.
+
+### The phase conditioning is now quantified, not just named
+
+The harmonic source integrates F0 into phase, so a sustained relative F0 error
+δ reaches harmonic h after C elapsed fundamental cycles as Δφ = 2π·h·C·δ. For
+the reference case that is ~3.9e4 rad per unit relative error. Perturbing the
+unmodified upstream module confirms the model to 1.5% in the linear regime
+(δ=1e-6 → measured 3.80e-2 against predicted 3.86e-2) with wrapping beyond
+δ≈1e-4. An F0 agreement of 1e-6 — tighter than FP32 sustains through an LSTM
+stack — already commits a ~4e-2 spectrum divergence, so sample-wise waveform
+parity is unattainable by construction and correlation is the correct
+comparison. The derivation and table are now in the family document.
+
+The one discrete hazard was also censused: a voiced/unvoiced flip at the 10 Hz
+threshold. Zero flips across all 15 cases on both backends. The margins are
+asymmetric in a way worth keeping on record: the suite's closest reference
+sample sits 0.31 Hz from the threshold, CPU F0 noise is ~500× inside that,
+and CUDA's TF32 noise (~0.99 Hz) is the same order — a future input skimming
+the threshold could flip single excitation samples on CUDA where the CPU does
+not, without touching any structural guarantee.
+
 ## 2026-07-26 — Closing the port: one cell was still empty
 
 Auditing the profile-by-backend-by-stage grid before closing the port found the

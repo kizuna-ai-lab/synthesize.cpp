@@ -1,6 +1,6 @@
 # Execution Backend Policy
 
-Status: Confirmed, last updated on 2026-07-23.
+Status: Confirmed, last updated on 2026-07-26.
 
 ## Shared Inference Graph
 
@@ -38,6 +38,20 @@ VITS F32 graph, ambient TF32 amplified the final PCM max-absolute difference fro
 `7.4365083e-4` to `1.1620114e-1`, while providing no material text-stage speedup
 on GB10. The strict default is compile-time library policy so Rust, Python, and
 other consumers do not need to mutate process-global CUDA environment variables.
+
+The guarantee is scoped to cuBLAS, and the scope is a measured fact rather than
+a drafting nicety. GGML's own tensor-core kernels (`mmf.cu`) take every F32
+matrix multiply with 16 or fewer columns on Ampere-class or newer devices, and
+they compute in TF32 (`mma.cuh`'s `mma...tf32` tiles) regardless of
+`GGML_CUDA_DISABLE_TF32`, which reaches only the cuBLAS math mode. On the Kokoro
+PL-BERT stage the cliff sits exactly at the kernel boundary — 2.1e-3 relative
+CUDA-versus-CPU deviation at 16 input tokens, 1.9e-6 at 17 — and the vendored
+GGML revision has no build option or environment variable that disables the
+path. Consequences for short inputs are bounded by measurement, not assumption:
+across every Kokoro profile and case the rounded durations stay exact and the
+waveform correlation is unaffected, and each family's Golden suite is the
+instrument that keeps that true. If a future upstream revision adds a gate for
+these kernels, re-vendoring and enabling it restores the unscoped guarantee.
 
 ## CUDA Unified Memory Policy
 

@@ -131,6 +131,50 @@ The oracle additionally emits the replay inputs `source.rand_ini` `[1, 9]` and
 `source.noise` `[600Y/300 * 300, 9]`, which are stochastic inputs rather than
 compared probes.
 
+
+### Recorded measurement: waveform parity is conditioning-limited
+
+Why the waveform probes carry correlations instead of sample-wise thresholds is
+not a preference; it is a measured property of the architecture, quantified so
+the claim can be checked rather than believed.
+
+The harmonic source integrates F0 into phase over the whole utterance, so a
+sustained relative F0 error `δ` reaches harmonic `h` after `C` elapsed cycles of
+the fundamental as a phase error
+
+```text
+Δφ(h, C) = 2π · h · C · δ
+```
+
+For the reference case (4.95 s, mean voiced F0 190 Hz, C ≈ 682, h up to 9) that
+is an amplification of ~3.9e4 radians per unit of relative F0 error. Driving the
+unmodified upstream source module with perturbed F0 confirms the model in the
+linear regime and locates the saturation:
+
+```text
+δ (relative)   measured max |Δ complex har|   predicted Δφ at h=9
+1e-6           3.80e-2                        3.86e-2
+1e-5           3.69e-1                        3.86e-1
+1e-4           2.17e0                         3.86e0   (wrapping begins)
+1e-3           1.54e0                         38.6     (fully wrapped)
+```
+
+Measured-to-predicted agreement in the linear regime is 1.5%. An F0 agreement
+of 1e-6 relative — tighter than single precision sustains through an LSTM stack
+— already produces a ~4e-2 complex-spectrum divergence, so sample-wise waveform
+parity is unattainable in FP32 by construction, for any implementation.
+
+The voiced/unvoiced threshold is the one discrete hazard in this path: a sample
+crossing 10 Hz flips its excitation between sine-plus-floor and noise-only.
+Across all 15 cases on both backends the flip count is zero. The margins differ
+by backend, and the difference matters: the closest reference sample to the
+threshold in the suite is 0.31 Hz away, CPU F0 noise is ~6.5e-4 Hz (roughly
+500× inside the margin), while CUDA's TF32 kernel noise reaches ~0.99 Hz — the
+same order as the margin. A future input whose F0 skims the threshold could
+therefore flip a sample's voicing on CUDA where the CPU does not; each flip is
+one sample of excitation at 24 kHz, and the Golden suite's structural checks
+would still hold since durations are unaffected.
+
 ## kokoro-v1-0 Variant
 
 `kokoro-v1-0` exposes all 54 upstream voicepacks as stable Preset Voice

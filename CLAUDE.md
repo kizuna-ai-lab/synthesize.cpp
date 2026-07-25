@@ -40,7 +40,7 @@ scripts/ci/clang-format.sh --check-diff   # what CI checks for changed files vs 
 
 Model-dependent gates: real model GGUFs and Golden tensor payloads are deliberately not committed. Integration/golden tests only register after materializing them locally, then configuring with `-DSYNTH_BUILD_INTEGRATION_TESTS=ON` (model paths default to `models/vits-ljspeech/…` and `models/vits-vctk/…`, overridable via `SYNTH_VITS_TEST_MODEL` / `SYNTH_VITS_VCTK_TEST_MODEL`) and building `synthesize-check-integration`.
 
-CUDA development uses the committed presets (`cmake --preset dev-linux-x86_64-cuda` for RTX/sm_89, `dev-dgx-spark` for DGX Spark/sm_121a), each with matching `--build` and `ctest` presets. CUDA builds require CUDA Toolkit 13.3 *exactly* and default to strict FP32 (`SYNTH_CUDA_TF32=OFF`). Release presets pin exact cubin sets and run a no-PTX verifier — never replace them with `native`/`all`. Full details and the manylinux wheel-build commands: `docs/testing.md`.
+CUDA development uses the committed presets (`cmake --preset dev-linux-x86_64-cuda` for RTX/sm_89, `dev-dgx-spark` for DGX Spark/sm_121a), each with matching `--build` and `ctest` presets. CUDA builds require CUDA Toolkit 13.3 *exactly* and default to strict FP32 cuBLAS math (`SYNTH_CUDA_TF32=OFF`; GGML's own tensor-core kernels still use TF32 for F32 matmuls with ≤16 columns — see `docs/backends.md`). Release presets pin exact cubin sets and run a no-PTX verifier — never replace them with `native`/`all`. Full details and the manylinux wheel-build commands: `docs/testing.md`.
 
 ## Project Language
 

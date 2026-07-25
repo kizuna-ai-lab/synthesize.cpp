@@ -84,11 +84,14 @@ the value the inverse transform consumes.
 
 Every profile was run on both backends across all seven stages. Intermediate
 drift is larger on CUDA — 1.9e-3 relative on PL-BERT's hidden state against
-7.5e-7 on the CPU — and it shrinks as the sequence lengthens, from 2.2e-2
-absolute at six tokens to 2.5e-5 at twenty-three. It is spread evenly across
-token positions rather than concentrated in any of them, and it does not reach
-the durations or degrade the waveform. It reads as accumulation order on small
-matrix multiplies; it is recorded as measured rather than explained.
+7.5e-7 on the CPU — and the cause is identified: GGML's own tensor-core kernels
+compute F32 matrix multiplies with 16 or fewer columns in TF32 on Ampere-class
+and newer devices, and the strict-FP32 build flag only governs cuBLAS, not those
+kernels. A token-count sweep puts the cliff exactly at that boundary: 2.1e-3
+relative at 16 tokens, 1.9e-6 at 17. The vendored GGML revision has no switch
+that disables the path. It reaches neither the rounded durations nor the
+waveform correlation; see `docs/backends.md` for the precise scope of the
+strict-FP32 guarantee.
 
 Correlation is the honest measure here rather than a sample-wise tolerance, for
 the same reason the profiles are split the way they are: the waveforms diverge

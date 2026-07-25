@@ -19,8 +19,8 @@ struct PreparedPriorExpansionInput {
     std::vector<float> logs_p_channel_fastest;
 };
 
-synth_status_t prepare_prior_expansion_input(const TextEncoderOutput & text,
-                                             const DurationOutput &    duration,
+synth_status_t prepare_prior_expansion_input(const TextEncoderOutput &     text,
+                                             const DurationOutput &        duration,
                                              PreparedPriorExpansionInput & output);
 
 synth_status_t finalize_prior_expansion_output(uint32_t                   channels,

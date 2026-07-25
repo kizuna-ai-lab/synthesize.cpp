@@ -73,7 +73,7 @@ TextEncoderGraph build_text_encoder_graph(ggml_context *             context,
     // Padding keeps the sequence length through every convolution block.
     const int padding = int(hparams.text_encoder_kernel_size / 2);
     for (uint32_t block = 0; block < hparams.n_layer; ++block) {
-        current = conv1d(context, current, weights.cnn[block].weight, weights.cnn[block].bias, padding, 1);
+        current = conv1d(context, current, weights.cnn[block].weight, weights.cnn[block].bias, 1, padding, 1);
         if (current == nullptr) {
             return TextEncoderGraph{};
         }

@@ -31,8 +31,7 @@ bool all_finite(const std::vector<float> & values) {
 
 }  // namespace
 
-synth_status_t prepare_waveform_decoder_input(const AcousticFlowOutput & flow,
-                                               PreparedWaveformDecoderInput & output) {
+synth_status_t prepare_waveform_decoder_input(const AcousticFlowOutput & flow, PreparedWaveformDecoderInput & output) {
     output          = {};
     size_t elements = 0;
     if (!checked_elements(flow.channels, flow.frame_count, elements) || flow.z.size() != elements ||
@@ -44,8 +43,8 @@ synth_status_t prepare_waveform_decoder_input(const AcousticFlowOutput & flow,
     output.z_channel_fastest.resize(elements);
     for (size_t channel = 0; channel < flow.channels; ++channel) {
         for (size_t frame = 0; frame < flow.frame_count; ++frame) {
-            const size_t source = frame + static_cast<size_t>(flow.frame_count) * channel;
-            const size_t destination = channel + static_cast<size_t>(flow.channels) * frame;
+            const size_t source                   = frame + static_cast<size_t>(flow.frame_count) * channel;
+            const size_t destination              = channel + static_cast<size_t>(flow.channels) * frame;
             output.z_channel_fastest[destination] = flow.z[source];
         }
     }
@@ -54,7 +53,7 @@ synth_status_t prepare_waveform_decoder_input(const AcousticFlowOutput & flow,
 
 synth_status_t finalize_waveform_decoder_output(uint64_t                   sample_count,
                                                 const std::vector<float> & pcm,
-                                                WaveformDecoderOutput &     output) {
+                                                WaveformDecoderOutput &    output) {
     output = {};
     if (sample_count == 0 || sample_count > std::numeric_limits<size_t>::max() ||
         pcm.size() != static_cast<size_t>(sample_count) || !all_finite(pcm)) {

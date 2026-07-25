@@ -6,8 +6,7 @@
 namespace synth {
 namespace {
 
-template <typename Value>
-void write_result_field(synth_result_t * result, size_t offset, const Value & value) {
+template <typename Value> void write_result_field(synth_result_t * result, size_t offset, const Value & value) {
     if (result != nullptr && result->struct_size >= offset + sizeof(value)) {
         std::memcpy(reinterpret_cast<unsigned char *>(result) + offset, &value, sizeof(value));
     }
@@ -27,8 +26,7 @@ void write_result_metadata(synth_result_t * result, const AudioDeliveryInfo & in
 }  // namespace
 
 bool valid_audio_sink(const synth_audio_sink_t * sink) {
-    return sink != nullptr &&
-           sink->struct_size >= offsetof(synth_audio_sink_t, write) + sizeof(sink->write) &&
+    return sink != nullptr && sink->struct_size >= offsetof(synth_audio_sink_t, write) + sizeof(sink->write) &&
            sink->write != nullptr;
 }
 

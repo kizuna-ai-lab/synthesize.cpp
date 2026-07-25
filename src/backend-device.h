@@ -18,20 +18,18 @@ enum class BackendKind {
     OtherGpu,
 };
 
-const char * backend_kind_name(BackendKind kind);
-BackendKind classify_backend_type(enum ggml_backend_dev_type device_type, const char * registry_name);
-BackendKind classify_backend_device(ggml_backend_dev_t device);
-synth_device_type_t public_device_type(enum ggml_backend_dev_type device_type);
-synth_device_flags_t device_memory_flags(BackendKind                  kind,
+const char *         backend_kind_name(BackendKind kind);
+BackendKind          classify_backend_type(enum ggml_backend_dev_type device_type, const char * registry_name);
+BackendKind          classify_backend_device(ggml_backend_dev_t device);
+synth_device_type_t  public_device_type(enum ggml_backend_dev_type device_type);
+synth_device_flags_t device_memory_flags(BackendKind                kind,
                                          enum ggml_backend_dev_type device_type,
-                                         uint64_t                    memory_total);
+                                         uint64_t                   memory_total);
 
-uint32_t backend_device_count();
+uint32_t       backend_device_count();
 synth_status_t get_backend_device(uint32_t index, uint64_t caller_size, synth_backend_device_t * output);
-synth_status_t get_backend_device(ggml_backend_dev_t device,
-                                  uint64_t           caller_size,
-                                  synth_backend_device_t * output);
-synth_bool_t backend_available(synth_backend_request_t request);
+synth_status_t get_backend_device(ggml_backend_dev_t device, uint64_t caller_size, synth_backend_device_t * output);
+synth_bool_t   backend_available(synth_backend_request_t request);
 
 // Resolution honors the public global registry index exactly, so a strict
 // backend request cannot silently substitute a different device or backend.

@@ -66,14 +66,14 @@ ggml_tensor * build_adain_res_block(ggml_context *               context,
             return nullptr;
         }
     }
-    residual = conv1d(context, residual, weights.conv1.weight, weights.conv1.bias, 1, 1);
+    residual = conv1d(context, residual, weights.conv1.weight, weights.conv1.bias, 1, 1, 1);
     residual = adain(context, residual, style, weights.norm2.fc, epsilon);
     residual = ggml_leaky_relu(context, residual, kLeakySlope, false);
-    residual = conv1d(context, residual, weights.conv2.weight, weights.conv2.bias, 1, 1);
+    residual = conv1d(context, residual, weights.conv2.weight, weights.conv2.bias, 1, 1, 1);
 
     ggml_tensor * shortcut = upsample ? upsample_nearest_2x(context, input) : input;
     if (weights.conv1x1 != nullptr) {
-        shortcut = conv1d(context, shortcut, weights.conv1x1, nullptr, 0, 1);
+        shortcut = conv1d(context, shortcut, weights.conv1x1, nullptr, 1, 0, 1);
     }
 
     return ggml_scale(context, ggml_add(context, residual, shortcut), kBranchScale);
@@ -150,7 +150,7 @@ ProsodyGraph build_prosody_graph(ggml_context *                  context,
                 return ProsodyGraph{};
             }
         }
-        current = conv1d(context, current, branch.projection->weight, branch.projection->bias, 0, 1);
+        current = conv1d(context, current, branch.projection->weight, branch.projection->bias, 1, 0, 1);
         if (current == nullptr) {
             return ProsodyGraph{};
         }

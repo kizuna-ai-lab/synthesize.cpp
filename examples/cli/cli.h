@@ -9,10 +9,10 @@
 namespace synth_cli {
 
 struct Options {
-    bool                    show_help         = false;
+    bool                    show_help = false;
     std::string             model_path;
     std::string             output_path;
-    synth_input_kind_t      input_kind        = SYNTH_INPUT_TEXT_UTF8;
+    synth_input_kind_t      input_kind = SYNTH_INPUT_TEXT_UTF8;
     std::string             linguistic_input;
     std::vector<int32_t>    token_ids;
     std::string             language_tag;

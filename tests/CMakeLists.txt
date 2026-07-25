@@ -136,11 +136,14 @@ synth_add_unit_test(synthesize-kokoro-transpose-conv-test kokoro_transpose_conv_
 synth_add_unit_test(synthesize-kokoro-prosody-test kokoro_prosody_test.cpp)
 synth_add_unit_test(synthesize-kokoro-text-encoder-test kokoro_text_encoder_test.cpp)
 synth_add_unit_test(synthesize-kokoro-source-test kokoro_source_test.cpp)
+synth_add_unit_test(synthesize-kokoro-istft-test kokoro_istft_test.cpp)
+synth_add_unit_test(synthesize-kokoro-decoder-test kokoro_decoder_test.cpp)
 set_tests_properties(synthesize-kokoro-metadata-test synthesize-kokoro-lstm-test
     synthesize-kokoro-catalog-test synthesize-kokoro-plbert-test
     synthesize-kokoro-duration-test synthesize-kokoro-transpose-conv-test
     synthesize-kokoro-prosody-test synthesize-kokoro-text-encoder-test
-    synthesize-kokoro-source-test
+    synthesize-kokoro-source-test synthesize-kokoro-istft-test
+    synthesize-kokoro-decoder-test
     PROPERTIES LABELS "unit;kokoro")
 
 synth_add_unit_test(synthesize-vits-text-encoder-host-test vits_text_encoder_host_test.cpp)
@@ -502,6 +505,8 @@ add_custom_target(synthesize-check-unit
         synthesize-kokoro-prosody-test
         synthesize-kokoro-text-encoder-test
         synthesize-kokoro-source-test
+        synthesize-kokoro-istft-test
+        synthesize-kokoro-decoder-test
         synthesize-vits-text-encoder-host-test
         synthesize-vits-metadata-test
         synthesize-vits-weights-test

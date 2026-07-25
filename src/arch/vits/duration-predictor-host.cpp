@@ -32,8 +32,8 @@ synth_status_t prepare_duration_input(size_t                     token_count,
 }
 
 synth_status_t finalize_duration_output(size_t                     token_count,
-                                       const std::vector<float> & logw,
-                                       DurationPredictorOutput &  output) {
+                                        const std::vector<float> & logw,
+                                        DurationPredictorOutput &  output) {
     output = {};
     if (token_count == 0 || logw.size() != token_count) {
         return SYNTH_ERR_INTERNAL;

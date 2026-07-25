@@ -3,17 +3,16 @@
 #include <stdint.h>
 #include <string.h>
 
-#define CHECK(condition)       \
-    do {                       \
-        if (!(condition)) {    \
-            return __LINE__;   \
-        }                      \
+#define CHECK(condition)     \
+    do {                     \
+        if (!(condition)) {  \
+            return __LINE__; \
+        }                    \
     } while (0)
 
 static int known_kind(const char * kind) {
-    return strcmp(kind, "cpu") == 0 || strcmp(kind, "accel") == 0 ||
-           strcmp(kind, "cuda") == 0 || strcmp(kind, "metal") == 0 ||
-           strcmp(kind, "vulkan") == 0 || strcmp(kind, "sycl") == 0 ||
+    return strcmp(kind, "cpu") == 0 || strcmp(kind, "accel") == 0 || strcmp(kind, "cuda") == 0 ||
+           strcmp(kind, "metal") == 0 || strcmp(kind, "vulkan") == 0 || strcmp(kind, "sycl") == 0 ||
            strcmp(kind, "gpu") == 0 || strcmp(kind, "unknown") == 0;
 }
 
@@ -45,9 +44,9 @@ int main(void) {
     const uint32_t count = synth_backend_device_count();
     CHECK(count > 0);
 
-    int found_cpu = 0;
-    int found_cuda = 0;
-    int found_metal = 0;
+    int found_cpu    = 0;
+    int found_cuda   = 0;
+    int found_metal  = 0;
     int found_vulkan = 0;
     for (uint32_t i = 0; i < count; ++i) {
         synth_backend_device_t device;
@@ -57,16 +56,14 @@ int main(void) {
         CHECK(device.description != NULL);
         CHECK(device.kind != NULL && known_kind(device.kind));
         CHECK(device.device_type <= SYNTH_DEVICE_TYPE_ACCEL);
-        CHECK((device.flags & ~(SYNTH_DEVICE_MEMORY_INFO_VALID |
-                                SYNTH_DEVICE_MEMORY_SHARED |
+        CHECK((device.flags & ~(SYNTH_DEVICE_MEMORY_INFO_VALID | SYNTH_DEVICE_MEMORY_SHARED |
                                 SYNTH_DEVICE_MEMORY_INFO_APPROXIMATE)) == 0);
         if ((device.flags & SYNTH_DEVICE_MEMORY_INFO_VALID) != 0) {
             CHECK(device.memory_total > 0);
         } else {
             CHECK(device.memory_total == 0 && device.memory_free == 0);
         }
-        CHECK((device.flags & (SYNTH_DEVICE_MEMORY_SHARED |
-                               SYNTH_DEVICE_MEMORY_INFO_APPROXIMATE)) == 0 ||
+        CHECK((device.flags & (SYNTH_DEVICE_MEMORY_SHARED | SYNTH_DEVICE_MEMORY_INFO_APPROXIMATE)) == 0 ||
               (device.flags & SYNTH_DEVICE_MEMORY_INFO_VALID) != 0);
         found_cpu |= strcmp(device.kind, "cpu") == 0;
         found_cuda |= strcmp(device.kind, "cuda") == 0;

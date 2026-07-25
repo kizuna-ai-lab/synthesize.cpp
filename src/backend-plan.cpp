@@ -23,8 +23,7 @@ ggml_backend_t initialize_backend(ggml_backend_dev_t device) {
     }
 }
 
-void append_accelerators(std::vector<ggml_backend_t> & owned,
-                         std::vector<ggml_backend_t> & scheduled) {
+void append_accelerators(std::vector<ggml_backend_t> & owned, std::vector<ggml_backend_t> & scheduled) {
     for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
         ggml_backend_dev_t device = ggml_backend_dev_get(i);
         if (ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_ACCEL) {
@@ -40,8 +39,8 @@ void append_accelerators(std::vector<ggml_backend_t> & owned,
 
 }  // namespace
 
-synth_status_t BackendPlan::create(ggml_backend_dev_t           primary_device,
-                                   bool                         include_accelerators,
+synth_status_t BackendPlan::create(ggml_backend_dev_t             primary_device,
+                                   bool                           include_accelerators,
                                    std::unique_ptr<BackendPlan> & output) {
     output.reset();
     if (primary_device == nullptr) {
@@ -54,7 +53,7 @@ synth_status_t BackendPlan::create(ggml_backend_dev_t           primary_device,
     }
 
     try {
-        auto plan = std::unique_ptr<BackendPlan>(new BackendPlan());
+        auto         plan           = std::unique_ptr<BackendPlan>(new BackendPlan());
         const size_t registry_count = ggml_backend_dev_count();
         plan->owned_backends_.reserve(registry_count + 1);
         plan->scheduler_backends_.reserve(registry_count + 1);
@@ -74,8 +73,8 @@ synth_status_t BackendPlan::create(ggml_backend_dev_t           primary_device,
             if (include_accelerators) {
                 append_accelerators(plan->owned_backends_, plan->scheduler_backends_);
             }
-            ggml_backend_dev_t cpu_device = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
-            ggml_backend_t cpu_backend = initialize_backend(cpu_device);
+            ggml_backend_dev_t cpu_device  = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+            ggml_backend_t     cpu_backend = initialize_backend(cpu_device);
             if (cpu_backend == nullptr) {
                 return SYNTH_ERR_BACKEND;
             }
@@ -134,7 +133,7 @@ ggml_backend_sched_t BackendPlan::create_scheduler(size_t graph_size) const {
 void BackendPlan::set_threads(int threads) const {
     const int resolved_threads = std::max(1, threads);
     for (ggml_backend_t backend : scheduler_backends_) {
-        ggml_backend_dev_t device = ggml_backend_get_device(backend);
+        ggml_backend_dev_t device   = ggml_backend_get_device(backend);
         ggml_backend_reg_t registry = ggml_backend_dev_backend_reg(device);
         if (registry == nullptr) {
             continue;
@@ -156,17 +155,15 @@ bool BackendPlan::assign_to_primary(ggml_backend_sched_t scheduler, ggml_tensor 
     return true;
 }
 
-BackendPlacement BackendPlan::inspect_placement(ggml_backend_sched_t scheduler,
-                                                const ggml_cgraph *   graph) const {
+BackendPlacement BackendPlan::inspect_placement(ggml_backend_sched_t scheduler, const ggml_cgraph * graph) const {
     BackendPlacement placement;
     if (scheduler == nullptr || graph == nullptr) {
         return placement;
     }
-    auto * mutable_graph = const_cast<ggml_cgraph *>(graph);
-    const int node_count = ggml_graph_n_nodes(mutable_graph);
-    placement.node_count = static_cast<uint64_t>(node_count);
-    placement.split_count =
-        static_cast<uint64_t>(std::max(0, ggml_backend_sched_get_n_splits(scheduler)));
+    auto *    mutable_graph = const_cast<ggml_cgraph *>(graph);
+    const int node_count    = ggml_graph_n_nodes(mutable_graph);
+    placement.node_count    = static_cast<uint64_t>(node_count);
+    placement.split_count   = static_cast<uint64_t>(std::max(0, ggml_backend_sched_get_n_splits(scheduler)));
     for (int node_index = 0; node_index < node_count; ++node_index) {
         ggml_tensor * node = ggml_graph_node(mutable_graph, node_index);
         if (ggml_is_view(node)) {
@@ -217,8 +214,8 @@ void BackendPlan::log_placement_if_enabled(const char *         stage,
                  static_cast<unsigned long long>(placement.unassigned_node_count),
                  static_cast<unsigned long long>(placement.split_count));
 
-    auto * mutable_graph = const_cast<ggml_cgraph *>(graph);
-    const int node_count = ggml_graph_n_nodes(mutable_graph);
+    auto *    mutable_graph = const_cast<ggml_cgraph *>(graph);
+    const int node_count    = ggml_graph_n_nodes(mutable_graph);
     for (int node_index = 0; node_index < node_count; ++node_index) {
         ggml_tensor * node = ggml_graph_node(mutable_graph, node_index);
         if (ggml_is_view(node)) {
@@ -229,13 +226,11 @@ void BackendPlan::log_placement_if_enabled(const char *         stage,
             continue;
         }
         const char * backend_name = backend == nullptr ? "unassigned" : ggml_backend_name(backend);
-        const char * tensor_name = ggml_get_name(node);
-        const char * operation = ggml_op_desc(node);
-        std::fprintf(stderr,
-                     "synth_backend_plan: stage=%s fallback_node=%d backend=%s op=%s tensor=%s\n",
+        const char * tensor_name  = ggml_get_name(node);
+        const char * operation    = ggml_op_desc(node);
+        std::fprintf(stderr, "synth_backend_plan: stage=%s fallback_node=%d backend=%s op=%s tensor=%s\n",
                      stage == nullptr ? "unknown" : stage, node_index,
-                     backend_name == nullptr ? "unknown" : backend_name,
-                     operation == nullptr ? "unknown" : operation,
+                     backend_name == nullptr ? "unknown" : backend_name, operation == nullptr ? "unknown" : operation,
                      tensor_name == nullptr || tensor_name[0] == '\0' ? "(unnamed)" : tensor_name);
     }
 }

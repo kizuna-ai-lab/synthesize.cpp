@@ -19,8 +19,8 @@ template <typename Integer> bool parse_integer(const std::string & text, Integer
     if (text.empty()) {
         return false;
     }
-    const char * begin = text.data();
-    const char * end   = begin + text.size();
+    const char * begin  = text.data();
+    const char * end    = begin + text.size();
     const auto   result = std::from_chars(begin, end, output, 10);
     return result.ec == std::errc{} && result.ptr == end;
 }
@@ -29,8 +29,8 @@ bool parse_rate(const std::string & text, float & output) {
     if (text.empty()) {
         return false;
     }
-    char * end = nullptr;
-    errno      = 0;
+    char * end        = nullptr;
+    errno             = 0;
     const float value = std::strtof(text.c_str(), &end);
     if (errno == ERANGE || end != text.c_str() + text.size() || !std::isfinite(value) || value <= 0.0f) {
         return false;
@@ -56,7 +56,7 @@ bool parse_token_ids(const std::string & text, std::vector<int32_t> & output) {
         if (position == start) {
             return false;
         }
-        int32_t token = 0;
+        int32_t    token  = 0;
         const auto result = std::from_chars(text.data() + start, text.data() + position, token, 10);
         if (result.ec != std::errc{} || result.ptr != text.data() + position) {
             return false;
@@ -106,16 +106,13 @@ bool parse_backend(const std::string & text, synth_backend_request_t & output) {
 }
 
 void write_u16(std::ostream & output, uint16_t value) {
-    const unsigned char bytes[] = { static_cast<unsigned char>(value),
-                                    static_cast<unsigned char>(value >> 8) };
+    const unsigned char bytes[] = { static_cast<unsigned char>(value), static_cast<unsigned char>(value >> 8) };
     output.write(reinterpret_cast<const char *>(bytes), sizeof(bytes));
 }
 
 void write_u32(std::ostream & output, uint32_t value) {
-    const unsigned char bytes[] = { static_cast<unsigned char>(value),
-                                    static_cast<unsigned char>(value >> 8),
-                                    static_cast<unsigned char>(value >> 16),
-                                    static_cast<unsigned char>(value >> 24) };
+    const unsigned char bytes[] = { static_cast<unsigned char>(value), static_cast<unsigned char>(value >> 8),
+                                    static_cast<unsigned char>(value >> 16), static_cast<unsigned char>(value >> 24) };
     output.write(reinterpret_cast<const char *>(bytes), sizeof(bytes));
 }
 
@@ -210,8 +207,7 @@ bool parse_arguments(int argc, const char * const * argv, Options & output, std:
         error = "--output is required";
         return false;
     }
-    if (input_count != 1 ||
-        (output.input_kind != SYNTH_INPUT_TOKEN_IDS && output.linguistic_input.empty())) {
+    if (input_count != 1 || (output.input_kind != SYNTH_INPUT_TOKEN_IDS && output.linguistic_input.empty())) {
         error = "exactly one non-empty --text, --phonemes, or --token-ids input is required";
         return false;
     }
@@ -219,23 +215,22 @@ bool parse_arguments(int argc, const char * const * argv, Options & output, std:
 }
 
 const char * usage_text() {
-    return
-        "Usage: synthesize-cli --model MODEL.gguf --output AUDIO.wav INPUT [OPTIONS]\n"
-        "\n"
-        "Input (exactly one):\n"
-        "  --text UTF8                 Text input\n"
-        "  --phonemes UTF8             Phoneme input\n"
-        "  --token-ids IDS             Comma- or whitespace-separated int32 token IDs\n"
-        "\n"
-        "Options:\n"
-        "  --language TAG              BCP 47 language tag\n"
-        "  --voice ID                  Preset Voice identifier\n"
-        "  --seed N|random             Synthesis seed (default: 0)\n"
-        "  --rate F                    Speaking-rate multiplier (default: 1.0)\n"
-        "  --max-output-frames N       Request output limit (default: model limit)\n"
-        "  --backend NAME              auto, cpu, cpu-accel, cuda, metal, or vulkan\n"
-        "  --device N                  Device index (default: -1, automatic)\n"
-        "  -h, --help                  Show this help\n";
+    return "Usage: synthesize-cli --model MODEL.gguf --output AUDIO.wav INPUT [OPTIONS]\n"
+           "\n"
+           "Input (exactly one):\n"
+           "  --text UTF8                 Text input\n"
+           "  --phonemes UTF8             Phoneme input\n"
+           "  --token-ids IDS             Comma- or whitespace-separated int32 token IDs\n"
+           "\n"
+           "Options:\n"
+           "  --language TAG              BCP 47 language tag\n"
+           "  --voice ID                  Preset Voice identifier\n"
+           "  --seed N|random             Synthesis seed (default: 0)\n"
+           "  --rate F                    Speaking-rate multiplier (default: 1.0)\n"
+           "  --max-output-frames N       Request output limit (default: model limit)\n"
+           "  --backend NAME              auto, cpu, cpu-accel, cuda, metal, or vulkan\n"
+           "  --device N                  Device index (default: -1, automatic)\n"
+           "  -h, --help                  Show this help\n";
 }
 
 bool write_f32_wav(const std::string & path,
@@ -247,9 +242,9 @@ bool write_f32_wav(const std::string & path,
     static_assert(sizeof(float) == 4, "the CLI requires 32-bit float");
     static_assert(std::numeric_limits<float>::is_iec559, "the CLI requires IEEE-754 float");
     error.clear();
-    if (path.empty() || sample_rate == 0 || channel_count == 0 ||
-        (samples == nullptr && frame_count != 0) || channel_count > UINT16_MAX / sizeof(float) ||
-        frame_count > UINT32_MAX || frame_count > UINT32_MAX / channel_count / sizeof(float)) {
+    if (path.empty() || sample_rate == 0 || channel_count == 0 || (samples == nullptr && frame_count != 0) ||
+        channel_count > UINT16_MAX / sizeof(float) || frame_count > UINT32_MAX ||
+        frame_count > UINT32_MAX / channel_count / sizeof(float)) {
         error = "invalid or RIFF-incompatible audio shape";
         return false;
     }

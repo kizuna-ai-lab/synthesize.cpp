@@ -3,11 +3,11 @@
 #include <stddef.h>
 #include <string.h>
 
-#define CHECK(condition)       \
-    do {                       \
-        if (!(condition)) {    \
-            return __LINE__;   \
-        }                      \
+#define CHECK(condition)     \
+    do {                     \
+        if (!(condition)) {  \
+            return __LINE__; \
+        }                    \
     } while (0)
 
 static synth_sink_result_t SYNTH_CALL accept_audio(void * user_data, const synth_audio_chunk_t * chunk) {

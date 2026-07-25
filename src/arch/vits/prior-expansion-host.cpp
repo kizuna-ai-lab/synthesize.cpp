@@ -31,10 +31,10 @@ bool all_finite(const std::vector<float> & values) {
 
 }  // namespace
 
-synth_status_t prepare_prior_expansion_input(const TextEncoderOutput &       text,
-                                             const DurationOutput &          duration,
-                                             PreparedPriorExpansionInput &  output) {
-    output = {};
+synth_status_t prepare_prior_expansion_input(const TextEncoderOutput &     text,
+                                             const DurationOutput &        duration,
+                                             PreparedPriorExpansionInput & output) {
+    output                    = {};
     size_t text_elements      = 0;
     size_t attention_elements = 0;
     if (text.channels == 0 || text.token_count == 0 || text.token_count != duration.token_count ||
@@ -53,8 +53,8 @@ synth_status_t prepare_prior_expansion_input(const TextEncoderOutput &       tex
     output.logs_p_channel_fastest.resize(text_elements);
     for (size_t channel = 0; channel < text.channels; ++channel) {
         for (size_t token = 0; token < text.token_count; ++token) {
-            const size_t source      = token + static_cast<size_t>(text.token_count) * channel;
-            const size_t destination = channel + static_cast<size_t>(text.channels) * token;
+            const size_t source                        = token + static_cast<size_t>(text.token_count) * channel;
+            const size_t destination                   = channel + static_cast<size_t>(text.channels) * token;
             output.m_p_channel_fastest[destination]    = text.m_p[source];
             output.logs_p_channel_fastest[destination] = text.logs_p[source];
         }
@@ -67,7 +67,7 @@ synth_status_t finalize_prior_expansion_output(uint32_t                   channe
                                                const std::vector<float> & m_p_channel_fastest,
                                                const std::vector<float> & logs_p_channel_fastest,
                                                PriorExpansionOutput &     output) {
-    output = {};
+    output          = {};
     size_t elements = 0;
     if (!checked_elements(channels, frame_count, elements) || m_p_channel_fastest.size() != elements ||
         logs_p_channel_fastest.size() != elements || !all_finite(m_p_channel_fastest) ||
@@ -81,8 +81,8 @@ synth_status_t finalize_prior_expansion_output(uint32_t                   channe
     output.logs_p.resize(elements);
     for (size_t channel = 0; channel < channels; ++channel) {
         for (size_t frame = 0; frame < frame_count; ++frame) {
-            const size_t source      = channel + static_cast<size_t>(channels) * frame;
-            const size_t destination = frame + static_cast<size_t>(frame_count) * channel;
+            const size_t source        = channel + static_cast<size_t>(channels) * frame;
+            const size_t destination   = frame + static_cast<size_t>(frame_count) * channel;
             output.m_p[destination]    = m_p_channel_fastest[source];
             output.logs_p[destination] = logs_p_channel_fastest[source];
         }

@@ -43,8 +43,40 @@ ggml_tensor * conv1d(ggml_context * context,
                      ggml_tensor *  input,
                      ggml_tensor *  weight,
                      ggml_tensor *  bias,
+                     int            stride,
                      int            padding,
                      int            dilation);
+
+// Transposed 1-D convolution across all channels, the generator's upsampler.
+//
+// GGML's own transposed convolution has no padding, so this reuses the scatter
+// construction the depthwise version documents: interleave `stride - 1` zeros,
+// widen the ends, then accumulate one shifted matrix multiply per kernel tap.
+// Reading the taps back to front is what supplies the definition's kernel
+// reversal, so the stored weights stay exactly as the checkpoint holds them.
+//
+// `input` is [in_channels, length] and `weight` is [kernel, out_channels,
+// in_channels], the layout GGML reports for PyTorch's [in, out, kernel].
+// `bias` may be null.
+ggml_tensor * transpose_conv1d(ggml_context * context,
+                               ggml_tensor *  input,
+                               ggml_tensor *  weight,
+                               ggml_tensor *  bias,
+                               int64_t        stride,
+                               int64_t        padding,
+                               int64_t        output_padding);
+
+// Output length of transpose_conv1d.
+int64_t transpose_conv1d_length(int64_t length,
+                                int64_t kernel,
+                                int64_t stride,
+                                int64_t padding,
+                                int64_t output_padding);
+
+// Prepends one frame by reflecting across the first one, so the new leading
+// frame is the second frame of the input. This is ReflectionPad1d((1, 0)), which
+// the generator applies before its last residual sum.
+ggml_tensor * reflect_pad_left_1(ggml_context * context, ggml_tensor * input);
 
 // Instance norm: each channel is normalized across time, which is a different
 // axis from layer norm's normalization across channels.

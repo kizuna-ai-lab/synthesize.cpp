@@ -16,8 +16,7 @@ int main() {
     SYNTH_TEST_CHECK(graph.m_p != nullptr && graph.m_p->ne[0] == 2 && graph.m_p->ne[1] == 3);
     SYNTH_TEST_CHECK(graph.logs_p != nullptr && graph.logs_p->ne[0] == 2 && graph.logs_p->ne[1] == 3);
     SYNTH_TEST_CHECK(graph.attention != nullptr && graph.attention->ne[0] == 3 && graph.attention->ne[1] == 4);
-    SYNTH_TEST_CHECK(graph.m_p_expanded != nullptr && graph.m_p_expanded->ne[0] == 2 &&
-                     graph.m_p_expanded->ne[1] == 4);
+    SYNTH_TEST_CHECK(graph.m_p_expanded != nullptr && graph.m_p_expanded->ne[0] == 2 && graph.m_p_expanded->ne[1] == 4);
     SYNTH_TEST_CHECK(graph.logs_p_expanded != nullptr && graph.logs_p_expanded->ne[0] == 2 &&
                      graph.logs_p_expanded->ne[1] == 4);
     SYNTH_TEST_CHECK(std::strcmp(graph.m_p_expanded->name, "prior.m_p_expanded") == 0);
@@ -32,10 +31,7 @@ int main() {
     const std::vector<float> m_p       = { 1.0f, 10.0f, 2.0f, 20.0f, 3.0f, 30.0f };
     const std::vector<float> logs_p    = { -1.0f, -10.0f, -2.0f, -20.0f, -3.0f, -30.0f };
     const std::vector<float> attention = {
-        1.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f,
-        0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f,
     };
     ggml_backend_tensor_set(graph.m_p, m_p.data(), 0, m_p.size() * sizeof(float));
     ggml_backend_tensor_set(graph.logs_p, logs_p.data(), 0, logs_p.size() * sizeof(float));
@@ -46,8 +42,7 @@ int main() {
     ggml_backend_tensor_get(graph.m_p_expanded, actual_m.data(), 0, actual_m.size() * sizeof(float));
     ggml_backend_tensor_get(graph.logs_p_expanded, actual_logs.data(), 0, actual_logs.size() * sizeof(float));
     SYNTH_TEST_CHECK(actual_m == std::vector<float>({ 1.0f, 10.0f, 2.0f, 20.0f, 2.0f, 20.0f, 3.0f, 30.0f }));
-    SYNTH_TEST_CHECK(actual_logs ==
-                     std::vector<float>({ -1.0f, -10.0f, -2.0f, -20.0f, -2.0f, -20.0f, -3.0f, -30.0f }));
+    SYNTH_TEST_CHECK(actual_logs == std::vector<float>({ -1.0f, -10.0f, -2.0f, -20.0f, -2.0f, -20.0f, -3.0f, -30.0f }));
     ggml_backend_sched_free(scheduler);
     ggml_backend_free(backend);
 

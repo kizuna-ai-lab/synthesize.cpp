@@ -29,12 +29,12 @@ int main() {
                      SYNTH_DEVICE_MEMORY_INFO_VALID);
     SYNTH_TEST_CHECK(synth::device_memory_flags(BackendKind::Cpu, GGML_BACKEND_DEVICE_TYPE_CPU, 1) ==
                      (SYNTH_DEVICE_MEMORY_INFO_VALID | SYNTH_DEVICE_MEMORY_INFO_APPROXIMATE));
-    SYNTH_TEST_CHECK(synth::device_memory_flags(BackendKind::Cuda, GGML_BACKEND_DEVICE_TYPE_IGPU, 1) ==
-                     (SYNTH_DEVICE_MEMORY_INFO_VALID | SYNTH_DEVICE_MEMORY_SHARED |
-                      SYNTH_DEVICE_MEMORY_INFO_APPROXIMATE));
-    SYNTH_TEST_CHECK(synth::device_memory_flags(BackendKind::Metal, GGML_BACKEND_DEVICE_TYPE_GPU, 1) ==
-                     (SYNTH_DEVICE_MEMORY_INFO_VALID | SYNTH_DEVICE_MEMORY_SHARED |
-                      SYNTH_DEVICE_MEMORY_INFO_APPROXIMATE));
+    SYNTH_TEST_CHECK(
+        synth::device_memory_flags(BackendKind::Cuda, GGML_BACKEND_DEVICE_TYPE_IGPU, 1) ==
+        (SYNTH_DEVICE_MEMORY_INFO_VALID | SYNTH_DEVICE_MEMORY_SHARED | SYNTH_DEVICE_MEMORY_INFO_APPROXIMATE));
+    SYNTH_TEST_CHECK(
+        synth::device_memory_flags(BackendKind::Metal, GGML_BACKEND_DEVICE_TYPE_GPU, 1) ==
+        (SYNTH_DEVICE_MEMORY_INFO_VALID | SYNTH_DEVICE_MEMORY_SHARED | SYNTH_DEVICE_MEMORY_INFO_APPROXIMATE));
 
     ggml_backend_dev_t selected = nullptr;
     SYNTH_TEST_CHECK(synth::resolve_cpu_device(SYNTH_BACKEND_AUTO, -1, &selected) == SYNTH_OK);
@@ -52,8 +52,7 @@ int main() {
                      SYNTH_OK);
     SYNTH_TEST_CHECK(selected == ggml_backend_dev_get(cpu_index));
     SYNTH_TEST_CHECK(synth::resolve_cpu_device(SYNTH_BACKEND_CPU, -2, &selected) == SYNTH_ERR_INVALID_ARG);
-    SYNTH_TEST_CHECK(synth::resolve_cpu_device(SYNTH_BACKEND_CPU,
-                                               static_cast<int32_t>(synth::backend_device_count()),
+    SYNTH_TEST_CHECK(synth::resolve_cpu_device(SYNTH_BACKEND_CPU, static_cast<int32_t>(synth::backend_device_count()),
                                                &selected) == SYNTH_ERR_BACKEND);
     SYNTH_TEST_CHECK(synth::resolve_cpu_device(SYNTH_BACKEND_CUDA, -1, &selected) == SYNTH_ERR_BACKEND);
     SYNTH_TEST_CHECK(synth::resolve_cpu_device(SYNTH_BACKEND_CPU, -1, nullptr) == SYNTH_ERR_INVALID_ARG);
@@ -61,13 +60,11 @@ int main() {
     selected = nullptr;
     SYNTH_TEST_CHECK(synth::resolve_requested_device(SYNTH_BACKEND_CPU, -1, &selected) == SYNTH_OK);
     SYNTH_TEST_CHECK(selected != nullptr && synth::classify_backend_device(selected) == BackendKind::Cpu);
-    const synth_status_t cuda_status =
-        synth::resolve_requested_device(SYNTH_BACKEND_CUDA, -1, &selected);
+    const synth_status_t cuda_status = synth::resolve_requested_device(SYNTH_BACKEND_CUDA, -1, &selected);
     if (synth::backend_available(SYNTH_BACKEND_CUDA) == SYNTH_TRUE) {
         SYNTH_TEST_CHECK(cuda_status == SYNTH_OK);
         SYNTH_TEST_CHECK(selected != nullptr && synth::classify_backend_device(selected) == BackendKind::Cuda);
-        SYNTH_TEST_CHECK(synth::resolve_requested_device(SYNTH_BACKEND_CUDA,
-                                                         static_cast<int32_t>(cpu_index),
+        SYNTH_TEST_CHECK(synth::resolve_requested_device(SYNTH_BACKEND_CUDA, static_cast<int32_t>(cpu_index),
                                                          &selected) == SYNTH_ERR_BACKEND);
     } else {
         SYNTH_TEST_CHECK(cuda_status == SYNTH_ERR_BACKEND && selected == nullptr);

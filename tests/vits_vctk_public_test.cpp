@@ -46,8 +46,7 @@ int main(int argc, char ** argv) {
     synth_model_capabilities_t capabilities;
     synth_model_capabilities_init(&capabilities, sizeof(capabilities));
     SYNTH_TEST_CHECK(synth_model_get_capabilities(model, &capabilities) == SYNTH_OK);
-    SYNTH_TEST_CHECK(
-        capabilities.input_flags == (SYNTH_INPUT_SUPPORT_PHONEMES_UTF8 | SYNTH_INPUT_SUPPORT_TOKEN_IDS));
+    SYNTH_TEST_CHECK(capabilities.input_flags == (SYNTH_INPUT_SUPPORT_PHONEMES_UTF8 | SYNTH_INPUT_SUPPORT_TOKEN_IDS));
 
     uint64_t voice_count = 0;
     SYNTH_TEST_CHECK(synth_model_get_preset_voice_count(model, &voice_count) == SYNTH_OK && voice_count == 109);
@@ -84,18 +83,18 @@ int main(int argc, char ** argv) {
     SYNTH_TEST_CHECK(first_result.resolved_voice_id_size == 11 &&
                      std::memcmp(first_result.resolved_voice_id, "speaker-004", 11) == 0);
 
-    const char phonemes[] = "ˈeɪ.";
-    request.input_kind    = SYNTH_INPUT_PHONEMES_UTF8;
-    request.input_data    = phonemes;
-    request.input_count   = sizeof(phonemes) - 1;
+    const char phonemes[]                = "ˈeɪ.";
+    request.input_kind                   = SYNTH_INPUT_PHONEMES_UTF8;
+    request.input_data                   = phonemes;
+    request.input_count                  = sizeof(phonemes) - 1;
     synth_audio_buffer_t * from_phonemes = nullptr;
     SYNTH_TEST_CHECK(synth_synthesize_to_buffer(context, &request, &from_phonemes, nullptr) == SYNTH_OK);
     SYNTH_TEST_CHECK(from_phonemes != nullptr && from_phonemes->frame_count == audio->frame_count);
     SYNTH_TEST_CHECK(std::memcmp(from_phonemes->samples, audio->samples, audio->frame_count * sizeof(float)) == 0);
 
-    request.input_kind  = SYNTH_INPUT_TOKEN_IDS;
-    request.input_data  = tokens.data();
-    request.input_count = tokens.size();
+    request.input_kind            = SYNTH_INPUT_TOKEN_IDS;
+    request.input_data            = tokens.data();
+    request.input_count           = tokens.size();
     synth_audio_buffer_t * repeat = nullptr;
     synth_result_t         repeat_result;
     synth_result_init(&repeat_result, sizeof(repeat_result));

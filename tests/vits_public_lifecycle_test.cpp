@@ -71,8 +71,7 @@ int main(int argc, char ** argv) {
     synth_model_capabilities_t capabilities;
     synth_model_capabilities_init(&capabilities, sizeof(capabilities));
     SYNTH_TEST_CHECK(synth_model_get_capabilities(model, &capabilities) == SYNTH_OK);
-    SYNTH_TEST_CHECK(
-        capabilities.input_flags == (SYNTH_INPUT_SUPPORT_PHONEMES_UTF8 | SYNTH_INPUT_SUPPORT_TOKEN_IDS));
+    SYNTH_TEST_CHECK(capabilities.input_flags == (SYNTH_INPUT_SUPPORT_PHONEMES_UTF8 | SYNTH_INPUT_SUPPORT_TOKEN_IDS));
     SYNTH_TEST_CHECK(capabilities.capability_flags ==
                      (SYNTH_MODEL_CAPABILITY_SPEAKING_RATE | SYNTH_MODEL_CAPABILITY_STOCHASTIC));
     SYNTH_TEST_CHECK(capabilities.output_sample_rate == 22050 && capabilities.output_channel_count == 1);

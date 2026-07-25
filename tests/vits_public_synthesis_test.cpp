@@ -32,9 +32,8 @@ struct AudioCapture {
 synth_sink_result_t SYNTH_CALL capture_audio(void * user_data, const synth_audio_chunk_t * chunk) {
     auto * capture = static_cast<AudioCapture *>(user_data);
     ++capture->calls;
-    if (chunk == nullptr || chunk->struct_size != sizeof(*chunk) ||
-        chunk->frame_offset != capture->samples.size() || chunk->sample_rate != 22050 ||
-        chunk->channel_count != 1) {
+    if (chunk == nullptr || chunk->struct_size != sizeof(*chunk) || chunk->frame_offset != capture->samples.size() ||
+        chunk->sample_rate != 22050 || chunk->channel_count != 1) {
         capture->valid = false;
         return SYNTH_SINK_ERROR;
     }
@@ -64,14 +63,13 @@ int main(int argc, char ** argv) {
 
     synth_model_load_params_t params;
     synth_model_load_params_init(&params, sizeof(params));
-    params.backend = argc == 4 && std::strcmp(argv[3], "cuda") == 0 ? SYNTH_BACKEND_CUDA : SYNTH_BACKEND_CPU;
+    params.backend        = argc == 4 && std::strcmp(argv[3], "cuda") == 0 ? SYNTH_BACKEND_CUDA : SYNTH_BACKEND_CPU;
     synth_model_t * model = nullptr;
     SYNTH_TEST_CHECK(synth_model_load(argv[1], &params, &model) == SYNTH_OK && model != nullptr);
     synth_model_capabilities_t capabilities;
     synth_model_capabilities_init(&capabilities, sizeof(capabilities));
     SYNTH_TEST_CHECK(synth_model_get_capabilities(model, &capabilities) == SYNTH_OK);
-    SYNTH_TEST_CHECK(
-        capabilities.input_flags == (SYNTH_INPUT_SUPPORT_PHONEMES_UTF8 | SYNTH_INPUT_SUPPORT_TOKEN_IDS));
+    SYNTH_TEST_CHECK(capabilities.input_flags == (SYNTH_INPUT_SUPPORT_PHONEMES_UTF8 | SYNTH_INPUT_SUPPORT_TOKEN_IDS));
     synth_context_t * context = nullptr;
     SYNTH_TEST_CHECK(synth_context_create(model, &context) == SYNTH_OK && context != nullptr);
 
@@ -97,10 +95,10 @@ int main(int argc, char ** argv) {
     SYNTH_TEST_CHECK(first_result.resolved_voice_id == nullptr && first_result.resolved_voice_id_size == 0);
     SYNTH_TEST_CHECK(all_finite(first->samples, first->frame_count));
 
-    const char phonemes[] = "ˈeɪ.";
-    request.input_kind    = SYNTH_INPUT_PHONEMES_UTF8;
-    request.input_data    = phonemes;
-    request.input_count   = sizeof(phonemes) - 1;
+    const char phonemes[]                = "ˈeɪ.";
+    request.input_kind                   = SYNTH_INPUT_PHONEMES_UTF8;
+    request.input_data                   = phonemes;
+    request.input_count                  = sizeof(phonemes) - 1;
     synth_audio_buffer_t * from_phonemes = nullptr;
     SYNTH_TEST_CHECK(synth_synthesize_to_buffer(context, &request, &from_phonemes, nullptr) == SYNTH_OK);
     SYNTH_TEST_CHECK(from_phonemes != nullptr && from_phonemes->frame_count == first->frame_count);
@@ -117,7 +115,7 @@ int main(int argc, char ** argv) {
     SYNTH_TEST_CHECK(std::memcmp(repeat->samples, first->samples, first->frame_count * sizeof(float)) == 0);
 
     request.seed = 43;
-    AudioCapture different;
+    AudioCapture       different;
     synth_audio_sink_t sink;
     synth_audio_sink_init(&sink, sizeof(sink));
     sink.write     = capture_audio;
@@ -128,9 +126,8 @@ int main(int argc, char ** argv) {
     SYNTH_TEST_CHECK(different.valid && different.calls == 1 && !different.samples.empty());
     SYNTH_TEST_CHECK(different_result.actual_seed == 43);
     const bool different_shape = different.samples.size() != first->frame_count;
-    const bool different_pcm = !different_shape &&
-                               std::memcmp(different.samples.data(), first->samples,
-                                           first->frame_count * sizeof(float)) != 0;
+    const bool different_pcm   = !different_shape && std::memcmp(different.samples.data(), first->samples,
+                                                                 first->frame_count * sizeof(float)) != 0;
     SYNTH_TEST_CHECK(different_shape || different_pcm);
 
     request.seed              = 42;
@@ -142,10 +139,10 @@ int main(int argc, char ** argv) {
     SYNTH_TEST_CHECK(synth_synthesize(context, &request, &sink, &limited_result) == SYNTH_ERR_OUTPUT_LIMIT);
     SYNTH_TEST_CHECK(limited.calls == 0 && limited_result.frames_emitted == 0);
 
-    request.max_output_frames = 0;
-    request.should_cancel     = cancel_now;
+    request.max_output_frames        = 0;
+    request.should_cancel            = cancel_now;
     synth_audio_buffer_t * cancelled = reinterpret_cast<synth_audio_buffer_t *>(uintptr_t(1));
-    synth_result_t cancelled_result;
+    synth_result_t         cancelled_result;
     synth_result_init(&cancelled_result, sizeof(cancelled_result));
     SYNTH_TEST_CHECK(synth_synthesize_to_buffer(context, &request, &cancelled, &cancelled_result) ==
                      SYNTH_ERR_CANCELLED);

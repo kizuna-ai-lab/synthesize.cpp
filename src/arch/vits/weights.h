@@ -28,7 +28,7 @@ struct HParams {
     uint32_t                           conditioning_channels        = 0;
     std::vector<std::string>           preset_voice_ids;
     std::vector<uint32_t>              preset_voice_flags;
-    bool                               frontend_present          = false;
+    bool                               frontend_present = false;
     SymbolMapFrontendConfig            frontend_config;
     uint32_t                           input_flags               = 0;
     uint32_t                           capability_flags          = 0;

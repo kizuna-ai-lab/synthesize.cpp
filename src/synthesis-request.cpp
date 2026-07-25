@@ -189,9 +189,8 @@ synth_status_t prepare_synthesis_request(const vits::ModelInfo &    info,
             const auto * tokens = static_cast<const int32_t *>(request->input_data);
             output.token_ids.assign(tokens, tokens + static_cast<size_t>(request->input_count));
         } else {
-            const synth_status_t frontend_status =
-                info.text_frontend->prepare(input_kind, request->input_data, request->input_count,
-                                            info.max_input_tokens, output.token_ids);
+            const synth_status_t frontend_status = info.text_frontend->prepare(
+                input_kind, request->input_data, request->input_count, info.max_input_tokens, output.token_ids);
             if (frontend_status != SYNTH_OK) {
                 output = {};
                 return frontend_status;

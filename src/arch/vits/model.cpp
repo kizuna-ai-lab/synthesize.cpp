@@ -68,17 +68,17 @@ synth_status_t stream_tensor_data(const std::string & path, const gguf_context *
 }  // namespace
 
 struct Model::Impl {
-    gguf_context *               gguf            = nullptr;
-    ggml_context *               weights_context = nullptr;
-    std::unique_ptr<BackendPlan> backend_plan;
-    ggml_backend_buffer_t        weights_buffer = nullptr;
-    HParams                      hparams;
+    gguf_context *                      gguf            = nullptr;
+    ggml_context *                      weights_context = nullptr;
+    std::unique_ptr<BackendPlan>        backend_plan;
+    ggml_backend_buffer_t               weights_buffer = nullptr;
+    HParams                             hparams;
     std::shared_ptr<const TextFrontend> text_frontend;
-    VoiceWeights                 voice_weights;
-    TextWeights                  text_weights;
-    DurationWeights              duration_weights;
-    FlowWeights                  flow_weights;
-    DecoderWeights               decoder_weights;
+    VoiceWeights                        voice_weights;
+    TextWeights                         text_weights;
+    DurationWeights                     duration_weights;
+    FlowWeights                         flow_weights;
+    DecoderWeights                      decoder_weights;
 
     synth_status_t compute_duration_stage(const std::vector<int32_t> & token_ids,
                                           const std::vector<float> &   duration_noise,

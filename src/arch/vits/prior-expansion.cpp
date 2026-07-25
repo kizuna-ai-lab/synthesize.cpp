@@ -7,9 +7,9 @@
 namespace synth::vits {
 
 PriorExpansionGraph build_prior_expansion_graph(ggml_context * context,
-                                                 int64_t        channels,
-                                                 int64_t        token_count,
-                                                 int64_t        frame_count) {
+                                                int64_t        channels,
+                                                int64_t        token_count,
+                                                int64_t        frame_count) {
     PriorExpansionGraph result;
     if (context == nullptr || channels <= 0 || token_count <= 0 || frame_count <= 0) {
         std::fprintf(stderr, "vits: invalid prior-expansion graph request\n");
@@ -28,10 +28,10 @@ PriorExpansionGraph build_prior_expansion_graph(ggml_context * context,
 
     ggml_tensor * m_p_transposed    = ggml_cont(context, ggml_transpose(context, result.m_p));
     ggml_tensor * logs_p_transposed = ggml_cont(context, ggml_transpose(context, result.logs_p));
-    result.m_p_expanded = ggml_cont(
-        context, ggml_transpose(context, ggml_mul_mat(context, result.attention, m_p_transposed)));
-    result.logs_p_expanded = ggml_cont(
-        context, ggml_transpose(context, ggml_mul_mat(context, result.attention, logs_p_transposed)));
+    result.m_p_expanded =
+        ggml_cont(context, ggml_transpose(context, ggml_mul_mat(context, result.attention, m_p_transposed)));
+    result.logs_p_expanded =
+        ggml_cont(context, ggml_transpose(context, ggml_mul_mat(context, result.attention, logs_p_transposed)));
     ggml_set_name(result.m_p_expanded, "prior.m_p_expanded");
     ggml_set_name(result.logs_p_expanded, "prior.logs_p_expanded");
 

@@ -27,9 +27,10 @@ ggml_tensor * conv1d(ggml_context * context,
                      ggml_tensor *  input,
                      ggml_tensor *  weight,
                      ggml_tensor *  bias,
+                     int            stride,
                      int            padding,
                      int            dilation) {
-    if (context == nullptr || input == nullptr || weight == nullptr) {
+    if (context == nullptr || input == nullptr || weight == nullptr || stride < 1) {
         return nullptr;
     }
     const int64_t in_channels  = weight->ne[1];
@@ -40,7 +41,7 @@ ggml_tensor * conv1d(ggml_context * context,
     // im2col wants the time axis first; the result is returned channel-first.
     ggml_tensor * time_major = ggml_cont(context, ggml_transpose(context, input));
     ggml_tensor * columns =
-        ggml_im2col(context, weight, time_major, 1, 0, padding, 0, dilation, 0, false, weight->type);
+        ggml_im2col(context, weight, time_major, stride, 0, padding, 0, dilation, 0, false, weight->type);
     ggml_tensor * kernel_2d = ggml_reshape_2d(context, weight, weight->ne[0] * weight->ne[1], out_channels);
     ggml_tensor * output =
         ggml_mul_mat(context, kernel_2d, ggml_reshape_2d(context, columns, columns->ne[0], columns->ne[1]));
@@ -102,6 +103,76 @@ int64_t depthwise_transpose_conv1d_length(int64_t length,
                                           int64_t padding,
                                           int64_t output_padding) {
     return (length - 1) * stride - 2 * padding + kernel + output_padding;
+}
+
+int64_t transpose_conv1d_length(int64_t length,
+                                int64_t kernel,
+                                int64_t stride,
+                                int64_t padding,
+                                int64_t output_padding) {
+    return (length - 1) * stride - 2 * padding + kernel + output_padding;
+}
+
+ggml_tensor * transpose_conv1d(ggml_context * context,
+                               ggml_tensor *  input,
+                               ggml_tensor *  weight,
+                               ggml_tensor *  bias,
+                               int64_t        stride,
+                               int64_t        padding,
+                               int64_t        output_padding) {
+    if (context == nullptr || input == nullptr || weight == nullptr || stride < 1) {
+        return nullptr;
+    }
+    const int64_t in_channels  = input->ne[0];
+    const int64_t length       = input->ne[1];
+    const int64_t kernel       = weight->ne[0];
+    const int64_t out_channels = weight->ne[1];
+    if (kernel < 1 || out_channels < 1 || weight->ne[2] != in_channels) {
+        return nullptr;
+    }
+
+    const int64_t out_length = transpose_conv1d_length(length, kernel, stride, padding, output_padding);
+    const int64_t left       = kernel - 1 - padding;
+    const int64_t right      = kernel + output_padding - stride - padding;
+    if (out_length < 1 || left < 0 || right < 0) {
+        return nullptr;
+    }
+
+    ggml_tensor * spread = ggml_reshape_3d(context, input, in_channels, 1, length);
+    if (stride > 1) {
+        spread = ggml_pad(context, spread, 0, int(stride - 1), 0, 0);
+    }
+    spread = ggml_reshape_2d(context, ggml_cont(context, spread), in_channels, stride * length);
+
+    ggml_tensor * padded = ggml_pad_ext(context, spread, 0, 0, int(left), int(right), 0, 0, 0, 0);
+
+    ggml_tensor * accumulated = nullptr;
+    for (int64_t tap = 0; tap < kernel; ++tap) {
+        // Taps are read back to front, which is the definition's reversal.
+        ggml_tensor * window = ggml_view_2d(context, padded, in_channels, out_length, padded->nb[1],
+                                            size_t(kernel - 1 - tap) * padded->nb[1]);
+        // This tap's matrix, transposed so the input channels lead and the
+        // matrix multiply reduces over them.
+        ggml_tensor * slice  = ggml_view_3d(context, weight, 1, out_channels, in_channels, weight->nb[1], weight->nb[2],
+                                            size_t(tap) * weight->nb[0]);
+        slice                = ggml_cont(context, ggml_permute(context, slice, 0, 2, 1, 3));
+        slice                = ggml_reshape_2d(context, slice, in_channels, out_channels);
+        ggml_tensor * term   = ggml_mul_mat(context, slice, window);
+        accumulated          = accumulated == nullptr ? term : ggml_add(context, accumulated, term);
+    }
+    if (bias != nullptr) {
+        accumulated = ggml_add(context, accumulated, bias);
+    }
+    return accumulated;
+}
+
+ggml_tensor * reflect_pad_left_1(ggml_context * context, ggml_tensor * input) {
+    if (context == nullptr || input == nullptr || input->ne[1] < 2) {
+        return nullptr;
+    }
+    ggml_tensor * mirrored =
+        ggml_cont(context, ggml_view_2d(context, input, input->ne[0], 1, input->nb[1], input->nb[1]));
+    return ggml_concat(context, mirrored, input, 1);
 }
 
 ggml_tensor * depthwise_transpose_conv1d(ggml_context * context,

@@ -58,7 +58,7 @@ int main(int argc, char ** argv) {
     }
 
     std::unique_ptr<synth::vits::Model> model;
-    synth_status_t status = load_vits_runner_model(argv[1], argc == 6 ? argv[5] : "cpu", model);
+    synth_status_t                      status = load_vits_runner_model(argv[1], argc == 6 ? argv[5] : "cpu", model);
     if (status != SYNTH_OK) {
         std::cerr << "model load failed: " << synth_status_string(status) << "\n";
         return 4;

@@ -26,8 +26,8 @@ struct BackendPlacement {
 // priority with CPU last, as required by GGML's fallback scheduler.
 class BackendPlan {
   public:
-    static synth_status_t create(ggml_backend_dev_t           primary_device,
-                                 bool                         include_accelerators,
+    static synth_status_t create(ggml_backend_dev_t             primary_device,
+                                 bool                           include_accelerators,
                                  std::unique_ptr<BackendPlan> & output);
 
     ~BackendPlan();
@@ -36,18 +36,16 @@ class BackendPlan {
     BackendPlan(BackendPlan &&)                  = delete;
     BackendPlan & operator=(BackendPlan &&)      = delete;
 
-    ggml_backend_t primary() const;
+    ggml_backend_t     primary() const;
     ggml_backend_dev_t primary_device() const;
-    size_t scheduler_backend_count() const;
+    size_t             scheduler_backend_count() const;
     ggml_backend_dev_t scheduler_device(size_t index) const;
 
     ggml_backend_sched_t create_scheduler(size_t graph_size) const;
-    void set_threads(int threads) const;
-    bool assign_to_primary(ggml_backend_sched_t scheduler, ggml_tensor * tensor) const;
-    BackendPlacement inspect_placement(ggml_backend_sched_t scheduler, const ggml_cgraph * graph) const;
-    void log_placement_if_enabled(const char *         stage,
-                                  ggml_backend_sched_t scheduler,
-                                  const ggml_cgraph *  graph) const;
+    void                 set_threads(int threads) const;
+    bool                 assign_to_primary(ggml_backend_sched_t scheduler, ggml_tensor * tensor) const;
+    BackendPlacement     inspect_placement(ggml_backend_sched_t scheduler, const ggml_cgraph * graph) const;
+    void log_placement_if_enabled(const char * stage, ggml_backend_sched_t scheduler, const ggml_cgraph * graph) const;
 
   private:
     BackendPlan() = default;

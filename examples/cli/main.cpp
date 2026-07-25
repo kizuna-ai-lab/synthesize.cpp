@@ -57,7 +57,7 @@ int main(int argc, char ** argv) {
     load_params.diagnostics  = &diagnostics;
 
     synth_model_t * raw_model = nullptr;
-    synth_status_t  status = synth_model_load(options.model_path.c_str(), &load_params, &raw_model);
+    synth_status_t  status    = synth_model_load(options.model_path.c_str(), &load_params, &raw_model);
     std::unique_ptr<synth_model_t, ModelDeleter> model(raw_model);
     if (status != SYNTH_OK) {
         std::fprintf(stderr, "synthesize-cli: model load failed: %s\n", synth_status_string(status));
@@ -65,7 +65,7 @@ int main(int argc, char ** argv) {
     }
 
     synth_context_t * raw_context = nullptr;
-    status = synth_context_create(model.get(), &raw_context);
+    status                        = synth_context_create(model.get(), &raw_context);
     std::unique_ptr<synth_context_t, ContextDeleter> context(raw_context);
     if (status != SYNTH_OK) {
         std::fprintf(stderr, "synthesize-cli: context creation failed: %s\n", synth_status_string(status));
@@ -98,7 +98,7 @@ int main(int argc, char ** argv) {
     synth_result_t result;
     synth_result_init(&result, sizeof(result));
     synth_audio_buffer_t * raw_audio = nullptr;
-    status = synth_synthesize_to_buffer(context.get(), &request, &raw_audio, &result);
+    status                           = synth_synthesize_to_buffer(context.get(), &request, &raw_audio, &result);
     std::unique_ptr<synth_audio_buffer_t, AudioDeleter> audio(raw_audio);
     if (audio == nullptr) {
         std::fprintf(stderr, "synthesize-cli: synthesis failed: %s\n", synth_status_string(status));
@@ -111,8 +111,8 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    std::fprintf(stdout, "wrote %llu frames at %u Hz to %s",
-                 static_cast<unsigned long long>(audio->frame_count), audio->sample_rate, options.output_path.c_str());
+    std::fprintf(stdout, "wrote %llu frames at %u Hz to %s", static_cast<unsigned long long>(audio->frame_count),
+                 audio->sample_rate, options.output_path.c_str());
     if ((result.flags & SYNTH_RESULT_SEED_USED) != 0) {
         std::fprintf(stdout, " (seed %llu)", static_cast<unsigned long long>(result.actual_seed));
     }

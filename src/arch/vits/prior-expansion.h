@@ -18,8 +18,8 @@ struct PriorExpansionGraph {
 };
 
 PriorExpansionGraph build_prior_expansion_graph(ggml_context * context,
-                                                 int64_t        channels,
-                                                 int64_t        token_count,
-                                                 int64_t        frame_count);
+                                                int64_t        channels,
+                                                int64_t        token_count,
+                                                int64_t        frame_count);
 
 }  // namespace synth::vits

@@ -64,23 +64,23 @@ struct WaveformDecoderOutput {
 };
 
 struct ModelInfo {
-    bool                     has_package_default = false;
-    std::vector<std::string> preset_voice_ids;
-    std::vector<uint32_t>    preset_voice_flags;
+    bool                                has_package_default = false;
+    std::vector<std::string>            preset_voice_ids;
+    std::vector<uint32_t>               preset_voice_flags;
     std::shared_ptr<const TextFrontend> text_frontend;
-    uint32_t                 input_flags          = 0;
-    uint32_t                 capability_flags     = 0;
-    uint32_t                 output_sample_rate   = 0;
-    uint32_t                 output_channel_count = 0;
-    uint32_t                 inter_channels       = 0;
-    uint32_t                 vocab_size           = 0;
-    uint32_t                 hop_length           = 0;
-    uint64_t                 max_input_tokens     = 0;
-    uint64_t                 max_output_frames    = 0;
-    float                    min_speaking_rate    = 0.0f;
-    float                    max_speaking_rate    = 0.0f;
-    float                    latent_noise_scale   = 0.0f;
-    float                    duration_noise_scale = 0.0f;
+    uint32_t                            input_flags          = 0;
+    uint32_t                            capability_flags     = 0;
+    uint32_t                            output_sample_rate   = 0;
+    uint32_t                            output_channel_count = 0;
+    uint32_t                            inter_channels       = 0;
+    uint32_t                            vocab_size           = 0;
+    uint32_t                            hop_length           = 0;
+    uint64_t                            max_input_tokens     = 0;
+    uint64_t                            max_output_frames    = 0;
+    float                               min_speaking_rate    = 0.0f;
+    float                               max_speaking_rate    = 0.0f;
+    float                               latent_noise_scale   = 0.0f;
+    float                               duration_noise_scale = 0.0f;
 };
 
 class Model {

@@ -7,9 +7,9 @@
 namespace {
 
 struct Capture {
-    synth_sink_result_t return_value = SYNTH_SINK_CONTINUE;
-    int                 calls        = 0;
-    synth_audio_chunk_t chunk{};
+    synth_sink_result_t  return_value = SYNTH_SINK_CONTINUE;
+    int                  calls        = 0;
+    synth_audio_chunk_t  chunk{};
     std::array<float, 4> samples{};
 };
 
@@ -31,7 +31,7 @@ synth_sink_result_t SYNTH_CALL throw_audio(void *, const synth_audio_chunk_t *) 
 
 int main() {
     const std::array<float, 4> pcm = { -0.5f, 0.25f, 0.75f, -1.0f };
-    synth::AudioDeliveryInfo info;
+    synth::AudioDeliveryInfo   info;
     info.actual_seed            = 42;
     info.sample_rate            = 22050;
     info.channel_count          = 1;
@@ -39,7 +39,7 @@ int main() {
     info.resolved_language_tag  = "en";
     info.resolved_language_size = 2;
 
-    Capture capture;
+    Capture            capture;
     synth_audio_sink_t sink;
     synth_audio_sink_init(&sink, sizeof(sink));
     sink.write     = capture_audio;
@@ -90,8 +90,7 @@ int main() {
     SYNTH_TEST_CHECK(!synth::valid_audio_sink(&invalid_sink));
     SYNTH_TEST_CHECK(synth::deliver_complete_audio(pcm.data(), pcm.size(), info, &invalid_sink, &result) ==
                      SYNTH_ERR_INVALID_ARG);
-    SYNTH_TEST_CHECK(synth::deliver_complete_audio(nullptr, pcm.size(), info, &sink, &result) ==
-                     SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(synth::deliver_complete_audio(nullptr, pcm.size(), info, &sink, &result) == SYNTH_ERR_INVALID_ARG);
 
     capture.calls = 0;
     synth_result_init(&result, sizeof(result));

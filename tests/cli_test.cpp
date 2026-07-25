@@ -1,4 +1,5 @@
 #include "cli.h"
+
 #include "test-assert.h"
 
 #include <array>
@@ -18,15 +19,12 @@ bool parse(std::initializer_list<const char *> arguments, synth_cli::Options & o
 }
 
 uint16_t read_u16(const std::vector<unsigned char> & bytes, size_t offset) {
-    return static_cast<uint16_t>(bytes[offset]) |
-           static_cast<uint16_t>(static_cast<uint16_t>(bytes[offset + 1]) << 8);
+    return static_cast<uint16_t>(bytes[offset]) | static_cast<uint16_t>(static_cast<uint16_t>(bytes[offset + 1]) << 8);
 }
 
 uint32_t read_u32(const std::vector<unsigned char> & bytes, size_t offset) {
-    return static_cast<uint32_t>(bytes[offset]) |
-           (static_cast<uint32_t>(bytes[offset + 1]) << 8) |
-           (static_cast<uint32_t>(bytes[offset + 2]) << 16) |
-           (static_cast<uint32_t>(bytes[offset + 3]) << 24);
+    return static_cast<uint32_t>(bytes[offset]) | (static_cast<uint32_t>(bytes[offset + 1]) << 8) |
+           (static_cast<uint32_t>(bytes[offset + 2]) << 16) | (static_cast<uint32_t>(bytes[offset + 3]) << 24);
 }
 
 }  // namespace
@@ -36,10 +34,27 @@ int main(int argc, char ** argv) {
 
     synth_cli::Options options;
     std::string        error;
-    SYNTH_TEST_CHECK(parse({ "synthesize-cli", "--model", "model.gguf", "--output", "speech.wav",
-                             "--token-ids", "0, 156 0,47", "--language", "en-US", "--voice", "speaker-a",
-                             "--seed", "42", "--rate", "1.25", "--max-output-frames", "100", "--backend",
-                             "cpu", "--device", "0" },
+    SYNTH_TEST_CHECK(parse({ "synthesize-cli",
+                             "--model",
+                             "model.gguf",
+                             "--output",
+                             "speech.wav",
+                             "--token-ids",
+                             "0, 156 0,47",
+                             "--language",
+                             "en-US",
+                             "--voice",
+                             "speaker-a",
+                             "--seed",
+                             "42",
+                             "--rate",
+                             "1.25",
+                             "--max-output-frames",
+                             "100",
+                             "--backend",
+                             "cpu",
+                             "--device",
+                             "0" },
                            options, error));
     SYNTH_TEST_CHECK(error.empty());
     SYNTH_TEST_CHECK(options.model_path == "model.gguf" && options.output_path == "speech.wav");
@@ -50,8 +65,8 @@ int main(int argc, char ** argv) {
     SYNTH_TEST_CHECK(options.max_output_frames == 100);
     SYNTH_TEST_CHECK(options.backend == SYNTH_BACKEND_CPU && options.device_index == 0);
 
-    SYNTH_TEST_CHECK(parse({ "synthesize-cli", "--model", "m", "--output", "o", "--text", "Hello",
-                             "--seed", "random", "--backend", "cuda" },
+    SYNTH_TEST_CHECK(parse({ "synthesize-cli", "--model", "m", "--output", "o", "--text", "Hello", "--seed", "random",
+                             "--backend", "cuda" },
                            options, error));
     SYNTH_TEST_CHECK(options.input_kind == SYNTH_INPUT_TEXT_UTF8 && options.linguistic_input == "Hello");
     SYNTH_TEST_CHECK(options.seed == SYNTH_SEED_RANDOM && options.backend == SYNTH_BACKEND_CUDA);
@@ -61,30 +76,25 @@ int main(int argc, char ** argv) {
 
     SYNTH_TEST_CHECK(!parse({ "synthesize-cli", "--model", "m", "--output", "o" }, options, error));
     SYNTH_TEST_CHECK(!error.empty());
-    SYNTH_TEST_CHECK(!parse({ "synthesize-cli", "--model", "m", "--output", "o", "--text", "a",
-                              "--phonemes", "b" },
+    SYNTH_TEST_CHECK(!parse({ "synthesize-cli", "--model", "m", "--output", "o", "--text", "a", "--phonemes", "b" },
                             options, error));
-    SYNTH_TEST_CHECK(!parse({ "synthesize-cli", "--model", "m", "--output", "o", "--token-ids", "1,,2" },
+    SYNTH_TEST_CHECK(
+        !parse({ "synthesize-cli", "--model", "m", "--output", "o", "--token-ids", "1,,2" }, options, error));
+    SYNTH_TEST_CHECK(
+        !parse({ "synthesize-cli", "--model", "m", "--output", "o", "--token-ids", "-1" }, options, error));
+    SYNTH_TEST_CHECK(
+        !parse({ "synthesize-cli", "--model", "m", "--output", "o", "--token-ids", "2147483648" }, options, error));
+    SYNTH_TEST_CHECK(
+        !parse({ "synthesize-cli", "--model", "m", "--output", "o", "--text", "a", "--seed", "18446744073709551616" },
+               options, error));
+    SYNTH_TEST_CHECK(
+        !parse({ "synthesize-cli", "--model", "m", "--output", "o", "--text", "a", "--rate", "nan" }, options, error));
+    SYNTH_TEST_CHECK(
+        !parse({ "synthesize-cli", "--model", "m", "--output", "o", "--text", "a", "--device", "-2" }, options, error));
+    SYNTH_TEST_CHECK(!parse({ "synthesize-cli", "--model", "m", "--output", "o", "--text", "a", "--backend", "other" },
                             options, error));
-    SYNTH_TEST_CHECK(!parse({ "synthesize-cli", "--model", "m", "--output", "o", "--token-ids", "-1" },
-                            options, error));
-    SYNTH_TEST_CHECK(!parse({ "synthesize-cli", "--model", "m", "--output", "o", "--token-ids",
-                              "2147483648" },
-                            options, error));
-    SYNTH_TEST_CHECK(!parse({ "synthesize-cli", "--model", "m", "--output", "o", "--text", "a", "--seed",
-                              "18446744073709551616" },
-                            options, error));
-    SYNTH_TEST_CHECK(!parse({ "synthesize-cli", "--model", "m", "--output", "o", "--text", "a", "--rate",
-                              "nan" },
-                            options, error));
-    SYNTH_TEST_CHECK(!parse({ "synthesize-cli", "--model", "m", "--output", "o", "--text", "a", "--device",
-                              "-2" },
-                            options, error));
-    SYNTH_TEST_CHECK(!parse({ "synthesize-cli", "--model", "m", "--output", "o", "--text", "a", "--backend",
-                              "other" },
-                            options, error));
-    SYNTH_TEST_CHECK(!parse({ "synthesize-cli", "--model", "m", "--output", "o", "--text", "a", "--unknown" },
-                            options, error));
+    SYNTH_TEST_CHECK(
+        !parse({ "synthesize-cli", "--model", "m", "--output", "o", "--text", "a", "--unknown" }, options, error));
 
     const std::filesystem::path fixture_root = argv[1];
     std::error_code             filesystem_error;
@@ -95,9 +105,8 @@ int main(int argc, char ** argv) {
 
     const std::array<float, 2> pcm = { -0.5f, 0.25f };
     SYNTH_TEST_CHECK(synth_cli::write_f32_wav(wav_path.string(), pcm.data(), 2, 22050, 1, error));
-    std::ifstream input(wav_path, std::ios::binary);
-    const std::vector<unsigned char> bytes{ std::istreambuf_iterator<char>(input),
-                                             std::istreambuf_iterator<char>() };
+    std::ifstream                    input(wav_path, std::ios::binary);
+    const std::vector<unsigned char> bytes{ std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>() };
     SYNTH_TEST_CHECK(bytes.size() == 64);
     SYNTH_TEST_CHECK(std::memcmp(bytes.data(), "RIFF", 4) == 0 && read_u32(bytes, 4) == 56);
     SYNTH_TEST_CHECK(std::memcmp(bytes.data() + 8, "WAVEfmt ", 8) == 0 && read_u32(bytes, 16) == 16);

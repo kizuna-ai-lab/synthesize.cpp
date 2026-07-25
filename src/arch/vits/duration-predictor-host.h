@@ -19,7 +19,7 @@ synth_status_t prepare_duration_input(size_t                     token_count,
                                       PreparedDurationInput &    output);
 
 synth_status_t finalize_duration_output(size_t                     token_count,
-                                       const std::vector<float> & logw,
-                                       DurationPredictorOutput &  output);
+                                        const std::vector<float> & logw,
+                                        DurationPredictorOutput &  output);
 
 }  // namespace synth::vits

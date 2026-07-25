@@ -10,8 +10,11 @@ add_library(synthesize
     text-frontend.cpp
     voice-profile.cpp
     arch/kokoro/catalog.cpp
+    arch/kokoro/decoder.cpp
+    arch/kokoro/decoder-host.cpp
     arch/kokoro/duration.cpp
     arch/kokoro/duration-host.cpp
+    arch/kokoro/generator.cpp
     arch/kokoro/operations.cpp
     arch/kokoro/plbert.cpp
     arch/kokoro/prosody.cpp

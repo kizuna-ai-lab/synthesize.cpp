@@ -209,6 +209,60 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — Stage 4 slice 10: decoder, iSTFTNet generator, inverse transform
+
+Added `generator.{h,cpp}`, `decoder.{h,cpp}`, and `decoder-host.{h,cpp}`, which
+completes the family's inference path from tokens to samples.
+
+Three operations were missing and were added to `operations.{h,cpp}`: a stride
+on the existing convolution, a dense transposed convolution, and the
+single-frame reflection pad. The transposed convolution reuses the construction
+the depthwise one documents — zero-interleave, widen, then one shifted matrix
+multiply per tap — and gets the definition's kernel reversal by reading the taps
+back to front, so the stored weights still match the checkpoint byte for byte.
+Its reference was cross-checked against `F.conv_transpose1d` before being
+trusted, because the weight axis order is the easy thing to get wrong: PyTorch
+stores `[in, out, kernel]`, which GGML reports as `[kernel, out, in]`, the
+reverse of an ordinary convolution's.
+
+Two upstream details that a careless port would flatten:
+
+- The generator's per-stage activation uses a slope of 0.1 and the one before
+  the final projection uses PyTorch's default of 0.01. They are written
+  differently upstream and are not interchangeable.
+- `AdaINResBlock1` and `AdainResBlk1d` are different blocks despite the nearly
+  identical names. The generator's is three Snake branches added straight back
+  onto the running value; the decoder's is a two-convolution residual with a
+  projection shortcut and a variance scale. Both now exist and are named apart.
+
+The frame arithmetic is what ties the stage together, and the test pins it: the
+upsamplers multiply the length by the product of the rates, the last stage's
+reflected frame adds one, and that extra frame is exactly what makes the
+features and the source spectrum the same length. The noise convolutions'
+strides are chosen so each stage's resampled spectrum matches its own rate; the
+test asserts the equality at every stage rather than only at the end.
+
+The inverse transform is the third host seam, and it is checked against
+`torch.istft` from the raw form the graph emits, so the exponential and the sine
+that turn the output into a magnitude and a phase are part of what is verified.
+Agreement is 1e-5.
+
+The decoder's numerical agreement with the oracle is deliberately left to Stage
+5, where the real checkpoint and the recorded reference tensors exist. What the
+unit test covers is what the oracle cannot catch cheaply: the frame alignment,
+the node budget, and the catalog shapes that must be rejected rather than
+reinterpreted.
+
+### A test that was passing because its exit code was discarded
+
+Piping a test binary through `tail` to read its output made `$?` the pipe's
+status, so a segmentation fault read as a pass. The fault was real: the host
+reference indexed the second convolution's weights as `base + 2 + 8 * branches`,
+which is out of range for every branch. Two further defects were behind it — the
+Snake alphas are stored as `[1, channels, 1]` and the test built them flat, and
+the upsampler weights were built with an ordinary convolution's axis order. All
+three were found only once the exit code was read directly.
+
 ## 2026-07-26 — Stage 4 slice 9: harmonic source and its short-time spectrum
 
 Added `source.{h,cpp}`, the second host seam. The module carries one learned

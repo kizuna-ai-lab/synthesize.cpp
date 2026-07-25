@@ -55,7 +55,32 @@ compute-type choices (`ggml-cuda.cu:1661,2278,2359`); `should_use_mmf` never
 consults precision, so `ggml_mul_mat_set_prec` cannot disable the tf32 tile
 path today.
 
-The exit path is upstream's own precision rework. When a ggml-level mechanism
-lands that lets an F32 matmul demand strict FP32 per op, the family graph
-builders switch to it on the sensitive matmuls, and these hunks drop from the
-local patch at that re-vendor.
+The exit path is upstream's own precision rework, which as of 2026-07-26 is at
+the design stage, not implementation. Its clearest public articulation is the
+CUDA maintainer's comment on
+[llama.cpp#24364](https://github.com/ggml-org/llama.cpp/pull/24364)
+(2026-07-16), an NVFP4 discussion where another per-backend precision control
+got the same "solve it at the ggml level" answer:
+
+- precision is a per-op property (`ggml_prec` in `op_params`), never a backend
+  flag;
+- `GGML_PREC_DEFAULT` means backends optimize freely — on Blackwell that
+  includes TF32;
+- the enum should grow minimum-precision values (`GGML_PREC_A8`,
+  `GGML_PREC_A16` were sketched);
+- and directly on point: "My opinion is that `GGML_PREC_F32` should require
+  strict FP32 arithmetic, not just the numerical range of FP32. For that we
+  should add a new value."
+
+Today the enum in master still holds only `DEFAULT` and `F32`, no tracking
+issue or implementation PR exists, and per-kernel attempts to honor
+`GGML_PREC_F32` (ggml#1536, moved to llama.cpp#24984) were closed unmerged.
+The things to watch are the `ggml_prec` enum in `ggml/include/ggml.h` and
+`should_use_mmf` growing a precision parameter. When a strict-FP32 op value
+lands, the family graph builders set it on the sensitive matmuls and these
+hunks drop from the local patch at that re-vendor.
+
+The measurements in this report — the 16/17-column cliff and the 0.99 Hz F0
+consequence — are precisely the motivating evidence for that new enum value,
+should the maintainer of this project choose to bring them to that
+discussion personally.

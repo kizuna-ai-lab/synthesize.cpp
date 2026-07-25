@@ -112,7 +112,7 @@ quants:
     tensor_types: 511 F32
     validation:
       cpu_pcm_correlation: 0.987437
-      dgx_pcm_correlation: 0.989607
+      dgx_pcm_correlation: 0.987973
   - name: F16
     filename: kokoro-v1-0-F16.gguf
     size: 246.5 MB
@@ -121,7 +121,7 @@ quants:
     tensor_types: 384 F32 + 127 F16
     validation:
       cpu_pcm_correlation: 0.987445
-      dgx_pcm_correlation: 0.989831
+      dgx_pcm_correlation: 0.988863
   - name: Q8_MIXED
     filename: kokoro-v1-0-Q8_MIXED.gguf
     size: 216.1 MB
@@ -130,4 +130,4 @@ quants:
     tensor_types: 384 F32 + 14 F16 + 113 Q8_0
     validation:
       cpu_pcm_correlation: 0.984790
-      dgx_pcm_correlation: 0.988311
+      dgx_pcm_correlation: 0.986341

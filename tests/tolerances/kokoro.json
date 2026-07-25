@@ -1,12 +1,12 @@
 {
   "case_count": 15,
   "family": "kokoro",
-  "note": "Measured on the complete source-F32 CPU path over all 15 manifest cases. Numerical acceptance thresholds and perceptual quality evaluation remain deferred; no placeholder tolerance or quality score is claimed. The structural probes duration.pred_dur, duration.y_length and duration.alignment are exact on every case, and the validators already fail rather than record a difference there. audio.pcm cannot carry a sample-wise threshold: the excitation phase is a cumulative sum over the utterance and so is chaotic in F0 by construction, which is why correlation and spectrogram correlation are recorded instead. source.har is compared as a complex value for the same reason, since a phase is meaningless where its magnitude is near zero. The F16 profile leaves PL-BERT, the prosody and duration path, the acoustic text encoder, and the Voice tables at the reference dtype, so every stage up to and including the harmonic source reproduces the F32 measurements exactly; only the waveform differs, and by less than the spread between cases. See src/arch/kokoro/quantization.h for why the split falls there. Q8_MIXED behaves the same way: every stage through the harmonic source is unchanged, and the durations and alignment stay exact, because the quantized tensors are all downstream of them. Twelve decoder matrices carry the halved type instead of a block-quantized one because their packed row is not a whole number of blocks; the decoder concatenates the two prosody curves and the narrow encoder residual onto its feature stream, which lands those channel counts two short of a multiple of thirty-two. The F32 profile was also run on CUDA. The predicted durations, frame count and alignment are exact there as well, which is the guarantee that has to hold across backends; the duration logits drift further than on the CPU, as cross-backend accumulation order does, and the waveform's worst-case correlation is 0.98961 against the CPU's 0.98744. The decoder now has a stage-local probe of its own. Its spectrum leaves the graph as a logarithm and a pre-sine angle, and those logarithms reach about -69 \u2014 a bin that is numerically silent \u2014 so a flat difference across the raw rows measures nothing. It is compared as the complex value the inverse transform consumes, with the raw halves still recorded so a change in the graph's output stays visible. All three profiles were also run on CUDA across every stage. The durations, frame count and alignment are exact there too, on every profile. Intermediate drift is larger than on the CPU \u2014 1.9e-3 relative on PL-BERT's hidden state against 7.5e-7 \u2014 and it shrinks as the sequence lengthens, from 2.2e-2 absolute at six tokens to 2.5e-5 at twenty-three. The cause is identified, not inferred: ggml's own tensor-core kernels (mmf.cu) handle F32 matrix multiplies with 16 or fewer columns on Ampere-or-newer devices and compute them in TF32, and GGML_CUDA_DISABLE_TF32 \u2014 what SYNTH_CUDA_TF32=OFF sets \u2014 only governs the cuBLAS math mode, not those kernels. A token-count sweep shows the cliff exactly at the kernel boundary: 2.1e-3 relative at 16 tokens, 1.9e-6 at 17. The vendored ggml revision has no switch that disables that path. It reaches neither the rounded durations nor the waveform correlation, and the harmonic source's phase conditioning is what turns the ~1 Hz TF32 noise in F0 into the larger CUDA source.har divergence.",
+  "note": "Measured on the complete source-F32 CPU path over all 15 manifest cases. Numerical acceptance thresholds and perceptual quality evaluation remain deferred; no placeholder tolerance or quality score is claimed. The structural probes duration.pred_dur, duration.y_length and duration.alignment are exact on every case, and the validators already fail rather than record a difference there. audio.pcm cannot carry a sample-wise threshold: the excitation phase is a cumulative sum over the utterance and so is chaotic in F0 by construction, which is why correlation and spectrogram correlation are recorded instead. source.har is compared as a complex value for the same reason, since a phase is meaningless where its magnitude is near zero. The F16 profile leaves PL-BERT, the prosody and duration path, the acoustic text encoder, and the Voice tables at the reference dtype, so every stage up to and including the harmonic source reproduces the F32 measurements exactly; only the waveform differs, and by less than the spread between cases. See src/arch/kokoro/quantization.h for why the split falls there. Q8_MIXED behaves the same way: every stage through the harmonic source is unchanged, and the durations and alignment stay exact, because the quantized tensors are all downstream of them. Twelve decoder matrices carry the halved type instead of a block-quantized one because their packed row is not a whole number of blocks; the decoder concatenates the two prosody curves and the narrow encoder residual onto its feature stream, which lands those channel counts two short of a multiple of thirty-two. The F32 profile was also run on CUDA. The predicted durations, frame count and alignment are exact there as well, which is the guarantee that has to hold across backends; the duration logits drift further than on the CPU, as cross-backend accumulation order does, and the waveform's worst-case correlation is 0.98961 against the CPU's 0.98744. The decoder now has a stage-local probe of its own. Its spectrum leaves the graph as a logarithm and a pre-sine angle, and those logarithms reach about -69 \u2014 a bin that is numerically silent \u2014 so a flat difference across the raw rows measures nothing. It is compared as the complex value the inverse transform consumes, with the raw halves still recorded so a change in the graph's output stays visible. All three profiles were also run on CUDA across every stage. The durations, frame count and alignment are exact there too, on every profile. Intermediate drift is larger than on the CPU \u2014 1.9e-3 relative on PL-BERT's hidden state against 7.5e-7 \u2014 and it shrinks as the sequence lengthens, from 2.2e-2 absolute at six tokens to 2.5e-5 at twenty-three. The CUDA numbers here are measured with strict FP32 fully enforced: ggml's mmf tile kernels compute sub-17-column F32 matmuls in TF32 and ignored the cuBLAS-only GGML_CUDA_DISABLE_TF32, so the local patch set (ggml-patches/, upstream submission llama.cpp#26112) extends the gate to them. With the gate, intermediate CUDA drift sits at ordinary cross-backend accumulation level (PL-BERT 4.2e-5 against the TF32-era 2.2e-2; F0 0.012 Hz against 0.99 Hz), and the remaining source and decoder divergence is the harmonic source's phase conditioning, the same floor the CPU has.",
   "profiles": {
     "F16": {
       "backends": {
         "CUDA": {
-          "device": "NVIDIA GB10 (sm_121a, TF32 off)",
+          "device": "NVIDIA GB10 (sm_121a, strict FP32 via ggml-patches TF32 gate)",
           "stages": {
             "decoder": {
               "backend": "CUDA",
@@ -14,10 +14,10 @@
                 "decoder.spectrum": {
                   "elements": 203302,
                   "exact_on_every_case": false,
-                  "measured_angle_max_abs": 0.2934051752090454,
-                  "measured_log_magnitude_max_abs": 0.6017484664916992,
-                  "measured_max_abs": 3.548760511215736,
-                  "measured_mean_abs": 0.027420254781586627,
+                  "measured_angle_max_abs": 0.31371593475341797,
+                  "measured_log_magnitude_max_abs": 0.5704984664916992,
+                  "measured_max_abs": 3.9979462188673387,
+                  "measured_mean_abs": 0.027441074292083648,
                   "measured_reference_magnitude_max": 24.189151909309828,
                   "worst_case": "kokoro-voice-last"
                 }
@@ -35,18 +35,18 @@
                   "worst_case": "kokoro-upstream-default"
                 },
                 "duration.d": {
-                  "elements": 3840,
+                  "elements": 49920,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.0562741756439209,
-                  "measured_mean_abs": 0.0009499999621766619,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 0.00010329484939575195,
+                  "measured_mean_abs": 1.4083949339785762e-06,
+                  "worst_case": "kokoro-upstream-default"
                 },
                 "duration.logits": {
-                  "elements": 300,
+                  "elements": 3900,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.04848289489746094,
-                  "measured_mean_abs": 0.008673738141854605,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 0.0004405975341796875,
+                  "measured_mean_abs": 3.2548154107271094e-05,
+                  "worst_case": "kokoro-upstream-default"
                 },
                 "duration.pred_dur": {
                   "elements": 78,
@@ -69,18 +69,18 @@
               "backend": "CUDA",
               "probes": {
                 "bert.hidden": {
-                  "elements": 4608,
+                  "elements": 38400,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.02247852087020874,
-                  "measured_mean_abs": 0.003499615065367026,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 4.175305366516113e-05,
+                  "measured_mean_abs": 3.882710545610735e-06,
+                  "worst_case": "kokoro-medium"
                 },
                 "text.d_en": {
-                  "elements": 3072,
+                  "elements": 25600,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.05789947509765625,
-                  "measured_mean_abs": 0.008515947812706296,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 8.249282836914062e-05,
+                  "measured_mean_abs": 9.181973283416412e-06,
+                  "worst_case": "kokoro-medium"
                 }
               },
               "threads": 8
@@ -89,24 +89,24 @@
               "backend": "CUDA",
               "probes": {
                 "prosody.en": {
-                  "elements": 32000,
+                  "elements": 126720,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.0562741756439209,
-                  "measured_mean_abs": 0.0007850385784113314,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 0.00010329484939575195,
+                  "measured_mean_abs": 1.2564074591919603e-06,
+                  "worst_case": "kokoro-upstream-default"
                 },
                 "prosody.f0": {
-                  "elements": 100,
+                  "elements": 368,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.990234375,
-                  "measured_mean_abs": 0.02552528914064169,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 0.011867523193359375,
+                  "measured_mean_abs": 0.00017306353117379805,
+                  "worst_case": "kokoro-normalization"
                 },
                 "prosody.n": {
                   "elements": 100,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.018411636352539062,
-                  "measured_mean_abs": 0.0017430314049124717,
+                  "measured_max_abs": 4.971027374267578e-05,
+                  "measured_mean_abs": 5.603507161140442e-06,
                   "worst_case": "kokoro-minimal"
                 }
               },
@@ -116,12 +116,12 @@
               "backend": "CUDA",
               "probes": {
                 "source.har": {
-                  "elements": 132022,
+                  "elements": 992662,
                   "exact_on_every_case": false,
-                  "measured_magnitude_max_abs": 0.3263866789638996,
-                  "measured_max_abs": 0.3337105214595792,
-                  "measured_mean_abs": 0.006685523879170853,
-                  "worst_case": "kokoro-minimal"
+                  "measured_magnitude_max_abs": 0.1124834418296814,
+                  "measured_max_abs": 0.11248344182968138,
+                  "measured_mean_abs": 0.0022879286359089265,
+                  "worst_case": "kokoro-long"
                 }
               },
               "threads": 8
@@ -130,18 +130,18 @@
               "backend": "CUDA",
               "probes": {
                 "text.asr": {
-                  "elements": 25600,
+                  "elements": 94208,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.001633286476135254,
-                  "measured_mean_abs": 6.233542063446231e-05,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 9.98377799987793e-06,
+                  "measured_mean_abs": 8.563953763386693e-07,
+                  "worst_case": "kokoro-normalization"
                 },
                 "text.t_en": {
-                  "elements": 3072,
+                  "elements": 38912,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.001633286476135254,
-                  "measured_mean_abs": 6.735770357672866e-05,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 9.98377799987793e-06,
+                  "measured_mean_abs": 9.059839950838658e-07,
+                  "worst_case": "kokoro-normalization"
                 }
               },
               "threads": 8
@@ -152,12 +152,12 @@
                 "audio.pcm": {
                   "elements": 46200,
                   "exact_on_every_case": false,
-                  "measured_correlation": 0.9898306166895,
-                  "measured_max_abs": 0.13382020220160484,
-                  "measured_mean_abs": 0.0012754420593269827,
+                  "measured_correlation": 0.9888629723888209,
+                  "measured_max_abs": 0.17741817235946655,
+                  "measured_mean_abs": 0.001256803667748279,
                   "measured_reference_rms": 0.034145907229351784,
-                  "measured_rms_error": 0.0049692448409385664,
-                  "measured_spectrogram_correlation": 0.9980741924784007,
+                  "measured_rms_error": 0.005180845147298887,
+                  "measured_spectrogram_correlation": 0.9978955049709446,
                   "worst_case": "kokoro-voice-last"
                 }
               },
@@ -327,7 +327,7 @@
     "F32": {
       "backends": {
         "CUDA": {
-          "device": "NVIDIA GB10 (sm_121a, TF32 off)",
+          "device": "NVIDIA GB10 (sm_121a, strict FP32 via ggml-patches TF32 gate)",
           "stages": {
             "decoder": {
               "backend": "CUDA",
@@ -335,10 +335,10 @@
                 "decoder.spectrum": {
                   "elements": 203302,
                   "exact_on_every_case": false,
-                  "measured_angle_max_abs": 0.2947613000869751,
-                  "measured_log_magnitude_max_abs": 0.5613059997558594,
-                  "measured_max_abs": 3.5353598454808863,
-                  "measured_mean_abs": 0.02738627219973429,
+                  "measured_angle_max_abs": 0.31243085861206055,
+                  "measured_log_magnitude_max_abs": 0.5584850311279297,
+                  "measured_max_abs": 4.02369828279068,
+                  "measured_mean_abs": 0.027415932360678713,
                   "measured_reference_magnitude_max": 24.189151909309828,
                   "worst_case": "kokoro-voice-last"
                 }
@@ -356,18 +356,18 @@
                   "worst_case": "kokoro-upstream-default"
                 },
                 "duration.d": {
-                  "elements": 3840,
+                  "elements": 49920,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.0562741756439209,
-                  "measured_mean_abs": 0.0009499999621766619,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 0.00010329484939575195,
+                  "measured_mean_abs": 1.4083949339785762e-06,
+                  "worst_case": "kokoro-upstream-default"
                 },
                 "duration.logits": {
-                  "elements": 300,
+                  "elements": 3900,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.04848289489746094,
-                  "measured_mean_abs": 0.008673738141854605,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 0.0004405975341796875,
+                  "measured_mean_abs": 3.2548154107271094e-05,
+                  "worst_case": "kokoro-upstream-default"
                 },
                 "duration.pred_dur": {
                   "elements": 78,
@@ -390,18 +390,18 @@
               "backend": "CUDA",
               "probes": {
                 "bert.hidden": {
-                  "elements": 4608,
+                  "elements": 38400,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.02247852087020874,
-                  "measured_mean_abs": 0.003499615065367026,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 4.175305366516113e-05,
+                  "measured_mean_abs": 3.882710545610735e-06,
+                  "worst_case": "kokoro-medium"
                 },
                 "text.d_en": {
-                  "elements": 3072,
+                  "elements": 25600,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.05789947509765625,
-                  "measured_mean_abs": 0.008515947812706296,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 8.249282836914062e-05,
+                  "measured_mean_abs": 9.181973283416412e-06,
+                  "worst_case": "kokoro-medium"
                 }
               },
               "threads": 8
@@ -410,24 +410,24 @@
               "backend": "CUDA",
               "probes": {
                 "prosody.en": {
-                  "elements": 32000,
+                  "elements": 126720,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.0562741756439209,
-                  "measured_mean_abs": 0.0007850385784113314,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 0.00010329484939575195,
+                  "measured_mean_abs": 1.2564074591919603e-06,
+                  "worst_case": "kokoro-upstream-default"
                 },
                 "prosody.f0": {
-                  "elements": 100,
+                  "elements": 368,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.990234375,
-                  "measured_mean_abs": 0.02552528914064169,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 0.011867523193359375,
+                  "measured_mean_abs": 0.00017306353117379805,
+                  "worst_case": "kokoro-normalization"
                 },
                 "prosody.n": {
                   "elements": 100,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.018411636352539062,
-                  "measured_mean_abs": 0.0017430314049124717,
+                  "measured_max_abs": 4.971027374267578e-05,
+                  "measured_mean_abs": 5.603507161140442e-06,
                   "worst_case": "kokoro-minimal"
                 }
               },
@@ -437,12 +437,12 @@
               "backend": "CUDA",
               "probes": {
                 "source.har": {
-                  "elements": 132022,
+                  "elements": 992662,
                   "exact_on_every_case": false,
-                  "measured_magnitude_max_abs": 0.3263866789638996,
-                  "measured_max_abs": 0.3337105214595792,
-                  "measured_mean_abs": 0.006685523879170853,
-                  "worst_case": "kokoro-minimal"
+                  "measured_magnitude_max_abs": 0.1124834418296814,
+                  "measured_max_abs": 0.11248344182968138,
+                  "measured_mean_abs": 0.0022879286359089265,
+                  "worst_case": "kokoro-long"
                 }
               },
               "threads": 8
@@ -451,18 +451,18 @@
               "backend": "CUDA",
               "probes": {
                 "text.asr": {
-                  "elements": 25600,
+                  "elements": 94208,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.001633286476135254,
-                  "measured_mean_abs": 6.233542063446231e-05,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 9.98377799987793e-06,
+                  "measured_mean_abs": 8.563953763386693e-07,
+                  "worst_case": "kokoro-normalization"
                 },
                 "text.t_en": {
-                  "elements": 3072,
+                  "elements": 38912,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.001633286476135254,
-                  "measured_mean_abs": 6.735770357672866e-05,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 9.98377799987793e-06,
+                  "measured_mean_abs": 9.059839950838658e-07,
+                  "worst_case": "kokoro-normalization"
                 }
               },
               "threads": 8
@@ -473,12 +473,12 @@
                 "audio.pcm": {
                   "elements": 46200,
                   "exact_on_every_case": false,
-                  "measured_correlation": 0.9896066677307364,
-                  "measured_max_abs": 0.13837021589279175,
-                  "measured_mean_abs": 0.0012606270463266516,
+                  "measured_correlation": 0.9879732618600324,
+                  "measured_max_abs": 0.18099170923233032,
+                  "measured_mean_abs": 0.0012559612890239344,
                   "measured_reference_rms": 0.034145907229351784,
-                  "measured_rms_error": 0.005022655274134484,
-                  "measured_spectrogram_correlation": 0.9981731033591453,
+                  "measured_rms_error": 0.005372674613515639,
+                  "measured_spectrogram_correlation": 0.9980120007414842,
                   "worst_case": "kokoro-voice-last"
                 }
               },
@@ -648,7 +648,7 @@
     "Q8_MIXED": {
       "backends": {
         "CUDA": {
-          "device": "NVIDIA GB10 (sm_121a, TF32 off)",
+          "device": "NVIDIA GB10 (sm_121a, strict FP32 via ggml-patches TF32 gate)",
           "stages": {
             "decoder": {
               "backend": "CUDA",
@@ -656,10 +656,10 @@
                 "decoder.spectrum": {
                   "elements": 203302,
                   "exact_on_every_case": false,
-                  "measured_angle_max_abs": 0.3396577835083008,
-                  "measured_log_magnitude_max_abs": 0.6773853302001953,
-                  "measured_max_abs": 3.724869696039141,
-                  "measured_mean_abs": 0.027482064557561175,
+                  "measured_angle_max_abs": 0.3366137742996216,
+                  "measured_log_magnitude_max_abs": 0.6554069519042969,
+                  "measured_max_abs": 4.01968570230823,
+                  "measured_mean_abs": 0.027532681083266484,
                   "measured_reference_magnitude_max": 24.189151909309828,
                   "worst_case": "kokoro-voice-last"
                 }
@@ -677,18 +677,18 @@
                   "worst_case": "kokoro-upstream-default"
                 },
                 "duration.d": {
-                  "elements": 3840,
+                  "elements": 49920,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.0562741756439209,
-                  "measured_mean_abs": 0.0009499999621766619,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 0.00010329484939575195,
+                  "measured_mean_abs": 1.4083949339785762e-06,
+                  "worst_case": "kokoro-upstream-default"
                 },
                 "duration.logits": {
-                  "elements": 300,
+                  "elements": 3900,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.04848289489746094,
-                  "measured_mean_abs": 0.008673738141854605,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 0.0004405975341796875,
+                  "measured_mean_abs": 3.2548154107271094e-05,
+                  "worst_case": "kokoro-upstream-default"
                 },
                 "duration.pred_dur": {
                   "elements": 78,
@@ -711,18 +711,18 @@
               "backend": "CUDA",
               "probes": {
                 "bert.hidden": {
-                  "elements": 4608,
+                  "elements": 38400,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.02247852087020874,
-                  "measured_mean_abs": 0.003499615065367026,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 4.175305366516113e-05,
+                  "measured_mean_abs": 3.882710545610735e-06,
+                  "worst_case": "kokoro-medium"
                 },
                 "text.d_en": {
-                  "elements": 3072,
+                  "elements": 25600,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.05789947509765625,
-                  "measured_mean_abs": 0.008515947812706296,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 8.249282836914062e-05,
+                  "measured_mean_abs": 9.181973283416412e-06,
+                  "worst_case": "kokoro-medium"
                 }
               },
               "threads": 8
@@ -731,24 +731,24 @@
               "backend": "CUDA",
               "probes": {
                 "prosody.en": {
-                  "elements": 32000,
+                  "elements": 126720,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.0562741756439209,
-                  "measured_mean_abs": 0.0007850385784113314,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 0.00010329484939575195,
+                  "measured_mean_abs": 1.2564074591919603e-06,
+                  "worst_case": "kokoro-upstream-default"
                 },
                 "prosody.f0": {
-                  "elements": 100,
+                  "elements": 368,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.990234375,
-                  "measured_mean_abs": 0.02552528914064169,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 0.011867523193359375,
+                  "measured_mean_abs": 0.00017306353117379805,
+                  "worst_case": "kokoro-normalization"
                 },
                 "prosody.n": {
                   "elements": 100,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.018411636352539062,
-                  "measured_mean_abs": 0.0017430314049124717,
+                  "measured_max_abs": 4.971027374267578e-05,
+                  "measured_mean_abs": 5.603507161140442e-06,
                   "worst_case": "kokoro-minimal"
                 }
               },
@@ -758,12 +758,12 @@
               "backend": "CUDA",
               "probes": {
                 "source.har": {
-                  "elements": 132022,
+                  "elements": 992662,
                   "exact_on_every_case": false,
-                  "measured_magnitude_max_abs": 0.3263866789638996,
-                  "measured_max_abs": 0.3337105214595792,
-                  "measured_mean_abs": 0.006685523879170853,
-                  "worst_case": "kokoro-minimal"
+                  "measured_magnitude_max_abs": 0.1124834418296814,
+                  "measured_max_abs": 0.11248344182968138,
+                  "measured_mean_abs": 0.0022879286359089265,
+                  "worst_case": "kokoro-long"
                 }
               },
               "threads": 8
@@ -772,18 +772,18 @@
               "backend": "CUDA",
               "probes": {
                 "text.asr": {
-                  "elements": 25600,
+                  "elements": 94208,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.001633286476135254,
-                  "measured_mean_abs": 6.233542063446231e-05,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 9.98377799987793e-06,
+                  "measured_mean_abs": 8.563953763386693e-07,
+                  "worst_case": "kokoro-normalization"
                 },
                 "text.t_en": {
-                  "elements": 3072,
+                  "elements": 38912,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.001633286476135254,
-                  "measured_mean_abs": 6.735770357672866e-05,
-                  "worst_case": "kokoro-minimal"
+                  "measured_max_abs": 9.98377799987793e-06,
+                  "measured_mean_abs": 9.059839950838658e-07,
+                  "worst_case": "kokoro-normalization"
                 }
               },
               "threads": 8
@@ -794,12 +794,12 @@
                 "audio.pcm": {
                   "elements": 46200,
                   "exact_on_every_case": false,
-                  "measured_correlation": 0.9883111031152751,
-                  "measured_max_abs": 0.150972131639719,
-                  "measured_mean_abs": 0.0013622533531713109,
+                  "measured_correlation": 0.9863406415964704,
+                  "measured_max_abs": 0.17720411717891693,
+                  "measured_mean_abs": 0.001379903466136768,
                   "measured_reference_rms": 0.034145907229351784,
-                  "measured_rms_error": 0.0053118652001349015,
-                  "measured_spectrogram_correlation": 0.9978960850590048,
+                  "measured_rms_error": 0.005711344411115108,
+                  "measured_spectrogram_correlation": 0.9977887524821069,
                   "worst_case": "kokoro-voice-last"
                 }
               },

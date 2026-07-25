@@ -78,20 +78,19 @@ the value the inverse transform consumes.
 
 | Profile | CPU waveform correlation | GB10 CUDA |
 | --- | ---: | ---: |
-| F32 | 0.987437 | 0.989607 |
-| F16 | 0.987445 | 0.989831 |
-| Q8_MIXED | 0.984790 | 0.988311 |
+| F32 | 0.987437 | 0.987973 |
+| F16 | 0.987445 | 0.988863 |
+| Q8_MIXED | 0.984790 | 0.986341 |
 
-Every profile was run on both backends across all seven stages. Intermediate
-drift is larger on CUDA — 1.9e-3 relative on PL-BERT's hidden state against
-7.5e-7 on the CPU — and the cause is identified: GGML's own tensor-core kernels
-compute F32 matrix multiplies with 16 or fewer columns in TF32 on Ampere-class
-and newer devices, and the strict-FP32 build flag only governs cuBLAS, not those
-kernels. A token-count sweep puts the cliff exactly at that boundary: 2.1e-3
-relative at 16 tokens, 1.9e-6 at 17. The vendored GGML revision has no switch
-that disables the path. It reaches neither the rounded durations nor the
-waveform correlation; see `docs/backends.md` for the precise scope of the
-strict-FP32 guarantee.
+Every profile was run on both backends across all seven stages, with strict
+FP32 fully enforced on CUDA. GGML's own tensor-core kernels compute F32 matrix
+multiplies with 16 or fewer columns in TF32 on Ampere-class and newer devices,
+and the upstream strict-FP32 flag governed only cuBLAS; the local patch set
+(`ggml-patches/`, submitted upstream as llama.cpp#26112) extends the gate to
+those kernels. With it, CUDA intermediate drift sits at ordinary cross-backend
+accumulation level — PL-BERT 4.2e-5 worst against the TF32-era 2.2e-2, F0
+0.012 Hz against 0.99 Hz — and what remains in the source and decoder stages is
+the same phase-conditioning floor the CPU has. See `docs/backends.md`.
 
 Correlation is the honest measure here rather than a sample-wise tolerance, for
 the same reason the profiles are split the way they are: the waveforms diverge

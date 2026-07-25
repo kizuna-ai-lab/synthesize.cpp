@@ -209,6 +209,43 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — The gate landed, the grid re-ran, upstream is in flight
+
+The audit that preceded landing found the vendoring premise itself was false:
+the "verbatim" tree carried nine files and ~400 lines of undocumented local
+changes — packaging installs, a barrier-deadlock fix, F16 transposed
+convolution, a tiled im2col kernel, the TF32 cuBLAS gates — any sync would have
+silently destroyed all of it. The delta now lives in
+`ggml-patches/0001-synthesize-local.patch` (round-trip verified byte-exact),
+`sync-ggml.sh` applies the patch directory and aborts loudly when a patch stops
+applying, a full network round trip reproduces the committed tree with zero
+changes, and `ggml/UPSTREAM` tells the truth. A lost upstream example file was
+restored so the delta is purely intentional.
+
+The mmf F32 gate is part of that patch set, and the 42-cell CUDA grid was
+re-run under it. Structural probes stay exact everywhere. The intermediate
+stages collapse to ordinary cross-backend accumulation level:
+
+| probe (CUDA worst) | TF32 era | gated |
+| --- | --- | --- |
+| `bert.hidden` | 2.2e-2 | 4.2e-5 |
+| `prosody.f0` | 0.99 Hz | 0.012 Hz |
+| `source.har` | 0.334 | 0.112 (CPU: 0.095) |
+| `decoder.spectrum` | 3.5 | 4.0 (CPU: 3.97) |
+
+The source and decoder rows are the point: they no longer carry a TF32
+component, only the phase-conditioning floor the CPU also has. Waveform
+correlations move within case-level noise (F32 0.98797 vs CPU 0.98744), as they
+must when the divergence is conditioning-limited on both backends. The
+voiced/unvoiced margin on CUDA is back to two orders inside the closest
+threshold approach.
+
+The TF32 set went upstream the same day as
+[llama.cpp#26112](https://github.com/ggml-org/llama.cpp/pull/26112) — option
+plus cuBLAS, solve_tri and mmf gates, default OFF, `test-backend-ops` clean on
+GB10. When it merges and the snapshot re-vendors past it, those hunks drop out
+of the local patch.
+
 ## 2026-07-26 — The root fix for the TF32 path, prototyped and measured
 
 The question was whether the two explained items could be fixed at the root.

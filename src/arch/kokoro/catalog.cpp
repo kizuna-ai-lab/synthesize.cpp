@@ -10,6 +10,7 @@
 // [out, in, kernel] has ne = [kernel, in, out].
 
 #include "ggml.h"
+#include "quantization.h"
 #include "weights.h"
 
 #include <cstdio>
@@ -27,17 +28,54 @@ constexpr int64_t kAsrResChannels   = 64;
 // The decoder concatenates the F0 and energy curves onto its feature stream.
 constexpr int64_t kCurveChannels    = 2;
 
+// The storage type every tensor must carry under this package's profile.
+ggml_type expected_storage_type(TensorRole role, QuantizationProfile profile) {
+    switch (profile) {
+        case QuantizationProfile::F32:
+            return GGML_TYPE_F32;
+        case QuantizationProfile::F16:
+            return role == TensorRole::Sensitive ? GGML_TYPE_F32 : GGML_TYPE_F16;
+        case QuantizationProfile::Q8Mixed:
+            if (role == TensorRole::MatrixWeight) {
+                return GGML_TYPE_Q8_0;
+            }
+            return role == TensorRole::TransposeWeight ? GGML_TYPE_F16 : GGML_TYPE_F32;
+    }
+    return GGML_TYPE_F32;
+}
+
+// Walks the whole package rather than only what the catalog resolves, so a
+// tensor nobody looks up cannot smuggle in an unexpected type, and a name
+// outside the catalog is rejected instead of being ignored.
+bool validate_storage_types(ggml_context * context, const HParams & hparams) {
+    for (ggml_tensor * tensor = ggml_get_first_tensor(context); tensor != nullptr;
+         tensor               = ggml_get_next_tensor(context, tensor)) {
+        const std::string name = tensor->name;
+        const TensorRole  role = tensor_role(name);
+        if (role == TensorRole::Unknown) {
+            std::fprintf(stderr, "kokoro: tensor %s is outside the catalog\n", name.c_str());
+            return false;
+        }
+        const ggml_type expected = expected_storage_type(role, hparams.quantization_profile);
+        if (tensor->type != expected) {
+            std::fprintf(stderr, "kokoro: tensor %s has type %s, expected %s for this quantization profile\n",
+                         name.c_str(), ggml_type_name(tensor->type), ggml_type_name(expected));
+            return false;
+        }
+    }
+    return true;
+}
+
 ggml_tensor * find(ggml_context * context, const std::string & name, std::initializer_list<int64_t> expected) {
     ggml_tensor * tensor = ggml_get_tensor(context, name.c_str());
     if (tensor == nullptr) {
         std::fprintf(stderr, "kokoro: missing tensor %s\n", name.c_str());
         return nullptr;
     }
-    if (tensor->type != GGML_TYPE_F32) {
-        std::fprintf(stderr, "kokoro: tensor %s has type %s, expected F32\n", name.c_str(),
-                     ggml_type_name(tensor->type));
-        return nullptr;
-    }
+    // Storage type is not checked here. It is a function of the tensor's name
+    // and the package's Quantization Profile alone, so it is checked once over
+    // the whole package by validate_storage_types below, which also catches a
+    // tensor the catalog never looks up.
     size_t axis = 0;
     for (int64_t want : expected) {
         if (axis >= GGML_MAX_DIMS || tensor->ne[axis] != want) {
@@ -426,6 +464,9 @@ synth_status_t build_model_weights(ggml_context * context, const HParams & hpara
         return SYNTH_ERR_INVALID_ARG;
     }
     weights = ModelWeights{};
+    if (!validate_storage_types(context, hparams)) {
+        return SYNTH_ERR_GGUF;
+    }
     if (!build_bert(context, hparams, weights.bert) ||
         !load_linear(context, "bert_encoder", hparams.plbert.hidden_size, hparams.hidden_dim, weights.bert_encoder) ||
         !build_text_encoder(context, hparams, weights.text_encoder) ||

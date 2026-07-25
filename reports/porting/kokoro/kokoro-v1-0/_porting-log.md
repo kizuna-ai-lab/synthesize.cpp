@@ -209,6 +209,65 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — Stage 6: the F16 Quantization Profile
+
+The quantizer was VITS-only by construction: it refused any other architecture
+and resolved storage per tensor from a VITS catalog classifier, with no
+catch-all rule. That fail-closed shape is worth keeping, so Kokoro got its own
+classifier rather than a relaxation.
+
+The classifier lives in the family module, at `src/arch/kokoro/quantization.h`,
+and the offline tool calls it. VITS keeps this knowledge in two places — the
+tool's policy and the runtime's catalog — and for a 511-tensor family two
+hand-maintained lists would drift silently, producing packages that simply fail
+to load. One source of truth removes the possibility.
+
+### Where the split falls, and why
+
+Measured parameter mass: the decoder body and its generator are 60.4% of the
+package, and everything upstream of them — PL-BERT, the prosody and duration
+path, the acoustic text encoder, the Voice tables — is 39.6%.
+
+That upstream part is exactly what decides F0 and the durations, and this
+port has already measured what a small F0 difference costs: the harmonic
+source accumulates phase across the whole utterance, so a few parts in ten
+thousand becomes radians by the end. So none of it is quantized at any profile.
+The split is the same shape as the VITS one, but for a reason this family
+measured rather than inherited.
+
+Three further cases needed their own rule:
+
+- The Snake alphas are divided by, so they stay exact.
+- The depthwise pools are transposed convolutions, but this runtime reads their
+  taps one at a time as a per-channel scale, which only works at the reference
+  dtype. They are Sensitive, not TransposeWeight, despite the name.
+- `decoder.F0_conv` and `decoder.N_conv` halve the prosody curves before
+  anything else reads them, so they sit on the F0 path rather than the audio
+  path.
+
+### Storage types are now checked over the whole package
+
+The catalog used to check each tensor's type where it looked it up, and only
+accepted F32. It now accepts what the profile implies, and the check moved to a
+single pass over every tensor in the package. That is stronger than the
+per-lookup form: it also rejects a tensor the catalog never looks up, and a name
+outside the catalog, rather than ignoring either.
+
+### Result
+
+The F16 package is 246.5 MB against 352.8 MB, a 30% reduction, and costs
+nothing measurable. Every stage up to and including the harmonic source
+reproduces the F32 measurements **exactly**, digit for digit, because none of
+those stages is quantized. Only the waveform differs, and by less than the
+spread between cases: worst-case correlation with the oracle is 0.987445 at F16
+against 0.987437 at F32, and comparing the two packages directly gives
+correlation 0.999999 with a maximum absolute difference of 8.5e-4.
+
+Q8_MIXED is not yet produced. It needs the block-packed matrix layout, which
+this family's convolution builder does not yet consume — VITS handles it by
+storing the kernel pre-packed as a 2-D tensor and driving `ggml_im2col` from a
+separate shape tensor. That is the next slice.
+
 ## 2026-07-26 — Family dispatch in the public interface
 
 Kokoro is now reachable through `synth_model_load`. Until this slice the public

@@ -18,14 +18,14 @@
 namespace {
 
 // The upstream example, resolved to token IDs by the manifest.
-const int32_t kTokens[] = { 0,   81,  83,  16,  61,  53,  156, 25,  16,  83,  44,  156, 138, 64,  16,  81,
-                            83,  16,  58,  156, 76,  123, 62,  16,  65,  138, 68,  16,  81,  83,  16,  53,
-                            156, 138, 54,  83,  123, 16,  138, 64,  16,  62,  156, 86,  54,  83,  64,  157,
-                            102, 147, 83,  56,  3,   16,  62,  156, 63,  56,  46,  16,  62,  83,  16,  70,
-                            16,  46,  156, 86,  46,  16,  133, 156, 72,  56,  42,  54,  4,   0 };
+const int32_t kTokens[] = { 0,   81,  83,  16,  61,  53,  156, 25,  16, 83,  44,  156, 138, 64, 16, 81,
+                            83,  16,  58,  156, 76,  123, 62,  16,  65, 138, 68,  16,  81,  83, 16, 53,
+                            156, 138, 54,  83,  123, 16,  138, 64,  16, 62,  156, 86,  54,  83, 64, 157,
+                            102, 147, 83,  56,  3,   16,  62,  156, 63, 56,  46,  16,  62,  83, 16, 70,
+                            16,  46,  156, 86,  46,  16,  133, 156, 72, 56,  42,  54,  4,   0 };
 
-constexpr const char * kVoice        = "af_heart";
-constexpr uint64_t     kVoiceSize    = 8;
+constexpr const char * kVoice          = "af_heart";
+constexpr uint64_t     kVoiceSize      = 8;
 // One predicted duration step is exactly this many output samples.
 constexpr uint64_t     kSamplesPerStep = 600;
 
@@ -42,8 +42,11 @@ synth_request_t make_request(uint64_t seed, float speaking_rate) {
     return request;
 }
 
-bool synthesize(synth_context_t * context, uint64_t seed, float speaking_rate, std::vector<float> & pcm,
-                uint32_t & sample_rate) {
+bool synthesize(synth_context_t *    context,
+                uint64_t             seed,
+                float                speaking_rate,
+                std::vector<float> & pcm,
+                uint32_t &           sample_rate) {
     synth_request_t        request = make_request(seed, speaking_rate);
     synth_audio_buffer_t * audio   = nullptr;
     synth_result_t         result;

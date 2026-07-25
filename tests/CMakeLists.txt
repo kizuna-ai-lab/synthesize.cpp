@@ -142,6 +142,7 @@ target_include_directories(synthesize-kokoro-model-errors-test PRIVATE
 target_link_libraries(synthesize-kokoro-model-errors-test PRIVATE synthesize ggml)
 add_test(NAME synthesize-kokoro-model-errors-test
     COMMAND synthesize-kokoro-model-errors-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
+synth_add_unit_test(synthesize-kokoro-quantization-policy-test kokoro_quantization_policy_test.cpp)
 synth_add_unit_test(synthesize-kokoro-istft-test kokoro_istft_test.cpp)
 synth_add_unit_test(synthesize-kokoro-decoder-test kokoro_decoder_test.cpp)
 set_tests_properties(synthesize-kokoro-metadata-test synthesize-kokoro-lstm-test
@@ -150,6 +151,7 @@ set_tests_properties(synthesize-kokoro-metadata-test synthesize-kokoro-lstm-test
     synthesize-kokoro-prosody-test synthesize-kokoro-text-encoder-test
     synthesize-kokoro-source-test synthesize-kokoro-istft-test
     synthesize-kokoro-decoder-test synthesize-kokoro-model-errors-test
+    synthesize-kokoro-quantization-policy-test
     PROPERTIES LABELS "unit;kokoro")
 
 synth_add_unit_test(synthesize-vits-text-encoder-host-test vits_text_encoder_host_test.cpp)
@@ -186,8 +188,9 @@ add_executable(synthesize-quantize-policy-test
     ${CMAKE_SOURCE_DIR}/tools/synthesize-quantize/policy.cpp)
 target_include_directories(synthesize-quantize-policy-test PRIVATE
     ${CMAKE_SOURCE_DIR}/tools/synthesize-quantize
+    ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(synthesize-quantize-policy-test PRIVATE ggml)
+target_link_libraries(synthesize-quantize-policy-test PRIVATE synthesize ggml)
 add_test(NAME synthesize-quantize-policy-test COMMAND synthesize-quantize-policy-test)
 set_tests_properties(synthesize-quantize-policy-test PROPERTIES LABELS "unit;tools;quantization")
 add_executable(synthesize-quantize-test
@@ -196,8 +199,9 @@ add_executable(synthesize-quantize-test
     ${CMAKE_SOURCE_DIR}/tools/synthesize-quantize/quantize.cpp)
 target_include_directories(synthesize-quantize-test PRIVATE
     ${CMAKE_SOURCE_DIR}/tools/synthesize-quantize
+    ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(synthesize-quantize-test PRIVATE ggml)
+target_link_libraries(synthesize-quantize-test PRIVATE synthesize ggml)
 add_test(NAME synthesize-quantize-test
     COMMAND synthesize-quantize-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
 set_tests_properties(synthesize-quantize-test PROPERTIES LABELS "unit;tools;quantization")
@@ -553,6 +557,7 @@ add_custom_target(synthesize-check-unit
         synthesize-kokoro-istft-test
         synthesize-kokoro-decoder-test
         synthesize-kokoro-model-errors-test
+        synthesize-kokoro-quantization-policy-test
         synthesize-vits-text-encoder-host-test
         synthesize-vits-metadata-test
         synthesize-vits-weights-test

@@ -37,4 +37,14 @@ const Profile * find_profile(const char * name);
 bool resolve_vits_target_type(const Profile & profile, const std::string & name, ggml_type & type_out);
 bool resolve_vits_target_spec(const Profile & profile, const std::string & name, TargetSpec & spec_out);
 
+// The same for Kokoro. Its split is not the same as VITS's by coincidence:
+// everything upstream of the decoder decides F0 and the durations, and the
+// harmonic source turns a small relative F0 difference into radians of phase
+// over an utterance, so PL-BERT, the prosody and duration path, the acoustic
+// text encoder, and the Voice tables all stay at the reference dtype. The
+// decoder and its generator are where the parameters are and where quantizing
+// pays. See reports/porting/kokoro/kokoro-v1-0/_porting-log.md.
+bool resolve_kokoro_target_type(const Profile & profile, const std::string & name, ggml_type & type_out);
+bool resolve_kokoro_target_spec(const Profile & profile, const std::string & name, TargetSpec & spec_out);
+
 }  // namespace synth::quantize

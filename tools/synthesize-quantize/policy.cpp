@@ -1,5 +1,7 @@
 #include "policy.h"
 
+#include "arch/kokoro/quantization.h"
+
 #include <cctype>
 #include <initializer_list>
 #include <string_view>
@@ -195,6 +197,34 @@ bool resolve_vits_target_spec(const Profile & profile, const std::string & name,
             return false;
     }
     return false;
+}
+
+bool resolve_kokoro_target_spec(const Profile & profile, const std::string & name, TargetSpec & spec_out) {
+    // The classifier lives in the family module so the runtime's catalog and
+    // this tool cannot disagree about a tensor.
+    switch (synth::kokoro::tensor_role(name)) {
+        case synth::kokoro::TensorRole::MatrixWeight:
+            spec_out = { profile.matrix_weight_type, profile.matrix_weight_layout };
+            return true;
+        case synth::kokoro::TensorRole::TransposeWeight:
+            spec_out = { profile.transpose_weight_type, TensorLayout::Native };
+            return true;
+        case synth::kokoro::TensorRole::Sensitive:
+            spec_out = { profile.sensitive_type, TensorLayout::Native };
+            return true;
+        case synth::kokoro::TensorRole::Unknown:
+            return false;
+    }
+    return false;
+}
+
+bool resolve_kokoro_target_type(const Profile & profile, const std::string & name, ggml_type & type_out) {
+    TargetSpec spec{};
+    if (!resolve_kokoro_target_spec(profile, name, spec)) {
+        return false;
+    }
+    type_out = spec.type;
+    return true;
 }
 
 bool resolve_vits_target_type(const Profile & profile, const std::string & name, ggml_type & type_out) {

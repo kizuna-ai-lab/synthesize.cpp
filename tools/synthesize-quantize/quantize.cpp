@@ -114,9 +114,20 @@ bool quantize_file(const std::string & input_path,
         return fail(error_out, "could not read input GGUF: " + input_path);
     }
 
+    // Each family gets its own catalog resolver. There is deliberately no
+    // catch-all: a tensor the resolver does not recognise stops the run, so a
+    // converter or runtime change cannot quietly acquire a storage type.
     std::string architecture;
-    if (!read_string(input.gguf, "general.architecture", architecture) || architecture != "vits") {
-        return fail(error_out, "input GGUF general.architecture must be vits");
+    if (!read_string(input.gguf, "general.architecture", architecture)) {
+        return fail(error_out, "input GGUF declares no general.architecture");
+    }
+    bool (*resolve_target_spec)(const Profile &, const std::string &, TargetSpec &) = nullptr;
+    if (architecture == "vits") {
+        resolve_target_spec = resolve_vits_target_spec;
+    } else if (architecture == "kokoro") {
+        resolve_target_spec = resolve_kokoro_target_spec;
+    } else {
+        return fail(error_out, "unsupported input GGUF general.architecture: " + architecture);
     }
 
     struct PlanEntry {
@@ -147,8 +158,8 @@ bool quantize_file(const std::string & input_path,
             return fail(error_out, "unsupported source tensor type for " + std::string(name));
         }
         TargetSpec target{};
-        if (!resolve_vits_target_spec(*profile, name, target)) {
-            return fail(error_out, "unknown VITS tensor: " + std::string(name));
+        if (!resolve_target_spec(*profile, name, target)) {
+            return fail(error_out, "unknown " + architecture + " tensor: " + std::string(name));
         }
         std::array<int64_t, 4> target_ne     = { tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3] };
         int                    target_n_dims = ggml_n_dims(tensor);

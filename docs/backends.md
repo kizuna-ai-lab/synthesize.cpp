@@ -50,8 +50,16 @@ GGML revision has no build option or environment variable that disables the
 path. Consequences for short inputs are bounded by measurement, not assumption:
 across every Kokoro profile and case the rounded durations stay exact and the
 waveform correlation is unaffected, and each family's Golden suite is the
-instrument that keeps that true. If a future upstream revision adds a gate for
-these kernels, re-vendoring and enabling it restores the unscoped guarantee.
+instrument that keeps that true.
+
+A root fix exists and is measured: a four-line gate making
+`ggml_cuda_should_use_mmf` honor `GGML_CUDA_DISABLE_TF32` for F32 restores
+strict FP32 at every width (2e-3 → 2e-6 on the affected stages) at no measured
+synthesis-time cost. It is recorded, with the prototype measurements and the
+patch itself, in `reports/upstream/ggml-mmf-f32-tf32-gate.md`; it is not
+applied, because the vendored tree is verbatim by contract. Landing it means
+either an upstream merge followed by a re-vendor, or a maintainer decision to
+adopt patch-on-sync.
 
 ## CUDA Unified Memory Policy
 

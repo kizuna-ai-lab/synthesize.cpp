@@ -209,6 +209,48 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — The root fix for the TF32 path, prototyped and measured
+
+The question was whether the two explained items could be fixed at the root.
+They are different in kind, and the answer is different for each.
+
+### The TF32 path: fixable, four lines, free
+
+Upstream master still ships `ggml_cuda_should_use_mmf` with no gate, so the fix
+was prototyped here: under `GGML_CUDA_DISABLE_TF32`, return false for
+`GGML_TYPE_F32`. The vendored file was edited temporarily, measured, and
+restored; the tree is verbatim again and the CUDA runner was rebuilt from the
+pristine source afterwards — verified by re-running one sweep point and getting
+the TF32-era number back, so no stale binary is left describing the wrong
+source.
+
+Measured with the gate: the 16-token cliff disappears (2.1e-3 → 2.1e-6, every
+width now at cuBLAS-grade FP32), F0 noise on the worst case drops 0.99 Hz →
+0.003 Hz, the harmonic-source divergence 0.334 → 0.008, and synthesis wall
+time does not move on either the longest or the shortest case. The kernels the
+gate turns off win microseconds on matrices this graph spends no time in.
+
+F16 and BF16 stay on their tensor-core paths deliberately: a reduced-precision
+storage type is its own precision statement. Only F32 storage carries a
+strict-FP32 expectation.
+
+The patch and the full measurements live in
+`reports/upstream/ggml-mmf-f32-tf32-gate.{patch,md}`. It is not applied: the
+vendored tree is verbatim by confirmed contract, so landing it is either an
+upstream merge plus re-vendor, or a maintainer decision to adopt patch-on-sync.
+Submitting upstream is an outward-facing act on the maintainer's behalf and
+waits for their word.
+
+### The phase conditioning: not fixable, and not a defect to fix
+
+Δφ = 2π·h·C·δ is the model's own mathematics — the reference implementation
+diverges from itself the same way under any ε-perturbation, on any hardware.
+There is no implementation on either side of the comparison to repair. What the
+conditioning *transmits* is another matter: with the TF32 gate in place its
+input shrinks three hundredfold on CUDA, the voiced/unvoiced margin returns to
+the CPU's ~100× safety, and the one permanent consequence — waveform parity is
+correlation, not samples — is already how the suite is built.
+
 ## 2026-07-26 — The two "measured but not explained" items, explained
 
 Both open numerical questions are now closed, and one of them corrects an

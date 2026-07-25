@@ -121,6 +121,7 @@ quants:
     tensor_types: 384 F32 + 127 F16
     validation:
       cpu_pcm_correlation: 0.987445
+      dgx_pcm_correlation: 0.989831
   - name: Q8_MIXED
     filename: kokoro-v1-0-Q8_MIXED.gguf
     size: 216.1 MB
@@ -129,3 +130,4 @@ quants:
     tensor_types: 384 F32 + 14 F16 + 113 Q8_0
     validation:
       cpu_pcm_correlation: 0.984790
+      dgx_pcm_correlation: 0.988311

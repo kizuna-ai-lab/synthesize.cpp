@@ -209,6 +209,52 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — Completing CUDA coverage, and a measurement of the wrong binary
+
+Every Quantization Profile now runs every stage on CUDA: 42 validator runs
+across three profiles, seven stages, and 15 cases. The durations, frame count
+and alignment are exact on all of them. Worst-case waveform correlation on CUDA
+is 0.9896 at F32, 0.9898 at F16 and 0.9883 at Q8_MIXED — each slightly better
+than the same profile on the CPU.
+
+### The first sweep measured a binary that no longer existed
+
+That sweep reported `decoder.spectrum` diverging by 1.2e14 on CUDA against 3.97
+on the CPU. The number was real; what it described was not.
+
+The tell was that it could not be true alongside the rest of the run: a spectrum
+that wrong would reconstruct to an amplitude of 1e12, and the CUDA waveform
+stage was producing a peak of 0.43 correlating at 0.9975. Two stages of the same
+`compute_decoder` cannot disagree that way. Reading the dumped spectrum back as
+graph layout instead of the transposed layout reconstructed to exactly the
+waveform stage's output, which located the difference: the binary had not
+transposed at all.
+
+`build/dev-dgx-spark` was last built at the CUDA slice and the transpose was
+added afterwards, with the decoder probe. The sweep had driven a stale runner.
+Rebuilding and re-running put `decoder.spectrum` at 3.5 to 3.7, in line with the
+CPU.
+
+The lesson is procedural rather than technical: a validation run describes
+whatever binary it drove, so the build has to be part of the run. The CPU tree
+was rebuilt as a matter of course because it is what the unit gate uses; the
+accelerator tree only gets rebuilt when someone remembers.
+
+### Intermediate drift on CUDA is larger, and size-dependent
+
+PL-BERT's hidden state differs by 1.9e-3 relative on CUDA against 7.5e-7 on the
+CPU, with TF32 off and strict FP32 confirmed in the build. The deviation shrinks
+as the sequence lengthens — 2.2e-2 absolute at six tokens, 7.7e-3 at sixteen,
+2.5e-5 at twenty-three — and is spread evenly across token positions rather than
+concentrated in one.
+
+That shape argues against a defect: an uninitialized tail or a padding error
+would sit in particular positions, and a real fault would usually worsen with
+size rather than improve. Small matrix multiplies selecting different kernels
+and reduction orders is the ordinary explanation. It does not reach the rounded
+durations and does not degrade the waveform. It is recorded as measured; it is
+not claimed to be fully explained.
+
 ## 2026-07-26 — Stage 8: publication artifacts
 
 `docs/models/kokoro-v1-0.md`, `scripts/hf_cards/kokoro-v1-0.yaml`, the generated
@@ -248,8 +294,10 @@ revision of the rule.
 
 ### Published
 
-All three packages are published in `jiangzhuo9357/kokoro-v1-0-gguf` at revision
-`ec897a4c400e8e5a69eb9da6bd423c0152f9030c`, public, under Apache-2.0.
+All three packages are published in `jiangzhuo9357/kokoro-v1-0-gguf`, public,
+under Apache-2.0. The card was updated at revision
+`020112ea74fbd5b4cf5d5f7886e9a009ee572f38` once every profile had CUDA
+measurements to report.
 
 The upload reported no bytes transferred, which is content-addressed
 deduplication rather than a skipped upload. That is worth checking rather than

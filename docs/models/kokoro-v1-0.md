@@ -3,7 +3,7 @@
 Status: F32, F16, and Q8_MIXED are `port_validated`. Quality evaluation has not
 been run. The packages are published in
 [`jiangzhuo9357/kokoro-v1-0-gguf`](https://huggingface.co/jiangzhuo9357/kokoro-v1-0-gguf)
-at revision `ec897a4c400e8e5a69eb9da6bd423c0152f9030c`.
+at revision `020112ea74fbd5b4cf5d5f7886e9a009ee572f38`.
 
 ## Package
 
@@ -50,9 +50,9 @@ of thirty-two, and a block-quantized row has to be a whole number of blocks.
 
 ## Port validation
 
-Seven graph stages and 15 deterministic cases run on DGX Spark CPU and NVIDIA
-GB10 CUDA 13.3, against the pinned upstream PyTorch implementation at
-`suite_version` 2.
+Seven graph stages and 15 deterministic cases run for all three Quantization
+Profiles on both DGX Spark CPU and NVIDIA GB10 CUDA 13.3 — 42 validator runs —
+against the pinned upstream PyTorch implementation at `suite_version` 2.
 
 The predicted durations, the frame count, and the alignment are **exact in every
 case, on every profile, and on both backends**. That is the structural
@@ -78,8 +78,16 @@ the value the inverse transform consumes.
 | Profile | CPU waveform correlation | GB10 CUDA |
 | --- | ---: | ---: |
 | F32 | 0.987437 | 0.989607 |
-| F16 | 0.987445 | not measured |
-| Q8_MIXED | 0.984790 | not measured |
+| F16 | 0.987445 | 0.989831 |
+| Q8_MIXED | 0.984790 | 0.988311 |
+
+Every profile was run on both backends across all seven stages. Intermediate
+drift is larger on CUDA — 1.9e-3 relative on PL-BERT's hidden state against
+7.5e-7 on the CPU — and it shrinks as the sequence lengthens, from 2.2e-2
+absolute at six tokens to 2.5e-5 at twenty-three. It is spread evenly across
+token positions rather than concentrated in any of them, and it does not reach
+the durations or degrade the waveform. It reads as accumulation order on small
+matrix multiplies; it is recorded as measured rather than explained.
 
 Correlation is the honest measure here rather than a sample-wise tolerance, for
 the same reason the profiles are split the way they are: the waveforms diverge

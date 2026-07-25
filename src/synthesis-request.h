@@ -1,6 +1,6 @@
 #pragma once
 
-#include "arch/vits/vits.h"
+#include "model-info.h"
 #include "synthesize.h"
 
 #include <cstdint>
@@ -23,7 +23,7 @@ struct PreparedSynthesisRequest {
     uint64_t                        resolved_voice_size    = 0;
 };
 
-synth_status_t prepare_synthesis_request(const vits::ModelInfo &    info,
+synth_status_t prepare_synthesis_request(const ModelInfo &          info,
                                          const synth_request_t *    request,
                                          PreparedSynthesisRequest & output);
 

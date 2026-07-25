@@ -97,7 +97,7 @@ bool supported_english_tag(const char * value, size_t size) {
 
 }  // namespace
 
-synth_status_t prepare_synthesis_request(const vits::ModelInfo &    info,
+synth_status_t prepare_synthesis_request(const ModelInfo &          info,
                                          const synth_request_t *    request,
                                          PreparedSynthesisRequest & output) {
     output = {};

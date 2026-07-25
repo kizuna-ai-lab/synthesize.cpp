@@ -1,9 +1,13 @@
 #include "synthesize.h"
 
+#include "arch/kokoro/kokoro.h"
 #include "arch/vits/vits.h"
 #include "audio-delivery.h"
 #include "backend-device.h"
 #include "backend-module.h"
+#include "gguf-metadata.h"
+#include "gguf.h"
+#include "model-info.h"
 #include "random-stream.h"
 #include "synthesis-request.h"
 
@@ -11,15 +15,23 @@
 #include <atomic>
 #include <cstddef>
 #include <cstring>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <new>
 #include <thread>
 #include <vector>
 
+// A Loaded Model is one family's model behind the family-independent info the
+// core runtime reads. Only one implementation pointer is ever set, and `info`
+// says which.
 struct synth_model {
-    std::unique_ptr<synth::vits::Model> implementation;
-    synth::vits::ModelInfo              info;
+    synth::ModelInfo                      info;
+    std::unique_ptr<synth::vits::Model>   vits;
+    std::unique_ptr<synth::kokoro::Model> kokoro;
+    // What only the VITS synthesis path reads; Kokoro's equivalents live behind
+    // its own seeded entry point.
+    synth::vits::ModelInfo                vits_extras;
 };
 
 struct synth_context {
@@ -177,6 +189,83 @@ void reset_result(synth_result_t * result) {
     }
 }
 
+// Reads the package's declared architecture so the right family loader is
+// called. A container that names no architecture, or names one this build has
+// no family for, is refused here rather than by whichever loader happened to be
+// tried first.
+synth_status_t read_model_family(const char * model_path, synth::ModelFamily & family) {
+    // A missing file has to keep reporting as missing. The probe runs before
+    // any family loader, so it owns that distinction now.
+    std::ifstream probe(model_path, std::ios::binary);
+    if (!probe) {
+        return SYNTH_ERR_FILE_NOT_FOUND;
+    }
+    probe.close();
+
+    gguf_init_params parameters{};
+    parameters.no_alloc = true;
+    parameters.ctx      = nullptr;
+    gguf_context * gguf = gguf_init_from_file(model_path, parameters);
+    if (gguf == nullptr) {
+        return SYNTH_ERR_GGUF;
+    }
+    std::string architecture;
+    const bool  present = synth::GgufMetadata(gguf, "synthesize").string("general.architecture", architecture);
+    gguf_free(gguf);
+    if (!present) {
+        return SYNTH_ERR_GGUF;
+    }
+    if (architecture == "vits") {
+        family = synth::ModelFamily::Vits;
+        return SYNTH_OK;
+    }
+    if (architecture == "kokoro") {
+        family = synth::ModelFamily::Kokoro;
+        return SYNTH_OK;
+    }
+    return SYNTH_ERR_UNSUPPORTED_ARCH;
+}
+
+synth::ModelInfo shared_info(const synth::vits::ModelInfo & info) {
+    synth::ModelInfo shared;
+    shared.family               = synth::ModelFamily::Vits;
+    shared.has_package_default  = info.has_package_default;
+    shared.preset_voice_ids     = info.preset_voice_ids;
+    shared.preset_voice_flags   = info.preset_voice_flags;
+    shared.text_frontend        = info.text_frontend;
+    shared.input_flags          = info.input_flags;
+    shared.capability_flags     = info.capability_flags;
+    shared.output_sample_rate   = info.output_sample_rate;
+    shared.output_channel_count = info.output_channel_count;
+    shared.vocab_size           = info.vocab_size;
+    shared.samples_per_frame    = info.hop_length;
+    shared.max_input_tokens     = info.max_input_tokens;
+    shared.max_output_frames    = info.max_output_frames;
+    shared.min_speaking_rate    = info.min_speaking_rate;
+    shared.max_speaking_rate    = info.max_speaking_rate;
+    return shared;
+}
+
+synth::ModelInfo shared_info(const synth::kokoro::ModelInfo & info) {
+    synth::ModelInfo shared;
+    shared.family               = synth::ModelFamily::Kokoro;
+    shared.has_package_default  = info.has_package_default;
+    shared.preset_voice_ids     = info.preset_voice_ids;
+    shared.preset_voice_flags   = info.preset_voice_flags;
+    shared.text_frontend        = info.text_frontend;
+    shared.input_flags          = info.input_flags;
+    shared.capability_flags     = info.capability_flags;
+    shared.output_sample_rate   = info.output_sample_rate;
+    shared.output_channel_count = info.output_channel_count;
+    shared.vocab_size           = info.vocab_size;
+    shared.samples_per_frame    = info.samples_per_frame;
+    shared.max_input_tokens     = info.max_input_tokens;
+    shared.max_output_frames    = info.max_output_frames;
+    shared.min_speaking_rate    = info.min_speaking_rate;
+    shared.max_speaking_rate    = info.max_speaking_rate;
+    return shared;
+}
+
 }  // namespace
 
 uint32_t synth_abi_version(void) {
@@ -302,8 +391,9 @@ synth_status_t synth_model_get_device(const synth_model_t * model, synth_backend
         return SYNTH_ERR_INVALID_ARG;
     }
     try {
-        ggml_backend_dev_t device =
-            model->implementation == nullptr ? nullptr : model->implementation->primary_device();
+        ggml_backend_dev_t device = model->kokoro != nullptr ? model->kokoro->primary_device() :
+                                    model->vits != nullptr   ? model->vits->primary_device() :
+                                                               nullptr;
         if (device == nullptr) {
             return SYNTH_ERR_BACKEND;
         }
@@ -345,34 +435,53 @@ synth_status_t synth_model_load(const char *                      model_path,
     }
     try {
         synth::freeze_backend_modules();
-        ggml_backend_dev_t selected_device        = nullptr;
-        const bool         vits_backend_supported = backend == SYNTH_BACKEND_AUTO || backend == SYNTH_BACKEND_CPU ||
-                                                    backend == SYNTH_BACKEND_CPU_ACCEL || backend == SYNTH_BACKEND_CUDA;
+        synth::ModelFamily   family        = synth::ModelFamily::Vits;
+        const synth_status_t family_status = read_model_family(model_path, family);
+        if (family_status != SYNTH_OK) {
+            emit_diagnostic(diagnostics, family_status, "model.unsupported_architecture",
+                            "the package does not declare an architecture this build supports");
+            return family_status;
+        }
+        ggml_backend_dev_t   selected_device   = nullptr;
+        // Both families claim the same execution backends today; when they
+        // diverge this becomes a per-family question.
+        const bool           backend_supported = backend == SYNTH_BACKEND_AUTO || backend == SYNTH_BACKEND_CPU ||
+                                                 backend == SYNTH_BACKEND_CPU_ACCEL || backend == SYNTH_BACKEND_CUDA;
         const synth_status_t selection_status =
-            vits_backend_supported ? synth::resolve_requested_device(backend, device_index, &selected_device) :
-                                     SYNTH_ERR_BACKEND;
+            backend_supported ? synth::resolve_requested_device(backend, device_index, &selected_device) :
+                                SYNTH_ERR_BACKEND;
         if (selection_status != SYNTH_OK) {
             emit_diagnostic(
-                diagnostics, selection_status,
-                vits_backend_supported ? "backend.device_unavailable" : "backend.unavailable",
-                vits_backend_supported ?
+                diagnostics, selection_status, backend_supported ? "backend.device_unavailable" : "backend.unavailable",
+                backend_supported ?
                     "the requested execution device is unavailable or does not match the requested backend" :
                     "the requested execution backend is unavailable for this model family");
             return selection_status;
         }
-        std::unique_ptr<synth::vits::Model> implementation;
-        const bool                          include_accelerators = backend != SYNTH_BACKEND_CPU;
-        const synth_status_t                status =
-            synth::vits::Model::load(model_path, selected_device, include_accelerators, implementation);
+        const bool     include_accelerators = backend != SYNTH_BACKEND_CPU;
+        auto           model                = std::make_unique<synth_model>();
+        synth_status_t status               = SYNTH_OK;
+        if (family == synth::ModelFamily::Kokoro) {
+            status = synth::kokoro::Model::load(model_path, selected_device, include_accelerators, model->kokoro);
+            if (status == SYNTH_OK) {
+                synth::kokoro::ModelInfo info;
+                status = model->kokoro->get_info(info);
+                if (status == SYNTH_OK) {
+                    model->info = shared_info(info);
+                }
+            }
+        } else {
+            status = synth::vits::Model::load(model_path, selected_device, include_accelerators, model->vits);
+            if (status == SYNTH_OK) {
+                status = model->vits->get_info(model->vits_extras);
+                if (status == SYNTH_OK) {
+                    model->info = shared_info(model->vits_extras);
+                }
+            }
+        }
         if (status != SYNTH_OK) {
             emit_diagnostic(diagnostics, status, "model.load_failed", synth_status_string(status));
             return status;
-        }
-        auto model                       = std::make_unique<synth_model>();
-        model->implementation            = std::move(implementation);
-        const synth_status_t info_status = model->implementation->get_info(model->info);
-        if (info_status != SYNTH_OK) {
-            return info_status;
         }
         *out_model = model.release();
         return SYNTH_OK;
@@ -578,6 +687,45 @@ synth_status_t synth_synthesize(synth_context_t *          context,
         return SYNTH_ERR_CANCELLED;
     }
 
+    if (context->model->info.family == synth::ModelFamily::Kokoro) {
+        try {
+            // A Kokoro Voice is a table row chosen by input length, so the row
+            // is resolved from the final token count rather than at load time.
+            uint32_t voice_row = 0;
+            if (!context->model->kokoro->resolve_voice_row(prepared.token_ids.size(), voice_row)) {
+                emit_diagnostic(prepared.diagnostics, SYNTH_ERR_INPUT_TOO_LONG, "synthesis.voice_row",
+                                "the input length has no style row in this voice table");
+                return SYNTH_ERR_INPUT_TOO_LONG;
+            }
+            synth::kokoro::WaveformOutput waveform;
+            status =
+                context->model->kokoro->run_synthesis(prepared.token_ids, prepared.speaker_index, voice_row,
+                                                      prepared.speaking_rate, actual_seed, context->threads, waveform);
+            if (status != SYNTH_OK) {
+                emit_diagnostic(prepared.diagnostics, status, "synthesis.graph_failed", synth_status_string(status));
+                return status;
+            }
+            if (waveform.sample_count > prepared.effective_frame_limit) {
+                (void) synth::deliver_complete_audio(nullptr, 0, delivery_info, sink, out_result);
+                return SYNTH_ERR_OUTPUT_LIMIT;
+            }
+            if (cancellation_requested(prepared)) {
+                (void) synth::deliver_complete_audio(nullptr, 0, delivery_info, sink, out_result);
+                return SYNTH_ERR_CANCELLED;
+            }
+            return synth::deliver_complete_audio(waveform.pcm.data(), waveform.sample_count, delivery_info, sink,
+                                                 out_result);
+        } catch (const std::bad_alloc &) {
+            emit_diagnostic(prepared.diagnostics, SYNTH_ERR_OOM, "allocation.failed",
+                            "synthesis temporary allocation failed");
+            return SYNTH_ERR_OOM;
+        } catch (...) {
+            emit_diagnostic(prepared.diagnostics, SYNTH_ERR_INTERNAL, "internal.exception",
+                            "unexpected exception during synthesis");
+            return SYNTH_ERR_INTERNAL;
+        }
+    }
+
     try {
         synth::NormalRandomStream random(actual_seed);
         if (prepared.token_ids.size() > std::numeric_limits<size_t>::max() / 2) {
@@ -587,9 +735,9 @@ synth_status_t synth_synthesize(synth_context_t *          context,
         random.fill(duration_noise.data(), duration_noise.size());
 
         synth::vits::DurationOutput duration;
-        status = context->model->implementation->run_duration(
-            prepared.token_ids, duration_noise, context->model->info.duration_noise_scale, prepared.speaking_rate,
-            context->threads, duration, prepared.speaker_index);
+        status = context->model->vits->run_duration(
+            prepared.token_ids, duration_noise, context->model->vits_extras.duration_noise_scale,
+            prepared.speaking_rate, context->threads, duration, prepared.speaker_index);
         if (status != SYNTH_OK) {
             emit_diagnostic(prepared.diagnostics, status, "synthesis.duration_failed", synth_status_string(status));
             return status;
@@ -598,27 +746,27 @@ synth_status_t synth_synthesize(synth_context_t *          context,
             (void) synth::deliver_complete_audio(nullptr, 0, delivery_info, sink, out_result);
             return SYNTH_ERR_CANCELLED;
         }
-        if (context->model->info.hop_length == 0 ||
-            duration.frame_count > std::numeric_limits<uint64_t>::max() / context->model->info.hop_length) {
+        if (context->model->vits_extras.hop_length == 0 ||
+            duration.frame_count > std::numeric_limits<uint64_t>::max() / context->model->vits_extras.hop_length) {
             return SYNTH_ERR_OUTPUT_LIMIT;
         }
-        const uint64_t pcm_frame_count = duration.frame_count * context->model->info.hop_length;
+        const uint64_t pcm_frame_count = duration.frame_count * context->model->vits_extras.hop_length;
         if (pcm_frame_count > prepared.effective_frame_limit) {
             (void) synth::deliver_complete_audio(nullptr, 0, delivery_info, sink, out_result);
             return SYNTH_ERR_OUTPUT_LIMIT;
         }
-        if (context->model->info.inter_channels == 0 ||
-            duration.frame_count > std::numeric_limits<size_t>::max() / context->model->info.inter_channels) {
+        if (context->model->vits_extras.inter_channels == 0 ||
+            duration.frame_count > std::numeric_limits<size_t>::max() / context->model->vits_extras.inter_channels) {
             return SYNTH_ERR_OUTPUT_LIMIT;
         }
         std::vector<float> latent_noise(static_cast<size_t>(duration.frame_count) *
-                                        context->model->info.inter_channels);
+                                        context->model->vits_extras.inter_channels);
         random.fill(latent_noise.data(), latent_noise.size());
 
         synth::vits::WaveformDecoderOutput waveform;
-        status = context->model->implementation->run_waveform_decoder(
-            prepared.token_ids, duration_noise, latent_noise, context->model->info.latent_noise_scale,
-            context->model->info.duration_noise_scale, prepared.speaking_rate, context->threads, waveform,
+        status = context->model->vits->run_waveform_decoder(
+            prepared.token_ids, duration_noise, latent_noise, context->model->vits_extras.latent_noise_scale,
+            context->model->vits_extras.duration_noise_scale, prepared.speaking_rate, context->threads, waveform,
             prepared.speaker_index);
         if (status != SYNTH_OK) {
             emit_diagnostic(prepared.diagnostics, status, "synthesis.graph_failed", synth_status_string(status));

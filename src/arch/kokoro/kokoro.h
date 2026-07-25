@@ -168,6 +168,22 @@ class Model {
                                int                          threads,
                                DecoderOutput &              output) const;
 
+    // Synthesis from a seed rather than from replayed tensors.
+    //
+    // The harmonic source's two random draws are sized from the resolved frame
+    // count, which is not known until the duration stage has run, so drawing
+    // them is the family's job and not the caller's. This is also where the
+    // family's stochastic contract lives: one seeded stream supplies both the
+    // uniform initial phases and the Gaussian noise, in that order, so a seed
+    // determines the entire draw.
+    synth_status_t run_synthesis(const std::vector<int32_t> & token_ids,
+                                 uint32_t                     voice_index,
+                                 uint32_t                     voice_row,
+                                 float                        speaking_rate,
+                                 uint64_t                     seed,
+                                 int                          threads,
+                                 WaveformOutput &             output) const;
+
     synth_status_t run_waveform(const std::vector<int32_t> & token_ids,
                                 uint32_t                     voice_index,
                                 uint32_t                     voice_row,

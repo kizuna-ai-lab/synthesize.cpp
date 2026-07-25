@@ -47,6 +47,19 @@ void NormalRandomStream::fill(float * output, size_t count) {
     }
 }
 
+float NormalRandomStream::next_uniform() {
+    return float(uniform_open());
+}
+
+void NormalRandomStream::fill_uniform(float * output, size_t count) {
+    if (output == nullptr) {
+        return;
+    }
+    for (size_t index = 0; index < count; ++index) {
+        output[index] = next_uniform();
+    }
+}
+
 uint64_t nondeterministic_seed() {
     static std::atomic<uint64_t> counter{ 0 };
     uint64_t seed = static_cast<uint64_t>(std::chrono::high_resolution_clock::now().time_since_epoch().count());

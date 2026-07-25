@@ -300,6 +300,9 @@ target_link_libraries(synthesize-vits-acoustic-flow PRIVATE synthesize ggml)
 add_executable(synthesize-vits-waveform-decoder vits_waveform_decoder_real.cpp)
 target_include_directories(synthesize-vits-waveform-decoder PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(synthesize-vits-waveform-decoder PRIVATE synthesize ggml)
+add_executable(synthesize-kokoro-public-lifecycle-test kokoro_public_lifecycle_test.cpp)
+target_include_directories(synthesize-kokoro-public-lifecycle-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(synthesize-kokoro-public-lifecycle-test PRIVATE synthesize)
 add_executable(synthesize-vits-public-lifecycle-test vits_public_lifecycle_test.cpp)
 target_include_directories(synthesize-vits-public-lifecycle-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(synthesize-vits-public-lifecycle-test PRIVATE synthesize)
@@ -322,6 +325,14 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     endif()
     if(NOT SYNTH_UV_EXECUTABLE)
         find_program(SYNTH_UV_EXECUTABLE uv REQUIRED)
+    endif()
+    if(EXISTS "${SYNTH_KOKORO_TEST_MODEL}")
+        add_test(
+            NAME synthesize-kokoro-public-lifecycle
+            COMMAND synthesize-kokoro-public-lifecycle-test ${SYNTH_KOKORO_TEST_MODEL})
+        set_tests_properties(synthesize-kokoro-public-lifecycle PROPERTIES
+            LABELS "integration;abi;kokoro"
+            TIMEOUT 300)
     endif()
     add_test(
         NAME synthesize-vits-public-lifecycle
@@ -592,6 +603,7 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             synthesize-vits-latent-sampling
             synthesize-vits-acoustic-flow
             synthesize-vits-waveform-decoder
+            synthesize-kokoro-public-lifecycle-test
             synthesize-vits-public-lifecycle-test
             synthesize-vits-public-synthesis-test
             synthesize-vits-vctk-public-test

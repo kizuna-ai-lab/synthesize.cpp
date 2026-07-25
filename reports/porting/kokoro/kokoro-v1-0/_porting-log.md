@@ -209,6 +209,42 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — Family dispatch in the public interface
+
+Kokoro is now reachable through `synth_model_load`. Until this slice the public
+entry point named `synth::vits::Model` directly, so the family that had passed
+port validation could not actually be used through the product surface.
+
+The core runtime now reads a family-independent `synth::ModelInfo`, declared in
+`src/model-info.h`. Each family keeps its own info struct for the quantities
+only its own graphs need — VITS's latent channel count and noise scales — while
+everything the public interface, the request validator, and the audio delivery
+path read has one shape. `prepare_synthesis_request` took `vits::ModelInfo` and
+now takes the shared one; it read nine fields and every one of them was already
+family-independent, which is what made the split cheap.
+
+`synth_model_load` reads `general.architecture` before choosing a loader, so a
+package that names no architecture, or one this build has no family for, is
+refused at the seam rather than by whichever loader happened to be tried first.
+That probe had to be placed after the file-existence check: it runs before any
+family loader, so it now owns the distinction between a missing file and an
+unreadable one, and the public API test caught it doing otherwise.
+
+Kokoro's synthesis path needed a seeded entry point of its own. The harmonic
+source's two random draws are sized from the resolved frame count, which is not
+known until the duration stage has run, so the caller cannot size them. The
+family draws them instead, from one seeded stream that supplies the uniform
+initial phases and then the Gaussian noise — one stream, so a seed determines
+the whole draw. `NormalRandomStream` gained a uniform read for this.
+
+`synthesize-kokoro-public-lifecycle` checks what only the public seam can show:
+the declared capabilities match the package contract, all 54 voices are exposed
+with no default so a request must name one, a seed repeats exactly, a different
+seed changes the audio but not its length, and the speaking rate orders the
+output length. Those are the manifest's public-request relations. Measured
+through the interface, the upstream case produces 118,800 samples at 24 kHz —
+198 duration steps of 600 samples — in 2.8 seconds of wall time on CPU.
+
 ## 2026-07-26 — Stage 5: per-stage validators and measured tolerances
 
 Six registered validators now drive the runner over all 15 manifest cases in

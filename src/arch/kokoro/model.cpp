@@ -12,12 +12,14 @@
 #include "kokoro.h"
 #include "plbert.h"
 #include "prosody.h"
+#include "random-stream.h"
 #include "source.h"
 #include "text-encoder.h"
 #include "weights.h"
 
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <new>
 
 namespace synth::kokoro {
@@ -853,6 +855,49 @@ synth_status_t Model::run_decoder(const std::vector<int32_t> & token_ids,
     output.frames   = state.source.frames;
     output.spectrum = spectrum;
     return SYNTH_OK;
+}
+
+synth_status_t Model::run_synthesis(const std::vector<int32_t> & token_ids,
+                                    uint32_t                     voice_index,
+                                    uint32_t                     voice_row,
+                                    float                        speaking_rate,
+                                    uint64_t                     seed,
+                                    int                          threads,
+                                    WaveformOutput &             output) const {
+    output = WaveformOutput{};
+
+    // The frame count decides how much noise the source consumes, so the
+    // duration stage runs first and the rest of the pipeline continues from the
+    // state it leaves behind.
+    Pipeline       state;
+    synth_status_t status = compute_prosody(token_ids, voice_index, voice_row, speaking_rate, threads, state);
+    if (status != SYNTH_OK) {
+        return status;
+    }
+
+    const uint32_t harmonics = source_harmonics();
+    const uint64_t samples   = source_sample_count(state.frame_count);
+    if (harmonics == 0 || samples == 0) {
+        return SYNTH_ERR_INTERNAL;
+    }
+    if (samples > std::numeric_limits<size_t>::max() / harmonics) {
+        return SYNTH_ERR_OUTPUT_LIMIT;
+    }
+
+    try {
+        SourceRandom       random;
+        NormalRandomStream stream(seed);
+        random.rand_ini.resize(harmonics);
+        stream.fill_uniform(random.rand_ini.data(), random.rand_ini.size());
+        // Upstream forces the fundamental's initial phase to zero; only the
+        // overtones carry one.
+        random.rand_ini[0] = 0.0f;
+        random.noise.resize(size_t(samples) * harmonics);
+        stream.fill(random.noise.data(), random.noise.size());
+        return run_waveform(token_ids, voice_index, voice_row, speaking_rate, random, threads, output);
+    } catch (const std::bad_alloc &) {
+        return SYNTH_ERR_OOM;
+    }
 }
 
 synth_status_t Model::run_waveform(const std::vector<int32_t> & token_ids,

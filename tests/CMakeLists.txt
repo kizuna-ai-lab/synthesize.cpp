@@ -624,6 +624,7 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             synthesize-vits-acoustic-flow
             synthesize-vits-waveform-decoder
             synthesize-kokoro-public-lifecycle-test
+            synthesize-kokoro-stages
             synthesize-vits-public-lifecycle-test
             synthesize-vits-public-synthesis-test
             synthesize-vits-vctk-public-test

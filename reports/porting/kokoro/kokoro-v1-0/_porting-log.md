@@ -209,6 +209,20 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — A gate that registered tests it never built
+
+`synthesize-check-integration` carries an explicit dependency list, and
+`synthesize-kokoro-stages` was not in it. Every Kokoro Golden test was
+registered and every one of them had been passing, because the runner happened
+to exist in the tree from earlier manual builds. On a clean checkout the seven
+of them would have failed with "manifest, model, and runner must be files".
+
+This is the second time this exact shape has appeared in this port: the same
+omission for `synthesize-check-unit` was caught during the LSTM slice. Both
+times the test was correct, registered, and useless, and both times a
+locally-built artifact hid it. Verified by configuring a fresh tree and running
+the whole gate: 27 of 27, nine of them Kokoro's.
+
 ## 2026-07-26 — Completing CUDA coverage, and a measurement of the wrong binary
 
 Every Quantization Profile now runs every stage on CUDA: 42 validator runs

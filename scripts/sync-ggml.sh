@@ -2,17 +2,21 @@
 #
 # sync-ggml.sh — re-vendor ggml/ from upstream ggml-org/ggml at a given ref.
 #
-# ggml is vendored (not a submodule): ggml/ is a verbatim snapshot of the
-# upstream tracked tree at the SHA recorded in ggml/UPSTREAM. That SHA is the
-# single source of truth — nothing else in the build, CI, or docs pins ggml.
-# This script is the supported way to move the snapshot, replacing the old
-# "re-clone and replace by hand" note in ggml/UPSTREAM.
+# ggml is vendored (not a submodule): ggml/ is the upstream tracked tree at the
+# SHA recorded in ggml/UPSTREAM, PLUS the patches in ggml-patches/, applied in
+# filename order. The SHA plus the patch directory are the source of truth —
+# nothing else in the build, CI, or docs pins ggml. This script is the only
+# supported way to regenerate the tree; editing ggml/ by hand is how ~400
+# undocumented local lines nearly got destroyed by a sync once.
 #
 # What it does:
 #   1. Fetches the upstream tracked tree at <ref> (a SHA, tag, or branch).
 #   2. Materializes it via `git archive` (tracked files only — no .git, no
 #      build cruft), minus the paths in EXCLUDES below.
-#   3. Swaps it into ggml/ and rewrites ggml/UPSTREAM with the resolved SHA.
+#   3. Applies every ggml-patches/*.patch in order, aborting loudly if one
+#      no longer applies (rebase the patch, then re-run).
+#   4. Swaps it into ggml/ and rewrites ggml/UPSTREAM with the resolved SHA
+#      and the list of applied patches.
 #
 # The snapshot is faithful to upstream: examples/ and tests/ are kept (they are
 # not built — TRANSCRIBE_*/GGML_BUILD_* leave them off — but keeping them makes
@@ -39,6 +43,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GGML_DIR="${REPO_ROOT}/ggml"
+PATCH_DIR="${REPO_ROOT}/ggml-patches"
 UPSTREAM_FILE="${GGML_DIR}/UPSTREAM"
 
 # Upstream paths to drop from the snapshot (relative to the ggml tree root).
@@ -110,17 +115,41 @@ for ex in "${EXCLUDES[@]}"; do
     rm -rf "${STAGE_DIR:?}/${ex}"
 done
 
-# ---- regenerate UPSTREAM ----------------------------------------------------
-cat > "${STAGE_DIR}/UPSTREAM" <<EOF
-repo: ${REPO}
-sha:  ${RESOLVED}
+# ---- apply local patches ----------------------------------------------------
+APPLIED_PATCHES=()
+if [ -d "$PATCH_DIR" ]; then
+    for patch_file in "$PATCH_DIR"/*.patch; do
+        [ -e "$patch_file" ] || continue
+        echo "sync-ggml: applying $(basename "$patch_file") ..."
+        if ! patch -p1 --forward --batch --no-backup-if-mismatch \
+                -d "$STAGE_DIR" < "$patch_file"; then
+            die "$(basename "$patch_file") no longer applies to $RESOLVED — rebase it against the new upstream (see ggml-patches/README.md), then re-run"
+        fi
+        APPLIED_PATCHES+=("$(basename "$patch_file")")
+    done
+fi
 
-This directory is a vendored snapshot of ggml at the SHA above. Do not edit
-files in this directory by hand; local changes are overwritten on the next sync.
-To move the snapshot, run scripts/sync-ggml.sh <ref> from the repo root: it
-re-vendors this directory and rewrites this file. The snapshot is upstream's
-tracked tree at the SHA, minus .github/ (upstream CI, irrelevant to a vendor).
-EOF
+# ---- regenerate UPSTREAM ----------------------------------------------------
+{
+    echo "repo: ${REPO}"
+    echo "sha:  ${RESOLVED}"
+    echo ""
+    echo "This directory is upstream's tracked tree at the SHA above, minus .github/,"
+    echo "plus the local patches listed below (see ggml-patches/README.md for what each"
+    echo "one is and why). Do not edit files here by hand: change a patch file instead,"
+    echo "then run scripts/sync-ggml.sh with no arguments to regenerate this directory,"
+    echo "and commit both together. A sync aborts if a patch stops applying, so local"
+    echo "changes are never silently lost."
+    echo ""
+    if [ "${#APPLIED_PATCHES[@]}" -gt 0 ]; then
+        echo "patches applied:"
+        for name in "${APPLIED_PATCHES[@]}"; do
+            echo "  - ${name}"
+        done
+    else
+        echo "patches applied: none"
+    fi
+} > "${STAGE_DIR}/UPSTREAM"
 
 # ---- dry-run: report and stop ----------------------------------------------
 if [ "$DRY_RUN" -eq 1 ]; then

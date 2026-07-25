@@ -1,7 +1,7 @@
 # Proposed upstream patch: honor GGML_CUDA_DISABLE_TF32 in the F32 mmf path
 
-Status: prototyped and measured on 2026-07-26; not applied to the vendored
-tree; not yet submitted upstream.
+Status: measured on 2026-07-26 and applied locally the same day as part of
+`ggml-patches/0001-synthesize-local.patch`; upstream submission in progress.
 
 ## Problem
 
@@ -35,13 +35,11 @@ unchanged on both the longest and shortest cases (1.39 s → 1.38 s; 0.80–0.86
 → 0.82–0.83 s): TTS graphs are dominated by wide decoder matmuls that never
 used mmf.
 
-## Landing paths
+## Landing
 
-1. Submit upstream, re-vendor after the merge. The vendored tree stays
-   verbatim, which is the project's standing rule.
-2. Adopt a patch-on-sync step in `scripts/sync-ggml.sh`. That is a change to a
-   confirmed project contract (the "verbatim snapshot" rule) and is the
-   maintainer's decision, not this report's.
-
-Until one lands, the strict-FP32 guarantee stays scoped as documented in
-`docs/backends.md`.
+The audit that preceded this fix found the "verbatim snapshot" premise was
+already false — the tree carried ~400 undocumented local lines — so the
+maintainer adopted patch-on-sync (`ggml-patches/` + `scripts/sync-ggml.sh`),
+and this gate is applied there. The upstream submission targets
+`ggml-org/llama.cpp`, where the CUDA backend is developed; on merge and
+re-vendor the hunks drop out of the local patch.

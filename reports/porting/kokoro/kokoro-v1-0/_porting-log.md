@@ -209,6 +209,36 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — Upstream declined the flag; the patch is the durable carrier
+
+llama.cpp#26112 was closed within hours by the CUDA maintainer, on design
+grounds: precision should be defined at the ggml level, per op, not as a
+backend compile flag, and a rework in that direction is in progress. The
+position is coherent — a compile-time backend switch is a blunt instrument,
+and an op-level `ggml_mul_mat_set_prec(GGML_PREC_F32)` that backends must
+honor is the better shape. It just does not exist yet for this case: in the
+pinned revision, `GGML_PREC_F32` reaches only the F16 cuBLAS compute-type
+choices, and `should_use_mmf` never consults precision at all.
+
+So the local patch changes character rather than disappearing: it is no longer
+a stopgap awaiting an upstream merge of the same shape, but the carrier of the
+behavior until upstream's own precision rework provides an op-level equivalent
+— at which point the family graph builders switch to the per-op API on the
+sensitive matmuls and the hunks retire at that re-vendor. The `ggml-patches/`
+mechanism built this week is exactly the vehicle for that situation.
+
+Two process lessons, recorded so they are not relearned:
+
+- llama.cpp prohibits AI-written pull-request prose and AI responses outright,
+  and their checker flags it. Any future interaction there — including a
+  future engagement with the precision rework — must be written by the
+  project's maintainer personally. The submission was closed on design grounds
+  either way, but the policy violation was real and mine.
+- Before proposing a mechanism upstream, find the maintainers' intended
+  design for the problem first. The rejection took hours and the reviewer
+  already knew where the fix belongs; a search for their precision-rework
+  discussion beforehand would have either redirected or pre-empted the PR.
+
 ## 2026-07-26 — The gate landed, the grid re-ran, upstream is in flight
 
 The audit that preceded landing found the vendoring premise itself was false:

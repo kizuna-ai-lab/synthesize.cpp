@@ -55,10 +55,12 @@ instrument that keeps that true.
 The root fix is applied: `ggml_cuda_should_use_mmf` honors
 `GGML_CUDA_DISABLE_TF32` for F32 via the local patch set in `ggml-patches/`,
 restoring strict FP32 at every width (2e-3 → 2e-6 on the affected stages) at no
-measured synthesis-time cost. The unscoped guarantee therefore holds again on
-current builds. The gate is also being submitted upstream — measurements and
-the standalone patch are in `reports/upstream/ggml-mmf-f32-tf32-gate.md` — and
-drops out of the local patch set at the re-vendor that includes it.
+measured synthesis-time cost. The unscoped guarantee therefore holds on current
+builds. Upstream declined this shape (llama.cpp#26112: precision belongs at the
+ggml level, not as a backend flag) and its op-level mechanism does not yet
+reach the tf32 tile path, so the patch is the durable carrier until upstream's
+precision rework lands; the exit path is recorded in
+`reports/upstream/ggml-mmf-f32-tf32-gate.md`.
 
 ## CUDA Unified Memory Policy
 

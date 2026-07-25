@@ -191,3 +191,21 @@ ctest --test-dir build --output-on-failure -L unit
 ctest --test-dir build --output-on-failure -L integration
 ctest --test-dir build --output-on-failure -L vits
 ```
+
+## Check targets build what they run
+
+`synthesize-check-unit` and `synthesize-check-integration` derive their
+dependencies from global properties that are appended to where each executable
+is declared — `synth_add_unit_test` does it automatically, and
+`synth_register_integration_target` does it for Golden runners and the CLI,
+which are not tests and so are not picked up by a test helper.
+
+They used to carry hand-written dependency lists. A test could then be correct,
+registered, and never built by the gate, in which case it ran against whatever
+binary was already in the tree or did not run at all. That happened twice: once
+for a unit test and once for a Golden runner, and a stale local build hid both.
+Deriving the list from declaration removes the second place where the two could
+disagree.
+
+A new test or runner therefore needs no change here. What still does is anything
+the gate drives that is neither: register it explicitly.

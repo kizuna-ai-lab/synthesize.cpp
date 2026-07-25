@@ -381,6 +381,12 @@ def run_stage(
         "model": display_path(model_path, project_root),
         "model_sha256": sha256_file(model_path),
         "runner": display_path(runner_path, project_root),
+        # The manifest and the model are hashed, and the runner was not: a
+        # report could name a binary and describe a different one. A stale
+        # accelerator build once produced a decoder divergence of 1e14 that
+        # way, and nothing in the report could have shown it.
+        "runner_sha256": sha256_file(runner_path),
+        "runner_mtime": int(runner_path.stat().st_mtime),
         "case_count": len(case_reports),
         "worst": worst,
         "cases": case_reports,

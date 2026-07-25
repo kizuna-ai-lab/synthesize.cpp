@@ -188,6 +188,9 @@ def main() -> int:
         "model": display_path(model_path, project_root),
         "model_sha256": sha256_file(model_path),
         "runner": display_path(runner_path, project_root),
+        # Hashed for the same reason the model is: a report has to identify the
+        # binary it drove, not just name a path that may since have been rebuilt.
+        "runner_sha256": sha256_file(runner_path),
         "case_count": len(case_reports),
         "worst": worst,
         "cases": case_reports,

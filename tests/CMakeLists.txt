@@ -1,30 +1,61 @@
+# Declaring a test is what makes a check target build it.
+#
+# Both check targets used to carry a hand-written DEPENDS list, so a test could
+# be correct, registered, and never built — it then passed or failed on whatever
+# binary happened to be in the tree. That happened twice in this repository:
+# once for a unit test and once for a Golden runner, and both times a stale
+# local build hid it. These properties are appended to at declaration and
+# consumed by the check targets below, so the two can no longer disagree.
+define_property(GLOBAL PROPERTY SYNTH_UNIT_TEST_TARGETS
+    BRIEF_DOCS "Executables the unit check target must build"
+    FULL_DOCS "Appended to by synth_add_unit_test and consumed by synthesize-check-unit")
+define_property(GLOBAL PROPERTY SYNTH_INTEGRATION_TARGETS
+    BRIEF_DOCS "Executables the integration check target must build"
+    FULL_DOCS "Appended to by synth_register_integration_target and consumed by synthesize-check-integration")
+
+function(synth_register_unit_target target)
+    set_property(GLOBAL APPEND PROPERTY SYNTH_UNIT_TEST_TARGETS ${target})
+endfunction()
+
+# Integration binaries include Golden runners, which are adapters rather than
+# tests and so are never picked up by a test-registration helper.
+function(synth_register_integration_target target)
+    set_property(GLOBAL APPEND PROPERTY SYNTH_INTEGRATION_TARGETS ${target})
+endfunction()
+
 function(synth_add_unit_test target source)
     add_executable(${target} ${source})
     target_include_directories(${target} PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(${target} PRIVATE synthesize ggml)
     add_test(NAME ${target} COMMAND ${target})
     set_tests_properties(${target} PROPERTIES LABELS "unit")
+    synth_register_unit_target(${target})
 endfunction()
 
 add_executable(synthesize-abi-smoke abi_smoke.c)
 target_link_libraries(synthesize-abi-smoke PRIVATE synthesize)
 add_test(NAME synthesize-abi-smoke COMMAND synthesize-abi-smoke)
+synth_register_unit_target(synthesize-abi-smoke)
 set_tests_properties(synthesize-abi-smoke PROPERTIES LABELS "unit;abi")
 add_executable(synthesize-abi-initializer-bounds-test abi_initializer_bounds_test.c)
 target_link_libraries(synthesize-abi-initializer-bounds-test PRIVATE synthesize)
 add_test(NAME synthesize-abi-initializer-bounds-test COMMAND synthesize-abi-initializer-bounds-test)
+synth_register_unit_target(synthesize-abi-initializer-bounds-test)
 set_tests_properties(synthesize-abi-initializer-bounds-test PROPERTIES LABELS "unit;abi")
 add_executable(synthesize-public-api-test public_api_test.c)
 target_link_libraries(synthesize-public-api-test PRIVATE synthesize)
 add_test(NAME synthesize-public-api-test COMMAND synthesize-public-api-test)
+synth_register_unit_target(synthesize-public-api-test)
 set_tests_properties(synthesize-public-api-test PROPERTIES LABELS "unit;abi")
 add_executable(synthesize-voice-profile-api-test voice_profile_api_test.c)
 target_link_libraries(synthesize-voice-profile-api-test PRIVATE synthesize)
 add_test(NAME synthesize-voice-profile-api-test COMMAND synthesize-voice-profile-api-test)
+synth_register_unit_target(synthesize-voice-profile-api-test)
 set_tests_properties(synthesize-voice-profile-api-test PROPERTIES LABELS "unit;abi;voice-profile")
 add_executable(synthesize-backend-device-test backend_device_test.c)
 target_link_libraries(synthesize-backend-device-test PRIVATE synthesize)
 add_test(NAME synthesize-backend-device-test COMMAND synthesize-backend-device-test)
+synth_register_unit_target(synthesize-backend-device-test)
 set_tests_properties(synthesize-backend-device-test PROPERTIES LABELS "unit;abi;backend")
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixtures/backend-modules")
 add_executable(synthesize-backend-module-test backend_module_test.c)
@@ -32,6 +63,7 @@ target_link_libraries(synthesize-backend-module-test PRIVATE synthesize)
 add_test(NAME synthesize-backend-module-test
     COMMAND synthesize-backend-module-test
         "${CMAKE_CURRENT_BINARY_DIR}/fixtures/backend-modules")
+synth_register_unit_target(synthesize-backend-module-test)
 set_tests_properties(synthesize-backend-module-test PROPERTIES LABELS "unit;abi;backend")
 add_test(NAME synthesize-backend-module-dl-test
     COMMAND ${CMAKE_COMMAND}
@@ -142,6 +174,7 @@ target_include_directories(synthesize-kokoro-model-errors-test PRIVATE
 target_link_libraries(synthesize-kokoro-model-errors-test PRIVATE synthesize ggml)
 add_test(NAME synthesize-kokoro-model-errors-test
     COMMAND synthesize-kokoro-model-errors-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
+synth_register_unit_target(synthesize-kokoro-model-errors-test)
 synth_add_unit_test(synthesize-kokoro-quantization-policy-test kokoro_quantization_policy_test.cpp)
 synth_add_unit_test(synthesize-kokoro-istft-test kokoro_istft_test.cpp)
 synth_add_unit_test(synthesize-kokoro-decoder-test kokoro_decoder_test.cpp)
@@ -192,6 +225,7 @@ target_include_directories(synthesize-quantize-policy-test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(synthesize-quantize-policy-test PRIVATE synthesize ggml)
 add_test(NAME synthesize-quantize-policy-test COMMAND synthesize-quantize-policy-test)
+synth_register_unit_target(synthesize-quantize-policy-test)
 set_tests_properties(synthesize-quantize-policy-test PROPERTIES LABELS "unit;tools;quantization")
 add_executable(synthesize-quantize-test
     synthesize_quantize_test.cpp
@@ -204,6 +238,7 @@ target_include_directories(synthesize-quantize-test PRIVATE
 target_link_libraries(synthesize-quantize-test PRIVATE synthesize ggml)
 add_test(NAME synthesize-quantize-test
     COMMAND synthesize-quantize-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
+synth_register_unit_target(synthesize-quantize-test)
 set_tests_properties(synthesize-quantize-test PROPERTIES LABELS "unit;tools;quantization")
 if(SYNTH_BUILD_TOOLS)
     add_test(NAME synthesize-quantize-cli-help-test
@@ -220,6 +255,7 @@ target_include_directories(synthesize-cli-unit-test PRIVATE
 target_link_libraries(synthesize-cli-unit-test PRIVATE synthesize)
 add_test(NAME synthesize-cli-unit-test
     COMMAND synthesize-cli-unit-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
+synth_register_unit_target(synthesize-cli-unit-test)
 set_tests_properties(synthesize-cli-unit-test PROPERTIES LABELS "unit;cli")
 add_executable(synthesize-vits-model-errors-test vits_model_errors_test.cpp)
 target_include_directories(synthesize-vits-model-errors-test PRIVATE
@@ -227,6 +263,7 @@ target_include_directories(synthesize-vits-model-errors-test PRIVATE
 target_link_libraries(synthesize-vits-model-errors-test PRIVATE synthesize ggml)
 add_test(NAME synthesize-vits-model-errors-test
     COMMAND synthesize-vits-model-errors-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
+synth_register_unit_target(synthesize-vits-model-errors-test)
 set_tests_properties(
     synthesize-vits-text-encoder-host-test
     synthesize-vits-metadata-test
@@ -283,39 +320,51 @@ endif()
 add_executable(synthesize-kokoro-stages kokoro_stages_real.cpp)
 target_include_directories(synthesize-kokoro-stages PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(synthesize-kokoro-stages PRIVATE synthesize ggml)
+synth_register_integration_target(synthesize-kokoro-stages)
 add_executable(synthesize-vits-text-encoder vits_text_encoder_real.cpp)
 target_include_directories(synthesize-vits-text-encoder PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(synthesize-vits-text-encoder PRIVATE synthesize ggml)
+synth_register_integration_target(synthesize-vits-text-encoder)
 add_executable(synthesize-vits-duration-predictor vits_duration_predictor_real.cpp)
 target_include_directories(synthesize-vits-duration-predictor PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(synthesize-vits-duration-predictor PRIVATE synthesize ggml)
+synth_register_integration_target(synthesize-vits-duration-predictor)
 add_executable(synthesize-vits-duration-path vits_duration_path_real.cpp)
 target_include_directories(synthesize-vits-duration-path PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(synthesize-vits-duration-path PRIVATE synthesize ggml)
+synth_register_integration_target(synthesize-vits-duration-path)
 add_executable(synthesize-vits-prior-expansion vits_prior_expansion_real.cpp)
 target_include_directories(synthesize-vits-prior-expansion PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(synthesize-vits-prior-expansion PRIVATE synthesize ggml)
+synth_register_integration_target(synthesize-vits-prior-expansion)
 add_executable(synthesize-vits-latent-sampling vits_latent_sampling_real.cpp)
 target_include_directories(synthesize-vits-latent-sampling PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(synthesize-vits-latent-sampling PRIVATE synthesize ggml)
+synth_register_integration_target(synthesize-vits-latent-sampling)
 add_executable(synthesize-vits-acoustic-flow vits_acoustic_flow_real.cpp)
 target_include_directories(synthesize-vits-acoustic-flow PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(synthesize-vits-acoustic-flow PRIVATE synthesize ggml)
+synth_register_integration_target(synthesize-vits-acoustic-flow)
 add_executable(synthesize-vits-waveform-decoder vits_waveform_decoder_real.cpp)
 target_include_directories(synthesize-vits-waveform-decoder PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(synthesize-vits-waveform-decoder PRIVATE synthesize ggml)
+synth_register_integration_target(synthesize-vits-waveform-decoder)
 add_executable(synthesize-kokoro-public-lifecycle-test kokoro_public_lifecycle_test.cpp)
 target_include_directories(synthesize-kokoro-public-lifecycle-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(synthesize-kokoro-public-lifecycle-test PRIVATE synthesize)
+synth_register_integration_target(synthesize-kokoro-public-lifecycle-test)
 add_executable(synthesize-vits-public-lifecycle-test vits_public_lifecycle_test.cpp)
 target_include_directories(synthesize-vits-public-lifecycle-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(synthesize-vits-public-lifecycle-test PRIVATE synthesize)
+synth_register_integration_target(synthesize-vits-public-lifecycle-test)
 add_executable(synthesize-vits-public-synthesis-test vits_public_synthesis_test.cpp)
 target_include_directories(synthesize-vits-public-synthesis-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(synthesize-vits-public-synthesis-test PRIVATE synthesize)
+synth_register_integration_target(synthesize-vits-public-synthesis-test)
 add_executable(synthesize-vits-vctk-public-test vits_vctk_public_test.cpp)
 target_include_directories(synthesize-vits-vctk-public-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(synthesize-vits-vctk-public-test PRIVATE synthesize)
+synth_register_integration_target(synthesize-vits-vctk-public-test)
 
 if(SYNTH_BUILD_INTEGRATION_TESTS)
     set(_synth_vits_golden_sentinel
@@ -553,58 +602,11 @@ endif()
 
 add_custom_target(synthesize-check-unit
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L unit
-    DEPENDS
-        synthesize-abi-smoke
-        synthesize-abi-initializer-bounds-test
-        synthesize-public-api-test
-        synthesize-voice-profile-api-test
-        synthesize-backend-device-test
-        synthesize-backend-module-test
-        synthesize-kokoro-metadata-test
-        synthesize-kokoro-lstm-test
-        synthesize-kokoro-catalog-test
-        synthesize-kokoro-plbert-test
-        synthesize-kokoro-duration-test
-        synthesize-kokoro-transpose-conv-test
-        synthesize-kokoro-prosody-test
-        synthesize-kokoro-text-encoder-test
-        synthesize-kokoro-source-test
-        synthesize-kokoro-istft-test
-        synthesize-kokoro-decoder-test
-        synthesize-kokoro-model-errors-test
-        synthesize-kokoro-quantization-policy-test
-        synthesize-vits-text-encoder-host-test
-        synthesize-vits-metadata-test
-        synthesize-vits-weights-test
-        synthesize-vits-text-encoder-graph-test
-        synthesize-vits-duration-host-test
-        synthesize-vits-duration-weights-test
-        synthesize-vits-duration-graph-test
-        synthesize-vits-duration-path-test
-        synthesize-vits-prior-expansion-host-test
-        synthesize-vits-prior-expansion-graph-test
-        synthesize-vits-latent-sampling-host-test
-        synthesize-vits-latent-sampling-graph-test
-        synthesize-vits-flow-weights-test
-        synthesize-vits-acoustic-flow-host-test
-        synthesize-vits-acoustic-flow-graph-test
-        synthesize-vits-decoder-weights-test
-        synthesize-vits-waveform-decoder-host-test
-        synthesize-vits-conv-test
-        synthesize-vits-transpose-conv-test
-        synthesize-vits-waveform-decoder-graph-test
-        synthesize-random-stream-test
-        synthesize-backend-device-internal-test
-        synthesize-backend-plan-test
-        synthesize-text-frontend-test
-        synthesize-synthesis-request-test
-        synthesize-audio-delivery-test
-        synthesize-vits-runner-voice-test
-        synthesize-quantize-policy-test
-        synthesize-quantize-test
-        synthesize-cli-unit-test
-        synthesize-vits-model-errors-test
     USES_TERMINAL)
+get_property(_synth_unit_targets GLOBAL PROPERTY SYNTH_UNIT_TEST_TARGETS)
+if(_synth_unit_targets)
+    add_dependencies(synthesize-check-unit ${_synth_unit_targets})
+endif()
 if(SYNTH_BUILD_TOOLS)
     add_dependencies(synthesize-check-unit synthesize-quantize)
 endif()
@@ -615,19 +617,14 @@ endif()
 if(SYNTH_BUILD_INTEGRATION_TESTS)
     add_custom_target(synthesize-check-integration
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L integration
-        DEPENDS
-            synthesize-vits-text-encoder
-            synthesize-vits-duration-predictor
-            synthesize-vits-duration-path
-            synthesize-vits-prior-expansion
-            synthesize-vits-latent-sampling
-            synthesize-vits-acoustic-flow
-            synthesize-vits-waveform-decoder
-            synthesize-kokoro-public-lifecycle-test
-            synthesize-kokoro-stages
-            synthesize-vits-public-lifecycle-test
-            synthesize-vits-public-synthesis-test
-            synthesize-vits-vctk-public-test
-            $<$<BOOL:${SYNTH_BUILD_CLI}>:synthesize-cli>
         USES_TERMINAL)
+    # The CLI is not a test and not a runner, but the integration gate drives
+    # it, so it has to be registered like anything else the gate needs.
+    if(SYNTH_BUILD_CLI)
+        synth_register_integration_target(synthesize-cli)
+    endif()
+    get_property(_synth_integration_targets GLOBAL PROPERTY SYNTH_INTEGRATION_TARGETS)
+    if(_synth_integration_targets)
+        add_dependencies(synthesize-check-integration ${_synth_integration_targets})
+    endif()
 endif()

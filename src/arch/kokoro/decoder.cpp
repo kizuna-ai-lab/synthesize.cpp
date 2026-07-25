@@ -15,10 +15,10 @@ namespace {
 
 // Generous per-block allowances; the graph is sized from these and then given
 // headroom, so they only have to be upper bounds.
-constexpr uint64_t kNodesPerAdainBlock  = 64;
-constexpr uint64_t kNodesPerSnakeBlock  = 128;
+constexpr uint64_t kNodesPerAdainBlock   = 64;
+constexpr uint64_t kNodesPerSnakeBlock   = 128;
 constexpr uint64_t kNodesPerTransposeTap = 8;
-constexpr uint64_t kNodesEpilogue       = 64;
+constexpr uint64_t kNodesEpilogue        = 64;
 
 // The curves reach the decoder at twice the frame rate and are halved by a
 // stride-two convolution whose kernel is three wide.

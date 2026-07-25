@@ -82,8 +82,8 @@ void reference_snake(std::vector<float> & value, int64_t channels, int64_t lengt
     for (int64_t channel = 0; channel < channels; ++channel) {
         const double a = double(alpha[size_t(channel)]);
         for (int64_t time = 0; time < length; ++time) {
-            const double x    = double(value[at(channel, time, channels)]);
-            const double term = std::sin(a * x);
+            const double x                     = double(value[at(channel, time, channels)]);
+            const double term                  = std::sin(a * x);
             value[at(channel, time, channels)] = float(x + term * term / a);
         }
     }
@@ -167,7 +167,8 @@ std::vector<float> reference_resblock(const std::vector<float> &              in
         // The second convolution is never dilated. Its pairs are appended after
         // every branch's own parameters, two per branch.
         const size_t convs2 = dilations.size() * 8 + branch * 2;
-        residual = reference_conv(residual, parameters[convs2 + 0], parameters[convs2 + 1], channels, length, kernel, 1);
+        residual =
+            reference_conv(residual, parameters[convs2 + 0], parameters[convs2 + 1], channels, length, kernel, 1);
 
         for (size_t index = 0; index < current.size(); ++index) {
             current[index] = residual[index] + current[index];
@@ -239,8 +240,7 @@ static bool run_resblock_case(float & max_diff) {
 
     synth::kokoro::AdaINResBlock1Weights weights;
     std::vector<ggml_tensor *>           handles;
-    auto                                 make_tensor = [&](const std::vector<float> & values, int64_t d0, int64_t d1,
-                           int64_t d2) {
+    auto make_tensor = [&](const std::vector<float> & values, int64_t d0, int64_t d1, int64_t d2) {
         ggml_tensor * tensor = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, d0, d1, d2);
         handles.push_back(tensor);
         return tensor;
@@ -308,9 +308,9 @@ static bool run_resblock_case(float & max_diff) {
 
     Context       graph_holder = make_context(1024);
     ggml_cgraph * graph        = ggml_new_graph_custom(graph_holder.get(), 4096, false);
-    ggml_tensor * out = synth::kokoro::build_adain_resblock1(graph_holder.get(), input_tensor, style_tensor, weights,
-                                                             dilations.data(), uint32_t(dilations.size()),
-                                                             uint32_t(kernel), epsilon);
+    ggml_tensor * out =
+        synth::kokoro::build_adain_resblock1(graph_holder.get(), input_tensor, style_tensor, weights, dilations.data(),
+                                             uint32_t(dilations.size()), uint32_t(kernel), epsilon);
     if (out == nullptr || out->ne[0] != channels || out->ne[1] != length) {
         ggml_backend_buffer_free(buffer);
         ggml_backend_free(backend);
@@ -348,13 +348,13 @@ namespace {
 // transform size, and a decoder whose last block doubles the frame rate.
 synth::kokoro::HParams make_hparams() {
     synth::kokoro::HParams hparams;
-    hparams.dim_in                          = 4;
-    hparams.style_dim                       = 3;
-    hparams.adain_eps                       = 1e-5f;
-    hparams.istftnet.upsample_rates         = { 2, 3 };
-    hparams.istftnet.upsample_kernel_sizes  = { 4, 9 };
-    hparams.istftnet.resblock_kernel_sizes  = { 3, 5 };
-    hparams.istftnet.resblock_dilations     = {
+    hparams.dim_in                         = 4;
+    hparams.style_dim                      = 3;
+    hparams.adain_eps                      = 1e-5f;
+    hparams.istftnet.upsample_rates        = { 2, 3 };
+    hparams.istftnet.upsample_kernel_sizes = { 4, 9 };
+    hparams.istftnet.resblock_kernel_sizes = { 3, 5 };
+    hparams.istftnet.resblock_dilations    = {
         { 1, 3 },
         { 1, 3 }
     };
@@ -436,9 +436,9 @@ struct Builder {
 };
 
 synth::kokoro::DecoderWeights make_weights(const Builder & make, const synth::kokoro::HParams & hparams) {
-    const int64_t style = hparams.style_dim;
-    const int64_t asr   = hparams.dim_in;
-    const int64_t wide  = 8;
+    const int64_t style  = hparams.style_dim;
+    const int64_t asr    = hparams.dim_in;
+    const int64_t wide   = 8;
     const int64_t narrow = 2;
 
     synth::kokoro::DecoderWeights weights;
@@ -502,8 +502,8 @@ int main() {
     Builder                             make{ holder.get() };
     const synth::kokoro::DecoderWeights weights = make_weights(make, hparams);
 
-    constexpr uint32_t frame_count = 3;
-    Context            graph_holder = make_context(8192);
+    constexpr uint32_t          frame_count  = 3;
+    Context                     graph_holder = make_context(8192);
     synth::kokoro::DecoderGraph built =
         synth::kokoro::build_decoder_graph(graph_holder.get(), weights, hparams, frame_count);
     SYNTH_TEST_CHECK(built.graph != nullptr);
@@ -549,10 +549,10 @@ int main() {
 
     // An upsampling kernel that does not exceed its rate by an even margin has
     // no padding that preserves the length, which the builder refuses.
-    synth::kokoro::HParams odd_margin              = hparams;
-    odd_margin.istftnet.upsample_kernel_sizes[1]   = 8;
-    SYNTH_TEST_CHECK(
-        synth::kokoro::build_decoder_graph(reject_holder.get(), weights, odd_margin, frame_count).graph == nullptr);
+    synth::kokoro::HParams odd_margin            = hparams;
+    odd_margin.istftnet.upsample_kernel_sizes[1] = 8;
+    SYNTH_TEST_CHECK(synth::kokoro::build_decoder_graph(reject_holder.get(), weights, odd_margin, frame_count).graph ==
+                     nullptr);
 
     // A catalog whose branch count disagrees with the configured dilations is a
     // conversion defect.

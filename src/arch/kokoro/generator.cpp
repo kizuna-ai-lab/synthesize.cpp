@@ -11,7 +11,7 @@ namespace {
 // The loop's activation and the one before the final projection differ
 // upstream: the loop passes an explicit slope and the last one takes PyTorch's
 // default. They are not interchangeable.
-constexpr float kLoopSlope = 0.1f;
+constexpr float kLoopSlope  = 0.1f;
 constexpr float kFinalSlope = 0.01f;
 
 // The noise branch's residual blocks carry their dilations in the upstream
@@ -99,13 +99,11 @@ ggml_tensor * build_generator(ggml_context *           context,
     const auto &   dilations    = hparams.istftnet.resblock_dilations;
     const uint32_t stage_count  = uint32_t(rates.size());
     const uint32_t branch_count = uint32_t(block_sizes.size());
-    if (stage_count == 0 || branch_count == 0 || kernels.size() != stage_count ||
-        dilations.size() != branch_count) {
+    if (stage_count == 0 || branch_count == 0 || kernels.size() != stage_count || dilations.size() != branch_count) {
         return nullptr;
     }
     if (weights.ups.size() != stage_count || weights.noise_convs.size() != stage_count ||
-        weights.noise_res.size() != stage_count ||
-        weights.resblocks.size() != size_t(stage_count) * branch_count) {
+        weights.noise_res.size() != stage_count || weights.resblocks.size() != size_t(stage_count) * branch_count) {
         return nullptr;
     }
     if (weights.conv_post.weight == nullptr) {
@@ -119,16 +117,16 @@ ggml_tensor * build_generator(ggml_context *           context,
         // The source spectrum is shared by every stage, so each one resamples
         // it to its own rate: a strided convolution while stages remain, and a
         // plain projection on the last, where the rates already agree.
-        const bool     last          = stage + 1 == stage_count;
-        uint32_t       source_stride = 1;
+        const bool last          = stage + 1 == stage_count;
+        uint32_t   source_stride = 1;
         for (uint32_t later = stage + 1; later < stage_count; ++later) {
             source_stride *= rates[later];
         }
         const int noise_stride  = last ? 1 : int(source_stride);
         const int noise_padding = last ? 0 : int((source_stride + 1) / 2);
 
-        ggml_tensor * source = conv1d(context, har, weights.noise_convs[stage].weight,
-                                      weights.noise_convs[stage].bias, noise_stride, noise_padding, 1);
+        ggml_tensor * source = conv1d(context, har, weights.noise_convs[stage].weight, weights.noise_convs[stage].bias,
+                                      noise_stride, noise_padding, 1);
         if (source == nullptr || weights.noise_res[stage].convs1.empty() ||
             weights.noise_res[stage].convs1.front().weight == nullptr) {
             return nullptr;
@@ -176,13 +174,13 @@ ggml_tensor * build_generator(ggml_context *           context,
         current = ggml_scale(context, summed, 1.0f / float(branch_count));
     }
 
-    current = ggml_leaky_relu(context, current, kFinalSlope, false);
+    current                   = ggml_leaky_relu(context, current, kFinalSlope, false);
     const int64_t post_kernel = weights.conv_post.weight->ne[0];
     if (post_kernel % 2 == 0) {
         return nullptr;
     }
-    return conv1d(context, current, weights.conv_post.weight, weights.conv_post.bias, 1,
-                  same_padding(post_kernel, 1), 1);
+    return conv1d(context, current, weights.conv_post.weight, weights.conv_post.bias, 1, same_padding(post_kernel, 1),
+                  1);
 }
 
 }  // namespace synth::kokoro

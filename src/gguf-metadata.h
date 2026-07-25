@@ -1,12 +1,25 @@
 #pragma once
 
+#include "synthesize.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
 
+struct ggml_context;
 struct gguf_context;
 
 namespace synth {
+
+// Reads every tensor in `weights_context` out of the package on disk and into
+// the backend buffer already allocated for it.
+//
+// Families differ in what tensors they declare but not in how those tensors are
+// filled, so this is shared. `family` only names the reporter in diagnostics.
+synth_status_t stream_tensor_data(const std::string &  path,
+                                  const gguf_context * gguf,
+                                  ggml_context *       weights_context,
+                                  const char *         family);
 
 // Typed, fail-closed reads of GGUF key/value metadata.
 //

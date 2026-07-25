@@ -209,6 +209,38 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — Stage 4 slice 11: family facade
+
+Added `kokoro.h` and `model.cpp`: package loading and one entry point per
+inference stage, mirroring what the VITS family already exposes. The staged
+shape is what the Stage 5 validators drive — each stage recomputes its
+predecessors so a validator can compare one stage against the oracle without
+the family holding synthesis state between calls.
+
+The seven stages are PL-BERT with its projection, the duration path and its
+host seam, prosody, the acoustic text encoder, the harmonic source, the
+decoder, and the inverse transform. Alignment expansion happens on the host
+between stages, as the matrix product upstream writes as `d @ pred_aln_trg`.
+
+Two layout rules had to be kept apart, and conflating them would have been a
+silent wrong answer rather than a crash. Graph tensors run feature-fastest;
+the reference probe artifacts run time-fastest. The staged outputs are
+converted to the probe layout at the boundary, but the duration host seam
+reads the graph's own layout, one token's bins at a time, so its logits are
+passed through untransposed.
+
+`stream_tensor_data` moved out of the VITS model into the shared GGUF helper.
+Both families fill their tensors the same way and only differ in which tensors
+they declare, so there was no reason for a second copy.
+
+An end-to-end synthetic package was considered for the test and rejected: the
+decoder's widths are fixed at 1024 upstream, so even a reduced-dimension
+package is on the order of a hundred megabytes of weights. The unit test
+therefore covers load error mapping, where the discrimination matters most —
+an empty or foreign container reports an unsupported architecture rather than
+a generic container error, which is what lets a dispatcher above the family
+tell "not mine" from "corrupt". Numerical agreement is Stage 5's.
+
 ## 2026-07-26 — Stage 4 slice 10: decoder, iSTFTNet generator, inverse transform
 
 Added `generator.{h,cpp}`, `decoder.{h,cpp}`, and `decoder-host.{h,cpp}`, which

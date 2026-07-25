@@ -15,6 +15,7 @@ add_library(synthesize
     arch/kokoro/duration.cpp
     arch/kokoro/duration-host.cpp
     arch/kokoro/generator.cpp
+    arch/kokoro/model.cpp
     arch/kokoro/operations.cpp
     arch/kokoro/plbert.cpp
     arch/kokoro/prosody.cpp

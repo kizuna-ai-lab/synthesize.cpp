@@ -6,6 +6,7 @@
 #include "duration-predictor.h"
 #include "ggml-backend.h"
 #include "ggml.h"
+#include "gguf-metadata.h"
 #include "gguf.h"
 #include "latent-sampling-host.h"
 #include "latent-sampling.h"
@@ -31,39 +32,6 @@ struct DurationStageOutput {
     TextEncoderOutput       text;
     DurationPredictorOutput predictor;
 };
-
-synth_status_t stream_tensor_data(const std::string & path, const gguf_context * gguf, ggml_context * weights_context) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) {
-        return SYNTH_ERR_IO;
-    }
-    const size_t               data_offset = gguf_get_data_offset(gguf);
-    std::vector<unsigned char> staging;
-    for (ggml_tensor * tensor = ggml_get_first_tensor(weights_context); tensor != nullptr;
-         tensor               = ggml_get_next_tensor(weights_context, tensor)) {
-        const int64_t index = gguf_find_tensor(gguf, tensor->name);
-        if (index < 0) {
-            std::fprintf(stderr, "vits: tensor %s is absent from GGUF data\n", tensor->name);
-            return SYNTH_ERR_GGUF;
-        }
-        const size_t         bytes = ggml_nbytes(tensor);
-        const std::streamoff absolute =
-            static_cast<std::streamoff>(data_offset) + static_cast<std::streamoff>(gguf_get_tensor_offset(gguf, index));
-        input.seekg(absolute);
-        if (!input) {
-            return SYNTH_ERR_IO;
-        }
-        if (staging.size() < bytes) {
-            staging.resize(bytes);
-        }
-        input.read(reinterpret_cast<char *>(staging.data()), static_cast<std::streamsize>(bytes));
-        if (!input || static_cast<size_t>(input.gcount()) != bytes) {
-            return SYNTH_ERR_IO;
-        }
-        ggml_backend_tensor_set(tensor, staging.data(), 0, bytes);
-    }
-    return SYNTH_OK;
-}
 
 }  // namespace
 
@@ -227,7 +195,7 @@ synth_status_t Model::load(const std::string &      path,
             return SYNTH_ERR_OOM;
         }
         ggml_backend_buffer_set_usage(implementation->weights_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-        status = stream_tensor_data(path, implementation->gguf, implementation->weights_context);
+        status = stream_tensor_data(path, implementation->gguf, implementation->weights_context, "vits");
         if (status != SYNTH_OK) {
             return status;
         }

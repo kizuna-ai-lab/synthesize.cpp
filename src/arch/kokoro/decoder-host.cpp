@@ -43,9 +43,9 @@ synth_status_t inverse_stft(const HParams &            hparams,
         return SYNTH_ERR_INVALID_ARG;
     }
 
-    const uint64_t total  = uint64_t(n_fft) + uint64_t(hop) * (frames - 1);
-    const uint32_t half   = n_fft / 2;
-    const uint64_t kept   = inverse_stft_length(hparams, frames);
+    const uint64_t total = uint64_t(n_fft) + uint64_t(hop) * (frames - 1);
+    const uint32_t half  = n_fft / 2;
+    const uint64_t kept  = inverse_stft_length(hparams, frames);
     if (total < uint64_t(n_fft) || kept == 0) {
         return SYNTH_ERR_INVALID_ARG;
     }

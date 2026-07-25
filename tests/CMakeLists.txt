@@ -136,6 +136,12 @@ synth_add_unit_test(synthesize-kokoro-transpose-conv-test kokoro_transpose_conv_
 synth_add_unit_test(synthesize-kokoro-prosody-test kokoro_prosody_test.cpp)
 synth_add_unit_test(synthesize-kokoro-text-encoder-test kokoro_text_encoder_test.cpp)
 synth_add_unit_test(synthesize-kokoro-source-test kokoro_source_test.cpp)
+add_executable(synthesize-kokoro-model-errors-test kokoro_model_errors_test.cpp)
+target_include_directories(synthesize-kokoro-model-errors-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(synthesize-kokoro-model-errors-test PRIVATE synthesize ggml)
+add_test(NAME synthesize-kokoro-model-errors-test
+    COMMAND synthesize-kokoro-model-errors-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
 synth_add_unit_test(synthesize-kokoro-istft-test kokoro_istft_test.cpp)
 synth_add_unit_test(synthesize-kokoro-decoder-test kokoro_decoder_test.cpp)
 set_tests_properties(synthesize-kokoro-metadata-test synthesize-kokoro-lstm-test
@@ -143,7 +149,7 @@ set_tests_properties(synthesize-kokoro-metadata-test synthesize-kokoro-lstm-test
     synthesize-kokoro-duration-test synthesize-kokoro-transpose-conv-test
     synthesize-kokoro-prosody-test synthesize-kokoro-text-encoder-test
     synthesize-kokoro-source-test synthesize-kokoro-istft-test
-    synthesize-kokoro-decoder-test
+    synthesize-kokoro-decoder-test synthesize-kokoro-model-errors-test
     PROPERTIES LABELS "unit;kokoro")
 
 synth_add_unit_test(synthesize-vits-text-encoder-host-test vits_text_encoder_host_test.cpp)
@@ -507,6 +513,7 @@ add_custom_target(synthesize-check-unit
         synthesize-kokoro-source-test
         synthesize-kokoro-istft-test
         synthesize-kokoro-decoder-test
+        synthesize-kokoro-model-errors-test
         synthesize-vits-text-encoder-host-test
         synthesize-vits-metadata-test
         synthesize-vits-weights-test

@@ -209,6 +209,19 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — Closing the port: one cell was still empty
+
+Auditing the profile-by-backend-by-stage grid before closing the port found the
+decoder stage missing on CPU for F16 and Q8_MIXED. It was not an oversight in
+the sweeps: the decoder validator was written after those two CPU runs, and
+nothing re-ran them. The CUDA sweep came later and covered all seven stages for
+all three profiles, which is why the gap was invisible from the CUDA side.
+
+Both runs are now recorded — 3.97 at F16 and 4.19 at Q8_MIXED against F32's
+3.97 — and the grid is complete at 42 of 42 cells. The check that found it is
+worth keeping as a habit: enumerate the coverage grid and look for holes rather
+than trusting that a sequence of successful runs covered it.
+
 ## 2026-07-26 — A gate that registered tests it never built
 
 `synthesize-check-integration` carries an explicit dependency list, and

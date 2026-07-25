@@ -167,6 +167,22 @@
         }
       },
       "stages": {
+        "decoder": {
+          "backend": "CPU",
+          "probes": {
+            "decoder.spectrum": {
+              "elements": 203302,
+              "exact_on_every_case": false,
+              "measured_angle_max_abs": 0.31133127212524414,
+              "measured_log_magnitude_max_abs": 0.56622314453125,
+              "measured_max_abs": 3.9701888756732315,
+              "measured_mean_abs": 0.027488034026643786,
+              "measured_reference_magnitude_max": 24.189151909309828,
+              "worst_case": "kokoro-voice-last"
+            }
+          },
+          "threads": 8
+        },
         "duration": {
           "backend": "CPU",
           "probes": {
@@ -793,6 +809,22 @@
         }
       },
       "stages": {
+        "decoder": {
+          "backend": "CPU",
+          "probes": {
+            "decoder.spectrum": {
+              "elements": 203302,
+              "exact_on_every_case": false,
+              "measured_angle_max_abs": 0.3569910526275635,
+              "measured_log_magnitude_max_abs": 0.7241344451904297,
+              "measured_max_abs": 4.1869216248809105,
+              "measured_mean_abs": 0.027584341458298096,
+              "measured_reference_magnitude_max": 24.189151909309828,
+              "worst_case": "kokoro-voice-last"
+            }
+          },
+          "threads": 8
+        },
         "duration": {
           "backend": "CPU",
           "probes": {

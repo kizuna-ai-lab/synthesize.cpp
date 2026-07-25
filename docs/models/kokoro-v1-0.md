@@ -51,7 +51,8 @@ of thirty-two, and a block-quantized row has to be a whole number of blocks.
 ## Port validation
 
 Seven graph stages and 15 deterministic cases run for all three Quantization
-Profiles on both DGX Spark CPU and NVIDIA GB10 CUDA 13.3 — 42 validator runs —
+Profiles on both DGX Spark CPU and NVIDIA GB10 CUDA 13.3 — every one of the 42
+profile, backend and stage combinations —
 against the pinned upstream PyTorch implementation at `suite_version` 2.
 
 The predicted durations, the frame count, and the alignment are **exact in every

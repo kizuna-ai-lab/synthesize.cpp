@@ -27,7 +27,8 @@ One canonical patch, inventoried by hunk:
 | `src/ggml-cuda/im2col.cu` | Tiled 1-D im2col kernel; the im2col-plus-GEMM convolution decomposition dominates TTS decoder graphs. |
 | `CMakeLists.txt` (option), `src/ggml-cuda/CMakeLists.txt`, `src/ggml-cuda/common.cuh`, `src/ggml-cuda/solve_tri.cu`, `src/ggml-cuda/mmf.cu` | `GGML_CUDA_DISABLE_TF32`: strict FP32 on CUDA. Gates the cuBLAS math mode, `solve_tri`, and — added 2026-07-26 after the 16-column cliff was measured — the F32 `mmf` tile path, which computes via tf32 MMA. See `reports/upstream/ggml-mmf-f32-tf32-gate.md`. |
 
-Upstreaming status: the `GGML_CUDA_DISABLE_TF32` set is being submitted to
-`ggml-org/llama.cpp` (where CUDA development happens; `ggml-org/ggml` syncs
-from it). Hunks that land upstream get dropped from the patch at the re-vendor
-that includes them.
+Upstreaming status: the `GGML_CUDA_DISABLE_TF32` set is submitted as
+[ggml-org/llama.cpp#26112](https://github.com/ggml-org/llama.cpp/pull/26112)
+(CUDA development happens in llama.cpp; `ggml-org/ggml` syncs from it). Hunks
+that land upstream get dropped from the patch at the re-vendor that includes
+them.

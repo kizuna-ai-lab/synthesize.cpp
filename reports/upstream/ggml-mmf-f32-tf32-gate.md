@@ -1,7 +1,9 @@
 # Proposed upstream patch: honor GGML_CUDA_DISABLE_TF32 in the F32 mmf path
 
 Status: measured on 2026-07-26 and applied locally the same day as part of
-`ggml-patches/0001-synthesize-local.patch`; upstream submission in progress.
+`ggml-patches/0001-synthesize-local.patch`. Submitted upstream the same day as
+[ggml-org/llama.cpp#26112](https://github.com/ggml-org/llama.cpp/pull/26112),
+tested there with `test-backend-ops` (MUL_MAT, SOLVE_TRI) on GB10.
 
 ## Problem
 
@@ -40,6 +42,6 @@ used mmf.
 The audit that preceded this fix found the "verbatim snapshot" premise was
 already false — the tree carried ~400 undocumented local lines — so the
 maintainer adopted patch-on-sync (`ggml-patches/` + `scripts/sync-ggml.sh`),
-and this gate is applied there. The upstream submission targets
-`ggml-org/llama.cpp`, where the CUDA backend is developed; on merge and
-re-vendor the hunks drop out of the local patch.
+and this gate is applied there. The upstream submission is
+[llama.cpp#26112](https://github.com/ggml-org/llama.cpp/pull/26112); on merge
+and re-vendor the hunks drop out of the local patch.

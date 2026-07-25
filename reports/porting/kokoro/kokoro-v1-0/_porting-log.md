@@ -246,11 +246,16 @@ rule is that large matrix weights are the first candidates wherever they sit,
 and Kokoro is a documented exception with the measurement behind it, not a
 revision of the rule.
 
-### Not published
+### Published
 
-The GGUF files are built and hashed but not uploaded. `docs/models/kokoro-v1-0.md`
-carries the `hf` commands; publication is the maintainer's call, not this
-port's.
+All three packages are published in `jiangzhuo9357/kokoro-v1-0-gguf` at revision
+`ec897a4c400e8e5a69eb9da6bd423c0152f9030c`, public, under Apache-2.0.
+
+The upload reported no bytes transferred, which is content-addressed
+deduplication rather than a skipped upload. That is worth checking rather than
+trusting, so the repository was read back: all three GGUFs are present at the
+right sizes, their LFS SHA-256 digests match the card exactly, and the published
+README is byte-identical to the generated one.
 
 ## 2026-07-26 — The decoder gap closed, and a listening pass
 

@@ -1,8 +1,9 @@
 # Kokoro v1.0
 
 Status: F32, F16, and Q8_MIXED are `port_validated`. Quality evaluation has not
-been run. The packages are not yet published; the publication commands are at
-the end of this page.
+been run. The packages are published in
+[`jiangzhuo9357/kokoro-v1-0-gguf`](https://huggingface.co/jiangzhuo9357/kokoro-v1-0-gguf)
+at revision `ec897a4c400e8e5a69eb9da6bd423c0152f9030c`.
 
 ## Package
 
@@ -127,7 +128,7 @@ uv run scripts/hf_cards/generate.py scripts/hf_cards/kokoro-v1-0.yaml
 uv run scripts/hf_cards/generate.py scripts/hf_cards/kokoro-v1-0.yaml --check
 ```
 
-Publish the flat directory:
+The flat published directory was created with:
 
 ```bash
 hf repos create jiangzhuo9357/kokoro-v1-0-gguf \

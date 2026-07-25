@@ -209,6 +209,36 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — Stage 4 slice 9: harmonic source and its short-time spectrum
+
+Added `source.{h,cpp}`, the second host seam. The module carries one learned
+9-to-1 projection and is otherwise phase accumulation, resampling, and a
+transform — work GGML expresses poorly — and it sits between two graph stages
+that both need concrete shapes. Keeping it on the host also gives port
+validation somewhere to inject the oracle's recorded randomness, which the
+`SourceRandomInputs` struct exists for.
+
+Three upstream behaviours were measured before being implemented rather than
+read off the source, because each has a convention that is easy to assume
+wrongly:
+
+- `F.interpolate(mode="linear")` maps an output index with `align_corners=false`
+  as `src = (o + 0.5) * in / out - 0.5`, clamped at zero. Confirmed exactly on
+  the downsample and to 1e-4 on the upsample, the latter only because the phases
+  being interpolated are already a few hundred radians.
+- Phase accumulates on the *coarse* grid and is then multiplied by the upsample
+  scale, since each coarse step stands for that many samples of advance. Doing
+  the sum on the fine grid instead is off by exactly that factor.
+- `torch.stft` with centre framing reflect-pads by `n_fft / 2` without repeating
+  the edge sample, applies a periodic (not symmetric) Hann window, and yields
+  `upsampled / hop + 1` frames. Matched to 4.8e-7 in magnitude.
+
+The seam is validated end to end against upstream `SourceModuleHnNSF` plus
+`TorchSTFT` at reduced dimensions, with the two random draws replayed from the
+PyTorch run: 1e-5 on the excitation and on the magnitude bins, 1e-4 on the phase
+bins compared as points on the circle, which is the right comparison since phase
+wraps.
+
 ## 2026-07-26 — Stage 4 slice 8: acoustic text encoder
 
 Added `text-encoder.{h,cpp}`: an embedding, then three convolution blocks with a

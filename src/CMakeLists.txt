@@ -15,6 +15,7 @@ add_library(synthesize
     arch/kokoro/operations.cpp
     arch/kokoro/plbert.cpp
     arch/kokoro/prosody.cpp
+    arch/kokoro/source.cpp
     arch/kokoro/text-encoder.cpp
     arch/kokoro/weights.cpp
     arch/vits/acoustic-flow.cpp

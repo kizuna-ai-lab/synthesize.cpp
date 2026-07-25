@@ -38,6 +38,8 @@ REQUIRED_KEYS = (
     "capabilities",
     "validation",
     "publication_note",
+    "license_note",
+    "architecture_label",
     "usage",
     "quants",
 )
@@ -55,6 +57,16 @@ def validate_spec(spec: dict) -> None:
     missing = [key for key in REQUIRED_KEYS if key not in spec]
     if missing:
         raise ValueError(f"model-card spec is missing required keys: {', '.join(missing)}")
+    if not isinstance(spec["source"].get("repository_label"), str):
+        raise ValueError("source.repository_label must name the upstream repository")
+    columns = spec["validation"].get("columns")
+    if not isinstance(columns, list) or not columns:
+        raise ValueError("validation.columns must list at least one measured column")
+    for column in columns:
+        if not isinstance(column, dict) or "key" not in column or "title" not in column:
+            raise ValueError("each validation column needs a key and a title")
+    if not isinstance(spec["validation"].get("metric_note"), str):
+        raise ValueError("validation.metric_note must say what the measured column means")
     if spec["library_name"] != "synthesize.cpp":
         raise ValueError("library_name must be synthesize.cpp")
     if spec["pipeline_tag"] != "text-to-speech":
@@ -144,6 +156,12 @@ def load_upstream_card(spec: dict) -> str:
     return strip_frontmatter(card_path.read_text(encoding="utf-8"))
 
 
+# Prose blocks in a spec may reference the spec's own fields, so a licence note
+# can cite the licence link without repeating the URL. They are rendered first,
+# and only they: the result is inserted into the card as plain text.
+PROSE_KEYS = ("license_note", "publication_note", "summary")
+
+
 def render(spec: dict, upstream_card: str) -> str:
     environment = Environment(
         loader=FileSystemLoader(HERE),
@@ -151,8 +169,12 @@ def render(spec: dict, upstream_card: str) -> str:
         keep_trailing_newline=True,
         autoescape=False,
     )
+    resolved = dict(spec)
+    for key in PROSE_KEYS:
+        if isinstance(resolved.get(key), str):
+            resolved[key] = environment.from_string(resolved[key]).render(**spec)
     template = environment.get_template("template.md.j2")
-    return template.render(upstream_card=upstream_card, **spec)
+    return template.render(upstream_card=upstream_card, **resolved)
 
 
 def main() -> int:

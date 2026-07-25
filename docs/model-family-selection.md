@@ -1,6 +1,6 @@
 # Model Family Selection
 
-Status: Confirmed on 2026-07-22.
+Status: Confirmed on 2026-07-26.
 
 Model families are selected architecture-first. Language breadth is a capability of individual model variants and is not an admission requirement for a family implementation.
 
@@ -23,6 +23,29 @@ The first supported model family is VITS. The initial implementation targets the
 Piper, MMS-TTS, MeloTTS, YourTTS, and Bert-VITS2 are follow-on adaptation candidates because they descend from or extend VITS. They are not automatically considered supported: each requires its own converter or configuration mapping and complete end-to-end validation.
 
 The choice is architecture-based. The languages, voices, and locales validated first will be decided separately when selecting model variants.
+
+## Second Model Family
+
+The second supported model family is Kokoro: a StyleTTS 2 decoder with an
+iSTFTNet generator. It was selected under the same criteria and adds operator
+surface the first family does not exercise — a bidirectional LSTM, adaptive
+instance normalization, a Snake activation, a harmonic-plus-noise source with
+phase accumulation, and a forward and inverse short-time transform.
+
+It is also the first family that is architecturally language-blind. A Kokoro
+model consumes IPA phoneme token IDs and a style vector and has no language
+input of its own, which keeps language breadth where this document already
+places it: a property of variants and their validation cases, not of the family.
+
+Its reference variant is `kokoro-v1-0`, the official Kokoro-82M v1.0
+checkpoint. Both the source and the weights carry an explicit Apache-2.0 grant.
+
+A second family does not generalize the first family's decisions. Kokoro's
+Quantization Profiles quantize a different part of the model than VITS's, for a
+reason measured in that family and recorded in
+`docs/porting/families/kokoro.md`: its excitation phase accumulates across a
+whole utterance, so everything upstream of the decoder stays at the reference
+dtype.
 
 ## Reference Validation Variants
 

@@ -6,12 +6,21 @@ model_family: vits
 target_repo: jiangzhuo9357/vits-vctk-gguf
 
 source:
+  repository_label: jaywalnut310/vits
   repository: https://github.com/jaywalnut310/vits
   revision: 2e561ba58618d021b5b8323d3765880f7e0ecfdb
   card_url: https://github.com/jaywalnut310/vits/blob/2e561ba58618d021b5b8323d3765880f7e0ecfdb/README.md
   card_path: models/upstream/vits-source/README.md
   checkpoint_name: VITS VCTK
   checkpoint_url: https://drive.google.com/drive/folders/1ksarh-cJf3F5eKJjLVWY0X1j1qsQqiS2
+
+architecture_label: VITS
+
+license_note: |
+  The pinned VITS source repository is MIT licensed:
+    [license at the ported revision]({{ license_link }}). The official checkpoint is
+    published by the VITS author in the repository's linked Google Drive folder, but
+    does not carry a separate checkpoint-license statement.
 
 license: other
 license_name: vits-mit-source-checkpoint-terms-unspecified
@@ -55,6 +64,16 @@ validation:
   implementation_revision: workspace-snapshot-2026-07-23
   cases_per_stage: 12
   stages: 7
+  columns:
+    - key: cpu_pcm_max_abs
+      title: CPU max PCM drift
+    - key: dgx_pcm_max_abs
+      title: DGX Spark CUDA max PCM drift
+    - key: rtx_pcm_max_abs
+      title: RTX 4070 SUPER CUDA max PCM drift
+  metric_note: |
+    Drift is the largest absolute difference between one PCM sample and the
+    reference's.
   platforms:
     - DGX Spark CPU
     - NVIDIA GB10 CUDA 13.3

@@ -1,6 +1,7 @@
 # Quantization Policy
 
 Status: VITS F16 and Q8_MIXED version 1 functionally validated on 2026-07-23.
+Kokoro F16 and Q8_MIXED version 1 functionally validated on 2026-07-26.
 
 ## Validation Sequence
 
@@ -85,6 +86,39 @@ No Q4 or Q5 mixed profile is committed until `Q8_MIXED` has been calibrated on a
 real Model Variant and the additional profile has independent port-validation,
 memory, and backend evidence. A later Quality Evaluation Suite may add perceptual
 and comparative evidence without changing the stored profile identity.
+
+## Kokoro F16 and Q8_MIXED Profiles
+
+Kokoro version 1 keeps PL-BERT, the prosody and duration path, the acoustic text
+encoder, and the Voice tables at the reference dtype, and quantizes the decoder
+and its iSTFTNet generator — 60% of the parameters. The Snake activations'
+alphas are divided by, and the depthwise upsampling pools are read one tap at a
+time as a per-channel scale, so both stay at the reference dtype whatever the
+profile.
+
+That split is the opposite of the general rule stated above, where large matrix
+weights are the first candidates wherever they sit, and it is specific to this
+family's structure rather than a revision of the policy. Kokoro's excitation is
+a sine whose phase accumulates across the whole utterance, so a relative
+difference in F0 of a few parts in ten thousand becomes radians of phase by the
+last syllable. Quantizing the front end was measured: it changed six of one
+case's 78 predicted durations and lengthened the utterance by 50 ms, which
+removes the structural exactness the suite checks for.
+
+Twelve decoder matrices carry F16 rather than Q8_0 in the mixed profile because
+their packed row is not a whole number of blocks; the decoder concatenates the
+two prosody curves and a narrow encoder residual onto its feature stream, which
+lands those channel counts two short of a multiple of thirty-two. The predicate
+that decides this, and the classifier that assigns every tensor its role, are
+shared by the offline tool and the runtime so the two cannot disagree about a
+package.
+
+```bash
+build/bin/synthesize-quantize \
+  models/kokoro-v1-0/kokoro-v1-0-F32.gguf \
+  models/kokoro-v1-0/kokoro-v1-0-Q8_MIXED.gguf \
+  --quant Q8_MIXED
+```
 
 ## Validation
 

@@ -1,0 +1,131 @@
+# Hugging Face card specification for jiangzhuo9357/kokoro-v1-0-gguf.
+
+model_slug: kokoro-v1-0
+display_name: Kokoro v1.0
+model_family: kokoro
+target_repo: jiangzhuo9357/kokoro-v1-0-gguf
+
+source:
+  repository_label: hexgrad/kokoro
+  repository: https://github.com/hexgrad/kokoro
+  revision: dfb907a02bba8152ca444717ca5d78747ccb4bec
+  card_url: https://huggingface.co/hexgrad/Kokoro-82M/blob/f3ff3571791e39611d31c381e3a41a3af07b4987/README.md
+  card_path: models/upstream/kokoro-v1_0/README.md
+  checkpoint_name: Kokoro-82M v1.0
+  checkpoint_url: https://huggingface.co/hexgrad/Kokoro-82M/resolve/f3ff3571791e39611d31c381e3a41a3af07b4987/kokoro-v1_0.pth
+
+architecture_label: Kokoro
+
+license_note: |
+  Both the pinned source repository and the weights carry an explicit Apache-2.0
+    grant: the repository ships a [LICENSE at the ported revision]({{ license_link }}),
+    and the model card declares `license: apache-2.0`. The Voice packs are
+    distributed in the same weights repository at the same revision.
+
+    The upstream card lists CC BY training sources — Koniwa `tnc` and SIWIS —
+    which are credited here in accordance with that licence.
+
+license: apache-2.0
+license_name: apache-2.0
+license_link: https://github.com/hexgrad/kokoro/blob/dfb907a02bba8152ca444717ca5d78747ccb4bec/LICENSE
+library_name: synthesize.cpp
+pipeline_tag: text-to-speech
+languages:
+  - en
+tags:
+  - gguf
+  - synthesize.cpp
+  - text-to-speech
+  - tts
+  - kokoro
+  - styletts2
+  - istftnet
+  - multi-voice
+  - cpu
+  - cuda
+
+summary: |
+  A self-contained Kokoro inference package converted from the official
+  Kokoro-82M v1.0 checkpoint. It is a StyleTTS 2 decoder with an iSTFTNet
+  generator, runs on CPU and CUDA through the same public library interface,
+  and carries all 54 preset Voices. The model is language-blind: it consumes
+  IPA phoneme token IDs and a style vector, so the Text Frontend is the
+  caller's concern rather than the package's.
+
+capabilities:
+  sample_rate_hz: 24000
+  voice_count: 54
+  voice_ids: preset-catalog
+  voice_mode: preset_catalog
+  input_kinds:
+    - phonemes_utf8
+    - token_ids
+  frontend_provider: synthesize.symbol_map
+
+validation:
+  level: port_validated
+  quality_evaluation: not_run
+  date: 2026-07-26
+  reference: the pinned upstream PyTorch implementation
+  implementation_revision: workspace-snapshot-2026-07-26
+  cases_per_stage: 15
+  stages: 7
+  columns:
+    - key: cpu_pcm_correlation
+      title: CPU waveform correlation
+    - key: dgx_pcm_correlation
+      title: DGX Spark CUDA waveform correlation
+  metric_note: |
+    Correlation is the honest measure for this family rather than a sample-wise
+    drift. Kokoro's excitation is a sine whose phase accumulates across the whole
+    utterance, so a difference in F0 of a few parts in ten thousand becomes
+    radians of phase by the last syllable: the waveforms diverge by construction
+    while the speech does not. The figure quoted is the worst case over the
+    suite. What is bit-exact, on every profile and both backends, is the
+    predicted durations.
+  platforms:
+    - DGX Spark CPU
+    - NVIDIA GB10 CUDA 13.3
+
+publication_note: |
+  Both the source and the weights carry an explicit Apache-2.0 grant, so no
+  redistribution assumption is required for this variant. The upstream model
+  card lists CC BY training sources — Koniwa `tnc` and SIWIS — whose attribution
+  is carried forward here.
+
+  Only English is declared. The checkpoint also ships Voices for British
+  English, Japanese, Mandarin Chinese, Spanish, French, Hindi, Italian and
+  Brazilian Portuguese; those Voices load and run, but no language beyond `en`
+  has its own validation cases, so none is advertised.
+
+usage:
+  profile: F16
+  voice: af_heart
+  phonemes: "ðə skˈI əbˈʌv ðə pˈɔɹt wʌz ðə kˈʌləɹ ʌv tˈɛləvˌɪʒən, tˈund tə ɐ dˈɛd ʧˈænᵊl."
+
+quants:
+  - name: F32
+    filename: kokoro-v1-0-F32.gguf
+    size: 352.8 MB
+    size_bytes: 352813952
+    sha256: 23cde0e3b2a3082fa97a84aed746d8c0cee79eca1ee9599c6e13b7e94ba0328b
+    tensor_types: 511 F32
+    validation:
+      cpu_pcm_correlation: 0.987437
+      dgx_pcm_correlation: 0.989607
+  - name: F16
+    filename: kokoro-v1-0-F16.gguf
+    size: 246.5 MB
+    size_bytes: 246451648
+    sha256: 951e4be979b8af5e72f2353de947c65372c84790b500dd0f53384c958ee2596e
+    tensor_types: 384 F32 + 127 F16
+    validation:
+      cpu_pcm_correlation: 0.987445
+  - name: Q8_MIXED
+    filename: kokoro-v1-0-Q8_MIXED.gguf
+    size: 216.1 MB
+    size_bytes: 216109696
+    sha256: 0d72f3778125a8f54c23468c6a2534f114d529121f9788e46ec45dc7d21b923c
+    tensor_types: 384 F32 + 14 F16 + 113 Q8_0
+    validation:
+      cpu_pcm_correlation: 0.984790

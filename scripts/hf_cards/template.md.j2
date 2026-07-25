@@ -35,7 +35,7 @@ GGUF conversions of the official
 [{{ source.checkpoint_name | default(display_name) }} checkpoint]({{ source.checkpoint_url }}) for
 [synthesize.cpp](https://github.com/handy-computer/synthesize.cpp).
 
-Ported from [jaywalnut310/vits]({{ source.repository }}) revision
+Ported from [{{ source.repository_label }}]({{ source.repository }}) revision
 [`{{ source.revision }}`]({{ source.repository }}/tree/{{ source.revision }}) and
 validated on {{ validation.date }} against {{ validation.reference }}.
 
@@ -49,7 +49,7 @@ validated on {{ validation.date }} against {{ validation.reference }}.
 | {{ quant.name }} | [{{ quant.filename }}](https://huggingface.co/{{ target_repo }}/resolve/main/{{ quant.filename }}) | {{ quant.size }} ({{ "{:,}".format(quant.size_bytes) }} bytes) | {{ quant.tensor_types }} | `{{ quant.sha256 }}` |
 {%- endfor %}
 
-All profiles use the same VITS architecture and public synthesize.cpp API. The
+All profiles use the same {{ architecture_label }} architecture and public synthesize.cpp API. The
 profile name describes a versioned storage policy, not the language or Execution
 Backend.
 
@@ -57,15 +57,17 @@ Backend.
 
 `validation_level: {{ validation.level }}`
 
-Seven graph stages were replayed for {{ validation.cases_per_stage }} cases on
+{{ validation.stages }} graph stages were replayed for {{ validation.cases_per_stage }} cases on
 {{ validation.platforms | join(", ") }}. Duration structure was exact in every
 case. CUDA placement contained zero executable CPU fallback nodes.
 
-| Profile | CPU max PCM drift | DGX Spark CUDA max PCM drift | RTX 4070 SUPER CUDA max PCM drift |
-| --- | ---: | ---: | ---: |
+| Profile |{% for column in validation.columns %} {{ column.title }} |{% endfor %}
+| --- |{% for column in validation.columns %} ---: |{% endfor %}
 {%- for quant in quants %}
-| {{ quant.name }} | {{ quant.validation.cpu_pcm_max_abs }} | {{ quant.validation.dgx_pcm_max_abs }} | {{ quant.validation.rtx_pcm_max_abs }} |
+| {{ quant.name }} |{% for column in validation.columns %} {{ quant.validation.get(column.key, "not measured") }} |{% endfor %}
 {%- endfor %}
+
+{{ validation.metric_note }}
 
 {% if validation.quality_evaluation == "not_run" -%}
 **Quality evaluation has not been run.** These results establish that the port,
@@ -125,10 +127,7 @@ Rust, or Python. Model loading never contacts Hugging Face.
 
 ## License and checkpoint provenance
 
-The pinned VITS source repository is MIT licensed:
-[license at the ported revision]({{ license_link }}). The official checkpoint is
-published by the VITS author in the repository's linked Google Drive folder, but
-does not carry a separate checkpoint-license statement.
+{{ license_note }}
 
 {{ publication_note }}
 

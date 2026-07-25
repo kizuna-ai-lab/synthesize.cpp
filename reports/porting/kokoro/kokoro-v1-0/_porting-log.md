@@ -209,6 +209,49 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — Stage 8: publication artifacts
+
+`docs/models/kokoro-v1-0.md`, `scripts/hf_cards/kokoro-v1-0.yaml`, the generated
+`models/kokoro-v1-0/README.md`, and the flat publication directory are in place.
+The package page states the Validation Level and the quality-evaluation status
+explicitly, as the workflow requires.
+
+### The card generator had VITS baked into it
+
+Three things in the template were the first family's rather than every family's:
+the metric columns (`cpu_pcm_max_abs` and two named CUDA machines), the
+architecture name in prose, and the upstream repository label and licence
+paragraph. Kokoro reports a correlation, not a sample-wise drift, and ran on two
+platforms rather than three, so none of it fitted.
+
+The spec now declares its own measured columns with a note saying what they
+mean, its own architecture label, repository label, and licence paragraph. Prose
+blocks in a spec are rendered through the template engine first, so a licence
+note can cite `license_link` without repeating the URL — the previous shape
+would have printed the placeholder literally.
+
+Both VITS cards regenerate through the new path, and their tests pass unchanged
+apart from the wording that now comes from the spec.
+
+### Documents that claimed one family
+
+`docs/model-family-selection.md` said the first supported family is VITS and
+stopped there; it now records Kokoro as the second, why it was selected, and the
+fact that a second family does not generalize the first one's decisions —
+Kokoro's Quantization Profiles quantize the opposite part of the model, for a
+reason measured in this family.
+
+`docs/quantization.md` states the same thing at the policy level: the general
+rule is that large matrix weights are the first candidates wherever they sit,
+and Kokoro is a documented exception with the measurement behind it, not a
+revision of the rule.
+
+### Not published
+
+The GGUF files are built and hashed but not uploaded. `docs/models/kokoro-v1-0.md`
+carries the `hf` commands; publication is the maintainer's call, not this
+port's.
+
 ## 2026-07-26 — The decoder gap closed, and a listening pass
 
 ### Informal listening: no audible defect

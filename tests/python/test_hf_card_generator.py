@@ -58,6 +58,7 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
             "model_family": "fixture",
             "target_repo": "handy-computer/fixture-gguf",
             "source": {
+                "repository_label": "example/source",
                 "repository": "https://example.com/source",
                 "revision": "0123456789abcdef",
                 "card_url": "https://example.com/source/card",
@@ -85,8 +86,12 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
                 "reference": "fixture reference",
                 "cases_per_stage": 12,
                 "stages": 7,
+                "columns": [{"key": "cpu_metric", "title": "CPU metric"}],
+                "metric_note": "The metric is a fixture.",
                 "platforms": ["CPU", "CUDA"],
             },
+            "architecture_label": "Fixture",
+            "license_note": "Upstream terms apply: [licence]({{ license_link }}).",
             "publication_note": "Terms were reviewed by the maintainer.",
             "usage": {
                 "profile": "F16",
@@ -102,7 +107,7 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
                     "sha256": "a" * 64,
                     "tensor_types": "1 F16",
                     "validation": {
-                        "cpu_pcm_max_abs": 0,
+                        "cpu_metric": 0,
                         "dgx_pcm_max_abs": 0,
                         "rtx_pcm_max_abs": 0,
                     },
@@ -180,6 +185,29 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
         self.assertEqual(metadata["synthesize_cpp"]["quality_evaluation"], "not_run")
         self.assertEqual(metadata["synthesize_cpp"]["input_kinds"], ["phonemes_utf8", "token_ids"])
         self.assertEqual(metadata["synthesize_cpp"]["frontend_provider"], "synthesize.symbol_map")
+
+        expected_files = {"README.md", *(quant["filename"] for quant in spec["quants"])}
+        actual_files = {path.name for path in model_dir.iterdir() if path.is_file()}
+        self.assertEqual(actual_files, expected_files)
+
+    def test_generated_kokoro_payload_requires_a_voice_and_is_flat(self) -> None:
+        spec = self.generator.load_spec(ROOT / "scripts" / "hf_cards" / "kokoro-v1-0.yaml")
+        self.generator.validate_spec(spec)
+        model_dir = ROOT / "models" / "kokoro-v1-0"
+        if not model_dir.is_dir():
+            self.skipTest("the Kokoro packages have not been materialized locally")
+        self.generator.validate_artifacts(spec, model_dir)
+        self.assertEqual(spec["capabilities"]["voice_mode"], "preset_catalog")
+        self.assertEqual(spec["capabilities"]["voice_count"], 54)
+        self.assertEqual(spec["capabilities"]["sample_rate_hz"], 24000)
+
+        expected_card = self.generator.render(spec, self.generator.load_upstream_card(spec))
+        self.assertEqual((model_dir / "README.md").read_text(encoding="utf-8"), expected_card)
+
+        # The upstream card names CC BY training corpora, so the generated card
+        # has to carry that attribution forward rather than only the licence.
+        self.assertIn("Koniwa", expected_card)
+        self.assertIn("SIWIS", expected_card)
 
         expected_files = {"README.md", *(quant["filename"] for quant in spec["quants"])}
         actual_files = {path.name for path in model_dir.iterdir() if path.is_file()}

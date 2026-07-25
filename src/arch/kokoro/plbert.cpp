@@ -46,9 +46,10 @@ ggml_tensor * albert_layer(ggml_context *             context,
     ggml_tensor * attention =
         layer_norm(context, ggml_add(context, hidden, projected), weights.attention_norm, epsilon);
 
-    // The package's activation is gelu_new, which is ggml_gelu's tanh form.
+    // The package's activation is gelu_new, the tanh form, evaluated here in
+    // single precision rather than through ggml_gelu's half-precision table.
     ggml_tensor * feed = linear(context, attention, weights.ffn);
-    feed               = ggml_gelu(context, feed);
+    feed               = gelu_tanh(context, feed);
     feed               = linear(context, feed, weights.ffn_output);
     return layer_norm(context, ggml_add(context, feed, attention), weights.output_norm, epsilon);
 }

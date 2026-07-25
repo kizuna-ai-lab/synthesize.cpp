@@ -274,8 +274,11 @@ if(SYNTH_BUILD_PYTHON_TESTS)
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 
-# The runner is a thin adapter shared by the Python Golden validator and manual
-# diagnostics. It is intentionally not itself a test.
+# The runners are thin adapters shared by the Python Golden validators and
+# manual diagnostics. They are intentionally not themselves tests.
+add_executable(synthesize-kokoro-stages kokoro_stages_real.cpp)
+target_include_directories(synthesize-kokoro-stages PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(synthesize-kokoro-stages PRIVATE synthesize ggml)
 add_executable(synthesize-vits-text-encoder vits_text_encoder_real.cpp)
 target_include_directories(synthesize-vits-text-encoder PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(synthesize-vits-text-encoder PRIVATE synthesize ggml)

@@ -85,6 +85,21 @@ ggml_tensor * upsample_nearest_2x(ggml_context * context, ggml_tensor * input) {
     return ggml_reshape_2d(context, ggml_cont(context, doubled), channels, 2 * length);
 }
 
+ggml_tensor * gelu_tanh(ggml_context * context, ggml_tensor * input) {
+    if (context == nullptr || input == nullptr) {
+        return nullptr;
+    }
+    // 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+    constexpr float kScale = 0.7978845608028654f;
+    constexpr float kCubic = 0.044715f;
+
+    ggml_tensor * cubed = ggml_mul(context, ggml_mul(context, input, input), input);
+    ggml_tensor * inner = ggml_add(context, input, ggml_scale(context, cubed, kCubic));
+    // scale_bias adds the constant, so the gate needs no separate one-tensor.
+    ggml_tensor * gate  = ggml_scale_bias(context, ggml_tanh(context, ggml_scale(context, inner, kScale)), 1.0f, 1.0f);
+    return ggml_scale(context, ggml_mul(context, input, gate), 0.5f);
+}
+
 ggml_tensor * snake(ggml_context * context, ggml_tensor * input, ggml_tensor * alpha) {
     if (alpha == nullptr) {
         return nullptr;

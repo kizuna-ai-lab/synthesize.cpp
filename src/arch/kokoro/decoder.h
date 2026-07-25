@@ -13,7 +13,7 @@ struct HParams;
 
 struct DecoderGraph {
     ggml_cgraph * graph    = nullptr;
-    ggml_tensor * asr      = nullptr;  // [dim_in, frame_count]
+    ggml_tensor * asr      = nullptr;  // [hidden_dim, frame_count]
     ggml_tensor * f0       = nullptr;  // [1, 2 * frame_count]
     ggml_tensor * energy   = nullptr;  // [1, 2 * frame_count]
     ggml_tensor * har      = nullptr;  // [n_fft + 2, output_frames]

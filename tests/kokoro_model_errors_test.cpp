@@ -67,8 +67,7 @@ int main(int argc, char ** argv) {
     const bool written = gguf_write_to_file(empty, fixtures.empty_gguf.string().c_str(), false);
     gguf_free(empty);
     SYNTH_TEST_CHECK(written);
-    SYNTH_TEST_CHECK(synth::kokoro::Model::load_cpu(fixtures.empty_gguf.string(), model) ==
-                     SYNTH_ERR_UNSUPPORTED_ARCH);
+    SYNTH_TEST_CHECK(synth::kokoro::Model::load_cpu(fixtures.empty_gguf.string(), model) == SYNTH_ERR_UNSUPPORTED_ARCH);
     SYNTH_TEST_CHECK(model == nullptr);
 
     // Another family's package must be refused by this facade even though the

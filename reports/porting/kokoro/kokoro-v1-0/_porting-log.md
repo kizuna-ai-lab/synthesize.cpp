@@ -209,6 +209,77 @@ path. Parity targets `torch.stft`/`torch.istft` semantics.
   listed. Both the ordinary gate (46/46) and a clean sanitizer gate (45/45)
   pass.
 
+## 2026-07-26 — First end-to-end run on the real package
+
+Added `tests/kokoro_stages_real.cpp`, the runner the Stage 5 validators will
+drive, and ran all seven stages against the converted GGUF for the
+`kokoro-upstream-default` case. The pipeline reaches audio, and the structural
+outputs are **bit-exact**: `pred_dur`, `y_length`, and the alignment all match
+the oracle exactly, so the output length is not merely close but identical.
+
+### Two defects the unit tests could not have caught
+
+- The decoder built its feature stream 64 channels wide instead of 512.
+  Upstream's `Decoder` names its own constructor argument `dim_in` and is
+  passed 512, while the configuration carries a separate top-level `dim_in` of
+  64. Reading the wrong one is a silent shape error, and the unit fixture had
+  set `dim_in` for the decoder's width, so the two names agreed there by
+  accident. The fixture now sets `hidden_dim` and deliberately leaves `dim_in`
+  unset.
+- The scheduler's hash set was sized from the graph's node capacity alone. It
+  must also cover the leaves, which are every weight the graph reads — a few
+  hundred for the decoder. The reduced-dimension unit test has few enough
+  weights that it never crossed the limit.
+
+### Measured agreement, and where it comes from
+
+| probe | before | after |
+| --- | --- | --- |
+| `bert.hidden` | 1.72e-3 | 1.58e-5 |
+| `text.d_en` | 2.84e-3 | 3.31e-5 |
+| `duration.logits` | 1.39e-2 | 2.79e-4 |
+| `prosody.f0` | 1.13e-1 | 6.54e-4 |
+| `source.har` (complex) | 1.25e-1 | 3.04e-2 |
+| waveform correlation | 0.99721 | 0.99821 |
+
+`text.t_en` and `text.asr` agree to 2.3e-6 throughout, and `duration.alignment`
+is exact.
+
+The first column is what GGML's CPU GELU costs. Its half-precision lookup table
+leaves about 1e-4 per activation, which compounds across PL-BERT's twelve
+replayed layers and reaches F0. `GGML_GELU_FP16` is hard-coded in the vendored
+snapshot and the snapshot is never hand-edited, so the fix is to evaluate the
+`gelu_new` closed form from single-precision primitives instead — the same
+reasoning that already keeps convolution off `ggml_conv_1d`. That is the second
+column.
+
+### The harmonic source is ill-conditioned in F0, and this is not a defect
+
+Three controlled runs separate the source's own accuracy from what it inherits:
+
+| comparison | complex absmax | mean |
+| --- | --- | --- |
+| upstream driven by the oracle's F0, against the oracle probe | 0 | 0 |
+| upstream driven by **our** F0, against upstream driven by the oracle's | 1.23e-1 | 4.19e-3 |
+| our C++ source driven by our F0, against upstream driven by the same F0 | 1.75e-2 | 9.4e-4 |
+
+The first line confirms the replay harness reproduces the oracle exactly. The
+second shows that feeding our F0 into the *unmodified upstream module* produces
+almost the entire divergence, so it is inherited rather than introduced. The
+reason is structural: the sine phase is a cumulative sum over the whole
+utterance scaled by 300, so a 4e-4 relative difference in F0 becomes radians of
+phase by the end. The third line is our own remaining float-ordering difference
+in that same chaotic accumulation, an order of magnitude below the inherited
+term.
+
+Two consequences for Stage 5. `source.har`'s phase cannot carry a tight
+tensor-parity tolerance, and must be compared as a complex value or weighted by
+magnitude, since bins with near-zero magnitude have meaningless phase. And
+waveform agreement has to be stated as a correlation and spectral distance
+rather than sample-wise: the current run is 0.9982 correlated with the oracle
+at 0.9992 spectrogram correlation, which is the right shape of claim for a
+model whose excitation phase is chaotic by construction.
+
 ## 2026-07-26 — Stage 4 slice 11: family facade
 
 Added `kokoro.h` and `model.cpp`: package loading and one entry point per

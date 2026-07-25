@@ -54,7 +54,7 @@ DecoderGraph build_decoder_graph(ggml_context *         context,
                                  const HParams &        hparams,
                                  uint32_t               frame_count) {
     DecoderGraph out;
-    if (context == nullptr || frame_count == 0 || hparams.dim_in == 0 || hparams.style_dim == 0) {
+    if (context == nullptr || frame_count == 0 || hparams.hidden_dim == 0 || hparams.style_dim == 0) {
         return out;
     }
     if (weights.decode.size() != 4 || weights.f0_conv.weight == nullptr || weights.n_conv.weight == nullptr ||
@@ -74,7 +74,12 @@ DecoderGraph build_decoder_graph(ggml_context *         context,
         return out;
     }
 
-    ggml_tensor * asr = ggml_new_tensor_2d(context, GGML_TYPE_F32, hparams.dim_in, frame_count);
+    // The features the decoder consumes are the text encoder's, so their width
+    // is `hidden_dim`. Upstream's Decoder calls its own constructor argument
+    // `dim_in` and passes 512 into it, which is a different quantity from the
+    // configuration's top-level `dim_in`; conflating the two silently builds a
+    // decoder 64 channels wide.
+    ggml_tensor * asr = ggml_new_tensor_2d(context, GGML_TYPE_F32, hparams.hidden_dim, frame_count);
     ggml_set_name(asr, "input.asr");
     ggml_set_input(asr);
     ggml_tensor * f0_curve = ggml_new_tensor_2d(context, GGML_TYPE_F32, 1, int64_t(frame_count) * 2);

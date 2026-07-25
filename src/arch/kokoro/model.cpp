@@ -1,5 +1,3 @@
-#include "kokoro.h"
-
 #include "backend-plan.h"
 #include "decoder-host.h"
 #include "decoder.h"
@@ -11,6 +9,7 @@
 #include "ggml.h"
 #include "gguf-metadata.h"
 #include "gguf.h"
+#include "kokoro.h"
 #include "plbert.h"
 #include "prosody.h"
 #include "source.h"
@@ -80,6 +79,13 @@ class Arena {
     ggml_backend_buffer_t buffer_  = nullptr;
 };
 
+constexpr size_t kGraphArenaBytes = 64ull * 1024 * 1024;
+
+// Headroom in the scheduler's hash set for the weight tensors a graph reads,
+// which enter as leaves rather than nodes. The decoder touches the most, at a
+// few hundred.
+constexpr size_t kSchedulerLeafAllowance = 2048;
+
 // One graph run: a header-only context and the scheduler that places it.
 //
 // Tensors already sitting in a backend buffer, such as the LSTM stores, are
@@ -114,7 +120,10 @@ class GraphRun {
         if (context_ == nullptr || graph == nullptr) {
             return SYNTH_ERR_OOM;
         }
-        scheduler_ = plan_.create_scheduler(size_t(ggml_graph_size(graph)));
+        // The scheduler's hash set has to cover the leaves as well as the
+        // nodes, and the leaves are every weight the graph touches, so sizing it
+        // from the node capacity alone is not enough.
+        scheduler_ = plan_.create_scheduler(size_t(ggml_graph_size(graph)) + kSchedulerLeafAllowance);
         if (scheduler_ == nullptr) {
             return SYNTH_ERR_BACKEND;
         }
@@ -195,7 +204,9 @@ struct Model::Impl {
 
     // The style halves of one Voice row. A Kokoro Voice is a table indexed by
     // input length, so the row is a synthesis-time choice, not a load-time one.
-    synth_status_t read_style(uint32_t voice_index, uint32_t row, std::vector<float> & decoder_style,
+    synth_status_t read_style(uint32_t             voice_index,
+                              uint32_t             row,
+                              std::vector<float> & decoder_style,
                               std::vector<float> & prosody_style) const;
 
     ~Impl() {
@@ -240,22 +251,22 @@ synth_status_t Model::get_info(ModelInfo & output) const {
     if (implementation_ == nullptr) {
         return SYNTH_ERR_INVALID_ARG;
     }
-    const HParams & hparams        = implementation_->hparams;
-    output                         = ModelInfo{};
-    output.has_package_default     = hparams.has_package_default;
-    output.preset_voice_ids        = hparams.preset_voice_ids;
-    output.preset_voice_flags      = hparams.preset_voice_flags;
-    output.text_frontend           = implementation_->text_frontend;
-    output.input_flags             = hparams.input_flags;
-    output.capability_flags        = hparams.capability_flags;
-    output.output_sample_rate      = hparams.output_sample_rate;
-    output.output_channel_count    = hparams.output_channel_count;
-    output.vocab_size              = hparams.n_token;
-    output.samples_per_frame       = hparams.samples_per_frame;
-    output.max_input_tokens        = hparams.max_input_tokens;
-    output.max_output_frames       = hparams.max_output_frames;
-    output.min_speaking_rate       = hparams.min_speaking_rate;
-    output.max_speaking_rate       = hparams.max_speaking_rate;
+    const HParams & hparams     = implementation_->hparams;
+    output                      = ModelInfo{};
+    output.has_package_default  = hparams.has_package_default;
+    output.preset_voice_ids     = hparams.preset_voice_ids;
+    output.preset_voice_flags   = hparams.preset_voice_flags;
+    output.text_frontend        = implementation_->text_frontend;
+    output.input_flags          = hparams.input_flags;
+    output.capability_flags     = hparams.capability_flags;
+    output.output_sample_rate   = hparams.output_sample_rate;
+    output.output_channel_count = hparams.output_channel_count;
+    output.vocab_size           = hparams.n_token;
+    output.samples_per_frame    = hparams.samples_per_frame;
+    output.max_input_tokens     = hparams.max_input_tokens;
+    output.max_output_frames    = hparams.max_output_frames;
+    output.min_speaking_rate    = hparams.min_speaking_rate;
+    output.max_speaking_rate    = hparams.max_speaking_rate;
     return SYNTH_OK;
 }
 
@@ -363,11 +374,7 @@ synth_status_t Model::load(const std::string &      path,
     }
 }
 
-
-
 namespace {
-
-constexpr size_t kGraphArenaBytes = 64ull * 1024 * 1024;
 
 synth_status_t check_tokens(const HParams & hparams, const std::vector<int32_t> & token_ids) {
     if (token_ids.empty()) {
@@ -390,21 +397,22 @@ synth_status_t check_tokens(const HParams & hparams, const std::vector<int32_t> 
 // predecessors, which is what lets a validator drive one stage at a time
 // against the oracle without the family holding synthesis state.
 struct Model::Pipeline {
-    uint32_t             token_count = 0;
-    uint64_t             frame_count = 0;
-    std::vector<float>   decoder_style;
-    std::vector<float>   prosody_style;
-    DurationResult       duration;
+    uint32_t           token_count = 0;
+    uint64_t           frame_count = 0;
+    std::vector<float> decoder_style;
+    std::vector<float> prosody_style;
+    DurationResult     duration;
     // Graph layout, feature index fastest.
-    std::vector<float>   plbert_hidden;
-    std::vector<float>   plbert_projected;
-    std::vector<float>   duration_logits;
-    std::vector<float>   duration_encoded;
-    std::vector<float>   f0;
-    std::vector<float>   energy;
-    std::vector<float>   text_encoded;
-    std::vector<float>   aligned;
-    SourceResult         source;
+    std::vector<float> plbert_hidden;
+    std::vector<float> plbert_projected;
+    std::vector<float> duration_logits;
+    std::vector<float> duration_encoded;
+    std::vector<float> f0;
+    std::vector<float> energy;
+    std::vector<float> expanded;
+    std::vector<float> text_encoded;
+    std::vector<float> aligned;
+    SourceResult       source;
 };
 
 synth_status_t Model::run_plbert(const std::vector<int32_t> & token_ids, int threads, PLBertOutput & output) const {
@@ -417,7 +425,9 @@ synth_status_t Model::run_plbert(const std::vector<int32_t> & token_ids, int thr
     const HParams & hparams = implementation_->hparams;
     output.hidden_size      = hparams.plbert.hidden_size;
     output.token_count      = state.token_count;
-    transpose_to_feature_major(state.plbert_hidden, hparams.plbert.hidden_size, state.token_count, output.hidden);
+    // PL-BERT's own probe keeps the encoder's [tokens, features] order, while
+    // the projection is transposed the moment it leaves the stage.
+    output.hidden           = state.plbert_hidden;
     transpose_to_feature_major(state.plbert_projected, hparams.hidden_dim, state.token_count, output.projected);
     return SYNTH_OK;
 }
@@ -503,11 +513,9 @@ synth_status_t Model::compute_duration(const std::vector<int32_t> & token_ids,
             scratch.encoder[layer].reverse_store =
                 ggml_new_tensor_2d(arena.context(), GGML_TYPE_F32, half, state.token_count);
         }
-        scratch.predictor.zero_state = scratch.zero_state;
-        scratch.predictor.forward_store =
-            ggml_new_tensor_2d(arena.context(), GGML_TYPE_F32, half, state.token_count);
-        scratch.predictor.reverse_store =
-            ggml_new_tensor_2d(arena.context(), GGML_TYPE_F32, half, state.token_count);
+        scratch.predictor.zero_state    = scratch.zero_state;
+        scratch.predictor.forward_store = ggml_new_tensor_2d(arena.context(), GGML_TYPE_F32, half, state.token_count);
+        scratch.predictor.reverse_store = ggml_new_tensor_2d(arena.context(), GGML_TYPE_F32, half, state.token_count);
         if (!arena.commit(implementation_->backend_plan->primary())) {
             return SYNTH_ERR_OOM;
         }
@@ -566,9 +574,10 @@ synth_status_t Model::run_duration(const std::vector<int32_t> & token_ids,
     output.frame_count      = state.frame_count;
     output.durations        = state.duration.pred_dur;
     output.alignment        = state.duration.alignment;
-    transpose_to_feature_major(state.duration_logits, hparams.max_dur, state.token_count, output.logits);
-    transpose_to_feature_major(state.duration_encoded, hparams.hidden_dim + hparams.style_dim, state.token_count,
-                               output.encoded);
+    // Both of these keep the graph's order, which is also the probes'.
+    output.logits           = state.duration_logits;
+    output.encoded          = state.duration_encoded;
+    (void) hparams;
     return SYNTH_OK;
 }
 
@@ -587,9 +596,8 @@ synth_status_t Model::compute_prosody(const std::vector<int32_t> & token_ids,
     const uint32_t  frames   = uint32_t(state.frame_count);
 
     try {
-        std::vector<float> expanded;
         expand_by_alignment(state.duration_encoded, state.duration.alignment, features, state.token_count, frames,
-                            expanded);
+                            state.expanded);
 
         const uint32_t half = hparams.hidden_dim / 2;
         Arena          arena;
@@ -617,7 +625,7 @@ synth_status_t Model::compute_prosody(const std::vector<int32_t> & token_ids,
         if (status != SYNTH_OK) {
             return status;
         }
-        ggml_backend_tensor_set(built.expanded, expanded.data(), 0, ggml_nbytes(built.expanded));
+        ggml_backend_tensor_set(built.expanded, state.expanded.data(), 0, ggml_nbytes(built.expanded));
         ggml_backend_tensor_set(built.style, state.prosody_style.data(), 0, ggml_nbytes(built.style));
         status = run.dispatch(built.graph, threads);
         if (status != SYNTH_OK) {
@@ -643,9 +651,12 @@ synth_status_t Model::run_prosody(const std::vector<int32_t> & token_ids,
     if (status != SYNTH_OK) {
         return status;
     }
-    output.frame_count = state.frame_count;
-    output.f0          = state.f0;
-    output.energy      = state.energy;
+    const HParams & hparams = implementation_->hparams;
+    output.frame_count      = state.frame_count;
+    transpose_to_feature_major(state.expanded, hparams.hidden_dim + hparams.style_dim, state.frame_count,
+                               output.expanded);
+    output.f0     = state.f0;
+    output.energy = state.energy;
     return SYNTH_OK;
 }
 
@@ -763,15 +774,16 @@ synth_status_t Model::run_source(const std::vector<int32_t> & token_ids,
                                  SourceOutput &               output) const {
     output = SourceOutput{};
     Pipeline       state;
-    synth_status_t status =
-        compute_source(token_ids, voice_index, voice_row, speaking_rate, random, threads, state);
+    synth_status_t status = compute_source(token_ids, voice_index, voice_row, speaking_rate, random, threads, state);
     if (status != SYNTH_OK) {
         return status;
     }
     output.frames     = state.source.frames;
     output.bins       = state.source.bins;
     output.excitation = state.source.har_source;
-    output.spectrum   = state.source.har;
+    // The seam builds the spectrum in the decoder's order; the probe keeps the
+    // frame index contiguous.
+    transpose_to_feature_major(state.source.har, 2 * state.source.bins, state.source.frames, output.spectrum);
     return SYNTH_OK;
 }
 
@@ -783,8 +795,7 @@ synth_status_t Model::compute_decoder(const std::vector<int32_t> & token_ids,
                                       int                          threads,
                                       Pipeline &                   state,
                                       std::vector<float> &         spectrum) const {
-    synth_status_t status =
-        compute_source(token_ids, voice_index, voice_row, speaking_rate, random, threads, state);
+    synth_status_t status = compute_source(token_ids, voice_index, voice_row, speaking_rate, random, threads, state);
     if (status != SYNTH_OK) {
         return status;
     }
@@ -795,8 +806,8 @@ synth_status_t Model::compute_decoder(const std::vector<int32_t> & token_ids,
         if (run.context() == nullptr) {
             return SYNTH_ERR_OOM;
         }
-        DecoderGraph built = build_decoder_graph(run.context(), implementation_->weights.decoder, hparams,
-                                                 uint32_t(state.frame_count));
+        DecoderGraph built =
+            build_decoder_graph(run.context(), implementation_->weights.decoder, hparams, uint32_t(state.frame_count));
         if (built.graph == nullptr) {
             return SYNTH_ERR_INTERNAL;
         }

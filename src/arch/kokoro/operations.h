@@ -94,6 +94,17 @@ ggml_tensor * adain(ggml_context *        context,
 // Nearest-neighbour doubling along the time axis.
 ggml_tensor * upsample_nearest_2x(ggml_context * context, ggml_tensor * input);
 
+// The tanh form of GELU, built from primitives rather than taken from
+// ggml_gelu.
+//
+// GGML's CPU GELU reads a half-precision lookup table, which costs about 1e-4
+// against the reference and compounds across PL-BERT's twelve replayed layers.
+// That error reaches F0, and the harmonic source's phase accumulator amplifies
+// an F0 difference into radians by the end of an utterance, so it is worth the
+// extra nodes to evaluate the closed form in single precision instead. This is
+// the same reasoning that keeps convolution off ggml_conv_1d.
+ggml_tensor * gelu_tanh(ggml_context * context, ggml_tensor * input);
+
 // x + (1/a) * sin(a * x)^2, the Snake activation, with one alpha per channel.
 ggml_tensor * snake(ggml_context * context, ggml_tensor * input, ggml_tensor * alpha);
 

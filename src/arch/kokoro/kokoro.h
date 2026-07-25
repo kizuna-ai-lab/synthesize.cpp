@@ -12,30 +12,35 @@ struct ggml_backend_device;
 
 namespace synth::kokoro {
 
-// Every stage output is a logical [features, time] array with time contiguous
-// within each feature, which is how the reference probe artifacts are stored
-// and so what the Stage 5 validators compare against directly.
+// Each stage output uses the axis order its reference probe uses, which is the
+// order upstream's own tensor has at that point rather than one rule for the
+// whole family. Where a comment says a shape, the last axis is the contiguous
+// one, so [tokens, features] means the feature index runs fastest. The Stage 5
+// validators compare these arrays against the probes directly.
 
 struct PLBertOutput {
     uint32_t           hidden_size = 0;
     uint64_t           token_count = 0;
-    std::vector<float> hidden;     // [hidden_size, token_count]
+    std::vector<float> hidden;     // [token_count, hidden_size]
     std::vector<float> projected;  // [hidden_dim, token_count], the encoder projection
 };
 
 struct DurationOutput {
     uint64_t             token_count = 0;
     uint64_t             frame_count = 0;
-    std::vector<float>   logits;     // [max_dur, token_count]
+    std::vector<float>   logits;     // [token_count, max_dur]
     std::vector<int64_t> durations;  // one rounded step count per token
-    // [token_count, frame_count] one-hot expansion, frame index contiguous.
+    // [token_count, frame_count] one-hot expansion.
     std::vector<float>   alignment;
-    // [hidden_dim + style_dim, token_count], the state the prosody stage expands.
+    // [token_count, hidden_dim + style_dim], the state the prosody stage expands.
     std::vector<float>   encoded;
 };
 
 struct ProsodyOutput {
     uint64_t           frame_count = 0;
+    // [hidden_dim + style_dim, frame_count], the alignment-expanded state this
+    // stage consumes.
+    std::vector<float> expanded;
     // Both curves leave the prosody stage at twice the frame rate.
     std::vector<float> f0;
     std::vector<float> energy;

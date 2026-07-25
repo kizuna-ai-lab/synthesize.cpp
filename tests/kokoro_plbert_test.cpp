@@ -123,7 +123,9 @@ float gelu_new(float x) {
 }
 
 // GGML's CPU GELU is a half-precision lookup table, so it evaluates
-// f16(gelu(f16(x))) rather than the exact activation. Modelling that is how the
+// f16(gelu(f16(x))) rather than the exact activation. The graph no longer uses
+// it; this models it so the test can show the exact activation is the better
+// fit, which is how a regression back to ggml_gelu would be caught. It is how the
 // test separates a real graph defect from the backend's known approximation.
 float gelu_ggml_table(float x) {
     if (x <= -10.0f) {
@@ -359,21 +361,22 @@ int main() {
         return worst;
     };
 
-    // Against the exact activation the graph is close, but not to float
-    // precision: GGML's CPU GELU is a half-precision lookup table.
+    // The graph agrees with the exact activation to float accumulation noise.
+    // It did not always: while the feed-forward used ggml_gelu, the CPU
+    // backend's half-precision lookup table left a residual around 3e-4 that
+    // was only explicable by modelling the table itself. Evaluating the tanh
+    // form from single-precision primitives removed that term at its source.
     const Matrix exact =
         reference_forward(word, position, token_type, embed_gamma, embed_beta, map_w, map_b, layer, tokens, false);
     SYNTH_TEST_CHECK(exact.size() == produced.size());
-    SYNTH_TEST_CHECK(deviation(exact) < 5e-3f);
+    SYNTH_TEST_CHECK(deviation(exact) < 2e-5f);
 
-    // Modelling that table shrinks the difference by roughly seven times, which
-    // shows the residual is the backend's approximation rather than a graph
-    // defect. What remains is ordinary accumulation-order noise carried through
-    // three layers.
+    // The table model is now the worse fit, which is what confirms the graph no
+    // longer goes through it. Keeping this comparison is what would catch a
+    // regression back to ggml_gelu, since that change is invisible in shapes.
     const Matrix tabulated =
         reference_forward(word, position, token_type, embed_gamma, embed_beta, map_w, map_b, layer, tokens, true);
-    SYNTH_TEST_CHECK(deviation(tabulated) < 5e-4f);
-    SYNTH_TEST_CHECK(deviation(tabulated) * 3.0f < deviation(exact));
+    SYNTH_TEST_CHECK(deviation(exact) < deviation(tabulated));
 
     // Contract failures return an empty graph rather than a partial one.
     {

@@ -346,9 +346,14 @@ namespace {
 // A reduced configuration with the same structure as the real one: two
 // upsampling stages whose kernels exceed their rates by an even margin, an even
 // transform size, and a decoder whose last block doubles the frame rate.
+//
+// The decoder's feature width is `hidden_dim`, the text encoder's output width.
+// The configuration also carries a top-level `dim_in`, which is a different and
+// much smaller quantity; this fixture deliberately leaves it unset so that
+// reading the wrong one cannot accidentally produce the right shape.
 synth::kokoro::HParams make_hparams() {
     synth::kokoro::HParams hparams;
-    hparams.dim_in                         = 4;
+    hparams.hidden_dim                     = 4;
     hparams.style_dim                      = 3;
     hparams.adain_eps                      = 1e-5f;
     hparams.istftnet.upsample_rates        = { 2, 3 };
@@ -437,7 +442,7 @@ struct Builder {
 
 synth::kokoro::DecoderWeights make_weights(const Builder & make, const synth::kokoro::HParams & hparams) {
     const int64_t style  = hparams.style_dim;
-    const int64_t asr    = hparams.dim_in;
+    const int64_t asr    = hparams.hidden_dim;
     const int64_t wide   = 8;
     const int64_t narrow = 2;
 
@@ -512,7 +517,7 @@ int main() {
     // The curves arrive at twice the frame rate and are halved inside.
     SYNTH_TEST_CHECK(built.f0->ne[1] == 2 * frame_count);
     SYNTH_TEST_CHECK(built.energy->ne[1] == 2 * frame_count);
-    SYNTH_TEST_CHECK(built.asr->ne[0] == hparams.dim_in);
+    SYNTH_TEST_CHECK(built.asr->ne[0] == hparams.hidden_dim);
     SYNTH_TEST_CHECK(built.asr->ne[1] == frame_count);
 
     const uint64_t frames = synth::kokoro::generator_output_frames(hparams, uint64_t(frame_count) * 2);

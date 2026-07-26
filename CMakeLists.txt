@@ -229,6 +229,32 @@ install(TARGETS synthesize
 install(FILES include/synthesize.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
+# GGML's own rules are `install(TARGETS ggml LIBRARY PUBLIC_HEADER)`. Naming
+# specific artifact kinds excludes every kind not named, so that installs no
+# static archive anywhere, and on Windows no DLL and no import library either --
+# the Provider wheels and the installed SDK would ship without the library they
+# exist to carry. Rather than patch the vendored tree, install the artifacts by
+# file, which does not depend on how upstream classifies them.
+# Only Windows needs this. Verified on Linux: upstream's rules install the static
+# archives and the versioned shared objects with their symlinks correctly for both
+# BUILD_SHARED_LIBS settings, so adding file-level rules there is redundant. On
+# Windows a shared library's artifacts are RUNTIME (the DLL) and ARCHIVE (the
+# import library), neither of which `LIBRARY` covers, so nothing would be
+# installed at all. This has not been executed on Windows; synthesize-installed-sdk-test
+# is the gate that proves it there.
+if(WIN32 AND SYNTH_BUILD_SHARED)
+    foreach(_synth_ggml_target ggml ggml-base)
+        if(TARGET ${_synth_ggml_target})
+            # The DLL belongs next to the executables that load it; the import
+            # library belongs with the link-time artifacts.
+            install(FILES $<TARGET_FILE:${_synth_ggml_target}>
+                DESTINATION ${CMAKE_INSTALL_BINDIR})
+            install(FILES $<TARGET_LINKER_FILE:${_synth_ggml_target}>
+                DESTINATION ${CMAKE_INSTALL_LIBDIR})
+        endif()
+    endforeach()
+endif()
+
 if(TARGET synthesize-cli)
     install(TARGETS synthesize-cli
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

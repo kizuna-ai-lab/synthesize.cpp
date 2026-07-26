@@ -270,21 +270,14 @@ function(ggml_add_backend_library backend)
         target_compile_definitions(${backend} PRIVATE GGML_BACKEND_DL)
         add_dependencies(ggml ${backend})
         if (GGML_BACKEND_DIR)
-            install(TARGETS ${backend}
-                RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-                LIBRARY DESTINATION ${GGML_BACKEND_DIR})
+            install(TARGETS ${backend} LIBRARY DESTINATION ${GGML_BACKEND_DIR})
         else()
-            install(TARGETS ${backend}
-                RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-                LIBRARY DESTINATION ${CMAKE_INSTALL_BINDIR})
+            install(TARGETS ${backend} LIBRARY DESTINATION ${CMAKE_INSTALL_BINDIR})
         endif()
     else()
         add_library(${backend} ${ARGN})
         target_link_libraries(ggml PUBLIC ${backend})
-        install(TARGETS ${backend}
-            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+        install(TARGETS ${backend} LIBRARY)
     endif()
 
     target_link_libraries(${backend} PRIVATE ggml-base)

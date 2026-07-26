@@ -21,9 +21,31 @@ One canonical patch, inventoried by hunk:
 
 | Files | What and why |
 | --- | --- |
-| `CMakeLists.txt`, `src/CMakeLists.txt` | Explicit install destinations (`RUNTIME`/`LIBRARY`/`ARCHIVE`/`PUBLIC_HEADER`) so the Provider wheels and the installed SDK lay out identically across platforms. |
 | `src/ggml-cpu/ggml-cpu.c` | `ggml_thread_cpu_relax` for MSVC (`YieldProcessor`) and a bounded spin-then-yield in the barrier wait: a pure pause-spin never yields the core, so under CPU oversubscription (a 2-vCPU runner) waiters starve an un-arrived worker and `ggml_barrier` deadlocks. |
 | `src/ggml-cuda/conv-transpose-1d.cu`, `src/ggml-cuda/ggml-cuda.cu` | Templated `conv_transpose_1d` kernel plus `supports_op`, so F16-stored transposed-convolution weights execute on CUDA (the VITS F16/Q8 profiles store them halved). |
+
+## Removed on 2026-07-26: the explicit install destinations
+
+Two hunks gave `ggml` and `ggml-base` explicit `RUNTIME`/`LIBRARY`/`ARCHIVE`/
+`PUBLIC_HEADER` destinations, on the grounds that upstream's
+`install(TARGETS ggml LIBRARY PUBLIC_HEADER)` lays out inconsistently across
+platforms. The replacement lives in the project's own `CMakeLists.txt`.
+
+Measurement narrowed what the patch was actually buying. On Linux upstream's
+rules install the static archives and the versioned shared objects with their
+symlinks correctly under both `BUILD_SHARED_LIBS` settings -- verified by removing
+our rules entirely and comparing install trees, which came out identical. The gap
+is Windows only: a shared library's artifacts there are RUNTIME (the DLL) and
+ARCHIVE (the import library), and naming `LIBRARY` covers neither, so nothing
+would be installed at all.
+
+Our replacement is therefore scoped to `WIN32 AND SYNTH_BUILD_SHARED` and puts the
+DLL in `BINDIR` next to the executables that load it, with the import library in
+`LIBDIR`. That destination split is what the patched form got wrong: it sent both
+to the directories CMake's artifact-kind names imply rather than the ones Windows
+loads from. This has not been executed on Windows; `synthesize-installed-sdk-test`
+is the gate that proves it there, and it passes on Linux for both static and
+shared builds.
 
 ## Removed on 2026-07-26: the tiled 1-D im2col kernel
 

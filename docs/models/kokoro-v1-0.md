@@ -82,15 +82,20 @@ the value the inverse transform consumes.
 | F16 | 0.987445 | 0.988863 |
 | Q8_MIXED | 0.984790 | 0.986341 |
 
-Every profile was run on both backends across all seven stages, with strict
-FP32 fully enforced on CUDA. GGML's own tensor-core kernels compute F32 matrix
-multiplies with 16 or fewer columns in TF32 on Ampere-class and newer devices,
-and the upstream strict-FP32 flag governed only cuBLAS; the local patch set
-(`ggml-patches/`, submitted upstream as llama.cpp#26112) extends the gate to
-those kernels. With it, CUDA intermediate drift sits at ordinary cross-backend
-accumulation level — PL-BERT 4.2e-5 worst against the TF32-era 2.2e-2, F0
-0.012 Hz against 0.99 Hz — and what remains in the source and decoder stages is
-the same phase-conditioning floor the CPU has. See `docs/backends.md`.
+Every profile was run on both backends across all seven stages. CUDA F32 matrix
+multiplies compute at TF32 precision: cuBLAS runs in
+`CUBLAS_TF32_TENSOR_OP_MATH`, and GGML's own tensor-core kernels take every F32
+matrix multiply with 16 or fewer columns through tf32 MMA tiles on Ampere-class
+and newer devices. CUDA intermediate drift therefore sits at the TF32 level —
+PL-BERT about 2.2e-2 absolute at six tokens, F0 about 0.99 Hz — rather than the
+4.2e-5 and 0.012 Hz a strict-FP32 build produced.
+
+That gate was removed on 2026-07-26 after a listening test found the difference
+inaudible on this variant; the measurements and method are in
+`reports/upstream/ggml-mmf-f32-tf32-gate.md`. What the suite still guarantees
+across backends is unchanged and is the property that matters here: the predicted
+durations, frame count, and alignment stay exact on every profile and every case.
+See `docs/backends.md`.
 
 Correlation is the honest measure here rather than a sample-wise tolerance, for
 the same reason the profiles are split the way they are: the waveforms diverge

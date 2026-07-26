@@ -148,14 +148,71 @@ int main() {
         SYNTH_TEST_CHECK(ggml_backend_sched_graph_compute(precision_scheduler, precision_graph) == GGML_STATUS_SUCCESS);
         float precision_value = 0.0f;
         ggml_backend_tensor_get(precision_product, &precision_value, 0, sizeof(precision_value));
-#if SYNTH_TEST_CUDA_TF32
-        SYNTH_TEST_CHECK(std::isfinite(precision_value));
-#else
+        // CUDA F32 matrix multiplies compute at TF32 precision: cuBLAS runs in
+        // CUBLAS_TF32_TENSOR_OP_MATH and ggml's mmf tile path uses tf32 MMA, so
+        // the bound here is TF32's ~1e-3 relative error with margin rather than
+        // FP32's ~1e-7. It stays a real check: a misplaced or broken matmul is
+        // wrong by orders of magnitude, not by one part in a thousand.
         const float precision_expected = matrix_size * 1.0001f * 1.0001f;
-        SYNTH_TEST_CHECK(std::fabs(precision_value - precision_expected) < 1.0e-3f);
-#endif
+        SYNTH_TEST_CHECK(std::isfinite(precision_value));
+        SYNTH_TEST_CHECK(std::fabs(precision_value - precision_expected) < 5.0e-3f * precision_expected);
         ggml_backend_sched_free(precision_scheduler);
         ggml_free(precision_context);
+
+        // A stage whose output is discrete is held on CPU deliberately, so that a
+        // rounded integer cannot depend on which backend produced the value it was
+        // rounded from. create_cpu_scheduler is what holds it there.
+        //
+        // The single-split assertion is the load-bearing one. Forcing nodes onto
+        // CPU while their operands stay in the primary buffer also places the work
+        // on CPU, but it cost 2,372 splits on Kokoro's duration graph and ran five
+        // times slower end to end than leaving the stage on the GPU. A CPU-only
+        // scheduler over CPU-resident operands is one split; a regression that
+        // reintroduced cross-backend operands would show up here as more.
+        SYNTH_TEST_CHECK(gpu->cpu_backend() != nullptr);
+        SYNTH_TEST_CHECK(ggml_backend_dev_type(ggml_backend_get_device(gpu->cpu_backend())) ==
+                         GGML_BACKEND_DEVICE_TYPE_CPU);
+        SYNTH_TEST_CHECK(gpu->cpu_backend() != gpu->primary());
+        SYNTH_TEST_CHECK(gpu->create_cpu_scheduler(0) == nullptr);
+
+        ggml_context * held_context = ggml_init(parameters);
+        SYNTH_TEST_CHECK(held_context != nullptr);
+        ggml_tensor * held_left  = ggml_new_tensor_2d(held_context, GGML_TYPE_F32, 4, 4);
+        ggml_tensor * held_right = ggml_new_tensor_2d(held_context, GGML_TYPE_F32, 4, 4);
+        ggml_set_input(held_left);
+        ggml_set_input(held_right);
+        ggml_tensor * held_product = ggml_mul_mat(held_context, held_left, held_right);
+        ggml_tensor * held_scaled  = ggml_scale(held_context, held_product, 2.0f);
+        ggml_cgraph * held_graph   = ggml_new_graph_custom(held_context, 16, false);
+        ggml_build_forward_expand(held_graph, held_scaled);
+
+        ggml_backend_sched_t held_scheduler = gpu->create_cpu_scheduler(32);
+        SYNTH_TEST_CHECK(held_scheduler != nullptr);
+        SYNTH_TEST_CHECK(ggml_backend_sched_alloc_graph(held_scheduler, held_graph));
+        const synth::BackendPlacement held = gpu->inspect_placement(held_scheduler, held_graph);
+        SYNTH_TEST_CHECK(held.node_count == 2);
+        SYNTH_TEST_CHECK(held.primary_node_count == 0);
+        SYNTH_TEST_CHECK(held.cpu_fallback_node_count == 2);
+        SYNTH_TEST_CHECK(held.accelerator_node_count == 0);
+        SYNTH_TEST_CHECK(held.unassigned_node_count == 0);
+        SYNTH_TEST_CHECK(held.split_count == 1);
+
+        // And it still computes: the values come back exact, because CPU F32 has
+        // no TF32 tile path to fall into.
+        const std::vector<float> held_input(16, 1.0f);
+        ggml_backend_tensor_set(held_left, held_input.data(), 0, held_input.size() * sizeof(float));
+        ggml_backend_tensor_set(held_right, held_input.data(), 0, held_input.size() * sizeof(float));
+        SYNTH_TEST_CHECK(ggml_backend_sched_graph_compute(held_scheduler, held_graph) == GGML_STATUS_SUCCESS);
+        float held_value = 0.0f;
+        ggml_backend_tensor_get(held_scaled, &held_value, 0, sizeof(held_value));
+        SYNTH_TEST_CHECK(held_value == 8.0f);
+
+        ggml_backend_sched_free(held_scheduler);
+        ggml_free(held_context);
     }
+
+    // With CPU as the primary there is no boundary to hold anything away from, so
+    // the CPU backend a plan reports is the primary itself.
+    SYNTH_TEST_CHECK(plan->cpu_backend() == plan->primary());
     return 0;
 }

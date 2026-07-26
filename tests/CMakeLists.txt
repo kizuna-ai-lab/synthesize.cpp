@@ -210,8 +210,6 @@ synth_add_unit_test(synthesize-vits-waveform-decoder-graph-test vits_waveform_de
 synth_add_unit_test(synthesize-random-stream-test random_stream_test.cpp)
 synth_add_unit_test(synthesize-backend-device-internal-test backend_device_internal_test.cpp)
 synth_add_unit_test(synthesize-backend-plan-test backend_plan_test.cpp)
-target_compile_definitions(synthesize-backend-plan-test PRIVATE
-    SYNTH_TEST_CUDA_TF32=$<BOOL:${SYNTH_CUDA_TF32}>)
 synth_add_unit_test(synthesize-text-frontend-test text_frontend_test.cpp)
 synth_add_unit_test(synthesize-synthesis-request-test synthesis_request_test.cpp)
 synth_add_unit_test(synthesize-audio-delivery-test audio_delivery_test.cpp)

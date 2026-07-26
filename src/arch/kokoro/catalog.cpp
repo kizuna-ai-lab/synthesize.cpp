@@ -511,7 +511,10 @@ bool build_voices(ggml_context * context, const HParams & hparams, VoiceWeights 
 
 }  // namespace
 
-synth_status_t build_model_weights(ggml_context * context, const HParams & hparams, ModelWeights & weights) {
+synth_status_t build_model_weights(ggml_context *  context,
+                                   ggml_context *  cpu_context,
+                                   const HParams & hparams,
+                                   ModelWeights &  weights) {
     if (context == nullptr) {
         return SYNTH_ERR_INVALID_ARG;
     }
@@ -519,12 +522,22 @@ synth_status_t build_model_weights(ggml_context * context, const HParams & hpara
     if (!validate_storage_types(context, hparams)) {
         return SYNTH_ERR_GGUF;
     }
-    if (!build_bert(context, hparams, weights.bert) ||
-        !load_linear(context, hparams, "bert_encoder", hparams.plbert.hidden_size, hparams.hidden_dim,
+    // The rounded duration must be identical on every backend, so the whole path
+    // that produces it reads CPU-resident weights when one is supplied. PL-BERT
+    // and its projection are read only by that path, so they bind there outright.
+    ggml_context * discrete = cpu_context != nullptr ? cpu_context : context;
+    if (!build_bert(discrete, hparams, weights.bert) ||
+        !load_linear(discrete, hparams, "bert_encoder", hparams.plbert.hidden_size, hparams.hidden_dim,
                      weights.bert_encoder) ||
         !build_text_encoder(context, hparams, weights.text_encoder) ||
         !build_predictor(context, hparams, weights.predictor) || !build_decoder(context, hparams, weights.decoder) ||
         !build_voices(context, hparams, weights.voices)) {
+        return SYNTH_ERR_GGUF;
+    }
+    // The predictor is bound twice because two stages on two backends read it.
+    if (cpu_context == nullptr) {
+        weights.predictor_cpu = weights.predictor;
+    } else if (!build_predictor(cpu_context, hparams, weights.predictor_cpu)) {
         return SYNTH_ERR_GGUF;
     }
     return SYNTH_OK;

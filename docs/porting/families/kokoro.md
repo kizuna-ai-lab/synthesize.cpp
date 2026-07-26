@@ -254,6 +254,45 @@ rounding and alignment construction, and the harmonic source generation plus its
 STFT. Both are host-side by nature: they consume a resolved length or produce a
 fixed excitation, and neither needs to be a backend graph node for correctness.
 
+### Recorded decision: the duration path is held on CPU
+
+Two of the seven stages run on CPU on every Execution Backend: the PL-BERT
+encoder with its `bert_encoder` projection, and the duration predictor. The other
+five stay on the primary backend.
+
+`resolve_durations` rounds the predictor's logits to integer frame counts, and
+every later stage's shape follows from that integer. CUDA F32 matrix multiplies
+compute at TF32 precision (`docs/backends.md`), and on the 146-token
+`kokoro-long` case that was enough to round one token's duration from 1 to 2,
+moving `y_length` from 376 to 377. The downstream failure is not numerical:
+`prosody.en` becomes 241,280 elements against the oracle's 240,640, `text.asr`
+193,024 against 192,512, and the stochastic-replay seam cannot inject harmonic
+source tensors sized for 376 frames into a 377-frame graph. Eighteen of
+twenty-one CUDA validation runs failed, and only three of those were tolerance
+failures.
+
+Holding the predictor alone is not sufficient and this was measured, not
+reasoned: its input is PL-BERT's output, so with PL-BERT still on CUDA the logits
+stayed 8.8e-2 from the reference and the frame count still moved. The rule is
+therefore the whole path to the rounding, not the rounding stage.
+
+The mechanism is `BackendPlan::create_cpu_scheduler` over CPU-resident weight
+mirrors, not `ggml_backend_sched_set_tensor_backend` inside a mixed graph. The
+difference is large enough to record: because the LSTMs are unrolled, the
+duration graph is 26,916 nodes, and forcing those onto CPU while the weights
+stayed in the CUDA buffer produced 2,372 scheduler splits and ran five times
+slower end to end than leaving the stage on the GPU. Three separate causes had to
+be removed before the graph reached a single split — the weights, the persistent
+LSTM store arena, and finally `ProsodyPredictorWeights`, which the prosody stage
+reads from the primary backend while the duration stage reads the same tensors
+from CPU. Hence `ModelWeights::predictor_cpu`: one set of tensors, two views, one
+per buffer.
+
+Measured cost on `kokoro-long`, F32, GB10: synthesis wall time 1.5 s to 2.9 s
+median, still 3.2 times faster than real time, and 89 MB of the 353 MB of weights
+resident in both buffers. In exchange the durations, frame count and alignment are
+exact on all three profiles and all fifteen cases, and the CUDA grid passes 21/21.
+
 ### Recorded decision: LSTM placement
 
 The five bidirectional LSTMs are **unrolled in the graph**, so every stage stays

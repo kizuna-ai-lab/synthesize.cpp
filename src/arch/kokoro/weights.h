@@ -243,9 +243,24 @@ struct ModelWeights {
     ProsodyPredictorWeights predictor;
     DecoderWeights          decoder;
     VoiceWeights            voices;
+
+    // The duration path and the prosody path read the same predictor tensors but
+    // run on different backends: durations are rounded to integers and so must be
+    // identical everywhere, while prosody is a continuous curve that stays on the
+    // primary backend. They therefore need separate views of the same weights,
+    // one per buffer. Equal to `predictor` when no CPU mirror exists.
+    ProsodyPredictorWeights predictor_cpu;
 };
 
 // Resolves every catalog entry from `context`, validating name, type and shape.
-synth_status_t build_model_weights(ggml_context * context, const HParams & hparams, ModelWeights & weights);
+// Binds the weight views a graph builder reads. `cpu_context` may be null; when
+// it is not, the stages whose output must not vary with the Execution Backend —
+// the PL-BERT encoder, its projection, and the duration predictor — bind against
+// it instead of `context`, so those graphs run entirely on CPU-resident weights.
+// It must already carry same-named tensors for those prefixes.
+synth_status_t build_model_weights(ggml_context *  context,
+                                   ggml_context *  cpu_context,
+                                   const HParams & hparams,
+                                   ModelWeights &  weights);
 
 }  // namespace synth::kokoro

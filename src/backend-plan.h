@@ -44,7 +44,20 @@ class BackendPlan {
     ggml_backend_sched_t create_scheduler(size_t graph_size) const;
     void                 set_threads(int threads) const;
     bool                 assign_to_primary(ggml_backend_sched_t scheduler, ggml_tensor * tensor) const;
-    BackendPlacement     inspect_placement(ggml_backend_sched_t scheduler, const ggml_cgraph * graph) const;
+
+    // The CPU backend this plan schedules onto. Present whether or not CPU is the
+    // primary: GGML's fallback scheduler always carries one.
+    ggml_backend_t cpu_backend() const;
+
+    // A scheduler over the CPU backend alone, for a stage held on CPU on purpose
+    // because its output is discrete. Mixing backends inside one graph is not an
+    // alternative: forcing a large graph's nodes onto CPU while its weights stay
+    // in the primary buffer was measured at 2,372 scheduler splits on Kokoro's
+    // duration stage, five times slower end to end than leaving it on the GPU.
+    // A single-backend scheduler over CPU-resident weights is one split.
+    ggml_backend_sched_t create_cpu_scheduler(size_t graph_size) const;
+
+    BackendPlacement inspect_placement(ggml_backend_sched_t scheduler, const ggml_cgraph * graph) const;
     void log_placement_if_enabled(const char * stage, ggml_backend_sched_t scheduler, const ggml_cgraph * graph) const;
 
   private:

@@ -273,7 +273,7 @@ int main() {
     Context                     context = make_context();
     synth::kokoro::ModelWeights weights;
     populate(context.get(), entries);
-    SYNTH_TEST_CHECK(synth::kokoro::build_model_weights(context.get(), h, weights) == SYNTH_OK);
+    SYNTH_TEST_CHECK(synth::kokoro::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_OK);
 
     SYNTH_TEST_CHECK(weights.bert.word_embeddings != nullptr);
     SYNTH_TEST_CHECK(weights.bert.layer.ffn.weight != nullptr);
@@ -296,7 +296,7 @@ int main() {
     SYNTH_TEST_CHECK(weights.decoder.generator.resblocks[0].alpha1.size() == 3);
     SYNTH_TEST_CHECK(weights.voices.packs.size() == h.preset_voice_ids.size());
 
-    SYNTH_TEST_CHECK(synth::kokoro::build_model_weights(nullptr, h, weights) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(synth::kokoro::build_model_weights(nullptr, nullptr, h, weights) == SYNTH_ERR_INVALID_ARG);
 
     // A package missing any single catalog entry is rejected.
     for (const std::string & missing :
@@ -312,7 +312,7 @@ int main() {
             }
             return false;
         });
-        SYNTH_TEST_CHECK(synth::kokoro::build_model_weights(ctx.get(), h, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::kokoro::build_model_weights(ctx.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
     }
 
     // A tensor whose shape disagrees with the declared hyper-parameters is a
@@ -329,7 +329,7 @@ int main() {
             }
             return false;
         });
-        SYNTH_TEST_CHECK(synth::kokoro::build_model_weights(ctx.get(), h, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::kokoro::build_model_weights(ctx.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
     }
 
     // The source-F32 catalog accepts only F32 tensors.
@@ -343,7 +343,7 @@ int main() {
             }
             return false;
         });
-        SYNTH_TEST_CHECK(synth::kokoro::build_model_weights(ctx.get(), h, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::kokoro::build_model_weights(ctx.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
     }
 
     // A trailing axis the catalog does not expect is also rejected, so a
@@ -358,7 +358,7 @@ int main() {
             }
             return false;
         });
-        SYNTH_TEST_CHECK(synth::kokoro::build_model_weights(ctx.get(), h, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::kokoro::build_model_weights(ctx.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
     }
 
     return 0;

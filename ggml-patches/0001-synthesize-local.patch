@@ -1,15 +1,7 @@
 diff --color -ruN a/CMakeLists.txt b/CMakeLists.txt
---- a/CMakeLists.txt	2026-06-19 16:14:26.000000000 +0900
-+++ b/CMakeLists.txt	2026-07-22 18:45:47.265394261 +0900
-@@ -200,6 +200,7 @@
- option(GGML_MUSA                            "ggml: use MUSA"                                  OFF)
- option(GGML_CUDA_FORCE_MMQ                  "ggml: use mmq kernels instead of cuBLAS"         OFF)
- option(GGML_CUDA_FORCE_CUBLAS               "ggml: always use cuBLAS instead of mmq kernels"  OFF)
-+option(GGML_CUDA_DISABLE_TF32                "ggml: use strict FP32 instead of TF32 in cuBLAS" OFF)
- set   (GGML_CUDA_PEER_MAX_BATCH_SIZE "128" CACHE STRING
-                                             "ggml: max. batch size for using peer access")
- option(GGML_CUDA_NO_PEER_COPY               "ggml: do not use peer to peer copies"            OFF)
-@@ -344,8 +345,15 @@
+--- a/CMakeLists.txt	2026-07-26 16:28:55.556233204 +0900
++++ b/CMakeLists.txt	2026-07-26 16:28:55.669081196 +0900
+@@ -344,8 +344,15 @@
  #if (GGML_METAL)
  #    set_target_properties(ggml PROPERTIES RESOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/ggml-metal.metal")
  #endif()
@@ -28,8 +20,8 @@ diff --color -ruN a/CMakeLists.txt b/CMakeLists.txt
  if (GGML_STANDALONE)
      configure_file(${CMAKE_CURRENT_SOURCE_DIR}/ggml.pc.in
 diff --color -ruN a/src/CMakeLists.txt b/src/CMakeLists.txt
---- a/src/CMakeLists.txt	2026-06-19 16:14:26.000000000 +0900
-+++ b/src/CMakeLists.txt	2026-07-22 18:45:47.266394262 +0900
+--- a/src/CMakeLists.txt	2026-07-26 16:28:55.557233206 +0900
++++ b/src/CMakeLists.txt	2026-07-26 16:28:55.651937595 +0900
 @@ -270,14 +270,21 @@
          target_compile_definitions(${backend} PRIVATE GGML_BACKEND_DL)
          add_dependencies(ggml ${backend})
@@ -56,8 +48,8 @@ diff --color -ruN a/src/CMakeLists.txt b/src/CMakeLists.txt
  
      target_link_libraries(${backend} PRIVATE ggml-base)
 diff --color -ruN a/src/ggml-cpu/ggml-cpu.c b/src/ggml-cpu/ggml-cpu.c
---- a/src/ggml-cpu/ggml-cpu.c	2026-06-19 16:14:26.000000000 +0900
-+++ b/src/ggml-cpu/ggml-cpu.c	2026-07-22 05:36:36.555781946 +0900
+--- a/src/ggml-cpu/ggml-cpu.c	2026-07-26 16:28:55.558233207 +0900
++++ b/src/ggml-cpu/ggml-cpu.c	2026-07-26 16:28:55.652337772 +0900
 @@ -515,6 +515,14 @@
  static inline void ggml_thread_cpu_relax(void) {
      _mm_pause();
@@ -117,43 +109,9 @@ diff --color -ruN a/src/ggml-cpu/ggml-cpu.c b/src/ggml-cpu/ggml-cpu.c
      }
  
      // exit barrier (full seq-cst fence)
-diff --color -ruN a/src/ggml-cuda/CMakeLists.txt b/src/ggml-cuda/CMakeLists.txt
---- a/src/ggml-cuda/CMakeLists.txt	2026-06-19 16:14:26.000000000 +0900
-+++ b/src/ggml-cuda/CMakeLists.txt	2026-07-22 15:17:42.960106144 +0900
-@@ -143,6 +143,10 @@
-         add_compile_definitions(GGML_CUDA_FORCE_CUBLAS)
-     endif()
- 
-+    if (GGML_CUDA_DISABLE_TF32)
-+        add_compile_definitions(GGML_CUDA_DISABLE_TF32)
-+    endif()
-+
-     if (GGML_CUDA_NO_VMM)
-         add_compile_definitions(GGML_CUDA_NO_VMM)
-     endif()
-diff --color -ruN a/src/ggml-cuda/common.cuh b/src/ggml-cuda/common.cuh
---- a/src/ggml-cuda/common.cuh	2026-06-19 16:14:26.000000000 +0900
-+++ b/src/ggml-cuda/common.cuh	2026-07-22 15:17:42.961106149 +0900
-@@ -1475,7 +1475,11 @@
-         if (cublas_handles[device] == nullptr) {
-             ggml_cuda_set_device(device);
-             CUBLAS_CHECK(cublasCreate(&cublas_handles[device]));
-+#ifdef GGML_CUDA_DISABLE_TF32
-+            CUBLAS_CHECK(cublasSetMathMode(cublas_handles[device], CUBLAS_DEFAULT_MATH));
-+#else
-             CUBLAS_CHECK(cublasSetMathMode(cublas_handles[device], CUBLAS_TF32_TENSOR_OP_MATH));
-+#endif
-         }
-         return cublas_handles[device];
-     }
-@@ -1638,4 +1642,3 @@
-     kernel<<<launch_params.block_nums, launch_params.block_dims, launch_params.shmem, launch_params.stream>>>(std::forward<Args>(args)... );
-     CUDA_CHECK(cudaGetLastError());
- }
--
 diff --color -ruN a/src/ggml-cuda/conv-transpose-1d.cu b/src/ggml-cuda/conv-transpose-1d.cu
---- a/src/ggml-cuda/conv-transpose-1d.cu	2026-06-19 16:14:26.000000000 +0900
-+++ b/src/ggml-cuda/conv-transpose-1d.cu	2026-07-23 11:58:10.015511742 +0900
+--- a/src/ggml-cuda/conv-transpose-1d.cu	2026-07-26 16:28:55.559233209 +0900
++++ b/src/ggml-cuda/conv-transpose-1d.cu	2026-07-26 16:28:55.653199773 +0900
 @@ -1,11 +1,25 @@
  #include "conv-transpose-1d.cuh"
  
@@ -315,8 +273,8 @@ diff --color -ruN a/src/ggml-cuda/conv-transpose-1d.cu b/src/ggml-cuda/conv-tran
 +    }
  }
 diff --color -ruN a/src/ggml-cuda/ggml-cuda.cu b/src/ggml-cuda/ggml-cuda.cu
---- a/src/ggml-cuda/ggml-cuda.cu	2026-06-19 16:14:26.000000000 +0900
-+++ b/src/ggml-cuda/ggml-cuda.cu	2026-07-23 11:24:07.081219909 +0900
+--- a/src/ggml-cuda/ggml-cuda.cu	2026-07-26 16:28:55.560233211 +0900
++++ b/src/ggml-cuda/ggml-cuda.cu	2026-07-26 16:28:55.653626030 +0900
 @@ -5315,7 +5315,8 @@
              {
                  ggml_type src0_type = op->src[0]->type;
@@ -328,8 +286,8 @@ diff --color -ruN a/src/ggml-cuda/ggml-cuda.cu b/src/ggml-cuda/ggml-cuda.cu
                  }
                  return false;
 diff --color -ruN a/src/ggml-cuda/im2col.cu b/src/ggml-cuda/im2col.cu
---- a/src/ggml-cuda/im2col.cu	2026-06-19 16:14:26.000000000 +0900
-+++ b/src/ggml-cuda/im2col.cu	2026-07-22 17:43:12.700223283 +0900
+--- a/src/ggml-cuda/im2col.cu	2026-07-26 16:28:55.560233211 +0900
++++ b/src/ggml-cuda/im2col.cu	2026-07-26 16:28:55.654228847 +0900
 @@ -3,6 +3,63 @@
  #define MAX_GRIDDIM_Y 65535
  #define MAX_GRIDDIM_Z 65535
@@ -405,37 +363,3 @@ diff --color -ruN a/src/ggml-cuda/im2col.cu b/src/ggml-cuda/im2col.cu
          im2col_cuda_f16(src1_d, (half *) dst_d, IW, IH, OW, OH, KW, KH, IC, N, IC_IH_IW, IH_IW, s0, s1, p0, p1, d0, d1, stream);
      } else {
          im2col_cuda_f32(src1_d, (float *) dst_d, IW, IH, OW, OH, KW, KH, IC, N, IC_IH_IW, IH_IW, s0, s1, p0, p1, d0, d1, stream);
-diff --color -ruN a/src/ggml-cuda/mmf.cu b/src/ggml-cuda/mmf.cu
---- a/src/ggml-cuda/mmf.cu	2026-06-19 16:14:26.000000000 +0900
-+++ b/src/ggml-cuda/mmf.cu	2026-07-25 19:58:17.961713317 +0900
-@@ -180,7 +180,13 @@
- 
-     switch (type) {
-         case GGML_TYPE_F32:
-+#ifdef GGML_CUDA_DISABLE_TF32
-+            // The F32 tile path computes via tf32 MMA; strict-FP32 builds
-+            // must fall back to mmvf or cuBLAS SGEMM.
-+            return false;
-+#else
-             return ampere_mma_available(cc) || amd_mfma_available(cc);
-+#endif // GGML_CUDA_DISABLE_TF32
-         case GGML_TYPE_F16:
-             return volta_mma_available(cc) || turing_mma_available(cc) || amd_wmma_available(cc) || amd_mfma_available(cc);
-         case GGML_TYPE_BF16:
-diff --color -ruN a/src/ggml-cuda/solve_tri.cu b/src/ggml-cuda/solve_tri.cu
---- a/src/ggml-cuda/solve_tri.cu	2026-06-19 16:14:26.000000000 +0900
-+++ b/src/ggml-cuda/solve_tri.cu	2026-07-22 15:17:42.961106149 +0900
-@@ -72,8 +72,12 @@
-     CUBLAS_CHECK(cublasStrsmBatched(ctx.cublas_handle(id), CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_N,
-                                     CUBLAS_DIAG_NON_UNIT, k, n, &alpha, A_ptrs_dev, n, X_ptrs_dev, k, total_batches));
- 
--    // revert to standard mode from common.cuh
-+    // Revert to the mode configured by common.cuh.
-+#ifdef GGML_CUDA_DISABLE_TF32
-+    CUBLAS_CHECK(cublasSetMathMode(ctx.cublas_handle(id), CUBLAS_DEFAULT_MATH));
-+#else
-     CUBLAS_CHECK(cublasSetMathMode(ctx.cublas_handle(id), CUBLAS_TF32_TENSOR_OP_MATH));
-+#endif
- 
-     GGML_UNUSED_VARS(s12, s13);
- }

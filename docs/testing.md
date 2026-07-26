@@ -1,6 +1,6 @@
 # Testing Policy
 
-Status: Confirmed on 2026-07-22.
+Status: Confirmed, last updated on 2026-07-26.
 
 Testing is a per-slice completion gate. A new converter rule, graph stage,
 runtime control, backend path, or public Interface is not complete merely because
@@ -71,10 +71,10 @@ When the VCTK model or materialized VCTK Golden sentinel is absent, its optional
 eight-test integration group is not registered; the required LJSpeech integration
 gate remains unchanged.
 
-Run the DGX Spark CUDA 13.3 Update 1 gate in a separate build tree. Strict FP32
-is the default; enabling `SYNTH_CUDA_TF32` intentionally selects the
-lower-precision experiment. The committed development preset owns the backend,
-build mode, tests, and native `sm_121a` target. Point both CMake toolkit
+Run the DGX Spark CUDA 13.3 Update 1 gate in a separate build tree. CUDA F32
+matrix multiplies compute at TF32 precision and there is no build option to
+change that; see `docs/backends.md`. The committed development preset owns the
+backend, build mode, tests, and native `sm_121a` target. Point both CMake toolkit
 discovery and its CUDA compiler selection at one CUDA 13.3 root; configuration
 rejects another CUDA minor version so host 13.0 headers cannot be mixed with the
 13.3 compiler:

@@ -92,11 +92,13 @@ class CMakePresetContractTest(unittest.TestCase):
                 self.assertEqual(resolved["binaryDir"], "${sourceDir}/build/${presetName}")
                 variables = resolved["cacheVariables"]
                 self.assertEqual(variables["SYNTH_CUDA"], "ON")
-                self.assertEqual(variables["SYNTH_CUDA_TF32"], "OFF")
                 self.assertEqual(variables["SYNTH_METAL"], "OFF")
                 self.assertEqual(variables["SYNTH_VULKAN"], "OFF")
                 self.assertEqual(variables["GGML_NATIVE"], "OFF")
                 self.assertNotIn("GGML_CUDA_ENABLE_UNIFIED_MEMORY", variables)
+                # The strict-FP32 gate was removed on 2026-07-26; no preset may
+                # reintroduce a knob the build no longer defines.
+                self.assertNotIn("SYNTH_CUDA_TF32", variables)
 
     def test_development_and_release_cuda_target_sets_are_explicit(self) -> None:
         expected = {

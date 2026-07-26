@@ -395,11 +395,16 @@ DGX Spark development machine. This checkpoint uses CUDA toolkit 13.0.88, driver
 It is Experimental evidence only: the release Provider remains locked to CUDA
 13.3 Update 1 and is not qualified by this local toolkit.
 
-CUDA uses strict FP32 cuBLAS math by default. `SYNTH_CUDA_TF32=ON` is an explicit
-lower-precision experiment. In the 12-case suite, TF32 produced worst
+CUDA F32 matrix multiplies compute at TF32 precision; the strict-FP32 gate that
+once made this configurable was removed on 2026-07-26 (`docs/backends.md`,
+`ggml-patches/README.md`). In the 12-case suite, TF32 produced worst
 max-absolute differences of `8.6592436e-3` at `text.m_p` and `1.1620114e-1` at
-`audio.pcm`. Strict FP32 reduces those to `1.1280179e-5` and `7.4365083e-4`
-respectively. The strict CUDA measurements are:
+`audio.pcm`, against `1.1280179e-5` and `7.4365083e-4` under the gate. The TF32
+figures are what current builds produce.
+
+The table below was measured **under the removed gate** and therefore no longer
+describes a shipped configuration. It is retained as the historical strict-FP32
+reference until the CUDA grid is re-measured and these rows are replaced:
 
 | Probe | Worst case | Max abs | Mean abs |
 | --- | --- | ---: | ---: |

@@ -32,35 +32,75 @@ enumeration, isolated operator success, or PTX JIT success is insufficient. Exac
 GPU models, operating systems, driver builds, and target coverage are recorded in
 the release's Validation Hardware Matrix rather than in the public C Interface.
 
-CUDA builds default to strict FP32 cuBLAS math. `SYNTH_CUDA_TF32=ON` is an
-explicit speed-over-precision experiment, not a release default. On the current
-VITS F32 graph, ambient TF32 amplified the final PCM max-absolute difference from
-`7.4365083e-4` to `1.1620114e-1`, while providing no material text-stage speedup
-on GB10. The strict default is compile-time library policy so Rust, Python, and
-other consumers do not need to mutate process-global CUDA environment variables.
+CUDA F32 matrix multiplies compute at TF32 precision, and the project makes no
+strict-FP32 promise on CUDA. There is no build option to change this: cuBLAS runs
+in `CUBLAS_TF32_TENSOR_OP_MATH`, and GGML's own tensor-core kernels (`mmf.cu`)
+take every F32 matrix multiply with 16 or fewer columns on Ampere-class or newer
+devices through `mma.cuh`'s `mma...tf32` tiles. TF32 carries a 10-bit mantissa,
+so the intermediate CUDA-versus-CPU deviation this produces is about 1e-3
+relative rather than FP32's 1e-7.
 
-The guarantee is scoped to cuBLAS, and the scope is a measured fact rather than
-a drafting nicety. GGML's own tensor-core kernels (`mmf.cu`) take every F32
-matrix multiply with 16 or fewer columns on Ampere-class or newer devices, and
-they compute in TF32 (`mma.cuh`'s `mma...tf32` tiles) regardless of
-`GGML_CUDA_DISABLE_TF32`, which reaches only the cuBLAS math mode. On the Kokoro
-PL-BERT stage the cliff sits exactly at the kernel boundary — 2.1e-3 relative
-CUDA-versus-CPU deviation at 16 input tokens, 1.9e-6 at 17 — and the vendored
-GGML revision has no build option or environment variable that disables the
-path. Consequences for short inputs are bounded by measurement, not assumption:
-across every Kokoro profile and case the rounded durations stay exact and the
-waveform correlation is unaffected, and each family's Golden suite is the
-instrument that keeps that true.
+This is a deliberate reversal, recorded on 2026-07-26. The project previously
+carried a `SYNTH_CUDA_TF32` option and a local GGML patch set that gated both
+paths, restoring strict FP32 at every width. Both were removed after a listening
+test: two Kokoro renderings differing only in that gate were compared
+sample-aligned, and the difference was inaudible. The gate was also free of any
+speed cost, which cuts the other way too — it was buying nothing that could be
+heard, and TTS graphs are dominated by wide decoder matmuls that never took the
+`mmf` tile path in the first place. Measurements, method, and the reasoning are
+in `reports/upstream/ggml-mmf-f32-tf32-gate.md`; the removed hunks are inventoried
+in `ggml-patches/README.md`.
 
-The root fix is applied: `ggml_cuda_should_use_mmf` honors
-`GGML_CUDA_DISABLE_TF32` for F32 via the local patch set in `ggml-patches/`,
-restoring strict FP32 at every width (2e-3 → 2e-6 on the affected stages) at no
-measured synthesis-time cost. The unscoped guarantee therefore holds on current
-builds. Upstream declined this shape (llama.cpp#26112: precision belongs at the
-ggml level, not as a backend flag) and its op-level mechanism does not yet
-reach the tf32 tile path, so the patch is the durable carrier until upstream's
-precision rework lands; the exit path is recorded in
-`reports/upstream/ggml-mmf-f32-tf32-gate.md`.
+What replaces the guarantee is measurement. Consequences are bounded by each
+family's Golden suite rather than by a precision flag: across every Kokoro profile
+and case the rounded durations, frame count, and alignment stay exact — that is
+the property required to hold across backends — while intermediate drift and
+waveform correlation are recorded per stage in `tests/tolerances/`. Those
+recorded CUDA numbers describe TF32 arithmetic, because that is what ships.
+
+Should upstream's precision rework land an op-level strict-FP32 value, the family
+graph builders can set it on individual sensitive matmuls without reintroducing a
+backend-wide flag. Upstream declined the backend-flag shape
+(llama.cpp#26112: precision belongs at the ggml level), and that remains the only
+route back.
+
+## Discrete Outputs Are Held On CPU
+
+A stage whose output is a discrete value — a rounded frame count, an argmax, a
+sampled token index — runs on CPU on every Execution Backend, and so does every
+stage feeding it. Continuous stages stay on the primary backend.
+
+The reason is that tolerance cannot absorb a discrete difference. TF32's roughly
+1e-3 relative error is enough to move a value across a rounding boundary: on
+Kokoro's 146-token case one token's duration rounded from 1 to 2 on CUDA, taking
+the frame count from 376 to 377. The downstream stages then have different shapes
+and there is no threshold that compares a 240,640-element tensor to a
+241,280-element one. Nor can the stochastic-replay seam in
+`port-validation.md` inject a noise tensor sized for a frame count that no longer
+matches. Eighteen of the family's twenty-one CUDA validation runs failed that way,
+and only three of those failures were numerical.
+
+The mechanism is a CPU-only scheduler over CPU-resident weights, not forcing nodes
+onto CPU inside a mixed graph. The distinction is measured: pinning nodes while
+their operands stayed in the primary buffer produced 2,372 scheduler splits on the
+duration graph and ran five times slower end to end than leaving the stage on the
+GPU, whereas a single-backend scheduler over mirrored weights is one split.
+`BackendPlan::create_cpu_scheduler` and `cpu_backend` exist for this, and
+`tests/backend_plan_test.cpp` asserts the single split so a regression that
+reintroduced cross-backend operands is caught.
+
+Two consequences are worth stating plainly. The whole path to the rounding must be
+held, not just the rounding stage: pinning Kokoro's duration predictor alone left
+the logits 8.8e-2 away from the reference because PL-BERT still ran on CUDA and
+fed it. And the cost is real — roughly a 95 percent increase in synthesis wall
+time on Kokoro's longest case, 1.5 s to 2.9 s, still 3.2 times faster than real
+time. The mirrored weights also occupy both buffers, 89 MB of 353 MB for this
+family.
+
+This rule scales with how much of a family sits upstream of a discrete decision.
+For Kokoro that is two stages of seven. For an autoregressive codec language
+model, where every sampled token feeds the next step, it would be most of the
+model, and the trade would have to be re-measured rather than assumed.
 
 ## CUDA Unified Memory Policy
 

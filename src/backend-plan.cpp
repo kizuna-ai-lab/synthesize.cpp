@@ -155,6 +155,23 @@ bool BackendPlan::assign_to_primary(ggml_backend_sched_t scheduler, ggml_tensor 
     return true;
 }
 
+ggml_backend_t BackendPlan::cpu_backend() const {
+    for (ggml_backend_t backend : scheduler_backends_) {
+        if (ggml_backend_dev_type(ggml_backend_get_device(backend)) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+            return backend;
+        }
+    }
+    return nullptr;
+}
+
+ggml_backend_sched_t BackendPlan::create_cpu_scheduler(size_t graph_size) const {
+    ggml_backend_t cpu = cpu_backend();
+    if (graph_size == 0 || cpu == nullptr) {
+        return nullptr;
+    }
+    return ggml_backend_sched_new(&cpu, nullptr, 1, graph_size, false, true);
+}
+
 BackendPlacement BackendPlan::inspect_placement(ggml_backend_sched_t scheduler, const ggml_cgraph * graph) const {
     BackendPlacement placement;
     if (scheduler == nullptr || graph == nullptr) {

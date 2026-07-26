@@ -18,6 +18,7 @@
 #include "weights.h"
 
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <new>
@@ -118,14 +119,23 @@ class GraphRun {
 
     // Places and allocates the graph. Inputs must be written afterwards, since
     // that is when they acquire memory.
-    synth_status_t allocate(ggml_cgraph * graph, const char * stage) {
+    //
+    // `pin_to_cpu` holds the whole graph on the CPU backend on purpose. It exists
+    // for stages whose output is discrete: a rounded duration must not depend on
+    // which Execution Backend ran the matmul that produced its logits, and CUDA
+    // F32 matmuls compute at TF32 precision, which is enough to move a value
+    // across a rounding boundary. See docs/backends.md.
+    synth_status_t allocate(ggml_cgraph * graph, const char * stage, bool pin_to_cpu = false) {
         if (context_ == nullptr || graph == nullptr) {
             return SYNTH_ERR_OOM;
         }
         // The scheduler's hash set has to cover the leaves as well as the
         // nodes, and the leaves are every weight the graph touches, so sizing it
         // from the node capacity alone is not enough.
-        scheduler_ = plan_.create_scheduler(size_t(ggml_graph_size(graph)) + kSchedulerLeafAllowance);
+        const size_t hash_size = size_t(ggml_graph_size(graph)) + kSchedulerLeafAllowance;
+        // A pinned stage gets a CPU-only scheduler and reads CPU-resident weight
+        // mirrors, so its graph is a single split with no cross-backend copies.
+        scheduler_             = pin_to_cpu ? plan_.create_cpu_scheduler(hash_size) : plan_.create_scheduler(hash_size);
         if (scheduler_ == nullptr) {
             return SYNTH_ERR_BACKEND;
         }
@@ -211,18 +221,105 @@ struct Model::Impl {
                               std::vector<float> & decoder_style,
                               std::vector<float> & prosody_style) const;
 
+    // CPU-resident mirrors of the weights read by the stages held on CPU, so
+    // those graphs never cross a backend boundary. Only populated when the
+    // primary backend is not already the CPU.
+    ggml_context *        cpu_weights_context = nullptr;
+    ggml_backend_buffer_t cpu_weights_buffer  = nullptr;
+
+    // Creates same-named, still-unallocated twins of every weight the CPU-held
+    // stages read. Must run before build_model_weights, which binds against them.
+    synth_status_t create_cpu_weight_mirror();
+    // Copies the streamed data into those twins. Must run after the primary
+    // tensors have been filled.
+    synth_status_t fill_cpu_weight_mirror() const;
+
     ~Impl() {
         if (weights_buffer != nullptr) {
             ggml_backend_buffer_free(weights_buffer);
         }
+        if (cpu_weights_buffer != nullptr) {
+            ggml_backend_buffer_free(cpu_weights_buffer);
+        }
         if (weights_context != nullptr) {
             ggml_free(weights_context);
+        }
+        if (cpu_weights_context != nullptr) {
+            ggml_free(cpu_weights_context);
         }
         if (gguf != nullptr) {
             gguf_free(gguf);
         }
     }
 };
+
+namespace {
+
+// Weight-name prefixes of the stages held on CPU. "bert" covers both the PL-BERT
+// encoder and its bert_encoder projection; "predictor" is the duration path.
+bool is_cpu_stage_weight(const char * name) {
+    if (name == nullptr) {
+        return false;
+    }
+    return std::strncmp(name, "bert", 4) == 0 || std::strncmp(name, "predictor", 9) == 0;
+}
+
+}  // namespace
+
+synth_status_t Model::Impl::create_cpu_weight_mirror() {
+    // With CPU as the primary backend there is no boundary to avoid, and the
+    // mirror would only duplicate memory.
+    if (weights_context == nullptr || backend_plan == nullptr ||
+        ggml_backend_dev_type(backend_plan->primary_device()) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+        return SYNTH_OK;
+    }
+    size_t mirrored = 0;
+    for (ggml_tensor * tensor = ggml_get_first_tensor(weights_context); tensor != nullptr;
+         tensor               = ggml_get_next_tensor(weights_context, tensor)) {
+        if (is_cpu_stage_weight(ggml_get_name(tensor))) {
+            ++mirrored;
+        }
+    }
+    if (mirrored == 0) {
+        return SYNTH_ERR_GGUF;
+    }
+    ggml_init_params parameters = {};
+    parameters.mem_size         = mirrored * ggml_tensor_overhead();
+    parameters.no_alloc         = true;
+    cpu_weights_context         = ggml_init(parameters);
+    if (cpu_weights_context == nullptr) {
+        return SYNTH_ERR_OOM;
+    }
+    for (ggml_tensor * tensor = ggml_get_first_tensor(weights_context); tensor != nullptr;
+         tensor               = ggml_get_next_tensor(weights_context, tensor)) {
+        const char * name = ggml_get_name(tensor);
+        if (!is_cpu_stage_weight(name)) {
+            continue;
+        }
+        ggml_tensor * twin = ggml_dup_tensor(cpu_weights_context, tensor);
+        if (twin == nullptr) {
+            return SYNTH_ERR_OOM;
+        }
+        // The builders resolve by name, so the twin has to carry the same one.
+        ggml_set_name(twin, name);
+    }
+    return SYNTH_OK;
+}
+
+synth_status_t Model::Impl::fill_cpu_weight_mirror() const {
+    if (cpu_weights_context == nullptr) {
+        return SYNTH_OK;
+    }
+    for (ggml_tensor * twin = ggml_get_first_tensor(cpu_weights_context); twin != nullptr;
+         twin               = ggml_get_next_tensor(cpu_weights_context, twin)) {
+        ggml_tensor * source = ggml_get_tensor(weights_context, ggml_get_name(twin));
+        if (source == nullptr || ggml_nbytes(source) != ggml_nbytes(twin)) {
+            return SYNTH_ERR_GGUF;
+        }
+        ggml_backend_tensor_copy(source, twin);
+    }
+    return SYNTH_OK;
+}
 
 synth_status_t Model::Impl::read_style(uint32_t             voice_index,
                                        uint32_t             row,
@@ -351,7 +448,14 @@ synth_status_t Model::load(const std::string &      path,
             }
             implementation->text_frontend = std::shared_ptr<const TextFrontend>(std::move(frontend));
         }
-        status = build_model_weights(implementation->weights_context, implementation->hparams, implementation->weights);
+        // The mirror's tensors must exist before binding, so the CPU-held stages
+        // bind against them rather than the primary-backend originals.
+        status = implementation->create_cpu_weight_mirror();
+        if (status != SYNTH_OK) {
+            return status;
+        }
+        status = build_model_weights(implementation->weights_context, implementation->cpu_weights_context,
+                                     implementation->hparams, implementation->weights);
         if (status != SYNTH_OK) {
             return status;
         }
@@ -362,7 +466,19 @@ synth_status_t Model::load(const std::string &      path,
             return SYNTH_ERR_OOM;
         }
         ggml_backend_buffer_set_usage(implementation->weights_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        if (implementation->cpu_weights_context != nullptr) {
+            implementation->cpu_weights_buffer = ggml_backend_alloc_ctx_tensors(
+                implementation->cpu_weights_context, implementation->backend_plan->cpu_backend());
+            if (implementation->cpu_weights_buffer == nullptr) {
+                return SYNTH_ERR_OOM;
+            }
+            ggml_backend_buffer_set_usage(implementation->cpu_weights_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        }
         status = stream_tensor_data(path, implementation->gguf, implementation->weights_context, "kokoro");
+        if (status != SYNTH_OK) {
+            return status;
+        }
+        status = implementation->fill_cpu_weight_mirror();
         if (status != SYNTH_OK) {
             return status;
         }
@@ -461,7 +577,14 @@ synth_status_t Model::compute_plbert(const std::vector<int32_t> & token_ids, int
         ggml_set_output(projected);
         ggml_build_forward_expand(built.graph, projected);
 
-        status = run.allocate(built.graph, "plbert");
+        // Declared CPU placement, for the same reason as the duration stage: this
+        // encoder's output is the duration predictor's input, so backend variation
+        // here reaches the rounding just as surely as variation in the predictor
+        // itself. Pinning only the predictor was measured and was not enough —
+        // the logits still moved by 8.8e-2 and the frame count still changed.
+        // The whole path from token IDs to a rounded duration is therefore CPU;
+        // the heavy decoder and waveform stages remain on the primary backend.
+        status = run.allocate(built.graph, "plbert", /*pin_to_cpu=*/true);
         if (status != SYNTH_OK) {
             return status;
         }
@@ -499,7 +622,7 @@ synth_status_t Model::compute_duration(const std::vector<int32_t> & token_ids,
 
     try {
         const uint32_t half   = hparams.hidden_dim / 2;
-        const uint32_t layers = uint32_t(implementation_->weights.predictor.text_encoder.lstms.size());
+        const uint32_t layers = uint32_t(implementation_->weights.predictor_cpu.text_encoder.lstms.size());
 
         Arena arena;
         if (!arena.open(size_t(layers) * 2 + 8)) {
@@ -518,7 +641,11 @@ synth_status_t Model::compute_duration(const std::vector<int32_t> & token_ids,
         scratch.predictor.zero_state    = scratch.zero_state;
         scratch.predictor.forward_store = ggml_new_tensor_2d(arena.context(), GGML_TYPE_F32, half, state.token_count);
         scratch.predictor.reverse_store = ggml_new_tensor_2d(arena.context(), GGML_TYPE_F32, half, state.token_count);
-        if (!arena.commit(implementation_->backend_plan->primary())) {
+        // This stage runs on a CPU-only scheduler, so its persistent LSTM stores
+        // have to live in a CPU buffer as well. A pre-allocated tensor in the
+        // primary buffer would abort the scheduler, which cannot run an operation
+        // against memory its single backend does not own.
+        if (!arena.commit(implementation_->backend_plan->cpu_backend())) {
             return SYNTH_ERR_OOM;
         }
 
@@ -526,13 +653,21 @@ synth_status_t Model::compute_duration(const std::vector<int32_t> & token_ids,
         if (run.context() == nullptr) {
             return SYNTH_ERR_OOM;
         }
-        DurationGraph built = build_duration_graph(run.context(), implementation_->weights.predictor, hparams, scratch,
-                                                   state.token_count);
+        DurationGraph built = build_duration_graph(run.context(), implementation_->weights.predictor_cpu, hparams,
+                                                   scratch, state.token_count);
         if (built.graph == nullptr) {
             return SYNTH_ERR_INTERNAL;
         }
         ggml_build_forward_expand(built.graph, built.hidden);
-        status = run.allocate(built.graph, "duration");
+        // Declared CPU placement. resolve_durations() rounds these logits to
+        // integer frame counts, and every downstream shape follows from that
+        // integer, so the stage has to produce the same value on every backend.
+        // It does not: on CUDA a 146-token utterance rounded one token from 1 to
+        // 2, moving the frame count 376 -> 377 and invalidating every later
+        // stage's shape. This is the only Kokoro stage whose output is discrete,
+        // so pinning it is sufficient, and it is cheap — the heavy decoder and
+        // waveform stages stay on the primary backend.
+        status = run.allocate(built.graph, "duration", /*pin_to_cpu=*/true);
         if (status != SYNTH_OK) {
             return status;
         }

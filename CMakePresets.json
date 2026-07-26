@@ -19,7 +19,6 @@
       "hidden": true,
       "cacheVariables": {
         "SYNTH_CUDA": "ON",
-        "SYNTH_CUDA_TF32": "OFF",
         "SYNTH_METAL": "OFF",
         "SYNTH_VULKAN": "OFF",
         "GGML_NATIVE": "OFF"
@@ -54,7 +53,7 @@
     {
       "name": "dev-dgx-spark",
       "displayName": "DGX Spark CUDA development",
-      "description": "Daily Linux AArch64 CPU/CUDA development with strict FP32 and native GB10 cubins.",
+      "description": "Daily Linux AArch64 CPU/CUDA development with native GB10 cubins.",
       "inherits": ["preset-base", "cuda-base", "development-base"],
       "cacheVariables": {
         "CMAKE_CUDA_ARCHITECTURES": "121a-real"
@@ -83,7 +82,7 @@
     {
       "name": "dev-linux-x86_64-cuda",
       "displayName": "Linux x86-64 CUDA development",
-      "description": "Daily RTX 4070 SUPER development with strict FP32 and native Ada cubins.",
+      "description": "Daily RTX 4070 SUPER development with native Ada cubins.",
       "inherits": ["preset-base", "cuda-base", "development-base"],
       "cacheVariables": {
         "CMAKE_CUDA_ARCHITECTURES": "89-real"

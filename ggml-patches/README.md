@@ -24,7 +24,22 @@ One canonical patch, inventoried by hunk:
 | `CMakeLists.txt`, `src/CMakeLists.txt` | Explicit install destinations (`RUNTIME`/`LIBRARY`/`ARCHIVE`/`PUBLIC_HEADER`) so the Provider wheels and the installed SDK lay out identically across platforms. |
 | `src/ggml-cpu/ggml-cpu.c` | `ggml_thread_cpu_relax` for MSVC (`YieldProcessor`) and a bounded spin-then-yield in the barrier wait: a pure pause-spin never yields the core, so under CPU oversubscription (a 2-vCPU runner) waiters starve an un-arrived worker and `ggml_barrier` deadlocks. |
 | `src/ggml-cuda/conv-transpose-1d.cu`, `src/ggml-cuda/ggml-cuda.cu` | Templated `conv_transpose_1d` kernel plus `supports_op`, so F16-stored transposed-convolution weights execute on CUDA (the VITS F16/Q8 profiles store them halved). |
-| `src/ggml-cuda/im2col.cu` | Tiled 1-D im2col kernel; the im2col-plus-GEMM convolution decomposition dominates TTS decoder graphs. |
+
+## Removed on 2026-07-26: the tiled 1-D im2col kernel
+
+A hunk in `src/ggml-cuda/im2col.cu` carried a tiled 1-D im2col kernel, justified
+on the premise that the im2col-plus-GEMM convolution decomposition dominates TTS
+decoder graphs. Measurement does not support that premise, so the hunk is gone.
+
+Nine-sample A/B on Kokoro's longest case, F32, GB10, the only difference being
+this kernel: upstream 2.301 / 2.425 / 2.589 s (min / median / max), tiled
+2.277 / 2.388 / 2.577 s. The 39 ms gap is inside a run-to-run spread of about
+300 ms. VITS showed no difference at all, 1.393 s against 1.392 s median. The
+decoder graphs are dominated by wide matrix multiplies rather than convolution:
+Kokoro's decoder stage is 1,936 nodes.
+
+A performance patch that cannot be shown to improve performance is maintenance
+cost with no return, and this one sat in an actively developed CUDA file.
 
 ## Removed on 2026-07-26: the strict-FP32 CUDA gate
 

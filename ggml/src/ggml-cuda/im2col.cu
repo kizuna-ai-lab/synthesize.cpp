@@ -3,63 +3,6 @@
 #define MAX_GRIDDIM_Y 65535
 #define MAX_GRIDDIM_Z 65535
 
-#define CUDA_IM2COL_OUTPUT_TILE 128
-#define CUDA_IM2COL_PATCH_TILE 32
-#define CUDA_IM2COL_TILE_THREADS 256
-
-static __global__ void im2col_1d_tiled_f32_kernel(
-        const float * x, float * dst,
-        int64_t IW, int64_t OW, int64_t KW, int64_t IC_KW, int64_t input_channel_stride,
-        int p0, int d0) {
-    __shared__ float tile[CUDA_IM2COL_PATCH_TILE][CUDA_IM2COL_OUTPUT_TILE + 1];
-
-    const int64_t output_base = static_cast<int64_t>(blockIdx.x) * CUDA_IM2COL_OUTPUT_TILE;
-    const int64_t patch_base  = static_cast<int64_t>(blockIdx.y) * CUDA_IM2COL_PATCH_TILE;
-
-    for (int tile_index = threadIdx.x; tile_index < CUDA_IM2COL_PATCH_TILE * CUDA_IM2COL_OUTPUT_TILE;
-         tile_index += CUDA_IM2COL_TILE_THREADS) {
-        const int local_patch  = tile_index / CUDA_IM2COL_OUTPUT_TILE;
-        const int local_output = tile_index - local_patch * CUDA_IM2COL_OUTPUT_TILE;
-        const int64_t output_position = output_base + local_output;
-        const int64_t patch_index     = patch_base + local_patch;
-        float value = 0.0f;
-        if (output_position < OW && patch_index < IC_KW) {
-            const int64_t input_channel = patch_index / KW;
-            const int64_t kernel_index = patch_index - input_channel * KW;
-            const int64_t input_position = output_position + kernel_index * d0 - p0;
-            if (input_position >= 0 && input_position < IW) {
-                value = x[input_channel * input_channel_stride + input_position];
-            }
-        }
-        tile[local_patch][local_output] = value;
-    }
-
-    __syncthreads();
-
-    for (int tile_index = threadIdx.x; tile_index < CUDA_IM2COL_PATCH_TILE * CUDA_IM2COL_OUTPUT_TILE;
-         tile_index += CUDA_IM2COL_TILE_THREADS) {
-        const int local_output = tile_index / CUDA_IM2COL_PATCH_TILE;
-        const int local_patch  = tile_index - local_output * CUDA_IM2COL_PATCH_TILE;
-        const int64_t output_position = output_base + local_output;
-        const int64_t patch_index     = patch_base + local_patch;
-        if (output_position < OW && patch_index < IC_KW) {
-            dst[output_position * IC_KW + patch_index] = tile[local_patch][local_output];
-        }
-    }
-}
-
-static void im2col_1d_tiled_f32_cuda(
-        const float * x, float * dst,
-        int64_t IW, int64_t OW, int64_t KW, int64_t IC, int64_t input_channel_stride,
-        int p0, int d0, cudaStream_t stream) {
-    const int64_t IC_KW = IC * KW;
-    const dim3 blocks((OW + CUDA_IM2COL_OUTPUT_TILE - 1) / CUDA_IM2COL_OUTPUT_TILE,
-                      (IC_KW + CUDA_IM2COL_PATCH_TILE - 1) / CUDA_IM2COL_PATCH_TILE, 1);
-    const dim3 threads(CUDA_IM2COL_TILE_THREADS, 1, 1);
-    im2col_1d_tiled_f32_kernel<<<blocks, threads, 0, stream>>>(
-        x, dst, IW, OW, KW, IC_KW, input_channel_stride, p0, d0);
-}
-
 template <typename T>
 static  __global__ void im2col_kernel(
         const float * x, T * dst,
@@ -165,9 +108,7 @@ void ggml_cuda_op_im2col(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int64_t N        = src1->ne[is_2D ? 3 : 2];
     const int64_t IH_IW    = src1->nb[is_2D ? 3 : 2] / 4; // nb is byte offset, src is type float32
 
-    if (!is_2D && dst->type == GGML_TYPE_F32 && N == 1 && s0 == 1 && IC * KW >= 96 && OW >= 32) {
-        im2col_1d_tiled_f32_cuda(src1_d, dst_d, IW, OW, KW, IC, IC_IH_IW, p0, d0, stream);
-    } else if(dst->type == GGML_TYPE_F16) {
+    if(dst->type == GGML_TYPE_F16) {
         im2col_cuda_f16(src1_d, (half *) dst_d, IW, IH, OW, OH, KW, KH, IC, N, IC_IH_IW, IH_IW, s0, s1, p0, p1, d0, d1, stream);
     } else {
         im2col_cuda_f32(src1_d, (float *) dst_d, IW, IH, OW, OH, KW, KH, IC, N, IC_IH_IW, IH_IW, s0, s1, p0, p1, d0, d1, stream);

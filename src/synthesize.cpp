@@ -1,4 +1,3 @@
-#include "cpu-parallelism.h"
 #include "synthesize.h"
 
 #include "arch/kokoro/kokoro.h"
@@ -6,6 +5,7 @@
 #include "audio-delivery.h"
 #include "backend-device.h"
 #include "backend-module.h"
+#include "cpu-parallelism.h"
 #include "gguf-metadata.h"
 #include "gguf.h"
 #include "model-info.h"

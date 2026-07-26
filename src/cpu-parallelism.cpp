@@ -4,8 +4,9 @@
 #include <thread>
 
 #ifdef __linux__
-#    include <cstdio>
 #    include <sched.h>
+
+#    include <cstdio>
 #endif
 
 namespace synth {

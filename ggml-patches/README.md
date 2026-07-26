@@ -11,17 +11,57 @@ undocumented local lines, and one `sync-ggml.sh` run would have silently
 destroyed the packaging installs, an F16 inference path, a CI deadlock fix, and
 the strict-FP32 precision policy all at once.
 
+Later the same day each of those groups was measured against its stated
+justification. Four of the five were removed, three of them because the
+justification did not survive measurement and one because a better fix existed on
+this side of the seam; the sections below record each removal and its evidence, so
+a future reader can see what was tried rather than only what remains. The patch
+went from ten files and seventeen hunks to two files and four hunks.
+
 Do not edit `ggml/` directly. Change a patch file (or add one), then run
 `scripts/sync-ggml.sh` with no arguments to regenerate `ggml/` from
 upstream-plus-patches, and commit both together.
 
 ## 0001-synthesize-local.patch
 
-One canonical patch, inventoried by hunk:
+One remaining group: a templated `conv_transpose_1d` CUDA kernel in
+`src/ggml-cuda/conv-transpose-1d.cu`, plus the matching `supports_op` in
+`src/ggml-cuda/ggml-cuda.cu`.
 
-| Files | What and why |
-| --- | --- |
-| `src/ggml-cuda/conv-transpose-1d.cu`, `src/ggml-cuda/ggml-cuda.cu` | Templated `conv_transpose_1d` kernel plus `supports_op`, so F16-stored transposed-convolution weights execute on CUDA (the VITS F16/Q8 profiles store them halved). |
+It was tried for removal on 2026-07-26 along with the other four groups and put
+back, because it turned out to do two things and only one of them had been
+recorded.
+
+**F16-stored weights.** VITS's F16 and Q8_MIXED Quantization Profiles store
+transposed-convolution weights halved (`tools/synthesize-quantize/policy.cpp`
+sets `transpose_weight_type` to F16 for both). Upstream's `supports_op` accepts
+`CONV_TRANSPOSE_1D` only when both operands are F32, so without this group those
+nodes do not error — they silently fall back to CPU. Measured on `ljs-long` with
+the group removed: `waveform_decoder` reported `primary=432 cpu_fallback=4
+splits=9`, the four being `CONV_TRANSPOSE_1D`. `port-validation.md` treats
+undeclared CPU placement as a hard failure, so that is not an acceptable
+degradation. With the group restored the same stage reports `primary=436
+cpu_fallback=0 splits=1`.
+
+**The part that was never written down: the F32 path.** The upstream kernel is
+correct but scales quadratically in input length, and the F32 profile carries no
+halved weights at all, so by the description above it should have been
+unaffected. It is the worst affected. Measured on CUDA with the group removed:
+
+| Case | Tokens | Upstream kernel | With this group |
+| --- | --- | --- | --- |
+| `ljs-minimal` | 9 | 1.18 s | — |
+| `ljs-medium` | 107 | 12.80 s | — |
+| `ljs-normalization` | 129 | 21.44 s | about 0.6 s |
+| `ljs-long` | 315 | over 240 s | 1.48 s |
+
+Two orders of magnitude at the length that matters. Anyone reading only the old
+one-line description would conclude this group is about F16 support and could try
+to drop it for an F32-only configuration; that is why the F32 numbers are here.
+
+This is the only group whose removal was measured and rejected. The exit path is
+upstream fixing the kernel's scaling and widening `supports_op`, not a
+replacement on this side.
 
 ## Removed on 2026-07-26: the barrier spin-then-yield and the MSVC pause hint
 

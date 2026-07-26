@@ -1,3 +1,4 @@
+#include "cpu-parallelism.h"
 #include "synthesize.h"
 
 #include "arch/kokoro/kokoro.h"
@@ -508,10 +509,9 @@ synth_status_t synth_context_create(const synth_model_t * model, synth_context_t
         return SYNTH_ERR_INVALID_ARG;
     }
     try {
-        auto context                    = std::make_unique<synth_context>();
-        context->model                  = model;
-        const unsigned hardware_threads = std::thread::hardware_concurrency();
-        context->threads                = hardware_threads == 0 ? 1 : static_cast<int>(hardware_threads);
+        auto context     = std::make_unique<synth_context>();
+        context->model   = model;
+        context->threads = synth::available_cpu_parallelism();
         context->active.clear();
         *out_context = context.release();
         return SYNTH_OK;

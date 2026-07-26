@@ -4,6 +4,7 @@ add_library(synthesize
     backend-device.cpp
     backend-module.cpp
     backend-plan.cpp
+    cpu-parallelism.cpp
     random-stream.cpp
     synthesize.cpp
     synthesis-request.cpp

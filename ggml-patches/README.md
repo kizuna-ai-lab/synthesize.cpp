@@ -21,8 +21,34 @@ One canonical patch, inventoried by hunk:
 
 | Files | What and why |
 | --- | --- |
-| `src/ggml-cpu/ggml-cpu.c` | `ggml_thread_cpu_relax` for MSVC (`YieldProcessor`) and a bounded spin-then-yield in the barrier wait: a pure pause-spin never yields the core, so under CPU oversubscription (a 2-vCPU runner) waiters starve an un-arrived worker and `ggml_barrier` deadlocks. |
 | `src/ggml-cuda/conv-transpose-1d.cu`, `src/ggml-cuda/ggml-cuda.cu` | Templated `conv_transpose_1d` kernel plus `supports_op`, so F16-stored transposed-convolution weights execute on CUDA (the VITS F16/Q8 profiles store them halved). |
+
+## Removed on 2026-07-26: the barrier spin-then-yield and the MSVC pause hint
+
+Three hunks in `src/ggml-cpu/ggml-cpu.c` added a bounded spin-then-yield to the
+barrier wait, plus an MSVC branch for `ggml_thread_cpu_relax`. The barrier hunks
+treated a symptom: GGML's barrier spins on a pause hint without yielding, so
+*oversubscribed* threads let waiters starve the worker that has not arrived.
+
+The cause was ours. `std::thread::hardware_concurrency` reports the host's CPU
+count and ignores both the affinity mask and the cgroup quota, so inside a
+two-vCPU container on a twenty-core host the library asked for twenty threads.
+`synth::available_cpu_parallelism` in `src/cpu-parallelism.cpp` now clamps to the
+affinity mask and the cgroup v1/v2 quota. Measured here: `hardware_concurrency`
+reports 20 under `taskset -c 0,1` while the clamp reports 2, and 1 under a single
+CPU. The public C Interface exposes no thread count, so no caller can route around
+it.
+
+Verified against the scenario the patch existed for: three real VITS syntheses
+under `taskset -c 0,1` with the upstream barrier completed in 14.5 s each with
+correct frame counts, no hang.
+
+The MSVC pause hint went with them, deliberately. Upstream's
+`ggml_thread_cpu_relax` covers `__aarch64__`, `__x86_64__` and `__riscv` and falls
+back to an empty body otherwise, and MSVC defines `_M_X64` rather than
+`__x86_64__`, so Windows builds spin without a pause instruction. With threads
+clamped that is a power and latency cost under contention, not a hang, and
+jiangzhuo accepted it rather than keep a patch for it.
 
 ## Removed on 2026-07-26: the explicit install destinations
 

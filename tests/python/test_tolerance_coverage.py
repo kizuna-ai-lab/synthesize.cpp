@@ -10,11 +10,17 @@ This reads the committed tolerance files and asserts the grid is full, so a new
 stage or a new profile fails here until it has been measured everywhere the
 package page claims support.
 
-It covers only families that record measurements per stage. The VITS file
-predates that format: it says `measurements-recorded-thresholds-deferred` while
-its `stages` object is empty, so there is nothing to cross-check and this test
-does not protect it. That is a real gap in the VITS port, recorded here rather
-than papered over by loosening the check.
+It covers only families that record measurements per stage. VITS did not, until
+2026-07-27: its file carried an empty `stages` object with the measurements
+described in prose, so there was nothing to cross-check. That gap had a
+consequence rather than staying theoretical. Removing the CUDA strict-FP32 gate
+changed `duration.w_ceil` on the 315-token case and moved the frame count by one
+hop, and because this test skipped the family, nothing failed; it was found by
+comparing CPU against CUDA by hand.
+
+The legacy branch below is kept because a family may legitimately arrive before
+its grid has been swept, but reaching it now means a family regressed to prose,
+which is why it asserts the empty object rather than merely tolerating it.
 """
 
 from __future__ import annotations

@@ -47,6 +47,69 @@ reason measured in that family and recorded in
 whole utterance, so everything upstream of the decoder stays at the reference
 dtype.
 
+## Third Model Family
+
+The third supported model family is Qwen3-TTS 12 Hz: a Qwen3 decoder that emits
+one semantic code per frame, a multi-token-prediction head that expands each
+frame into fifteen acoustic codes, and a residual vector-quantized codec that
+reconstructs 24 kHz audio. Its selection rationale, staged variants, and
+decomposition are recorded in
+[`porting/families/qwen3-tts.md`](porting/families/qwen3-tts.md).
+
+Kokoro was chosen partly on standing among CPU-practical open models. That test
+was applied again and deliberately abandoned for this cycle. Of the four
+open-weight models ranking above the shipped Kokoro variant, two are restricted
+to non-commercial or separately licensed use, one asserts Apache-2.0 while
+acknowledging that part of its code and data derives from a checkpoint carrying
+no explicit license and requires 12 GB of GPU memory at batch size 1, and the
+fourth leads by an amount inside measurement noise. This family is therefore
+selected on capability and language coverage. It is not claimed to sound better
+than the second family, and its delivered Validation Level is `port_validated`.
+
+It adds operator and runtime surface neither predecessor exercises: KV-cached
+autoregressive decoding, a sampling chain, a multi-token-prediction head, and a
+causal residual vector-quantized codec decoder. It is also the first family
+whose upstream variants map directly onto declared Voice Profile sources rather
+than onto the `voice_id` path alone, and the first to require a byte-level BPE
+Text Frontend Provider, which is what would give the project raw-text input
+without depending on a GPL-licensed grapheme-to-phoneme engine.
+
+Capability is split across upstream checkpoints, so it is staged across three
+Reference Model Variants: `qwen3-tts-12hz-0.6b-customvoice` establishes the
+family on the existing Preset Voice path, `qwen3-tts-12hz-0.6b-base` adds
+Reference Audio, and `qwen3-tts-12hz-1.7b-voicedesign` adds Description Text.
+Each stage is a completion gate for the next. All four upstream repositories,
+including the shared `Qwen3-TTS-Tokenizer-12Hz`, carry an explicit Apache-2.0
+grant verified against their model-card metadata.
+
+Autoregressive sampling does not amend the Port Validation Contract. Two
+frameworks are not required to agree on a sampling trajectory; following the
+stochastic-replay rule already in `port-validation.md`, the oracle captures its
+sampled code sequence and a validation-only family seam replays it into both
+graphs. The codec decoder remains deterministic given a fixed code sequence and
+keeps ordinary end-to-end waveform comparison.
+
+## Fourth Model Family Candidate
+
+OmniVoice is recorded as the leading fourth-family candidate. It is a
+non-autoregressive mask-predict model whose refinement steps reabsorb
+floating-point argmax flips, making exact token agreement checkable, and a
+single checkpoint carries reference-audio cloning, described-attribute voice
+design, and automatic voice selection together.
+
+Its pre-trained weights are licensed CC-BY-NC because of training-data
+constraints, while only its code is Apache-2.0. A family in that position can
+become a Supported Model Family, because that status requires a port passing the
+Port Validation Suite on CPU. It cannot become a Published Model Package,
+because that status additionally requires releasing exact bytes and license
+through a project-owned model repository. Whether the project supports a family
+it can never publish is an open decision that a fourth-family intake must settle
+before conversion work begins.
+
+License facts for this candidate were established from its upstream model card.
+A downstream community port describes these weights as Apache-2.0, which is
+incorrect; port documentation is not a license source.
+
 ## Reference Validation Variants
 
 The upstream reference implementation is `jaywalnut310/vits`.

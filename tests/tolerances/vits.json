@@ -1,27 +1,157 @@
 {
-  "case_count": 12,
   "family": "vits",
-  "note": "Measured across all three Quantization Profiles on CPU and CUDA, over the twelve\ncommitted Port Validation Cases of the vits-ljspeech Reference Model Variant.\nNumerical acceptance thresholds and perceptual quality evaluation remain\ndeferred; no placeholder tolerance or quality score is claimed.\n\nThis file previously carried an empty `stages` object with the measurements\ndescribed only in prose. That was not a formatting detail. Because\ntests/python/test_tolerance_coverage.py skips families with no recorded grid,\nthis family had no cross-check between what the package claims and what was\nactually run, and on 2026-07-26 that let a real defect ship silently: removing\nthe CUDA strict-FP32 gate changed duration.w_ceil on the 315-token case, moving\nthe frame count by one hop, and nothing failed. It was found by comparing CPU\nagainst CUDA by hand. Recording the grid is what closes that hole, and the check\nwas verified to bite by deleting a stage and watching it fail.\n\nThe structural probes are the guarantee that has to hold across backends, and\nthey hold: duration.w_ceil, duration.y_length and duration.attention are exact on\nevery case, every profile and both backends. That is not free -- the stage\nproducing them runs on CPU on every backend, for the reason recorded in\ndocs/porting/families/vits.md. The duration-path slice reports no worst-case\ndrift because there is none to rank: its probes are integers compared for\nequality, so its entries carry exact_on_every_case rather than a measured\nmaximum.\n\nTwo limits of this file, stated rather than implied. It covers vits-ljspeech\nonly; vits-vctk is a second Reference Model Variant with its own twelve cases and\nits own speaker-conditioned path, and the coverage test keys on family rather\nthan variant, so vctk remains unchecked by that test. And CUDA drift is measured\nagainst the CPU oracle while CUDA F32 matrix multiplies compute at TF32\nprecision, so the intermediate figures mix implementation difference with\nprecision difference; see docs/backends.md.",
-  "profiles": {
-    "F16": {
-      "backends": {
-        "CUDA": {
+  "note": "Measured across all three Quantization Profiles on CPU and CUDA, over the twelve\ncommitted Port Validation Cases of each Reference Model Variant. Numerical\nacceptance thresholds and perceptual quality evaluation remain deferred; no\nplaceholder tolerance or quality score is claimed.\n\nThis file previously carried an empty `stages` object with the measurements\ndescribed only in prose. That was not a formatting detail. Because\ntests/python/test_tolerance_coverage.py skips families with no recorded grid,\nthis family had no cross-check between what the package claims and what was\nactually run, and on 2026-07-26 that let a real defect ship silently: removing\nthe CUDA strict-FP32 gate changed duration.w_ceil on the 315-token case, moving\nthe frame count by one hop, and nothing failed. It was found by comparing CPU\nagainst CUDA by hand.\n\nBoth Reference Model Variants are recorded, under `variants`. Keying the file on\nfamily alone was the second half of the same hole: vits-vctk has its own twelve\ncases and its own speaker-conditioned path, so a grid that is full for\nvits-ljspeech says nothing about it. The coverage test now checks each variant\nagainst its own reference profile, and that was verified to bite by deleting a\nstage from each variant in turn and watching it fail.\n\nThe structural probes are the guarantee that has to hold across backends, and\nthey hold on both variants: duration.w_ceil, duration.y_length and\nduration.attention are exact on every case, every profile and both backends.\nThat is not free -- the stage producing them runs on CPU on every backend, for\nthe reason recorded in docs/porting/families/vits.md. The duration-path slice\nreports no worst-case drift because there is none to rank: its probes are\nintegers compared for equality, so its entries carry exact_on_every_case rather\nthan a measured maximum.\n\nOne limit remains, stated rather than implied. CUDA drift is measured against the\nCPU oracle while CUDA F32 matrix multiplies compute at TF32 precision, so the\nintermediate figures mix implementation difference with precision difference; see\ndocs/backends.md.",
+  "reference_stage": "source-f32-cpu",
+  "schema": "synthesize-tolerances-v1",
+  "status": "measurements-recorded-thresholds-deferred",
+  "suite_version": 1,
+  "variants": {
+    "vits-ljspeech": {
+      "case_count": 12,
+      "profiles": {
+        "F16": {
+          "backends": {
+            "CUDA": {
+              "stages": {
+                "acoustic-flow": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "flow.z": {
+                      "elements": 60864,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.014438629150390625,
+                      "measured_mean_abs": 0.00044525440835221854,
+                      "worst_case": "ljs-rate-slow"
+                    }
+                  },
+                  "threads": 8
+                },
+                "duration-path": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "duration.attention": {
+                      "elements": 260820,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    },
+                    "duration.w_ceil": {
+                      "elements": 315,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    },
+                    "duration.y_length": {
+                      "elements": 1,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    }
+                  },
+                  "threads": 8
+                },
+                "duration-predictor": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "duration.logw": {
+                      "elements": 71,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 1.1086463928222656e-05,
+                      "measured_mean_abs": 1.8583427012806208e-06,
+                      "worst_case": "ljs-repetition"
+                    }
+                  },
+                  "threads": 8
+                },
+                "latent-sampling": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "latent.z_p": {
+                      "elements": 158976,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.014161109924316406,
+                      "measured_mean_abs": 5.461447695572994e-05,
+                      "worst_case": "ljs-long"
+                    }
+                  },
+                  "threads": 8
+                },
+                "prior-expansion": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "prior.logs_p_expanded": {
+                      "elements": 25536,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0009763240814208984,
+                      "measured_mean_abs": 9.722006361334022e-05,
+                      "worst_case": "ljs-punctuation"
+                    },
+                    "prior.m_p_expanded": {
+                      "elements": 158976,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0019559860229492188,
+                      "measured_mean_abs": 2.565610821581075e-05,
+                      "worst_case": "ljs-long"
+                    }
+                  },
+                  "threads": 8
+                },
+                "text-encoder": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "text.logs_p": {
+                      "elements": 60480,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.001562453806400299,
+                      "measured_mean_abs": 5.702996471275886e-05,
+                      "worst_case": "ljs-long"
+                    },
+                    "text.m_p": {
+                      "elements": 1728,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.005259722471237183,
+                      "measured_mean_abs": 0.0002639802662963996,
+                      "worst_case": "ljs-minimal"
+                    },
+                    "text.mask": {
+                      "elements": 33,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0,
+                      "measured_mean_abs": 0.0,
+                      "worst_case": "ljs-upstream-default"
+                    }
+                  },
+                  "threads": 8
+                },
+                "waveform-decoder": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "audio.pcm": {
+                      "elements": 34048,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.027103282511234283,
+                      "measured_mean_abs": 0.00042270530894746483,
+                      "worst_case": "ljs-punctuation"
+                    }
+                  },
+                  "threads": 8
+                }
+              }
+            }
+          },
           "stages": {
             "acoustic-flow": {
-              "backend": "CUDA",
+              "backend": "CPU",
               "probes": {
                 "flow.z": {
-                  "elements": 60864,
+                  "elements": 15744,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.014438629150390625,
-                  "measured_mean_abs": 0.00044525440835221854,
-                  "worst_case": "ljs-rate-slow"
+                  "measured_max_abs": 0.0038679838180541992,
+                  "measured_mean_abs": 0.00017460581053396673,
+                  "worst_case": "ljs-short"
                 }
               },
               "threads": 8
             },
             "duration-path": {
-              "backend": "CUDA",
+              "backend": "CPU",
               "probes": {
                 "duration.attention": {
                   "elements": 260820,
@@ -42,7 +172,7 @@
               "threads": 8
             },
             "duration-predictor": {
-              "backend": "CUDA",
+              "backend": "CPU",
               "probes": {
                 "duration.logw": {
                   "elements": 71,
@@ -55,54 +185,54 @@
               "threads": 8
             },
             "latent-sampling": {
-              "backend": "CUDA",
+              "backend": "CPU",
               "probes": {
                 "latent.z_p": {
-                  "elements": 158976,
+                  "elements": 63744,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.014161109924316406,
-                  "measured_mean_abs": 5.461447695572994e-05,
-                  "worst_case": "ljs-long"
+                  "measured_max_abs": 1.33514404296875e-05,
+                  "measured_mean_abs": 1.6031229180558753e-07,
+                  "worst_case": "ljs-normalization"
                 }
               },
               "threads": 8
             },
             "prior-expansion": {
-              "backend": "CUDA",
+              "backend": "CPU",
               "probes": {
                 "prior.logs_p_expanded": {
-                  "elements": 25536,
+                  "elements": 158976,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.0009763240814208984,
-                  "measured_mean_abs": 9.722006361334022e-05,
-                  "worst_case": "ljs-punctuation"
+                  "measured_max_abs": 3.844499588012695e-06,
+                  "measured_mean_abs": 4.500361390399856e-08,
+                  "worst_case": "ljs-long"
                 },
                 "prior.m_p_expanded": {
                   "elements": 158976,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.0019559860229492188,
-                  "measured_mean_abs": 2.565610821581075e-05,
+                  "measured_max_abs": 1.1622905731201172e-05,
+                  "measured_mean_abs": 1.0070006548144537e-07,
                   "worst_case": "ljs-long"
                 }
               },
               "threads": 8
             },
             "text-encoder": {
-              "backend": "CUDA",
+              "backend": "CPU",
               "probes": {
                 "text.logs_p": {
                   "elements": 60480,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.001562453806400299,
-                  "measured_mean_abs": 5.702996471275886e-05,
+                  "measured_max_abs": 3.844499588012695e-06,
+                  "measured_mean_abs": 4.490514694855957e-08,
                   "worst_case": "ljs-long"
                 },
                 "text.m_p": {
-                  "elements": 1728,
+                  "elements": 60480,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.005259722471237183,
-                  "measured_mean_abs": 0.0002639802662963996,
-                  "worst_case": "ljs-minimal"
+                  "measured_max_abs": 1.1622905731201172e-05,
+                  "measured_mean_abs": 1.032840972338962e-07,
+                  "worst_case": "ljs-long"
                 },
                 "text.mask": {
                   "elements": 33,
@@ -115,513 +245,513 @@
               "threads": 8
             },
             "waveform-decoder": {
-              "backend": "CUDA",
-              "probes": {
-                "audio.pcm": {
-                  "elements": 34048,
-                  "exact_on_every_case": false,
-                  "measured_max_abs": 0.027103282511234283,
-                  "measured_mean_abs": 0.00042270530894746483,
-                  "worst_case": "ljs-punctuation"
-                }
-              },
-              "threads": 8
-            }
-          }
-        }
-      },
-      "stages": {
-        "acoustic-flow": {
-          "backend": "CPU",
-          "probes": {
-            "flow.z": {
-              "elements": 15744,
-              "exact_on_every_case": false,
-              "measured_max_abs": 0.0038679838180541992,
-              "measured_mean_abs": 0.00017460581053396673,
-              "worst_case": "ljs-short"
-            }
-          },
-          "threads": 8
-        },
-        "duration-path": {
-          "backend": "CPU",
-          "probes": {
-            "duration.attention": {
-              "elements": 260820,
-              "exact_on_every_case": true,
-              "measured_max_abs": 0.0
-            },
-            "duration.w_ceil": {
-              "elements": 315,
-              "exact_on_every_case": true,
-              "measured_max_abs": 0.0
-            },
-            "duration.y_length": {
-              "elements": 1,
-              "exact_on_every_case": true,
-              "measured_max_abs": 0.0
-            }
-          },
-          "threads": 8
-        },
-        "duration-predictor": {
-          "backend": "CPU",
-          "probes": {
-            "duration.logw": {
-              "elements": 71,
-              "exact_on_every_case": false,
-              "measured_max_abs": 1.1086463928222656e-05,
-              "measured_mean_abs": 1.8583427012806208e-06,
-              "worst_case": "ljs-repetition"
-            }
-          },
-          "threads": 8
-        },
-        "latent-sampling": {
-          "backend": "CPU",
-          "probes": {
-            "latent.z_p": {
-              "elements": 63744,
-              "exact_on_every_case": false,
-              "measured_max_abs": 1.33514404296875e-05,
-              "measured_mean_abs": 1.6031229180558753e-07,
-              "worst_case": "ljs-normalization"
-            }
-          },
-          "threads": 8
-        },
-        "prior-expansion": {
-          "backend": "CPU",
-          "probes": {
-            "prior.logs_p_expanded": {
-              "elements": 158976,
-              "exact_on_every_case": false,
-              "measured_max_abs": 3.844499588012695e-06,
-              "measured_mean_abs": 4.500361390399856e-08,
-              "worst_case": "ljs-long"
-            },
-            "prior.m_p_expanded": {
-              "elements": 158976,
-              "exact_on_every_case": false,
-              "measured_max_abs": 1.1622905731201172e-05,
-              "measured_mean_abs": 1.0070006548144537e-07,
-              "worst_case": "ljs-long"
-            }
-          },
-          "threads": 8
-        },
-        "text-encoder": {
-          "backend": "CPU",
-          "probes": {
-            "text.logs_p": {
-              "elements": 60480,
-              "exact_on_every_case": false,
-              "measured_max_abs": 3.844499588012695e-06,
-              "measured_mean_abs": 4.490514694855957e-08,
-              "worst_case": "ljs-long"
-            },
-            "text.m_p": {
-              "elements": 60480,
-              "exact_on_every_case": false,
-              "measured_max_abs": 1.1622905731201172e-05,
-              "measured_mean_abs": 1.032840972338962e-07,
-              "worst_case": "ljs-long"
-            },
-            "text.mask": {
-              "elements": 33,
-              "exact_on_every_case": true,
-              "measured_max_abs": 0.0,
-              "measured_mean_abs": 0.0,
-              "worst_case": "ljs-upstream-default"
-            }
-          },
-          "threads": 8
-        },
-        "waveform-decoder": {
-          "backend": "CPU",
-          "probes": {
-            "audio.pcm": {
-              "elements": 84992,
-              "exact_on_every_case": false,
-              "measured_max_abs": 0.017125502228736877,
-              "measured_mean_abs": 0.0001612276234922842,
-              "worst_case": "ljs-normalization"
-            }
-          },
-          "threads": 8
-        }
-      }
-    },
-    "F32": {
-      "backends": {
-        "CUDA": {
-          "stages": {
-            "acoustic-flow": {
-              "backend": "CUDA",
-              "probes": {
-                "flow.z": {
-                  "elements": 158976,
-                  "exact_on_every_case": false,
-                  "measured_max_abs": 0.014860153198242188,
-                  "measured_mean_abs": 0.0002172523164999612,
-                  "worst_case": "ljs-long"
-                }
-              },
-              "threads": 8
-            },
-            "duration-path": {
-              "backend": "CUDA",
-              "probes": {
-                "duration.attention": {
-                  "elements": 260820,
-                  "exact_on_every_case": true,
-                  "measured_max_abs": 0.0
-                },
-                "duration.w_ceil": {
-                  "elements": 315,
-                  "exact_on_every_case": true,
-                  "measured_max_abs": 0.0
-                },
-                "duration.y_length": {
-                  "elements": 1,
-                  "exact_on_every_case": true,
-                  "measured_max_abs": 0.0
-                }
-              },
-              "threads": 8
-            },
-            "duration-predictor": {
-              "backend": "CUDA",
-              "probes": {
-                "duration.logw": {
-                  "elements": 71,
-                  "exact_on_every_case": false,
-                  "measured_max_abs": 1.1086463928222656e-05,
-                  "measured_mean_abs": 1.8583427012806208e-06,
-                  "worst_case": "ljs-repetition"
-                }
-              },
-              "threads": 8
-            },
-            "latent-sampling": {
-              "backend": "CUDA",
-              "probes": {
-                "latent.z_p": {
-                  "elements": 158976,
-                  "exact_on_every_case": false,
-                  "measured_max_abs": 0.014161109924316406,
-                  "measured_mean_abs": 5.461447695572994e-05,
-                  "worst_case": "ljs-long"
-                }
-              },
-              "threads": 8
-            },
-            "prior-expansion": {
-              "backend": "CUDA",
-              "probes": {
-                "prior.logs_p_expanded": {
-                  "elements": 25536,
-                  "exact_on_every_case": false,
-                  "measured_max_abs": 0.0009763240814208984,
-                  "measured_mean_abs": 9.722006361334022e-05,
-                  "worst_case": "ljs-punctuation"
-                },
-                "prior.m_p_expanded": {
-                  "elements": 158976,
-                  "exact_on_every_case": false,
-                  "measured_max_abs": 0.0019559860229492188,
-                  "measured_mean_abs": 2.565610821581075e-05,
-                  "worst_case": "ljs-long"
-                }
-              },
-              "threads": 8
-            },
-            "text-encoder": {
-              "backend": "CUDA",
-              "probes": {
-                "text.logs_p": {
-                  "elements": 60480,
-                  "exact_on_every_case": false,
-                  "measured_max_abs": 0.001562453806400299,
-                  "measured_mean_abs": 5.702996471275886e-05,
-                  "worst_case": "ljs-long"
-                },
-                "text.m_p": {
-                  "elements": 1728,
-                  "exact_on_every_case": false,
-                  "measured_max_abs": 0.005259722471237183,
-                  "measured_mean_abs": 0.0002639802662963996,
-                  "worst_case": "ljs-minimal"
-                },
-                "text.mask": {
-                  "elements": 33,
-                  "exact_on_every_case": true,
-                  "measured_max_abs": 0.0,
-                  "measured_mean_abs": 0.0,
-                  "worst_case": "ljs-upstream-default"
-                }
-              },
-              "threads": 8
-            },
-            "waveform-decoder": {
-              "backend": "CUDA",
-              "probes": {
-                "audio.pcm": {
-                  "elements": 211968,
-                  "exact_on_every_case": false,
-                  "measured_max_abs": 0.019023246597498655,
-                  "measured_mean_abs": 0.00017818215918446797,
-                  "worst_case": "ljs-long"
-                }
-              },
-              "threads": 8
-            }
-          }
-        }
-      },
-      "stages": {
-        "acoustic-flow": {
-          "backend": "CPU",
-          "probes": {
-            "flow.z": {
-              "elements": 158976,
-              "exact_on_every_case": false,
-              "measured_max_abs": 7.033348083496094e-05,
-              "measured_mean_abs": 1.1885602672359585e-06,
-              "worst_case": "ljs-long"
-            }
-          },
-          "threads": 8
-        },
-        "duration-path": {
-          "backend": "CPU",
-          "probes": {
-            "duration.attention": {
-              "elements": 260820,
-              "exact_on_every_case": true,
-              "measured_max_abs": 0.0
-            },
-            "duration.w_ceil": {
-              "elements": 315,
-              "exact_on_every_case": true,
-              "measured_max_abs": 0.0
-            },
-            "duration.y_length": {
-              "elements": 1,
-              "exact_on_every_case": true,
-              "measured_max_abs": 0.0
-            }
-          },
-          "threads": 8
-        },
-        "duration-predictor": {
-          "backend": "CPU",
-          "probes": {
-            "duration.logw": {
-              "elements": 71,
-              "exact_on_every_case": false,
-              "measured_max_abs": 1.1086463928222656e-05,
-              "measured_mean_abs": 1.8583427012806208e-06,
-              "worst_case": "ljs-repetition"
-            }
-          },
-          "threads": 8
-        },
-        "latent-sampling": {
-          "backend": "CPU",
-          "probes": {
-            "latent.z_p": {
-              "elements": 63744,
-              "exact_on_every_case": false,
-              "measured_max_abs": 1.33514404296875e-05,
-              "measured_mean_abs": 1.6031229180558753e-07,
-              "worst_case": "ljs-normalization"
-            }
-          },
-          "threads": 8
-        },
-        "prior-expansion": {
-          "backend": "CPU",
-          "probes": {
-            "prior.logs_p_expanded": {
-              "elements": 158976,
-              "exact_on_every_case": false,
-              "measured_max_abs": 3.844499588012695e-06,
-              "measured_mean_abs": 4.500361390399856e-08,
-              "worst_case": "ljs-long"
-            },
-            "prior.m_p_expanded": {
-              "elements": 158976,
-              "exact_on_every_case": false,
-              "measured_max_abs": 1.1622905731201172e-05,
-              "measured_mean_abs": 1.0070006548144537e-07,
-              "worst_case": "ljs-long"
-            }
-          },
-          "threads": 8
-        },
-        "text-encoder": {
-          "backend": "CPU",
-          "probes": {
-            "text.logs_p": {
-              "elements": 60480,
-              "exact_on_every_case": false,
-              "measured_max_abs": 3.844499588012695e-06,
-              "measured_mean_abs": 4.490514694855957e-08,
-              "worst_case": "ljs-long"
-            },
-            "text.m_p": {
-              "elements": 60480,
-              "exact_on_every_case": false,
-              "measured_max_abs": 1.1622905731201172e-05,
-              "measured_mean_abs": 1.032840972338962e-07,
-              "worst_case": "ljs-long"
-            },
-            "text.mask": {
-              "elements": 33,
-              "exact_on_every_case": true,
-              "measured_max_abs": 0.0,
-              "measured_mean_abs": 0.0,
-              "worst_case": "ljs-upstream-default"
-            }
-          },
-          "threads": 8
-        },
-        "waveform-decoder": {
-          "backend": "CPU",
-          "probes": {
-            "audio.pcm": {
-              "elements": 69120,
-              "exact_on_every_case": false,
-              "measured_max_abs": 0.0002946630120277405,
-              "measured_mean_abs": 2.455841464593013e-06,
-              "worst_case": "ljs-medium"
-            }
-          },
-          "threads": 8
-        }
-      }
-    },
-    "Q8_MIXED": {
-      "backends": {
-        "CUDA": {
-          "stages": {
-            "acoustic-flow": {
-              "backend": "CUDA",
-              "probes": {
-                "flow.z": {
-                  "elements": 60864,
-                  "exact_on_every_case": false,
-                  "measured_max_abs": 0.16575151681900024,
-                  "measured_mean_abs": 0.0060757504080719196,
-                  "worst_case": "ljs-rate-slow"
-                }
-              },
-              "threads": 8
-            },
-            "duration-path": {
-              "backend": "CUDA",
-              "probes": {
-                "duration.attention": {
-                  "elements": 260820,
-                  "exact_on_every_case": true,
-                  "measured_max_abs": 0.0
-                },
-                "duration.w_ceil": {
-                  "elements": 315,
-                  "exact_on_every_case": true,
-                  "measured_max_abs": 0.0
-                },
-                "duration.y_length": {
-                  "elements": 1,
-                  "exact_on_every_case": true,
-                  "measured_max_abs": 0.0
-                }
-              },
-              "threads": 8
-            },
-            "duration-predictor": {
-              "backend": "CUDA",
-              "probes": {
-                "duration.logw": {
-                  "elements": 71,
-                  "exact_on_every_case": false,
-                  "measured_max_abs": 1.1086463928222656e-05,
-                  "measured_mean_abs": 1.8583427012806208e-06,
-                  "worst_case": "ljs-repetition"
-                }
-              },
-              "threads": 8
-            },
-            "latent-sampling": {
-              "backend": "CUDA",
-              "probes": {
-                "latent.z_p": {
-                  "elements": 158976,
-                  "exact_on_every_case": false,
-                  "measured_max_abs": 0.014161109924316406,
-                  "measured_mean_abs": 5.461447695572994e-05,
-                  "worst_case": "ljs-long"
-                }
-              },
-              "threads": 8
-            },
-            "prior-expansion": {
-              "backend": "CUDA",
-              "probes": {
-                "prior.logs_p_expanded": {
-                  "elements": 25536,
-                  "exact_on_every_case": false,
-                  "measured_max_abs": 0.0009763240814208984,
-                  "measured_mean_abs": 9.722006361334022e-05,
-                  "worst_case": "ljs-punctuation"
-                },
-                "prior.m_p_expanded": {
-                  "elements": 158976,
-                  "exact_on_every_case": false,
-                  "measured_max_abs": 0.0019559860229492188,
-                  "measured_mean_abs": 2.565610821581075e-05,
-                  "worst_case": "ljs-long"
-                }
-              },
-              "threads": 8
-            },
-            "text-encoder": {
-              "backend": "CUDA",
-              "probes": {
-                "text.logs_p": {
-                  "elements": 60480,
-                  "exact_on_every_case": false,
-                  "measured_max_abs": 0.001562453806400299,
-                  "measured_mean_abs": 5.702996471275886e-05,
-                  "worst_case": "ljs-long"
-                },
-                "text.m_p": {
-                  "elements": 1728,
-                  "exact_on_every_case": false,
-                  "measured_max_abs": 0.005259722471237183,
-                  "measured_mean_abs": 0.0002639802662963996,
-                  "worst_case": "ljs-minimal"
-                },
-                "text.mask": {
-                  "elements": 33,
-                  "exact_on_every_case": true,
-                  "measured_max_abs": 0.0,
-                  "measured_mean_abs": 0.0,
-                  "worst_case": "ljs-upstream-default"
-                }
-              },
-              "threads": 8
-            },
-            "waveform-decoder": {
-              "backend": "CUDA",
+              "backend": "CPU",
               "probes": {
                 "audio.pcm": {
                   "elements": 84992,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.37672530859708786,
-                  "measured_mean_abs": 0.006878929453365797,
+                  "measured_max_abs": 0.017125502228736877,
+                  "measured_mean_abs": 0.0001612276234922842,
+                  "worst_case": "ljs-normalization"
+                }
+              },
+              "threads": 8
+            }
+          }
+        },
+        "F32": {
+          "backends": {
+            "CUDA": {
+              "stages": {
+                "acoustic-flow": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "flow.z": {
+                      "elements": 158976,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.014860153198242188,
+                      "measured_mean_abs": 0.0002172523164999612,
+                      "worst_case": "ljs-long"
+                    }
+                  },
+                  "threads": 8
+                },
+                "duration-path": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "duration.attention": {
+                      "elements": 260820,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    },
+                    "duration.w_ceil": {
+                      "elements": 315,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    },
+                    "duration.y_length": {
+                      "elements": 1,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    }
+                  },
+                  "threads": 8
+                },
+                "duration-predictor": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "duration.logw": {
+                      "elements": 71,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 1.1086463928222656e-05,
+                      "measured_mean_abs": 1.8583427012806208e-06,
+                      "worst_case": "ljs-repetition"
+                    }
+                  },
+                  "threads": 8
+                },
+                "latent-sampling": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "latent.z_p": {
+                      "elements": 158976,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.014161109924316406,
+                      "measured_mean_abs": 5.461447695572994e-05,
+                      "worst_case": "ljs-long"
+                    }
+                  },
+                  "threads": 8
+                },
+                "prior-expansion": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "prior.logs_p_expanded": {
+                      "elements": 25536,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0009763240814208984,
+                      "measured_mean_abs": 9.722006361334022e-05,
+                      "worst_case": "ljs-punctuation"
+                    },
+                    "prior.m_p_expanded": {
+                      "elements": 158976,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0019559860229492188,
+                      "measured_mean_abs": 2.565610821581075e-05,
+                      "worst_case": "ljs-long"
+                    }
+                  },
+                  "threads": 8
+                },
+                "text-encoder": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "text.logs_p": {
+                      "elements": 60480,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.001562453806400299,
+                      "measured_mean_abs": 5.702996471275886e-05,
+                      "worst_case": "ljs-long"
+                    },
+                    "text.m_p": {
+                      "elements": 1728,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.005259722471237183,
+                      "measured_mean_abs": 0.0002639802662963996,
+                      "worst_case": "ljs-minimal"
+                    },
+                    "text.mask": {
+                      "elements": 33,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0,
+                      "measured_mean_abs": 0.0,
+                      "worst_case": "ljs-upstream-default"
+                    }
+                  },
+                  "threads": 8
+                },
+                "waveform-decoder": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "audio.pcm": {
+                      "elements": 211968,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.019023246597498655,
+                      "measured_mean_abs": 0.00017818215918446797,
+                      "worst_case": "ljs-long"
+                    }
+                  },
+                  "threads": 8
+                }
+              }
+            }
+          },
+          "stages": {
+            "acoustic-flow": {
+              "backend": "CPU",
+              "probes": {
+                "flow.z": {
+                  "elements": 158976,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 7.033348083496094e-05,
+                  "measured_mean_abs": 1.1885602672359585e-06,
+                  "worst_case": "ljs-long"
+                }
+              },
+              "threads": 8
+            },
+            "duration-path": {
+              "backend": "CPU",
+              "probes": {
+                "duration.attention": {
+                  "elements": 260820,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0
+                },
+                "duration.w_ceil": {
+                  "elements": 315,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0
+                },
+                "duration.y_length": {
+                  "elements": 1,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0
+                }
+              },
+              "threads": 8
+            },
+            "duration-predictor": {
+              "backend": "CPU",
+              "probes": {
+                "duration.logw": {
+                  "elements": 71,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.1086463928222656e-05,
+                  "measured_mean_abs": 1.8583427012806208e-06,
+                  "worst_case": "ljs-repetition"
+                }
+              },
+              "threads": 8
+            },
+            "latent-sampling": {
+              "backend": "CPU",
+              "probes": {
+                "latent.z_p": {
+                  "elements": 63744,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.33514404296875e-05,
+                  "measured_mean_abs": 1.6031229180558753e-07,
+                  "worst_case": "ljs-normalization"
+                }
+              },
+              "threads": 8
+            },
+            "prior-expansion": {
+              "backend": "CPU",
+              "probes": {
+                "prior.logs_p_expanded": {
+                  "elements": 158976,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 3.844499588012695e-06,
+                  "measured_mean_abs": 4.500361390399856e-08,
+                  "worst_case": "ljs-long"
+                },
+                "prior.m_p_expanded": {
+                  "elements": 158976,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.1622905731201172e-05,
+                  "measured_mean_abs": 1.0070006548144537e-07,
+                  "worst_case": "ljs-long"
+                }
+              },
+              "threads": 8
+            },
+            "text-encoder": {
+              "backend": "CPU",
+              "probes": {
+                "text.logs_p": {
+                  "elements": 60480,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 3.844499588012695e-06,
+                  "measured_mean_abs": 4.490514694855957e-08,
+                  "worst_case": "ljs-long"
+                },
+                "text.m_p": {
+                  "elements": 60480,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.1622905731201172e-05,
+                  "measured_mean_abs": 1.032840972338962e-07,
+                  "worst_case": "ljs-long"
+                },
+                "text.mask": {
+                  "elements": 33,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0,
+                  "measured_mean_abs": 0.0,
+                  "worst_case": "ljs-upstream-default"
+                }
+              },
+              "threads": 8
+            },
+            "waveform-decoder": {
+              "backend": "CPU",
+              "probes": {
+                "audio.pcm": {
+                  "elements": 69120,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 0.0002946630120277405,
+                  "measured_mean_abs": 2.455841464593013e-06,
+                  "worst_case": "ljs-medium"
+                }
+              },
+              "threads": 8
+            }
+          }
+        },
+        "Q8_MIXED": {
+          "backends": {
+            "CUDA": {
+              "stages": {
+                "acoustic-flow": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "flow.z": {
+                      "elements": 60864,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.16575151681900024,
+                      "measured_mean_abs": 0.0060757504080719196,
+                      "worst_case": "ljs-rate-slow"
+                    }
+                  },
+                  "threads": 8
+                },
+                "duration-path": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "duration.attention": {
+                      "elements": 260820,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    },
+                    "duration.w_ceil": {
+                      "elements": 315,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    },
+                    "duration.y_length": {
+                      "elements": 1,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    }
+                  },
+                  "threads": 8
+                },
+                "duration-predictor": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "duration.logw": {
+                      "elements": 71,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 1.1086463928222656e-05,
+                      "measured_mean_abs": 1.8583427012806208e-06,
+                      "worst_case": "ljs-repetition"
+                    }
+                  },
+                  "threads": 8
+                },
+                "latent-sampling": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "latent.z_p": {
+                      "elements": 158976,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.014161109924316406,
+                      "measured_mean_abs": 5.461447695572994e-05,
+                      "worst_case": "ljs-long"
+                    }
+                  },
+                  "threads": 8
+                },
+                "prior-expansion": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "prior.logs_p_expanded": {
+                      "elements": 25536,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0009763240814208984,
+                      "measured_mean_abs": 9.722006361334022e-05,
+                      "worst_case": "ljs-punctuation"
+                    },
+                    "prior.m_p_expanded": {
+                      "elements": 158976,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0019559860229492188,
+                      "measured_mean_abs": 2.565610821581075e-05,
+                      "worst_case": "ljs-long"
+                    }
+                  },
+                  "threads": 8
+                },
+                "text-encoder": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "text.logs_p": {
+                      "elements": 60480,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.001562453806400299,
+                      "measured_mean_abs": 5.702996471275886e-05,
+                      "worst_case": "ljs-long"
+                    },
+                    "text.m_p": {
+                      "elements": 1728,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.005259722471237183,
+                      "measured_mean_abs": 0.0002639802662963996,
+                      "worst_case": "ljs-minimal"
+                    },
+                    "text.mask": {
+                      "elements": 33,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0,
+                      "measured_mean_abs": 0.0,
+                      "worst_case": "ljs-upstream-default"
+                    }
+                  },
+                  "threads": 8
+                },
+                "waveform-decoder": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "audio.pcm": {
+                      "elements": 84992,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.37672530859708786,
+                      "measured_mean_abs": 0.006878929453365797,
+                      "worst_case": "ljs-normalization"
+                    }
+                  },
+                  "threads": 8
+                }
+              }
+            }
+          },
+          "stages": {
+            "acoustic-flow": {
+              "backend": "CPU",
+              "probes": {
+                "flow.z": {
+                  "elements": 60864,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 0.14211416244506836,
+                  "measured_mean_abs": 0.005819317074281104,
+                  "worst_case": "ljs-rate-slow"
+                }
+              },
+              "threads": 8
+            },
+            "duration-path": {
+              "backend": "CPU",
+              "probes": {
+                "duration.attention": {
+                  "elements": 260820,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0
+                },
+                "duration.w_ceil": {
+                  "elements": 315,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0
+                },
+                "duration.y_length": {
+                  "elements": 1,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0
+                }
+              },
+              "threads": 8
+            },
+            "duration-predictor": {
+              "backend": "CPU",
+              "probes": {
+                "duration.logw": {
+                  "elements": 71,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.1086463928222656e-05,
+                  "measured_mean_abs": 1.8583427012806208e-06,
+                  "worst_case": "ljs-repetition"
+                }
+              },
+              "threads": 8
+            },
+            "latent-sampling": {
+              "backend": "CPU",
+              "probes": {
+                "latent.z_p": {
+                  "elements": 63744,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.33514404296875e-05,
+                  "measured_mean_abs": 1.6031229180558753e-07,
+                  "worst_case": "ljs-normalization"
+                }
+              },
+              "threads": 8
+            },
+            "prior-expansion": {
+              "backend": "CPU",
+              "probes": {
+                "prior.logs_p_expanded": {
+                  "elements": 158976,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 3.844499588012695e-06,
+                  "measured_mean_abs": 4.500361390399856e-08,
+                  "worst_case": "ljs-long"
+                },
+                "prior.m_p_expanded": {
+                  "elements": 158976,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.1622905731201172e-05,
+                  "measured_mean_abs": 1.0070006548144537e-07,
+                  "worst_case": "ljs-long"
+                }
+              },
+              "threads": 8
+            },
+            "text-encoder": {
+              "backend": "CPU",
+              "probes": {
+                "text.logs_p": {
+                  "elements": 60480,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 3.844499588012695e-06,
+                  "measured_mean_abs": 4.490514694855957e-08,
+                  "worst_case": "ljs-long"
+                },
+                "text.m_p": {
+                  "elements": 60480,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.1622905731201172e-05,
+                  "measured_mean_abs": 1.032840972338962e-07,
+                  "worst_case": "ljs-long"
+                },
+                "text.mask": {
+                  "elements": 33,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0,
+                  "measured_mean_abs": 0.0,
+                  "worst_case": "ljs-upstream-default"
+                }
+              },
+              "threads": 8
+            },
+            "waveform-decoder": {
+              "backend": "CPU",
+              "probes": {
+                "audio.pcm": {
+                  "elements": 84992,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 0.36679696291685104,
+                  "measured_mean_abs": 0.007154022230952899,
                   "worst_case": "ljs-normalization"
                 }
               },
@@ -629,134 +759,762 @@
             }
           }
         }
-      },
-      "stages": {
-        "acoustic-flow": {
-          "backend": "CPU",
-          "probes": {
-            "flow.z": {
-              "elements": 60864,
-              "exact_on_every_case": false,
-              "measured_max_abs": 0.14211416244506836,
-              "measured_mean_abs": 0.005819317074281104,
-              "worst_case": "ljs-rate-slow"
+      }
+    },
+    "vits-vctk": {
+      "case_count": 12,
+      "profiles": {
+        "F16": {
+          "backends": {
+            "CUDA": {
+              "stages": {
+                "acoustic-flow": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "flow.z": {
+                      "elements": 118272,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.020626544952392578,
+                      "measured_mean_abs": 0.00020561258255429295,
+                      "worst_case": "vctk-long"
+                    }
+                  },
+                  "threads": 8
+                },
+                "duration-path": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "duration.attention": {
+                      "elements": 194040,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    },
+                    "duration.w_ceil": {
+                      "elements": 315,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    },
+                    "duration.y_length": {
+                      "elements": 1,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    }
+                  },
+                  "threads": 8
+                },
+                "duration-predictor": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "duration.logw": {
+                      "elements": 315,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 1.9848346710205078e-05,
+                      "measured_mean_abs": 1.2120675472986131e-06,
+                      "worst_case": "vctk-long"
+                    }
+                  },
+                  "threads": 8
+                },
+                "latent-sampling": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "latent.z_p": {
+                      "elements": 118272,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0021500587463378906,
+                      "measured_mean_abs": 4.1924326612877735e-05,
+                      "worst_case": "vctk-long"
+                    }
+                  },
+                  "threads": 8
+                },
+                "prior-expansion": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "prior.logs_p_expanded": {
+                      "elements": 44352,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0004891157150268555,
+                      "measured_mean_abs": 0.00022792662050397623,
+                      "worst_case": "vctk-rate-slow"
+                    },
+                    "prior.m_p_expanded": {
+                      "elements": 118272,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0009686946868896484,
+                      "measured_mean_abs": 1.0891225314959698e-05,
+                      "worst_case": "vctk-long"
+                    }
+                  },
+                  "threads": 8
+                },
+                "text-encoder": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "text.logs_p": {
+                      "elements": 1728,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.001935720443725586,
+                      "measured_mean_abs": 0.000681556761264801,
+                      "worst_case": "vctk-minimal"
+                    },
+                    "text.m_p": {
+                      "elements": 60480,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0031262636184692383,
+                      "measured_mean_abs": 1.5716968277956767e-05,
+                      "worst_case": "vctk-long"
+                    },
+                    "text.mask": {
+                      "elements": 33,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0,
+                      "measured_mean_abs": 0.0,
+                      "worst_case": "vctk-upstream-speaker-004"
+                    }
+                  },
+                  "threads": 8
+                },
+                "waveform-decoder": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "audio.pcm": {
+                      "elements": 157696,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.1957356221973896,
+                      "measured_mean_abs": 0.0007946023107658343,
+                      "worst_case": "vctk-long"
+                    }
+                  },
+                  "threads": 8
+                }
+              }
             }
           },
-          "threads": 8
-        },
-        "duration-path": {
-          "backend": "CPU",
-          "probes": {
-            "duration.attention": {
-              "elements": 260820,
-              "exact_on_every_case": true,
-              "measured_max_abs": 0.0
+          "stages": {
+            "acoustic-flow": {
+              "backend": "CPU",
+              "probes": {
+                "flow.z": {
+                  "elements": 28800,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 0.005980372428894043,
+                  "measured_mean_abs": 6.337526926977767e-05,
+                  "worst_case": "vctk-punctuation"
+                }
+              },
+              "threads": 8
             },
-            "duration.w_ceil": {
-              "elements": 315,
-              "exact_on_every_case": true,
-              "measured_max_abs": 0.0
+            "duration-path": {
+              "backend": "CPU",
+              "probes": {
+                "duration.attention": {
+                  "elements": 194040,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0
+                },
+                "duration.w_ceil": {
+                  "elements": 315,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0
+                },
+                "duration.y_length": {
+                  "elements": 1,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0
+                }
+              },
+              "threads": 8
             },
-            "duration.y_length": {
-              "elements": 1,
-              "exact_on_every_case": true,
-              "measured_max_abs": 0.0
-            }
-          },
-          "threads": 8
-        },
-        "duration-predictor": {
-          "backend": "CPU",
-          "probes": {
-            "duration.logw": {
-              "elements": 71,
-              "exact_on_every_case": false,
-              "measured_max_abs": 1.1086463928222656e-05,
-              "measured_mean_abs": 1.8583427012806208e-06,
-              "worst_case": "ljs-repetition"
-            }
-          },
-          "threads": 8
-        },
-        "latent-sampling": {
-          "backend": "CPU",
-          "probes": {
-            "latent.z_p": {
-              "elements": 63744,
-              "exact_on_every_case": false,
-              "measured_max_abs": 1.33514404296875e-05,
-              "measured_mean_abs": 1.6031229180558753e-07,
-              "worst_case": "ljs-normalization"
-            }
-          },
-          "threads": 8
-        },
-        "prior-expansion": {
-          "backend": "CPU",
-          "probes": {
-            "prior.logs_p_expanded": {
-              "elements": 158976,
-              "exact_on_every_case": false,
-              "measured_max_abs": 3.844499588012695e-06,
-              "measured_mean_abs": 4.500361390399856e-08,
-              "worst_case": "ljs-long"
+            "duration-predictor": {
+              "backend": "CPU",
+              "probes": {
+                "duration.logw": {
+                  "elements": 315,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.9848346710205078e-05,
+                  "measured_mean_abs": 1.2120675472986131e-06,
+                  "worst_case": "vctk-long"
+                }
+              },
+              "threads": 8
             },
-            "prior.m_p_expanded": {
-              "elements": 158976,
-              "exact_on_every_case": false,
-              "measured_max_abs": 1.1622905731201172e-05,
-              "measured_mean_abs": 1.0070006548144537e-07,
-              "worst_case": "ljs-long"
-            }
-          },
-          "threads": 8
-        },
-        "text-encoder": {
-          "backend": "CPU",
-          "probes": {
-            "text.logs_p": {
-              "elements": 60480,
-              "exact_on_every_case": false,
-              "measured_max_abs": 3.844499588012695e-06,
-              "measured_mean_abs": 4.490514694855957e-08,
-              "worst_case": "ljs-long"
+            "latent-sampling": {
+              "backend": "CPU",
+              "probes": {
+                "latent.z_p": {
+                  "elements": 118272,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 3.9637088775634766e-06,
+                  "measured_mean_abs": 4.13880078799613e-08,
+                  "worst_case": "vctk-long"
+                }
+              },
+              "threads": 8
             },
-            "text.m_p": {
-              "elements": 60480,
-              "exact_on_every_case": false,
-              "measured_max_abs": 1.1622905731201172e-05,
-              "measured_mean_abs": 1.032840972338962e-07,
-              "worst_case": "ljs-long"
+            "prior-expansion": {
+              "backend": "CPU",
+              "probes": {
+                "prior.logs_p_expanded": {
+                  "elements": 118272,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.3113021850585938e-06,
+                  "measured_mean_abs": 1.902559603810375e-07,
+                  "worst_case": "vctk-long"
+                },
+                "prior.m_p_expanded": {
+                  "elements": 118272,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 4.291534423828125e-06,
+                  "measured_mean_abs": 1.832726372395445e-08,
+                  "worst_case": "vctk-long"
+                }
+              },
+              "threads": 8
             },
-            "text.mask": {
-              "elements": 33,
-              "exact_on_every_case": true,
-              "measured_max_abs": 0.0,
-              "measured_mean_abs": 0.0,
-              "worst_case": "ljs-upstream-default"
+            "text-encoder": {
+              "backend": "CPU",
+              "probes": {
+                "text.logs_p": {
+                  "elements": 60480,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.3113021850585938e-06,
+                  "measured_mean_abs": 1.9177200676745208e-07,
+                  "worst_case": "vctk-long"
+                },
+                "text.m_p": {
+                  "elements": 60480,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 4.291534423828125e-06,
+                  "measured_mean_abs": 1.894620540783594e-08,
+                  "worst_case": "vctk-long"
+                },
+                "text.mask": {
+                  "elements": 33,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0,
+                  "measured_mean_abs": 0.0,
+                  "worst_case": "vctk-upstream-speaker-004"
+                }
+              },
+              "threads": 8
+            },
+            "waveform-decoder": {
+              "backend": "CPU",
+              "probes": {
+                "audio.pcm": {
+                  "elements": 157696,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 0.07153122313320637,
+                  "measured_mean_abs": 0.00025243242107012747,
+                  "worst_case": "vctk-long"
+                }
+              },
+              "threads": 8
             }
-          },
-          "threads": 8
+          }
         },
-        "waveform-decoder": {
-          "backend": "CPU",
-          "probes": {
-            "audio.pcm": {
-              "elements": 84992,
-              "exact_on_every_case": false,
-              "measured_max_abs": 0.36679696291685104,
-              "measured_mean_abs": 0.007154022230952899,
-              "worst_case": "ljs-normalization"
+        "F32": {
+          "backends": {
+            "CUDA": {
+              "stages": {
+                "acoustic-flow": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "flow.z": {
+                      "elements": 14592,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.01162576675415039,
+                      "measured_mean_abs": 0.00011789157016257952,
+                      "worst_case": "vctk-upstream-speaker-004"
+                    }
+                  },
+                  "threads": 8
+                },
+                "duration-path": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "duration.attention": {
+                      "elements": 194040,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    },
+                    "duration.w_ceil": {
+                      "elements": 315,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    },
+                    "duration.y_length": {
+                      "elements": 1,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    }
+                  },
+                  "threads": 8
+                },
+                "duration-predictor": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "duration.logw": {
+                      "elements": 315,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 1.9848346710205078e-05,
+                      "measured_mean_abs": 1.2120675472986131e-06,
+                      "worst_case": "vctk-long"
+                    }
+                  },
+                  "threads": 8
+                },
+                "latent-sampling": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "latent.z_p": {
+                      "elements": 118272,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0021500587463378906,
+                      "measured_mean_abs": 4.1924326612877735e-05,
+                      "worst_case": "vctk-long"
+                    }
+                  },
+                  "threads": 8
+                },
+                "prior-expansion": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "prior.logs_p_expanded": {
+                      "elements": 44352,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0004891157150268555,
+                      "measured_mean_abs": 0.00022792662050397623,
+                      "worst_case": "vctk-rate-slow"
+                    },
+                    "prior.m_p_expanded": {
+                      "elements": 118272,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0009686946868896484,
+                      "measured_mean_abs": 1.0891225314959698e-05,
+                      "worst_case": "vctk-long"
+                    }
+                  },
+                  "threads": 8
+                },
+                "text-encoder": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "text.logs_p": {
+                      "elements": 1728,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.001935720443725586,
+                      "measured_mean_abs": 0.000681556761264801,
+                      "worst_case": "vctk-minimal"
+                    },
+                    "text.m_p": {
+                      "elements": 60480,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0031262636184692383,
+                      "measured_mean_abs": 1.5716968277956767e-05,
+                      "worst_case": "vctk-long"
+                    },
+                    "text.mask": {
+                      "elements": 33,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0,
+                      "measured_mean_abs": 0.0,
+                      "worst_case": "vctk-upstream-speaker-004"
+                    }
+                  },
+                  "threads": 8
+                },
+                "waveform-decoder": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "audio.pcm": {
+                      "elements": 65536,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.030684679746627808,
+                      "measured_mean_abs": 0.00034617201570864343,
+                      "worst_case": "vctk-normalization"
+                    }
+                  },
+                  "threads": 8
+                }
+              }
             }
           },
-          "threads": 8
+          "stages": {
+            "acoustic-flow": {
+              "backend": "CPU",
+              "probes": {
+                "flow.z": {
+                  "elements": 118272,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.4781951904296875e-05,
+                  "measured_mean_abs": 1.5479570098266156e-07,
+                  "worst_case": "vctk-long"
+                }
+              },
+              "threads": 8
+            },
+            "duration-path": {
+              "backend": "CPU",
+              "probes": {
+                "duration.attention": {
+                  "elements": 194040,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0
+                },
+                "duration.w_ceil": {
+                  "elements": 315,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0
+                },
+                "duration.y_length": {
+                  "elements": 1,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0
+                }
+              },
+              "threads": 8
+            },
+            "duration-predictor": {
+              "backend": "CPU",
+              "probes": {
+                "duration.logw": {
+                  "elements": 315,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.9848346710205078e-05,
+                  "measured_mean_abs": 1.2120675472986131e-06,
+                  "worst_case": "vctk-long"
+                }
+              },
+              "threads": 8
+            },
+            "latent-sampling": {
+              "backend": "CPU",
+              "probes": {
+                "latent.z_p": {
+                  "elements": 118272,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 3.9637088775634766e-06,
+                  "measured_mean_abs": 4.13880078799613e-08,
+                  "worst_case": "vctk-long"
+                }
+              },
+              "threads": 8
+            },
+            "prior-expansion": {
+              "backend": "CPU",
+              "probes": {
+                "prior.logs_p_expanded": {
+                  "elements": 118272,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.3113021850585938e-06,
+                  "measured_mean_abs": 1.902559603810375e-07,
+                  "worst_case": "vctk-long"
+                },
+                "prior.m_p_expanded": {
+                  "elements": 118272,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 4.291534423828125e-06,
+                  "measured_mean_abs": 1.832726372395445e-08,
+                  "worst_case": "vctk-long"
+                }
+              },
+              "threads": 8
+            },
+            "text-encoder": {
+              "backend": "CPU",
+              "probes": {
+                "text.logs_p": {
+                  "elements": 60480,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.3113021850585938e-06,
+                  "measured_mean_abs": 1.9177200676745208e-07,
+                  "worst_case": "vctk-long"
+                },
+                "text.m_p": {
+                  "elements": 60480,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 4.291534423828125e-06,
+                  "measured_mean_abs": 1.894620540783594e-08,
+                  "worst_case": "vctk-long"
+                },
+                "text.mask": {
+                  "elements": 33,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0,
+                  "measured_mean_abs": 0.0,
+                  "worst_case": "vctk-upstream-speaker-004"
+                }
+              },
+              "threads": 8
+            },
+            "waveform-decoder": {
+              "backend": "CPU",
+              "probes": {
+                "audio.pcm": {
+                  "elements": 157696,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 0.00023978948593139648,
+                  "measured_mean_abs": 7.815228750515405e-07,
+                  "worst_case": "vctk-long"
+                }
+              },
+              "threads": 8
+            }
+          }
+        },
+        "Q8_MIXED": {
+          "backends": {
+            "CUDA": {
+              "stages": {
+                "acoustic-flow": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "flow.z": {
+                      "elements": 49152,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.18339848518371582,
+                      "measured_mean_abs": 0.0026415488640433673,
+                      "worst_case": "vctk-normalization"
+                    }
+                  },
+                  "threads": 8
+                },
+                "duration-path": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "duration.attention": {
+                      "elements": 194040,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    },
+                    "duration.w_ceil": {
+                      "elements": 315,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    },
+                    "duration.y_length": {
+                      "elements": 1,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0
+                    }
+                  },
+                  "threads": 8
+                },
+                "duration-predictor": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "duration.logw": {
+                      "elements": 315,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 1.9848346710205078e-05,
+                      "measured_mean_abs": 1.2120675472986131e-06,
+                      "worst_case": "vctk-long"
+                    }
+                  },
+                  "threads": 8
+                },
+                "latent-sampling": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "latent.z_p": {
+                      "elements": 118272,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0021500587463378906,
+                      "measured_mean_abs": 4.1924326612877735e-05,
+                      "worst_case": "vctk-long"
+                    }
+                  },
+                  "threads": 8
+                },
+                "prior-expansion": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "prior.logs_p_expanded": {
+                      "elements": 44352,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0004891157150268555,
+                      "measured_mean_abs": 0.00022792662050397623,
+                      "worst_case": "vctk-rate-slow"
+                    },
+                    "prior.m_p_expanded": {
+                      "elements": 118272,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0009686946868896484,
+                      "measured_mean_abs": 1.0891225314959698e-05,
+                      "worst_case": "vctk-long"
+                    }
+                  },
+                  "threads": 8
+                },
+                "text-encoder": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "text.logs_p": {
+                      "elements": 1728,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.001935720443725586,
+                      "measured_mean_abs": 0.000681556761264801,
+                      "worst_case": "vctk-minimal"
+                    },
+                    "text.m_p": {
+                      "elements": 60480,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.0031262636184692383,
+                      "measured_mean_abs": 1.5716968277956767e-05,
+                      "worst_case": "vctk-long"
+                    },
+                    "text.mask": {
+                      "elements": 33,
+                      "exact_on_every_case": true,
+                      "measured_max_abs": 0.0,
+                      "measured_mean_abs": 0.0,
+                      "worst_case": "vctk-upstream-speaker-004"
+                    }
+                  },
+                  "threads": 8
+                },
+                "waveform-decoder": {
+                  "backend": "CUDA",
+                  "probes": {
+                    "audio.pcm": {
+                      "elements": 157696,
+                      "exact_on_every_case": false,
+                      "measured_max_abs": 0.8527519702911377,
+                      "measured_mean_abs": 0.005668012534552116,
+                      "worst_case": "vctk-long"
+                    }
+                  },
+                  "threads": 8
+                }
+              }
+            }
+          },
+          "stages": {
+            "acoustic-flow": {
+              "backend": "CPU",
+              "probes": {
+                "flow.z": {
+                  "elements": 49152,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 0.19206368923187256,
+                  "measured_mean_abs": 0.0025256565592760203,
+                  "worst_case": "vctk-normalization"
+                }
+              },
+              "threads": 8
+            },
+            "duration-path": {
+              "backend": "CPU",
+              "probes": {
+                "duration.attention": {
+                  "elements": 194040,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0
+                },
+                "duration.w_ceil": {
+                  "elements": 315,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0
+                },
+                "duration.y_length": {
+                  "elements": 1,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0
+                }
+              },
+              "threads": 8
+            },
+            "duration-predictor": {
+              "backend": "CPU",
+              "probes": {
+                "duration.logw": {
+                  "elements": 315,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.9848346710205078e-05,
+                  "measured_mean_abs": 1.2120675472986131e-06,
+                  "worst_case": "vctk-long"
+                }
+              },
+              "threads": 8
+            },
+            "latent-sampling": {
+              "backend": "CPU",
+              "probes": {
+                "latent.z_p": {
+                  "elements": 118272,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 3.9637088775634766e-06,
+                  "measured_mean_abs": 4.13880078799613e-08,
+                  "worst_case": "vctk-long"
+                }
+              },
+              "threads": 8
+            },
+            "prior-expansion": {
+              "backend": "CPU",
+              "probes": {
+                "prior.logs_p_expanded": {
+                  "elements": 118272,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.3113021850585938e-06,
+                  "measured_mean_abs": 1.902559603810375e-07,
+                  "worst_case": "vctk-long"
+                },
+                "prior.m_p_expanded": {
+                  "elements": 118272,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 4.291534423828125e-06,
+                  "measured_mean_abs": 1.832726372395445e-08,
+                  "worst_case": "vctk-long"
+                }
+              },
+              "threads": 8
+            },
+            "text-encoder": {
+              "backend": "CPU",
+              "probes": {
+                "text.logs_p": {
+                  "elements": 60480,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 1.3113021850585938e-06,
+                  "measured_mean_abs": 1.9177200676745208e-07,
+                  "worst_case": "vctk-long"
+                },
+                "text.m_p": {
+                  "elements": 60480,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 4.291534423828125e-06,
+                  "measured_mean_abs": 1.894620540783594e-08,
+                  "worst_case": "vctk-long"
+                },
+                "text.mask": {
+                  "elements": 33,
+                  "exact_on_every_case": true,
+                  "measured_max_abs": 0.0,
+                  "measured_mean_abs": 0.0,
+                  "worst_case": "vctk-upstream-speaker-004"
+                }
+              },
+              "threads": 8
+            },
+            "waveform-decoder": {
+              "backend": "CPU",
+              "probes": {
+                "audio.pcm": {
+                  "elements": 157696,
+                  "exact_on_every_case": false,
+                  "measured_max_abs": 0.7800585478544235,
+                  "measured_mean_abs": 0.006111586444669374,
+                  "worst_case": "vctk-long"
+                }
+              },
+              "threads": 8
+            }
+          }
         }
       }
     }
-  },
-  "reference_stage": "source-f32-cpu",
-  "schema": "synthesize-tolerances-v1",
-  "status": "measurements-recorded-thresholds-deferred",
-  "suite_version": 1,
-  "variant": "vits-ljspeech"
+  }
 }

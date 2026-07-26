@@ -400,11 +400,39 @@ once made this configurable was removed on 2026-07-26 (`docs/backends.md`,
 `ggml-patches/README.md`). In the 12-case suite, TF32 produced worst
 max-absolute differences of `8.6592436e-3` at `text.m_p` and `1.1620114e-1` at
 `audio.pcm`, against `1.1280179e-5` and `7.4365083e-4` under the gate. The TF32
-figures are what current builds produce.
+figures are what current builds produce for the stages that remain on the primary
+backend.
 
-The table below was measured **under the removed gate** and therefore no longer
-describes a shipped configuration. It is retained as the historical strict-FP32
-reference until the CUDA grid is re-measured and these rows are replaced:
+### Recorded decision: the duration stage is held on CPU
+
+`duration-path.cpp` ceils `logw` into the integer `w_ceil`, and `y_length` and the
+attention path are built from it, so every later stage's shape follows from an
+integer this stage produced. Removing the strict-FP32 gate made that integer
+backend-dependent: on the 315-token `ljs-long` case CUDA ceiled one token
+differently, moving the frame count by 256 samples — exactly one hop.
+
+Nothing in the suite caught it. The VITS tolerance file predates the per-stage
+format, so `tests/python/test_tolerance_coverage.py` does not protect this family,
+and the registered Golden tests run on CPU. It was found by comparing CPU against
+CUDA by hand after the same failure was diagnosed in Kokoro.
+
+`Model::Impl::compute_duration_stage` therefore runs on a CPU-only scheduler over
+CPU-resident weight mirrors of `text_encoder`, `duration_predictor`, and `voice`.
+The text encoder is included because that stage re-runs it and feeds its output
+straight into the predictor; pinning only the predictor would leave the input
+backend-dependent. `voice_weights_cpu` exists because the flow and waveform
+decoder stages read the same Voice tensors from the primary buffer.
+
+Measured on `ljs-long`, F32, GB10: synthesis wall time 1.09 s to 1.39 s median,
+still 7.6 times faster than real time, with 27.5 MB of the 113.2 MB of weights
+resident in both buffers. Both variants report `structural_exact` across all
+twelve cases on CUDA, and frame counts match CPU exactly — 234,496 for
+`ljs-long` and 156,416 for `vctk-long`.
+
+The table below was measured **under the removed gate**. Its continuous rows no
+longer describe a shipped configuration and are retained as the historical
+strict-FP32 reference; re-measuring them requires migrating this family's
+tolerance file to the per-stage format first, which is tracked separately:
 
 | Probe | Worst case | Max abs | Mean abs |
 | --- | --- | ---: | ---: |

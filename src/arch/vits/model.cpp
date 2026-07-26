@@ -20,6 +20,7 @@
 #include "weights.h"
 
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <new>
@@ -32,6 +33,17 @@ struct DurationStageOutput {
     TextEncoderOutput       text;
     DurationPredictorOutput predictor;
 };
+
+// Weight-name prefixes of the stage that produces w_ceil. The duration graph
+// re-runs the text encoder, so both belong to it, and the Voice table is read
+// there as well as by the flow and decoder stages.
+bool is_cpu_stage_weight(const char * name) {
+    if (name == nullptr) {
+        return false;
+    }
+    return std::strncmp(name, "text_encoder", 12) == 0 || std::strncmp(name, "duration_predictor", 18) == 0 ||
+           std::strncmp(name, "voice", 5) == 0;
+}
 
 }  // namespace
 
@@ -48,6 +60,23 @@ struct Model::Impl {
     FlowWeights                         flow_weights;
     DecoderWeights                      decoder_weights;
 
+    // CPU-resident mirrors for the stage that produces w_ceil. `w_ceil` is an
+    // integer frame count and every later shape follows from it, so it must not
+    // vary with the Execution Backend; CUDA F32 matmuls compute at TF32
+    // precision, which is enough to move a duration across a ceiling boundary.
+    // See docs/backends.md. Only populated when the primary is not the CPU.
+    ggml_context *        cpu_weights_context = nullptr;
+    ggml_backend_buffer_t cpu_weights_buffer  = nullptr;
+    TextWeights           text_weights_cpu;
+    DurationWeights       duration_weights_cpu;
+    // The duration graph reads the Voice weights from CPU while the flow and
+    // decoder stages read the same tensors from the primary buffer, so they need
+    // one view per buffer.
+    VoiceWeights          voice_weights_cpu;
+
+    synth_status_t create_cpu_weight_mirror();
+    synth_status_t fill_cpu_weight_mirror() const;
+
     synth_status_t compute_duration_stage(const std::vector<int32_t> & token_ids,
                                           const std::vector<float> &   duration_noise,
                                           float                        noise_scale_w,
@@ -59,14 +88,73 @@ struct Model::Impl {
         if (weights_buffer != nullptr) {
             ggml_backend_buffer_free(weights_buffer);
         }
+        if (cpu_weights_buffer != nullptr) {
+            ggml_backend_buffer_free(cpu_weights_buffer);
+        }
         if (weights_context != nullptr) {
             ggml_free(weights_context);
+        }
+        if (cpu_weights_context != nullptr) {
+            ggml_free(cpu_weights_context);
         }
         if (gguf != nullptr) {
             gguf_free(gguf);
         }
     }
 };
+
+synth_status_t Model::Impl::create_cpu_weight_mirror() {
+    if (weights_context == nullptr || backend_plan == nullptr ||
+        ggml_backend_dev_type(backend_plan->primary_device()) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+        return SYNTH_OK;
+    }
+    size_t mirrored = 0;
+    for (ggml_tensor * tensor = ggml_get_first_tensor(weights_context); tensor != nullptr;
+         tensor               = ggml_get_next_tensor(weights_context, tensor)) {
+        if (is_cpu_stage_weight(ggml_get_name(tensor))) {
+            ++mirrored;
+        }
+    }
+    if (mirrored == 0) {
+        return SYNTH_ERR_GGUF;
+    }
+    ggml_init_params parameters = {};
+    parameters.mem_size         = mirrored * ggml_tensor_overhead();
+    parameters.no_alloc         = true;
+    cpu_weights_context         = ggml_init(parameters);
+    if (cpu_weights_context == nullptr) {
+        return SYNTH_ERR_OOM;
+    }
+    for (ggml_tensor * tensor = ggml_get_first_tensor(weights_context); tensor != nullptr;
+         tensor               = ggml_get_next_tensor(weights_context, tensor)) {
+        const char * name = ggml_get_name(tensor);
+        if (!is_cpu_stage_weight(name)) {
+            continue;
+        }
+        ggml_tensor * twin = ggml_dup_tensor(cpu_weights_context, tensor);
+        if (twin == nullptr) {
+            return SYNTH_ERR_OOM;
+        }
+        // The builders resolve by name, so the twin has to carry the same one.
+        ggml_set_name(twin, name);
+    }
+    return SYNTH_OK;
+}
+
+synth_status_t Model::Impl::fill_cpu_weight_mirror() const {
+    if (cpu_weights_context == nullptr) {
+        return SYNTH_OK;
+    }
+    for (ggml_tensor * twin = ggml_get_first_tensor(cpu_weights_context); twin != nullptr;
+         twin               = ggml_get_next_tensor(cpu_weights_context, twin)) {
+        ggml_tensor * source = ggml_get_tensor(weights_context, ggml_get_name(twin));
+        if (source == nullptr || ggml_nbytes(source) != ggml_nbytes(twin)) {
+            return SYNTH_ERR_GGUF;
+        }
+        ggml_backend_tensor_copy(source, twin);
+    }
+    return SYNTH_OK;
+}
 
 Model::Model(std::unique_ptr<Impl> implementation) : implementation_(std::move(implementation)) {}
 
@@ -163,6 +251,12 @@ synth_status_t Model::load(const std::string &      path,
                          implementation->hparams.model_variant.c_str(), static_cast<long long>(expected_tensor_count));
             return SYNTH_ERR_GGUF;
         }
+        // The mirror's tensors must exist before the discrete path's views are
+        // bound against them.
+        status = implementation->create_cpu_weight_mirror();
+        if (status != SYNTH_OK) {
+            return status;
+        }
         status = build_voice_weights(implementation->weights_context, implementation->hparams,
                                      implementation->voice_weights);
         if (status != SYNTH_OK) {
@@ -195,7 +289,37 @@ synth_status_t Model::load(const std::string &      path,
             return SYNTH_ERR_OOM;
         }
         ggml_backend_buffer_set_usage(implementation->weights_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        if (implementation->cpu_weights_context != nullptr) {
+            implementation->cpu_weights_buffer = ggml_backend_alloc_ctx_tensors(
+                implementation->cpu_weights_context, implementation->backend_plan->cpu_backend());
+            if (implementation->cpu_weights_buffer == nullptr) {
+                return SYNTH_ERR_OOM;
+            }
+            ggml_backend_buffer_set_usage(implementation->cpu_weights_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+            // Same builders, CPU context: the discrete path's own views.
+            status = build_voice_weights(implementation->cpu_weights_context, implementation->hparams,
+                                         implementation->voice_weights_cpu);
+            if (status == SYNTH_OK) {
+                status = build_text_weights(implementation->cpu_weights_context, implementation->hparams,
+                                            implementation->text_weights_cpu);
+            }
+            if (status == SYNTH_OK) {
+                status = build_duration_weights(implementation->cpu_weights_context, implementation->hparams,
+                                                implementation->duration_weights_cpu);
+            }
+            if (status != SYNTH_OK) {
+                return status;
+            }
+        } else {
+            implementation->voice_weights_cpu    = implementation->voice_weights;
+            implementation->text_weights_cpu     = implementation->text_weights;
+            implementation->duration_weights_cpu = implementation->duration_weights;
+        }
         status = stream_tensor_data(path, implementation->gguf, implementation->weights_context, "vits");
+        if (status != SYNTH_OK) {
+            return status;
+        }
+        status = implementation->fill_cpu_weight_mirror();
         if (status != SYNTH_OK) {
             return status;
         }
@@ -326,16 +450,23 @@ synth_status_t Model::Impl::compute_duration_stage(const std::vector<int32_t> & 
             return SYNTH_ERR_OOM;
         }
 
+        // Declared CPU placement for the whole graph. duration-path.cpp ceils
+        // these logw values into integer frame counts and builds the attention
+        // path from them, so every later stage's shape follows from an integer
+        // this stage produced. It must not depend on the Execution Backend: with
+        // CUDA F32 matmuls at TF32 precision, the 315-token case ceiled one
+        // token differently and moved the frame count by 256 samples. The graph
+        // reads CPU-resident weight views for the same reason.
         const int64_t    token_count = text_input.token_count;
         TextEncoderGraph text_graph =
-            build_text_encoder_graph(compute_context, text_weights, model_hparams, token_count);
+            build_text_encoder_graph(compute_context, text_weights_cpu, model_hparams, token_count);
         if (text_graph.token_ids == nullptr || text_graph.relative_indices == nullptr ||
             text_graph.encoded == nullptr) {
             ggml_free(compute_context);
             return SYNTH_ERR_INTERNAL;
         }
         DurationPredictorGraph duration_graph =
-            build_duration_predictor_graph(compute_context, text_graph.encoded, duration_weights, voice_weights,
+            build_duration_predictor_graph(compute_context, text_graph.encoded, duration_weights_cpu, voice_weights_cpu,
                                            model_hparams, speaker_index, token_count, noise_scale_w);
         if (duration_graph.graph == nullptr || duration_graph.duration_noise == nullptr ||
             duration_graph.logw == nullptr) {
@@ -345,7 +476,7 @@ synth_status_t Model::Impl::compute_duration_stage(const std::vector<int32_t> & 
         ggml_build_forward_expand(duration_graph.graph, text_graph.m_p);
         ggml_build_forward_expand(duration_graph.graph, text_graph.logs_p);
 
-        scheduler = backend_plan->create_scheduler(16384);
+        scheduler = backend_plan->create_cpu_scheduler(16384);
         if (scheduler == nullptr) {
             ggml_free(compute_context);
             return SYNTH_ERR_BACKEND;

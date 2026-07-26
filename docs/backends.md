@@ -97,10 +97,25 @@ time on Kokoro's longest case, 1.5 s to 2.9 s, still 3.2 times faster than real
 time. The mirrored weights also occupy both buffers, 89 MB of 353 MB for this
 family.
 
-This rule scales with how much of a family sits upstream of a discrete decision.
-For Kokoro that is two stages of seven. For an autoregressive codec language
-model, where every sampled token feeds the next step, it would be most of the
-model, and the trade would have to be re-measured rather than assumed.
+This rule scales with how much of a family sits upstream of a discrete decision,
+so its cost is per family and has to be measured rather than assumed:
+
+| Family | Held stages | Mirrored weights | Cost | Result |
+| --- | --- | --- | --- | --- |
+| Kokoro | PL-BERT, duration predictor | 89.2 of 352.8 MB | 1.5 s → 2.9 s, +95 % | 3.2× real time |
+| VITS | text encoder, duration predictor | 27.5 of 113.2 MB | 1.09 s → 1.39 s, +29 % | 7.6× real time |
+
+Kokoro is the more expensive of the two because its LSTMs are unrolled in the
+graph, so the duration stage is 26,916 nodes and all of it moves. VITS is cheaper
+because its discrete path is one graph and the HiFi-GAN decoder, which dominates,
+never leaves the primary backend.
+
+The mechanism generalizes and the second family needed no rework: identify the
+weight groups the discrete path reads, mirror them, give any group a second view
+when a continuous stage reads the same tensors from the primary buffer, and switch
+that stage's scheduler. For an autoregressive codec language model, where every
+sampled token feeds the next step, the held portion would be most of the model,
+and that trade has to be measured before such a family is accepted.
 
 ## CUDA Unified Memory Policy
 

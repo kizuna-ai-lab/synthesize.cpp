@@ -111,11 +111,11 @@
                       "worst_case": "ljs-minimal"
                     },
                     "text.mask": {
-                      "elements": 33,
+                      "elements": 315,
                       "exact_on_every_case": true,
                       "measured_max_abs": 0.0,
                       "measured_mean_abs": 0.0,
-                      "worst_case": "ljs-upstream-default"
+                      "worst_case": "ljs-long"
                     }
                   },
                   "threads": 8
@@ -124,11 +124,11 @@
                   "backend": "CUDA",
                   "probes": {
                     "audio.pcm": {
-                      "elements": 34048,
+                      "elements": 211968,
                       "exact_on_every_case": false,
-                      "measured_max_abs": 0.027103282511234283,
-                      "measured_mean_abs": 0.00042270530894746483,
-                      "worst_case": "ljs-punctuation"
+                      "measured_max_abs": 0.027616113424301147,
+                      "measured_mean_abs": 0.0003698099845580171,
+                      "worst_case": "ljs-long"
                     }
                   },
                   "threads": 8
@@ -235,11 +235,11 @@
                   "worst_case": "ljs-long"
                 },
                 "text.mask": {
-                  "elements": 33,
+                  "elements": 315,
                   "exact_on_every_case": true,
                   "measured_max_abs": 0.0,
                   "measured_mean_abs": 0.0,
-                  "worst_case": "ljs-upstream-default"
+                  "worst_case": "ljs-long"
                 }
               },
               "threads": 8
@@ -250,8 +250,8 @@
                 "audio.pcm": {
                   "elements": 84992,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.017125502228736877,
-                  "measured_mean_abs": 0.0001612276234922842,
+                  "measured_max_abs": 0.015339627861976624,
+                  "measured_mean_abs": 0.0001584763879392286,
                   "worst_case": "ljs-normalization"
                 }
               },
@@ -361,11 +361,11 @@
                       "worst_case": "ljs-minimal"
                     },
                     "text.mask": {
-                      "elements": 33,
+                      "elements": 315,
                       "exact_on_every_case": true,
                       "measured_max_abs": 0.0,
                       "measured_mean_abs": 0.0,
-                      "worst_case": "ljs-upstream-default"
+                      "worst_case": "ljs-long"
                     }
                   },
                   "threads": 8
@@ -374,11 +374,11 @@
                   "backend": "CUDA",
                   "probes": {
                     "audio.pcm": {
-                      "elements": 211968,
+                      "elements": 84992,
                       "exact_on_every_case": false,
-                      "measured_max_abs": 0.019023246597498655,
-                      "measured_mean_abs": 0.00017818215918446797,
-                      "worst_case": "ljs-long"
+                      "measured_max_abs": 0.019020721316337585,
+                      "measured_mean_abs": 0.00027695356836767023,
+                      "worst_case": "ljs-normalization"
                     }
                   },
                   "threads": 8
@@ -485,11 +485,11 @@
                   "worst_case": "ljs-long"
                 },
                 "text.mask": {
-                  "elements": 33,
+                  "elements": 315,
                   "exact_on_every_case": true,
                   "measured_max_abs": 0.0,
                   "measured_mean_abs": 0.0,
-                  "worst_case": "ljs-upstream-default"
+                  "worst_case": "ljs-long"
                 }
               },
               "threads": 8
@@ -500,8 +500,8 @@
                 "audio.pcm": {
                   "elements": 69120,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.0002946630120277405,
-                  "measured_mean_abs": 2.455841464593013e-06,
+                  "measured_max_abs": 0.00029484182596206665,
+                  "measured_mean_abs": 2.4574520749344054e-06,
                   "worst_case": "ljs-medium"
                 }
               },
@@ -611,11 +611,11 @@
                       "worst_case": "ljs-minimal"
                     },
                     "text.mask": {
-                      "elements": 33,
+                      "elements": 315,
                       "exact_on_every_case": true,
                       "measured_max_abs": 0.0,
                       "measured_mean_abs": 0.0,
-                      "worst_case": "ljs-upstream-default"
+                      "worst_case": "ljs-long"
                     }
                   },
                   "threads": 8
@@ -626,8 +626,8 @@
                     "audio.pcm": {
                       "elements": 84992,
                       "exact_on_every_case": false,
-                      "measured_max_abs": 0.37672530859708786,
-                      "measured_mean_abs": 0.006878929453365797,
+                      "measured_max_abs": 0.3765099570155144,
+                      "measured_mean_abs": 0.006890956901837053,
                       "worst_case": "ljs-normalization"
                     }
                   },
@@ -735,11 +735,11 @@
                   "worst_case": "ljs-long"
                 },
                 "text.mask": {
-                  "elements": 33,
+                  "elements": 315,
                   "exact_on_every_case": true,
                   "measured_max_abs": 0.0,
                   "measured_mean_abs": 0.0,
-                  "worst_case": "ljs-upstream-default"
+                  "worst_case": "ljs-long"
                 }
               },
               "threads": 8
@@ -750,8 +750,8 @@
                 "audio.pcm": {
                   "elements": 84992,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.36679696291685104,
-                  "measured_mean_abs": 0.007154022230952899,
+                  "measured_max_abs": 0.36558403819799423,
+                  "measured_mean_abs": 0.007145849441934981,
                   "worst_case": "ljs-normalization"
                 }
               },
@@ -866,11 +866,11 @@
                       "worst_case": "vctk-long"
                     },
                     "text.mask": {
-                      "elements": 33,
+                      "elements": 315,
                       "exact_on_every_case": true,
                       "measured_max_abs": 0.0,
                       "measured_mean_abs": 0.0,
-                      "worst_case": "vctk-upstream-speaker-004"
+                      "worst_case": "vctk-long"
                     }
                   },
                   "threads": 8
@@ -881,8 +881,8 @@
                     "audio.pcm": {
                       "elements": 157696,
                       "exact_on_every_case": false,
-                      "measured_max_abs": 0.1957356221973896,
-                      "measured_mean_abs": 0.0007946023107658343,
+                      "measured_max_abs": 0.21655512228608131,
+                      "measured_mean_abs": 0.0008411053134223739,
                       "worst_case": "vctk-long"
                     }
                   },
@@ -990,11 +990,11 @@
                   "worst_case": "vctk-long"
                 },
                 "text.mask": {
-                  "elements": 33,
+                  "elements": 315,
                   "exact_on_every_case": true,
                   "measured_max_abs": 0.0,
                   "measured_mean_abs": 0.0,
-                  "worst_case": "vctk-upstream-speaker-004"
+                  "worst_case": "vctk-long"
                 }
               },
               "threads": 8
@@ -1005,8 +1005,8 @@
                 "audio.pcm": {
                   "elements": 157696,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.07153122313320637,
-                  "measured_mean_abs": 0.00025243242107012747,
+                  "measured_max_abs": 0.0739435963332653,
+                  "measured_mean_abs": 0.0002605274146449475,
                   "worst_case": "vctk-long"
                 }
               },
@@ -1116,11 +1116,11 @@
                       "worst_case": "vctk-long"
                     },
                     "text.mask": {
-                      "elements": 33,
+                      "elements": 315,
                       "exact_on_every_case": true,
                       "measured_max_abs": 0.0,
                       "measured_mean_abs": 0.0,
-                      "worst_case": "vctk-upstream-speaker-004"
+                      "worst_case": "vctk-long"
                     }
                   },
                   "threads": 8
@@ -1129,11 +1129,11 @@
                   "backend": "CUDA",
                   "probes": {
                     "audio.pcm": {
-                      "elements": 65536,
+                      "elements": 38400,
                       "exact_on_every_case": false,
-                      "measured_max_abs": 0.030684679746627808,
-                      "measured_mean_abs": 0.00034617201570864343,
-                      "worst_case": "vctk-normalization"
+                      "measured_max_abs": 0.031042009592056274,
+                      "measured_mean_abs": 0.0004363305014931651,
+                      "worst_case": "vctk-punctuation"
                     }
                   },
                   "threads": 8
@@ -1240,11 +1240,11 @@
                   "worst_case": "vctk-long"
                 },
                 "text.mask": {
-                  "elements": 33,
+                  "elements": 315,
                   "exact_on_every_case": true,
                   "measured_max_abs": 0.0,
                   "measured_mean_abs": 0.0,
-                  "worst_case": "vctk-upstream-speaker-004"
+                  "worst_case": "vctk-long"
                 }
               },
               "threads": 8
@@ -1255,8 +1255,8 @@
                 "audio.pcm": {
                   "elements": 157696,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.00023978948593139648,
-                  "measured_mean_abs": 7.815228750515405e-07,
+                  "measured_max_abs": 0.00023868680000305176,
+                  "measured_mean_abs": 7.762241123584926e-07,
                   "worst_case": "vctk-long"
                 }
               },
@@ -1366,11 +1366,11 @@
                       "worst_case": "vctk-long"
                     },
                     "text.mask": {
-                      "elements": 33,
+                      "elements": 315,
                       "exact_on_every_case": true,
                       "measured_max_abs": 0.0,
                       "measured_mean_abs": 0.0,
-                      "worst_case": "vctk-upstream-speaker-004"
+                      "worst_case": "vctk-long"
                     }
                   },
                   "threads": 8
@@ -1381,8 +1381,8 @@
                     "audio.pcm": {
                       "elements": 157696,
                       "exact_on_every_case": false,
-                      "measured_max_abs": 0.8527519702911377,
-                      "measured_mean_abs": 0.005668012534552116,
+                      "measured_max_abs": 0.8456324636936188,
+                      "measured_mean_abs": 0.005719731792857551,
                       "worst_case": "vctk-long"
                     }
                   },
@@ -1490,11 +1490,11 @@
                   "worst_case": "vctk-long"
                 },
                 "text.mask": {
-                  "elements": 33,
+                  "elements": 315,
                   "exact_on_every_case": true,
                   "measured_max_abs": 0.0,
                   "measured_mean_abs": 0.0,
-                  "worst_case": "vctk-upstream-speaker-004"
+                  "worst_case": "vctk-long"
                 }
               },
               "threads": 8
@@ -1505,8 +1505,8 @@
                 "audio.pcm": {
                   "elements": 157696,
                   "exact_on_every_case": false,
-                  "measured_max_abs": 0.7800585478544235,
-                  "measured_mean_abs": 0.006111586444669374,
+                  "measured_max_abs": 0.7776949852705002,
+                  "measured_mean_abs": 0.006067842955012485,
                   "worst_case": "vctk-long"
                 }
               },

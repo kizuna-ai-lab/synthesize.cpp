@@ -8,5 +8,4 @@ then run scripts/sync-ggml.sh with no arguments to regenerate this directory,
 and commit both together. A sync aborts if a patch stops applying, so local
 changes are never silently lost.
 
-patches applied:
-  - 0001-synthesize-local.patch
+patches applied: none

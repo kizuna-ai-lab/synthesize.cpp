@@ -46,7 +46,9 @@ int main() {
     SYNTH_TEST_CHECK(expect_type("text_encoder.blocks.3.ffn.output.weight", GGML_TYPE_F32) == 0);
     SYNTH_TEST_CHECK(expect_type("duration_predictor.flows.2.dds.blocks.1.pointwise.weight", GGML_TYPE_F32) == 0);
     SYNTH_TEST_CHECK(expect_type("flow.blocks.3.wn.layers.2.residual_skip.weight", GGML_TYPE_F16) == 0);
-    SYNTH_TEST_CHECK(expect_type("decoder.upsample.3.transpose_conv.weight", GGML_TYPE_F16) == 0);
+    // Transposed-convolution weights are the one role VITS keeps at full
+    // precision in every profile; see resolve_vits_target_spec.
+    SYNTH_TEST_CHECK(expect_type("decoder.upsample.3.transpose_conv.weight", GGML_TYPE_F32) == 0);
     SYNTH_TEST_CHECK(expect_type("decoder.upsample.2.resblocks.1.conv2.2.weight", GGML_TYPE_F16) == 0);
 
     SYNTH_TEST_CHECK(expect_spec("Q8_MIXED", "flow.blocks.3.wn.layers.2.residual_skip.weight", GGML_TYPE_Q8_0,
@@ -54,7 +56,7 @@ int main() {
     SYNTH_TEST_CHECK(expect_spec("Q8_MIXED", "decoder.pre.weight", GGML_TYPE_Q8_0, TensorLayout::PackedMatrix) == 0);
     SYNTH_TEST_CHECK(expect_spec("Q8_MIXED", "decoder.post.weight", GGML_TYPE_Q8_0, TensorLayout::PackedMatrix) == 0);
     SYNTH_TEST_CHECK(
-        expect_spec("Q8_MIXED", "decoder.upsample.3.transpose_conv.weight", GGML_TYPE_F16, TensorLayout::Native) == 0);
+        expect_spec("Q8_MIXED", "decoder.upsample.3.transpose_conv.weight", GGML_TYPE_F32, TensorLayout::Native) == 0);
     SYNTH_TEST_CHECK(expect_spec("Q8_MIXED", "duration_predictor.pre.weight", GGML_TYPE_F32, TensorLayout::Native) ==
                      0);
 

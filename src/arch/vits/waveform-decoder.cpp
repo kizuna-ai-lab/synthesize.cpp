@@ -126,16 +126,18 @@ ggml_tensor * transpose_conv1d_time_major(ggml_context *                 context
                                           const TransposeConv1dWeights & weights,
                                           int                            stride,
                                           int                            padding) {
-    ggml_tensor * raw = ggml_conv_transpose_1d(context, weights.weight, input, stride, 0, 1);
-    raw               = ggml_reshape_2d(context, raw, raw->ne[0], raw->ne[1]);
-    if (raw->ne[0] <= 2LL * padding) {
+    if (context == nullptr || input == nullptr || weights.bias == nullptr) {
         return nullptr;
     }
-    ggml_tensor * cropped = ggml_view_2d(context, raw, raw->ne[0] - 2LL * padding, raw->ne[1], raw->nb[1],
-                                         static_cast<size_t>(padding) * raw->nb[0]);
-    cropped               = ggml_cont(context, cropped);
-    ggml_tensor * bias    = ggml_reshape_2d(context, weights.bias, 1, weights.bias->ne[0]);
-    return ggml_add(context, cropped, bias);
+    // The shared helper reduces over the input channels, so hand it the
+    // channel-major view of this stage's time-major state.
+    ggml_tensor * channel_major = ggml_cont(context, ggml_transpose(context, input));
+    ggml_tensor * signal = transpose_conv1d_without_bias(context, channel_major, weights.weight, stride, padding);
+    if (signal == nullptr) {
+        return nullptr;
+    }
+    ggml_tensor * bias = ggml_reshape_2d(context, weights.bias, 1, weights.bias->ne[0]);
+    return ggml_add(context, signal, bias);
 }
 
 ggml_tensor * resblock_time_major(ggml_context *                 context,

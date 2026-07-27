@@ -17,8 +17,8 @@ preset Voice identifier. It accepts UTF-8 phonemes through the built-in
 | Profile | Bytes | Tensor storage | SHA-256 |
 | --- | ---: | --- | --- |
 | F32 | 113,245,056 | 460 F32 | `bd17e44c7c2d761d33c1527059bd3921f9d3fa9d46bd73b3e020d746a8b7db7b` |
-| F16 | 70,453,568 | 342 F32 + 118 F16 | `5fc428ba97416cc164055f509af1b9e120b089bd0bab792ad674c862411d7bca` |
-| Q8_MIXED | 52,890,240 | 342 F32 + 4 F16 + 114 Q8_0 | `df95091f975e78088c4908c3f2adfc381cfa234c3f520ddd3ffe10160ff12ba1` |
+| F16 | 75,778,368 | 346 F32 + 114 F16 | `8683788b4dec7b81bf86f1cca024ed790724e491e2df40f77f1fc0bc614f860f` |
+| Q8_MIXED | 58,215,040 | 346 F32 + 114 Q8_0 | `f751607f7514fa2aa1dca3ba46738b081c6b6c6b9579bfd22b1b80016551a3eb` |
 
 The public C ABI is profile-independent. C++, Rust, and Python callers load a
 local GGUF through the same model interface. VITS tensor policy, packed Q8
@@ -26,16 +26,25 @@ matrix layout, and execution details remain private to the architecture module.
 
 ## Port validation
 
-Seven graph stages and 12 deterministic cases run on one-thread DGX Spark CPU,
-NVIDIA GB10 CUDA 13.3, and NVIDIA RTX 4070 SUPER CUDA 13.3. Duration structure
+Seven graph stages and 12 deterministic cases run on DGX Spark CPU and NVIDIA
+GB10 CUDA 13.3. The RTX 4070 SUPER CUDA 13.3 host also ran them for the packages
+cut on 2026-07-23; it was not available for the 2026-07-27 re-cut. Duration structure
 is exact in every case. Every CUDA placement record has one split and zero
 executable CPU fallback nodes.
 
-| Profile | CPU max PCM drift | GB10 CUDA | RTX 4070 SUPER CUDA |
-| --- | ---: | ---: | ---: |
-| F32 | 0.0002223924 | 0.20982037 | 0.2027478628 |
-| F16 | 0.01712550 | 0.20995625 | 0.20820463 |
-| Q8_MIXED | 0.36679696 | 0.32943400 | 0.34679114 |
+| Profile | CPU max PCM drift | GB10 CUDA |
+| --- | ---: | ---: |
+| F32 | 0.00029484 | 0.01902072 |
+| F16 | 0.01533963 | 0.02761611 |
+| Q8_MIXED | 0.36558404 | 0.37650996 |
+
+Re-measured on 2026-07-27 against the re-cut F16 and Q8_MIXED packages, on the
+DGX Spark host only. The RTX 4070 SUPER column is dropped rather than carried
+forward: that host was not available, so its figures would describe packages
+that no longer exist. The earlier GB10 column is not comparable either --- its
+F32 and F16 entries, 0.20982037 and 0.20995625, disagree by an order of
+magnitude with the same stage's CUDA record in `tests/tolerances/vits.json`, and
+that discrepancy predates this change and was not reconstructed.
 
 These measurements prove functional execution and record numerical drift; they
 are not perceptual-quality thresholds. Naturalness and intelligibility remain

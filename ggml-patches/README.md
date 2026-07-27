@@ -1,67 +1,97 @@
 # Local patches to the vendored ggml
 
-`ggml/` is upstream's tracked tree at the SHA in `ggml/UPSTREAM`, **plus the
-patches in this directory**, applied in filename order by
-`scripts/sync-ggml.sh`. The sync aborts loudly if a patch stops applying, so a
-re-vendor can never silently drop a local change again.
+**There are none.** `ggml/` is upstream's tracked tree at the SHA in
+`ggml/UPSTREAM`, verbatim, minus `.github/`. This directory is kept for the
+mechanism and for the record below.
 
-This directory exists because the previous claim — that the snapshot was
-verbatim — was discovered to be false on 2026-07-26: the tree carried about 400
-undocumented local lines, and one `sync-ggml.sh` run would have silently
-destroyed the packaging installs, an F16 inference path, a CI deadlock fix, and
-the strict-FP32 precision policy all at once.
+The mechanism still stands: `scripts/sync-ggml.sh` regenerates `ggml/` from
+upstream plus every `ggml-patches/*.patch` in filename order, and aborts loudly
+if one stops applying. If a local change ever becomes necessary again, add a
+patch file here and re-run the script -- never hand-edit `ggml/`.
 
-Later the same day each of those groups was measured against its stated
-justification. Four of the five were removed, three of them because the
-justification did not survive measurement and one because a better fix existed on
-this side of the seam; the sections below record each removal and its evidence, so
-a future reader can see what was tried rather than only what remains. The patch
-went from ten files and seventeen hunks to two files and four hunks.
+## How this directory emptied
 
-Do not edit `ggml/` directly. Change a patch file (or add one), then run
-`scripts/sync-ggml.sh` with no arguments to regenerate `ggml/` from
-upstream-plus-patches, and commit both together.
+The tree once carried about 400 undocumented local lines, discovered on
+2026-07-26. Nothing recorded them, and one `sync-ggml.sh` run would have
+silently destroyed the packaging installs, an F16 inference path, a CI deadlock
+fix, and the strict-FP32 precision policy at once. They were split into five
+groups and each was measured against the reason given for it.
 
-## 0001-synthesize-local.patch
+Four went that day. Three of those four because the justification did not
+survive measurement, one because a better fix existed on this side of the seam.
+The fifth -- the `conv_transpose_1d` CUDA kernel -- was measured, found to be
+load-bearing, and kept, with a note saying its only exit was upstream fixing the
+kernel rather than a replacement on this side. That note was wrong on both
+counts, and the group went on 2026-07-27. Each section below records what was
+tried and what the numbers were.
 
-One remaining group: a templated `conv_transpose_1d` CUDA kernel in
-`src/ggml-cuda/conv-transpose-1d.cu`, plus the matching `supports_op` in
-`src/ggml-cuda/ggml-cuda.cu`.
+One consequence is worth stating. With no local modification left, `ggml/` could
+become a git submodule pinned to the same SHA, removing 1,992 files and about
+19.5 MB from this repository. A submodule is a pointer and cannot carry a local
+change, so one hunk would have blocked it as surely as seventeen. That
+conversion is deliberately not made here: it changes how the tree is cloned,
+packaged into an sdist, and re-vendored, and it should be its own change.
 
-It was tried for removal on 2026-07-26 along with the other four groups and put
-back, because it turned out to do two things and only one of them had been
-recorded.
+## Removed on 2026-07-27: the templated conv_transpose_1d CUDA kernel
 
-**F16-stored weights.** VITS's F16 and Q8_MIXED Quantization Profiles store
-transposed-convolution weights halved (`tools/synthesize-quantize/policy.cpp`
-sets `transpose_weight_type` to F16 for both). Upstream's `supports_op` accepts
-`CONV_TRANSPOSE_1D` only when both operands are F32, so without this group those
-nodes do not error — they silently fall back to CPU. Measured on `ljs-long` with
-the group removed: `waveform_decoder` reported `primary=432 cpu_fallback=4
-splits=9`, the four being `CONV_TRANSPOSE_1D`. `port-validation.md` treats
-undeclared CPU placement as a hard failure, so that is not an acceptable
-degradation. With the group restored the same stage reports `primary=436
-cpu_fallback=0 splits=1`.
+Three hunks in `src/ggml-cuda/conv-transpose-1d.cu` templated upstream's kernel
+over the source type, and one in `src/ggml-cuda/ggml-cuda.cu` widened
+`supports_op` to accept an F16 `src0`.
 
-**The part that was never written down: the F32 path.** The upstream kernel is
-correct but scales quadratically in input length, and the F32 profile carries no
-halved weights at all, so by the description above it should have been
-unaffected. It is the worst affected. Measured on CUDA with the group removed:
+**What it was for.** VITS's F16 and Q8_MIXED profiles stored transposed-
+convolution weights halved, and upstream's `supports_op` accepts
+`CONV_TRANSPOSE_1D` only when both operands are F32, so those nodes fell back to
+the CPU silently rather than erroring -- an undeclared CPU placement, which
+`docs/port-validation.md` treats as a hard failure. Separately, and never
+written down until the group was measured, upstream's kernel scales
+quadratically in input length: with the group removed, `ljs-long` (315 tokens)
+took over 240 s on CUDA against 1.48 s with it, and that was the **F32** profile,
+which carries no halved weights and by the recorded description should have been
+unaffected.
 
-| Case | Tokens | Upstream kernel | With this group |
-| --- | --- | --- | --- |
-| `ljs-minimal` | 9 | 1.18 s | — |
-| `ljs-medium` | 107 | 12.80 s | — |
-| `ljs-normalization` | 129 | 21.44 s | about 0.6 s |
-| `ljs-long` | 315 | over 240 s | 1.48 s |
+**What replaced it.** Both reasons are gone because the operator is gone.
+`src/arch/vits/operations.cpp` now expresses a transposed convolution as a
+column matrix multiply followed by `ggml_col2im_1d` -- what the fused op
+decomposes into, and upstream already, with CPU, CUDA and Vulkan kernels.
+`ggml_mul_mat` takes an F16 `src0` natively, that being the ordinary weight path,
+so the `supports_op` widening is unnecessary; and the quadratic kernel is never
+reached. Measured on GB10 across the four `upsample` stages at `ljs-long`
+shapes, against the **patched** kernel rather than upstream's:
 
-Two orders of magnitude at the length that matters. Anyone reading only the old
-one-line description would conclude this group is about F16 support and could try
-to drop it for an F32-only configuration; that is why the F32 numbers are here.
+| | fused op, patched | mul_mat + col2im_1d |
+| --- | --- | --- |
+| CPU, four stages | 204 ms | 130 ms |
+| CUDA, four stages | 33.8 ms | 4.9 ms |
 
-This is the only group whose removal was measured and rejected. The exit path is
-upstream fixing the kernel's scaling and widening `supports_op`, not a
-replacement on this side.
+Agreement with the fused op is exact on a small case (`0.000e+00`) and 5e-7
+relative at real F32 shapes. The layout recipe -- merge the kernel's leading
+`[kernel, out_channels]` pair so `k` varies faster than `oc`, then transpose so
+the matrix multiply reduces over the input channels -- is
+[qwentts.cpp](https://github.com/ServeurpersoCom/qwentts.cpp)'s, from its
+`ARCHITECTURE.md`.
+
+**What it cost.** VITS's transposed-convolution weights now stay F32 in every
+profile (`resolve_vits_target_spec`), adding 5.32 MB per package: ljspeech F16
+goes from 70.4 MB to 75.8 MB, Q8_MIXED from 52.9 MB to 58.2 MB. That is not
+incidental. CUDA's F16 matrix multiply accumulates in half precision where the
+templated kernel had upconverted and accumulated in F32, so leaving the weights
+halved would have moved CUDA from bit-exact agreement with the F32 reference to
+about 3e-3 relative. Keeping them whole leaves both backends near 1e-6 -- better
+than the F16 CPU path managed before the change (1.6e-3, upstream's CPU kernel
+losing precision there that `mul_mat` does not). Packages built earlier are
+refused by tensor type in `src/arch/vits/weights.cpp` rather than run at reduced
+accuracy.
+
+Two things this also fixed, neither of them the point. Vulkan rejects
+`CONV_TRANSPOSE_1D` with an F16 `src0` exactly as CUDA did, and the patch only
+ever touched CUDA -- so VITS's F16 decoder had been falling back to the CPU on
+Vulkan the whole time, undetected. And Qwen3-TTS's intake expected to need a 1-D
+column scatter-add operator; it does not, because `ggml_col2im_1d` is already
+upstream.
+
+Kokoro is untouched. It never used the fused operator -- it decomposes
+transposed convolution into a per-tap `mul_mat` loop of its own -- and it keeps
+F16 weights with the tolerances measured for them.
 
 ## Removed on 2026-07-26: the barrier spin-then-yield and the MSVC pause hint
 
@@ -153,6 +183,13 @@ about 0.99 Hz rather than 0.012 Hz — so the CUDA measurements recorded in
 in the same change: left behind, it would have set an unused cache variable that
 nothing reads, configuring and building successfully while silently doing
 nothing.
+
+A third consequence surfaced only on 2026-07-27. `tests/kokoro_lstm_test.cpp`
+carried a hardcoded `1e-4` cross-backend bound measured under the gate, and the
+removal did not re-measure it -- a stale build directory, still holding
+`GGML_CUDA_DISABLE_TF32=ON` in its cache for an option that no longer exists,
+kept it passing. Built clean it reports 7.06e-4 on CUDA at length 37 against
+1.79e-7 on the CPU, and the bound is now taken per device.
 
 The upstream history is kept in that report: the gate was submitted as
 [llama.cpp#26112](https://github.com/ggml-org/llama.cpp/pull/26112) and closed,

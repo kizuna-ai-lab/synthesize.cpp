@@ -246,14 +246,18 @@ ggml_tensor * find_tensor(ggml_context *                 context,
         std::fprintf(stderr, "vits: missing tensor %s\n", name.c_str());
         return nullptr;
     }
+    // Transposed-convolution weights stay F32 in every profile. They feed the
+    // column matrix multiply in transpose_conv1d_without_bias, and CUDA's F16
+    // matrix multiply accumulates in half precision -- about 3e-3 relative
+    // against the F32 reference on the decoder's upsampling stages, where the
+    // fused op this replaced had accumulated in F32. A package built before
+    // that change fails here by type rather than drifting quietly.
     ggml_type expected_type = GGML_TYPE_F32;
-    if (hparams.quantization_profile == QuantizationProfile::F16 && role != TensorRole::Sensitive) {
-        expected_type = GGML_TYPE_F16;
-    } else if (hparams.quantization_profile == QuantizationProfile::Q8Mixed) {
-        if (role == TensorRole::MatrixWeight) {
-            expected_type = GGML_TYPE_Q8_0;
-        } else if (role == TensorRole::TransposeWeight) {
+    if (role == TensorRole::MatrixWeight) {
+        if (hparams.quantization_profile == QuantizationProfile::F16) {
             expected_type = GGML_TYPE_F16;
+        } else if (hparams.quantization_profile == QuantizationProfile::Q8Mixed) {
+            expected_type = GGML_TYPE_Q8_0;
         }
     }
     if (tensor->type != expected_type) {

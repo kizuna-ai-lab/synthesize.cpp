@@ -112,7 +112,7 @@ int main() {
     synth::test::GgmlContext q8_weights_context = synth::test::make_ggml_context();
     SYNTH_TEST_CHECK(q8_weights_context != nullptr);
     synth::test::populate_decoder_weight_tensors(q8_weights_context.get(), q8_hparams, {}, {}, {}, GGML_TYPE_I32,
-                                                 GGML_TYPE_Q8_0, GGML_TYPE_F16, true);
+                                                 GGML_TYPE_Q8_0, GGML_TYPE_F32, true);
     synth::vits::DecoderWeights q8_weights;
     SYNTH_TEST_CHECK(synth::vits::build_decoder_weights(q8_weights_context.get(), q8_hparams, q8_weights) == SYNTH_OK);
     synth::test::GgmlContext          q8_graph_context = synth::test::make_ggml_context(32 * 1024 * 1024);

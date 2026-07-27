@@ -108,7 +108,7 @@ int check_output(const std::string & path) {
     SYNTH_TEST_CHECK(affine != nullptr && affine->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(post != nullptr && post->type == GGML_TYPE_F16);
     SYNTH_TEST_CHECK(post->ne[0] == 7 && post->ne[1] == 32 && post->ne[2] == 1);
-    SYNTH_TEST_CHECK(transpose != nullptr && transpose->type == GGML_TYPE_F16);
+    SYNTH_TEST_CHECK(transpose != nullptr && transpose->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(tensor_value(embedding, 6) == 1.0f);
     SYNTH_TEST_CHECK(tensor_value(norm, 0) == 1.0f / 7.0f);
 
@@ -137,7 +137,7 @@ int check_q8_output(const std::string & path) {
     ggml_tensor * embedding = ggml_get_tensor(ctx, "voice.embedding.weight");
     SYNTH_TEST_CHECK(post != nullptr && post->type == GGML_TYPE_Q8_0);
     SYNTH_TEST_CHECK(post->ne[0] == 7 * 32 && post->ne[1] == 1 && post->ne[2] == 1);
-    SYNTH_TEST_CHECK(transpose != nullptr && transpose->type == GGML_TYPE_F16);
+    SYNTH_TEST_CHECK(transpose != nullptr && transpose->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(transpose->ne[0] == 8 && transpose->ne[1] == 2 && transpose->ne[2] == 4);
     SYNTH_TEST_CHECK(embedding != nullptr && embedding->type == GGML_TYPE_F32);
 

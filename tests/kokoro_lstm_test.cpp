@@ -254,15 +254,27 @@ int main() {
         }
         std::printf("kokoro-lstm: exercising %s (device type %d)\n", ggml_backend_dev_name(device), int(type));
         std::fflush(stdout);
+        // Cross-backend accumulation order is a wider tolerance than the CPU's,
+        // but it is still parity, not drift.
+        //
+        // The accelerator bound is not the CPU's. This project ships CUDA F32
+        // matrix multiplies on TF32 tensor cores -- the strict-FP32 gate that
+        // once held them to FP32 was removed on 2026-07-26 -- and the
+        // recurrence compounds that: measured on GB10 at the shipped settings,
+        // 4.9e-6 / 3.8e-6 / 4.6e-4 / 7.1e-4 for lengths 1 / 2 / 5 / 37, against
+        // 6.0e-8 ... 1.8e-7 for the same lengths on the CPU. A single step
+        // agrees to 5e-6 either way; it is the chain that separates them.
+        const float tolerance = type == GGML_BACKEND_DEVICE_TYPE_CPU ? 1e-4f : 2e-3f;
         // A single step exercises the seed state; longer runs exercise the
         // recurrence and, for the reverse direction, the descending write order.
         for (uint32_t length : { 1u, 2u, 5u, 37u }) {
             float max_diff = 0.0f;
             int   nodes    = 0;
             SYNTH_TEST_CHECK(run_case(device, length, max_diff, nodes));
-            // Cross-backend accumulation order is a wider tolerance than the
-            // CPU's, but it is still parity, not drift.
-            SYNTH_TEST_CHECK(max_diff < 1e-4f);
+            std::printf("kokoro-lstm:   length %2u  max_diff %.3e (bound %.0e)\n", length, double(max_diff),
+                        double(tolerance));
+            std::fflush(stdout);
+            SYNTH_TEST_CHECK(max_diff < tolerance);
             // The advertised node count must match the graph the builder emits,
             // so callers can size their graphs without guessing.
             SYNTH_TEST_CHECK(nodes == int(synth::kokoro::bidirectional_lstm_node_count(length)));

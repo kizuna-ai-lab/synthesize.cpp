@@ -59,9 +59,9 @@ capabilities:
 validation:
   level: port_validated
   quality_evaluation: not_run
-  date: 2026-07-23
+  date: 2026-07-27
   reference: the pinned upstream PyTorch implementation
-  implementation_revision: workspace-snapshot-2026-07-23
+  implementation_revision: workspace-snapshot-2026-07-27
   cases_per_stage: 12
   stages: 7
   columns:
@@ -69,15 +69,12 @@ validation:
       title: CPU max PCM drift
     - key: dgx_pcm_max_abs
       title: DGX Spark CUDA max PCM drift
-    - key: rtx_pcm_max_abs
-      title: RTX 4070 SUPER CUDA max PCM drift
   metric_note: |
     Drift is the largest absolute difference between one PCM sample and the
     reference's.
   platforms:
     - DGX Spark CPU
     - NVIDIA GB10 CUDA 13.3
-    - NVIDIA RTX 4070 SUPER CUDA 13.3
 
 publication_note: |
   The synthesize.cpp maintainer has chosen to publish these converted artifacts
@@ -99,26 +96,23 @@ quants:
     sha256: b9e69b257cc600679a45e4197614f36ec678156180e2d366f7e1dcb6668b2be0
     tensor_types: 473 F32
     validation:
-      cpu_pcm_max_abs: 0.0002596639
-      dgx_pcm_max_abs: 0.025091962
-      rtx_pcm_max_abs: 0.0183914602
+      cpu_pcm_max_abs: 0.00023869
+      dgx_pcm_max_abs: 0.03104201
   - name: F16
     filename: vits-vctk-F16.gguf
-    size: 74.2 MB
-    size_bytes: 74208224
-    sha256: ff11efb1106834efb3609647e68642b48a58dbbdbabbc776d3afd83cf46085af
-    tensor_types: 350 F32 + 123 F16
+    size: 79.5 MB
+    size_bytes: 79533024
+    sha256: 0b3c4e067c6fdd736edb90b7e1d11f6f480e5a832620740178a3119a4ef0913c
+    tensor_types: 354 F32 + 119 F16
     validation:
-      cpu_pcm_max_abs: 0.06752773
-      dgx_pcm_max_abs: 0.24737186
-      rtx_pcm_max_abs: 0.19204060
+      cpu_pcm_max_abs: 0.07394360
+      dgx_pcm_max_abs: 0.21655512
   - name: Q8_MIXED
     filename: vits-vctk-Q8_MIXED.gguf
-    size: 55.0 MB
-    size_bytes: 55047392
-    sha256: 149438d3a6c817ca6e4ab803a67207a41f62097cc8f586520355610801fb0542
-    tensor_types: 350 F32 + 4 F16 + 119 Q8_0
+    size: 60.4 MB
+    size_bytes: 60372192
+    sha256: 9f6caab60c66cdfa2379a1f1b93dbbd886161cd6f1115431fbe964d198b698e3
+    tensor_types: 354 F32 + 119 Q8_0
     validation:
-      cpu_pcm_max_abs: 0.77982019
-      dgx_pcm_max_abs: 0.57462588
-      rtx_pcm_max_abs: 0.62477511
+      cpu_pcm_max_abs: 0.77769499
+      dgx_pcm_max_abs: 0.84563246

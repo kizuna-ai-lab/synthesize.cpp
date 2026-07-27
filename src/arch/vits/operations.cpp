@@ -108,27 +108,53 @@ ggml_tensor * depthwise_conv1d(ggml_context *        context,
     return ggml_cont(context, ggml_transpose(context, output));
 }
 
+ggml_tensor * transpose_conv1d_without_bias(ggml_context * context,
+                                            ggml_tensor *  input,
+                                            ggml_tensor *  weight,
+                                            int            stride,
+                                            int            padding) {
+    if (context == nullptr || input == nullptr || weight == nullptr || stride <= 0 || padding < 0) {
+        return nullptr;
+    }
+    const int64_t kernel       = weight->ne[0];
+    const int64_t out_channels = weight->ne[1];
+    const int64_t in_channels  = weight->ne[2];
+    const int64_t length       = input->ne[1];
+    if (kernel < 1 || out_channels < 1 || in_channels < 1 || weight->ne[3] != 1 || input->ne[0] != in_channels) {
+        return nullptr;
+    }
+    // ggml_col2im_1d asserts rather than reports on a non-positive length.
+    if ((length - 1) * stride + kernel - 2LL * padding < 1) {
+        return nullptr;
+    }
+    if (!ggml_is_contiguous(input)) {
+        input = ggml_cont(context, input);
+    }
+    // The kernel arrives as [kernel, out_channels, in_channels], so merging the
+    // leading pair yields exactly the out_channels-major, kernel-minor column
+    // order col2im_1d scatters back; the transpose then puts the input channels
+    // first so the matrix multiply reduces over them.
+    ggml_tensor * columns_weight = ggml_reshape_2d(context, weight, kernel * out_channels, in_channels);
+    columns_weight               = ggml_cont(context, ggml_transpose(context, columns_weight));
+    ggml_tensor * columns        = ggml_mul_mat(context, columns_weight, input);
+    return ggml_col2im_1d(context, columns, stride, static_cast<int>(out_channels), padding);
+}
+
 ggml_tensor * transpose_conv1d(ggml_context *                 context,
                                ggml_tensor *                  input,
                                const TransposeConv1dWeights & weights,
                                int                            stride,
                                int                            padding) {
-    if (context == nullptr || input == nullptr || weights.weight == nullptr || weights.bias == nullptr || stride <= 0 ||
-        padding < 0) {
+    if (context == nullptr || weights.bias == nullptr) {
         return nullptr;
     }
-    ggml_tensor * time_major = ggml_cont(context, ggml_transpose(context, input));
-    ggml_tensor * raw        = ggml_conv_transpose_1d(context, weights.weight, time_major, stride, 0, 1);
-    raw                      = ggml_reshape_2d(context, raw, raw->ne[0], raw->ne[1]);
-    if (raw->ne[0] <= 2LL * padding) {
+    ggml_tensor * signal = transpose_conv1d_without_bias(context, input, weights.weight, stride, padding);
+    if (signal == nullptr) {
         return nullptr;
     }
-    ggml_tensor * cropped = ggml_view_2d(context, raw, raw->ne[0] - 2LL * padding, raw->ne[1], raw->nb[1],
-                                         static_cast<size_t>(padding) * raw->nb[0]);
-    cropped               = ggml_cont(context, cropped);
-    ggml_tensor * bias    = ggml_reshape_2d(context, weights.bias, 1, weights.bias->ne[0]);
-    cropped               = ggml_add(context, cropped, bias);
-    return ggml_cont(context, ggml_transpose(context, cropped));
+    ggml_tensor * bias = ggml_reshape_2d(context, weights.bias, 1, weights.bias->ne[0]);
+    signal             = ggml_add(context, signal, bias);
+    return ggml_cont(context, ggml_transpose(context, signal));
 }
 
 ggml_tensor * layer_norm(ggml_context * context, ggml_tensor * input, const NormWeights & weights, float epsilon) {

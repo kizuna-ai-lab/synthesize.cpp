@@ -18,8 +18,8 @@ included.
 | Profile | Bytes | Tensor storage | SHA-256 |
 | --- | ---: | --- | --- |
 | F32 | 120,407,552 | 473 F32 | `b9e69b257cc600679a45e4197614f36ec678156180e2d366f7e1dcb6668b2be0` |
-| F16 | 74,208,224 | 350 F32 + 123 F16 | `ff11efb1106834efb3609647e68642b48a58dbbdbabbc776d3afd83cf46085af` |
-| Q8_MIXED | 55,047,392 | 350 F32 + 4 F16 + 119 Q8_0 | `149438d3a6c817ca6e4ab803a67207a41f62097cc8f586520355610801fb0542` |
+| F16 | 79,533,024 | 354 F32 + 119 F16 | `0b3c4e067c6fdd736edb90b7e1d11f6f480e5a832620740178a3119a4ef0913c` |
+| Q8_MIXED | 60,372,192 | 354 F32 + 119 Q8_0 | `9f6caab60c66cdfa2379a1f1b93dbbd886161cd6f1115431fbe964d198b698e3` |
 
 The public C ABI is profile-independent. C++, Rust, and Python callers load a
 local GGUF through the same model interface. VITS tensor policy, packed Q8
@@ -27,16 +27,22 @@ matrix layout, and execution details remain private to the architecture module.
 
 ## Port validation
 
-Seven graph stages and 12 deterministic cases run on one-thread DGX Spark CPU,
-NVIDIA GB10 CUDA 13.3, and NVIDIA RTX 4070 SUPER CUDA 13.3. Duration structure
+Seven graph stages and 12 deterministic cases run on DGX Spark CPU and NVIDIA
+GB10 CUDA 13.3. The RTX 4070 SUPER CUDA 13.3 host also ran them for the packages
+cut on 2026-07-23; it was not available for the 2026-07-27 re-cut. Duration structure
 is exact in every case. Both CUDA placement records contain zero executable CPU
 fallback nodes.
 
-| Profile | CPU max PCM drift | GB10 CUDA | RTX 4070 SUPER CUDA |
-| --- | ---: | ---: | ---: |
-| F32 | 0.0002596639 | 0.025091962 | 0.0183914602 |
-| F16 | 0.06752773 | 0.24737186 | 0.19204060 |
-| Q8_MIXED | 0.77982019 | 0.57462588 | 0.62477511 |
+| Profile | CPU max PCM drift | GB10 CUDA |
+| --- | ---: | ---: |
+| F32 | 0.00023869 | 0.03104201 |
+| F16 | 0.07394360 | 0.21655512 |
+| Q8_MIXED | 0.77769499 | 0.84563246 |
+
+Re-measured on 2026-07-27 against the re-cut F16 and Q8_MIXED packages, on the
+DGX Spark host only. The RTX 4070 SUPER column is dropped rather than carried
+forward: that host was not available, so its figures would describe packages
+that no longer exist.
 
 These measurements prove functional execution and record numerical drift; they
 are not perceptual-quality thresholds. Naturalness, intelligibility, and speaker

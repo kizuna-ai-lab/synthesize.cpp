@@ -1,6 +1,6 @@
 # Execution Backend Policy
 
-Status: Confirmed, last updated on 2026-07-26.
+Status: Confirmed, last updated on 2026-07-27.
 
 ## Shared Inference Graph
 
@@ -49,7 +49,8 @@ speed cost, which cuts the other way too — it was buying nothing that could be
 heard, and TTS graphs are dominated by wide decoder matmuls that never took the
 `mmf` tile path in the first place. Measurements, method, and the reasoning are
 in `reports/upstream/ggml-mmf-f32-tf32-gate.md`; the removed hunks are inventoried
-in `ggml-patches/README.md`.
+in `ggml-patches/README.md`, which as of 2026-07-27 inventories the whole local
+patch set, because none of it remains.
 
 What replaces the guarantee is measurement. Consequences are bounded by each
 family's Golden suite rather than by a precision flag: across every Kokoro profile
@@ -116,6 +117,30 @@ when a continuous stage reads the same tensors from the primary buffer, and swit
 that stage's scheduler. For an autoregressive codec language model, where every
 sampled token feeds the next step, the held portion would be most of the model,
 and that trade has to be measured before such a family is accepted.
+
+## Operator Choice Is Part Of The Backend Contract
+
+An operator that a backend declines does not fail: the scheduler places it on
+the CPU, and the graph still produces a plausible answer. That makes operator
+selection a backend-portability question, not only a numerical one.
+
+VITS's transposed convolutions are the worked example. `ggml_conv_transpose_1d`
+is accepted by CUDA and Vulkan only when both operands are F32, so with halved
+weights those nodes silently moved to the CPU — the undeclared placement
+`docs/port-validation.md` calls a hard failure. A local CUDA patch hid it on one
+backend for a while and left Vulkan broken, because a patch covers the backend
+it was written for and nothing else.
+
+The durable fix was to stop using the fused operator. `ggml_mul_mat` followed by
+`ggml_col2im_1d` computes the same thing, takes F16 weights on the ordinary
+weight path, and has CPU, CUDA and Vulkan kernels upstream. Prefer an operator
+every target backend accepts over one that needs a local patch to reach parity
+on a single backend; `ggml-patches/README.md` records what that cost and bought.
+
+Where a decomposition changes accumulation — CUDA's F16 matrix multiply
+accumulates in half precision — the tensor types feeding it are part of the
+decision. VITS keeps transposed-convolution weights F32 in every profile for
+that reason, at 5.32 MB per package.
 
 ## CUDA Unified Memory Policy
 

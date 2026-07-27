@@ -354,6 +354,93 @@ outlier channels ahead of the final norm. `tests/tolerances/qwen3-tts.json` must
 use a cosine threshold for these stages; a max-abs threshold would report
 catastrophic failure on a correct port.
 
+### Determinism: what "byte-exact sampling" there does not mean here
+
+`src/philox.h` implements Philox4x32-10 and the header says it keeps the
+multinomial sampler "byte for byte aligned with the upstream Python pipeline".
+Read carefully before drawing the obvious conclusion.
+
+Two things make it inapplicable as-is:
+
+- Philox matches PyTorch's **CUDA** generator (cuRAND). PyTorch's **CPU**
+  generator is MT19937. `docs/port-validation.md` Phase 1 puts this project's
+  oracle on CPU, so their stream would not match ours even in principle.
+- Their alignment is achieved by **replacing `torch.multinomial` in the
+  reference** — `tests/cossim_common.py` defines `patched_multinomial`, which
+  pulls the uniform draw from their own Philox stream and walks the F32
+  cumulative sum the way `src/sampling.h` does. The oracle was changed to match
+  the port, not the other way round.
+
+That is a legitimate way to isolate the RNG, and it is the same *idea* as this
+project's stochastic-replay seam: neutralize the generator so everything else
+can be compared. The difference is where the neutralization happens. Theirs
+modifies the reference implementation; ours captures the draws as model inputs
+and replays them, leaving the oracle stock. Ours is the less invasive of the two
+and stays valid when the reference changes.
+
+**The conclusion to carry into stage 5: do not plan on end-to-end sampled parity
+against an unmodified PyTorch oracle.** Neither port achieves it. Compare the
+deterministic prefix, and replay the draws across the seam.
+
+If a sampled path is ever compared, the operation order has to match
+HuggingFace's `generate()` chain exactly, because each step changes the
+distribution the next one sees:
+
+```
+repetition_penalty -> temperature -> top_k -> top_p -> softmax -> multinomial
+```
+
+Details in their implementation worth confirming against upstream rather than
+assuming: `top_p` softmaxes the full vocabulary over the *sorted* tensor so the
+cumulative-sum boundary matches `TopPLogitsWarper`; the Talker masks
+`[vocab - 1024, vocab)` except `codec_eos` before sampling while the
+CodePredictor needs no suppression; and the greedy path (`temperature <= 0`)
+is argmax over the suppressed logits with no repetition penalty and no draw at
+all.
+
+### Native Streaming Synthesis looks reachable, and this is what it costs
+
+Open question 5 asks whether the causal codec decoder qualifies as Native
+Streaming Synthesis under `CONTEXT.md` or only Chunked Audio Delivery.
+`qwentts.cpp` carries an existence proof for the stronger claim, which intake
+should confirm against upstream rather than inherit.
+
+They keep three pieces of decoder state resident between frames:
+
+1. every causal convolution's left context,
+2. every transposed convolution's overlap carry,
+3. the transformer's sliding-window KV ring.
+
+With those, their `pipeline-codec.h` states that a `T=1` frame decode
+"reproduces the offline full decode exactly with zero re-decoded context". That
+is incremental synthesis, not chunking.
+
+The contrast is instructive. Their *other* path, `codec-chunked-decode.h`,
+decodes a whole buffer in bounded-VRAM chunks and must prepend
+`left_ctx_frames` of previously decoded frames and then strip the resulting
+samples, because a chunk decoded in isolation has edge artefacts where the
+causal kernel and the attention window have no left context. That path is a
+memory-bounding device, and it is what this project would ship if the state
+above were not carried — Chunked Audio Delivery, in `CONTEXT.md` terms.
+
+So the distinction between the two claims for this family is concrete: it is
+whether those three state objects are carried across frames. That is a design
+decision for stage 4, not a property of the architecture, and it should be
+recorded as such rather than discovered late.
+
+### Text frontend: the pieces this project would need
+
+Their byte-level BPE is 633 lines with no dependencies, reading vocabulary and
+merges from the GGUF payload. The parts are: the GPT-2 byte-to-Unicode encoding
+table, the GPT-2 regex pre-tokenizer, the BPE merge loop, and a registry of
+verbatim special tokens loaded from caller-named GGUF keys — which is how the
+TTS style markers and language tags are handled.
+
+That matches the second built-in Text Frontend Provider sketched above, and
+sizes it: a self-contained, unit-testable slice with no executable per-model
+mapping logic. The one piece that is logic rather than data is the GPT-2
+pre-tokenizer regex, which is fixed across models rather than per-package.
+
 ### Performance shape of the code predictor
 
 Their fix resets the predictor KV cache each frame, prefills two positions
@@ -410,7 +497,11 @@ That question is left open here rather than answered.
    Preset Voice Catalog.
 5. Determine whether the causal codec decoder qualifies as Native Streaming
    Synthesis under `CONTEXT.md`, or whether Stage 1 claims only Chunked Audio
-   Delivery.
+   Delivery. `qwentts.cpp` indicates the stronger claim is reachable and names
+   its cost — carrying causal-conv left context, transposed-conv overlap carry,
+   and the transformer KV ring across frames. Confirm against upstream, and
+   record which claim this project makes as a stage-4 decision rather than
+   letting it be settled by omission.
 6. Establish upstream provenance and redistribution permission for publishing
    converted Model Packages, as was done for Kokoro. Alibaba does not disclose
    training corpora; the Apache-2.0 grant is the basis relied on, and it is the

@@ -138,7 +138,8 @@ def capture_codes(tts, sink: dict):
     def wrapper(batch, *args, **kwargs):
         if batch and isinstance(batch[0], dict) and "audio_codes" in batch[0]:
             codes = batch[0]["audio_codes"]
-            sink["codes"] = codes.detach().cpu().numpy() if torch.is_tensor(codes) else np.asarray(codes)
+            sink["codes"] = (codes.detach().cpu().numpy() if torch.is_tensor(codes)
+                             else np.asarray(codes))
         return original(batch, *args, **kwargs)
 
     tokenizer.decode = wrapper
@@ -190,7 +191,10 @@ def run_case(tts, case: dict, output_root: pathlib.Path) -> dict:
         # Seeding immediately before the call is what makes the dump
         # regeneratable; the case's own seed is used so the seeded cases produce
         # genuinely distinct references rather than three copies of one.
-        torch.manual_seed(int(case["request"]["seed_u64"]))
+        seed = int(case["request"]["seed_u64"])
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
         kwargs = dict(
             text=case["input"]["text"],
             language=parameters["language"],
@@ -303,15 +307,25 @@ def main() -> int:
     manifest = load_manifest(args.manifest)
     output_root = args.output_root or pathlib.Path(manifest["case_artifact_root"])
     reference = manifest["reference"]
-    if reference["device"] != "cpu" or reference["dtype"] != "float32":
-        raise SystemExit("this dumper only drives the CPU float32 reference")
+    # Driven by the manifest rather than hardcoded. This family's talker weights
+    # are stored bf16, so float32 would upcast them and capture a reference for a
+    # model that does not exist.
+    dtypes = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
+    if reference["dtype"] not in dtypes:
+        raise SystemExit(f"unsupported reference dtype {reference['dtype']!r}")
+    device = reference["device"]
+    if device == "cuda" and not torch.cuda.is_available():
+        raise SystemExit("manifest pins a cuda reference but no CUDA device is available")
 
     from qwen_tts import Qwen3TTSModel
 
     tts = Qwen3TTSModel.from_pretrained(
-        str(args.weights_dir), device_map="cpu", dtype=torch.float32,
+        str(args.weights_dir),
+        device_map="cuda:0" if device == "cuda" else device,
+        dtype=dtypes[reference["dtype"]],
         attn_implementation="eager",
     )
+    print(f"reference: {device} {reference['dtype']} eager", flush=True)
 
     wanted = set(args.case) if args.case else None
     cases = [c for c in manifest["cases"] if wanted is None or c["id"] in wanted]

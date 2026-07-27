@@ -292,7 +292,16 @@
       },
       "note": "12 codec ids = 10 languages + beijing_dialect + sichuan_dialect; dialects are reachable only by selecting eric or dylan"
     },
-    "trust_remote_code_required": false
+    "trust_remote_code_required": false,
+    "checkpoint_dtypes": {
+      "model.safetensors": {
+        "BF16": 402
+      },
+      "speech_tokenizer/model.safetensors": {
+        "F32": 496
+      },
+      "consequence": "the source/reference-dtype GGUF at stage 3 is BF16 talker plus F32 codec, not F32 throughout"
+    }
   },
   "stochastic_behavior": {
     "is_stochastic": true,
@@ -376,7 +385,7 @@
     "einops": "0.8.1",
     "huggingface_hub": "0.36.2",
     "attn_implementation": "eager",
-    "dtype": "torch.float32",
+    "dtype": "bfloat16 (talker) / float32 (codec) -- the checkpoint's own dtypes",
     "deviation_from_plan": "the plan pinned huggingface-hub 0.30.2 alongside transformers 4.57.3, which are incompatible; 0.36.2 is what the resolver selects",
     "pyproject": {
       "path": "scripts/envs/qwen3-tts/pyproject.toml",
@@ -385,7 +394,9 @@
     "lockfile": {
       "path": "scripts/envs/qwen3-tts/uv.lock",
       "sha256": "8dc4a8018372a89a03d44ea24f9759022e942edb19b2f7d29df0204d7f4a4266"
-    }
+    },
+    "device": "cuda",
+    "dtype_note": "The talker checkpoint stores 402 BF16 tensors and the codec 496 F32. The first intake ran the oracle at float32 on CPU, which upcast every talker weight and captured a reference for a model that does not exist. docs/port-validation.md now requires the oracle to run at the checkpoint's dtype; see 'Choosing the Oracle's dtype and Device'. vits and kokoro are natively F32, which is why the earlier CPU-F32 wording had never been tested against a BF16 family."
   },
   "oracle_smoke": {
     "entry_point": "Qwen3TTSModel.generate_custom_voice",
@@ -405,13 +416,22 @@
       38.422
     ],
     "real_time_factor": [
-      9.718,
-      9.417
+      1.0,
+      1.2
     ],
     "finite": true,
     "peak": 0.5742930173873901,
     "reproducible_across_processes": true,
-    "real_time_factor_note": "CPU, F32, eager attention. This is a floor set by this project's Phase 1 CPU-oracle rule, not a measurement of the model as upstream deploys it: the model card's only device guidance is CUDA with bfloat16 and FlashAttention 2. It is NOT automatically the CUDA figure. docs/backends.md's discrete-output rule would hold the autoregressive core on CPU on every backend, which applied as written makes CUDA nearly worthless here, but port validation replays the captured codes so the sampler never runs in the compared graph. The rule bites only on the public request path, and whether to pay it for a stochastic family is a stage-7 decision that has not been taken."
+    "real_time_factor_note": "About real time at the checkpoint's own dtype on the device upstream targets, mean 1.05 across the 18 manifest cases. The 9.4 to 9.7 recorded earlier was CPU float32 eager, which upcast the BF16 talker; it is retained below as the CPU floor rather than as this family's figure.",
+    "device": "cuda",
+    "dtype": "bfloat16",
+    "cpu_float32_floor": {
+      "real_time_factor": [
+        9.4,
+        9.7
+      ],
+      "note": "CPU, F32, eager -- an upcast of the checkpoint, kept for comparison only"
+    }
   },
   "audio_delivery_claim": {
     "stage_1": "chunked_audio_delivery",
@@ -425,6 +445,7 @@
   },
   "open_decisions": [
     "Whether the discrete-output rule applies to this family's autoregressive sampler on the public request path. Applied as written it holds the whole talker on CPU and CUDA buys almost nothing; relaxed, the same text and seed could yield different tokens per backend. Parity validation is unaffected either way because it replays captured codes. Stage 7.",
+    "BF16 has a heavier tail than F32: seed 0 on the input \"Hi.\" produced 121 codec frames under BF16 where every other seed tried gave 12 or 13, and F32 never did. This is the shipped model's behaviour and a faithful port reproduces it, but it affects how manifest seeds are chosen and what a user should expect.",
     "SnakeBeta alpha and beta pass through exp() on every forward in the reference; whether they can be folded once at load needs the forward rather than the shapes, and is a stage-3 question.",
     "The 1.7B voice-design rung has not been measured; its real-time factor must not be inferred from the 0.6B figure.",
     "The code predictor cache-reset mitigation described by the reference port is unmeasured here and is a stage-4 implementation concern.",

@@ -62,6 +62,7 @@ ARCH_KEY = "qwen3-tts"
 FORMAT_VERSION = 1
 PROFILE_NAME = "BF16"
 PROFILE_VERSION = 1
+ARCHITECTURE_VERSION = 1
 REPORT_SCHEMA = "synthesize-converter-report-v1"
 
 # The reconstruction epsilon upstream uses when dividing by cluster usage.
@@ -263,8 +264,31 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
     writer.add_string("synthesize.source.checkpoint.license_status", "apache-2.0")
     writer.add_string("synthesize.converter", "scripts/convert-qwen3-tts.py")
 
+    writer.add_uint32("synthesize.qwen3-tts.architecture_version", ARCHITECTURE_VERSION)
+
+    package = manifest["package_contract"]
     writer.add_uint32("synthesize.capabilities.input_flags", INPUT_TEXT_UTF8)
     writer.add_uint32("synthesize.capabilities.flags", CAPABILITY_STOCHASTIC)
+    writer.add_uint64("synthesize.capabilities.max_input_tokens", int(package["max_input_tokens"]))
+    writer.add_uint64("synthesize.capabilities.max_output_frames", int(package["max_output_frames"]))
+    # This family exposes no speaking-rate control: upstream's entry point has no
+    # speed parameter, so the range is pinned rather than merely defaulted.
+    low, high = package["speaking_rate_range"]
+    writer.add_float32("synthesize.capabilities.min_speaking_rate", float(low))
+    writer.add_float32("synthesize.capabilities.max_speaking_rate", float(high))
+
+    audio = package["native_audio"]
+    writer.add_uint32("synthesize.audio.sample_rate_hz", int(audio["sample_rate_hz"]))
+    writer.add_uint32("synthesize.audio.channels", int(audio["channels"]))
+    writer.add_string("synthesize.audio.sample_format", audio["sample_format"])
+
+    voices = package["voices"]
+    writer.add_string("synthesize.voice.mode", voices["mode"])
+    writer.add_bool("synthesize.voice.has_package_default", voices.get("default_id") is not None)
+    writer.add_uint32("synthesize.voice.preset_count", len(voices["preset_ids"]))
+    for index, voice_id in enumerate(voices["preset_ids"]):
+        writer.add_string(f"synthesize.voice.{index}.id", voice_id)
+        writer.add_uint32(f"synthesize.voice.{index}.flags", 0)
 
     # Talker geometry.
     for key, value in (
@@ -279,15 +303,15 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
         ("text_hidden_size", talker["text_hidden_size"]),
         ("code_group_count", talker["num_code_groups"]),
     ):
-        writer.add_uint32(f"qwen3-tts.talker.{key}", int(value))
-    writer.add_float32("qwen3-tts.talker.rms_norm_eps", float(talker["rms_norm_eps"]))
-    writer.add_float32("qwen3-tts.talker.rope_theta", float(talker["rope_theta"]))
+        writer.add_uint32(f"synthesize.qwen3-tts.talker.{key}", int(value))
+    writer.add_float32("synthesize.qwen3-tts.talker.rms_norm_eps", float(talker["rms_norm_eps"]))
+    writer.add_float32("synthesize.qwen3-tts.talker.rope_theta", float(talker["rope_theta"]))
     # The declared mrope collapses exactly to 1-D rope for this model: every
     # position_ids path yields three identical rows. Recorded so the runtime does
     # not reimplement sectioning that the reference never exercises.
-    writer.add_string("qwen3-tts.talker.rope_type", "1d")
+    writer.add_string("synthesize.qwen3-tts.talker.rope_type", "1d")
     writer.add_string(
-        "qwen3-tts.talker.rope_note",
+        "synthesize.qwen3-tts.talker.rope_note",
         "config declares mrope_section with interleaved=true; all three position rows "
         "are always identical, so it is exactly plain 1-D rope",
     )
@@ -301,7 +325,7 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
         ("vocab_size", predictor["vocab_size"]),
         ("code_group_count", predictor["num_code_groups"]),
     ):
-        writer.add_uint32(f"qwen3-tts.code_predictor.{key}", int(value))
+        writer.add_uint32(f"synthesize.qwen3-tts.code_predictor.{key}", int(value))
 
     # Codec geometry, checked rather than copied.
     hop = int(codec_config["decode_upsample_rate"])
@@ -310,41 +334,42 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
     sample_rate = int(codec_config["input_sample_rate"])
     if abs(sample_rate / hop - FRAME_RATE_HZ) > 1e-9:
         raise ConverterError(f"{sample_rate} Hz over hop {hop} is not {FRAME_RATE_HZ} Hz")
-    writer.add_uint32("qwen3-tts.codec.sample_rate", sample_rate)
-    writer.add_uint32("qwen3-tts.codec.hop_length", hop)
-    writer.add_float32("qwen3-tts.codec.frame_rate_hz", FRAME_RATE_HZ)
+    writer.add_uint32("synthesize.qwen3-tts.codec.sample_rate", sample_rate)
+    writer.add_uint32("synthesize.qwen3-tts.codec.hop_length", hop)
+    writer.add_float32("synthesize.qwen3-tts.codec.frame_rate_hz", FRAME_RATE_HZ)
 
     # Special token ids the graph needs.
     for key in ("tts_bos_token_id", "tts_eos_token_id", "tts_pad_token_id",
                 "im_start_token_id", "im_end_token_id", "assistant_token_id"):
-        writer.add_uint32(f"qwen3-tts.token.{key}", int(config[key]))
+        writer.add_uint32(f"synthesize.qwen3-tts.token.{key}", int(config[key]))
     for key in ("codec_bos_id", "codec_eos_token_id", "codec_pad_id"):
-        writer.add_uint32(f"qwen3-tts.token.{key}", int(talker[key]))
+        writer.add_uint32(f"synthesize.qwen3-tts.token.{key}", int(talker[key]))
 
     # Preset Voice Catalog: speakers are codec-vocabulary token ids, not
     # embeddings, which is why this variant carries no speaker encoder.
     speakers = sorted(talker["spk_id"], key=lambda n: talker["spk_id"][n])
-    writer.add_array("qwen3-tts.speakers.names", speakers)
-    writer.add_array("qwen3-tts.speakers.token_ids", [int(talker["spk_id"][n]) for n in speakers])
+    writer.add_array("synthesize.qwen3-tts.speakers.names", speakers)
+    writer.add_array("synthesize.qwen3-tts.speakers.token_ids", [int(talker["spk_id"][n]) for n in speakers])
     writer.add_array(
-        "qwen3-tts.speakers.dialect_override",
+        "synthesize.qwen3-tts.speakers.dialect_override",
         [str(talker["spk_is_dialect"][n]) if talker["spk_is_dialect"][n] else "" for n in speakers],
     )
     languages = sorted(talker["codec_language_id"], key=lambda n: talker["codec_language_id"][n])
-    writer.add_array("qwen3-tts.languages.names", languages)
-    writer.add_array("qwen3-tts.languages.token_ids",
+    writer.add_array("synthesize.qwen3-tts.languages.names", languages)
+    writer.add_array("synthesize.qwen3-tts.languages.token_ids",
                      [int(talker["codec_language_id"][n]) for n in languages])
 
     # Text Frontend payload: vocabulary and merges travel in the package so the
     # provider needs no executable per-model mapping logic.
     ordered = sorted(vocab, key=lambda token: vocab[token])
-    writer.add_array("qwen3-tts.frontend.vocab", ordered)
-    writer.add_array("qwen3-tts.frontend.merges", merges)
-    writer.add_string("qwen3-tts.frontend.provider", "synthesize.qwen_bpe")
-    writer.add_uint32("qwen3-tts.frontend.contract_version", 1)
+    writer.add_array("synthesize.qwen3-tts.frontend.vocab", ordered)
+    writer.add_array("synthesize.qwen3-tts.frontend.merges", merges)
+    writer.add_bool("synthesize.frontend.present", True)
+    writer.add_string("synthesize.frontend.provider", "synthesize.qwen_bpe")
+    writer.add_uint32("synthesize.frontend.contract_version", 1)
     chat_template = tokenizer_config.get("chat_template")
     if isinstance(chat_template, str):
-        writer.add_string("qwen3-tts.frontend.chat_template", chat_template)
+        writer.add_string("synthesize.qwen3-tts.frontend.chat_template", chat_template)
 
 
 def verify_gguf(path: Path, outputs: list[OutputTensor]) -> None:

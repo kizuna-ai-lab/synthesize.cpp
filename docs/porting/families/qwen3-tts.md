@@ -212,12 +212,13 @@ be upstream already, with CPU, CUDA and Vulkan kernels — VITS was moved onto i
 on 2026-07-27 (`ggml-patches/README.md`). Intake should still measure rather
 than assume, but it starts from "nothing to add" rather than "two to add".
 
-If a local change does become necessary, `ggml-patches/` plus
-`scripts/sync-ggml.sh` is the mechanism, and that directory now holds no patches
-at all. Adding one has a cost it did not have before: it would re-block the
-submodule conversion that the empty patch set makes possible. Given the outcome
-recorded in the local patch notes, any operator added here is for this project's
-use; no upstream submission is planned or implied by this design.
+If a local change does become necessary, there is no longer a mechanism for
+one: `ggml/` became a submodule on 2026-07-27 and a submodule cannot carry a
+local modification. `ggml-patches/README.md` lists the options that remain --
+avoid the operator, fork ggml under an organization this project controls, or
+revert to vendoring -- and the first of those is what retired the last patch.
+Given the outcome recorded in those notes, no upstream submission is planned or
+implied by this design.
 
 ## Decomposition
 

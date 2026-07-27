@@ -163,6 +163,16 @@ if(SYNTH_METAL)
     set(GGML_METAL_EMBED_LIBRARY ON CACHE BOOL "" FORCE)
 endif()
 
+# ggml is a git submodule, not a vendored copy. An uninitialized one leaves an
+# empty directory here, and add_subdirectory's own error names a missing
+# CMakeLists.txt without saying why it is missing or how to fix it.
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ggml/CMakeLists.txt")
+    message(FATAL_ERROR
+        "ggml/ is empty: it is a git submodule and has not been initialized.\n"
+        "  git submodule update --init --recursive\n"
+        "or clone with --recurse-submodules. See ggml-patches/README.md.")
+endif()
+
 add_subdirectory(ggml)
 
 if(SYNTH_GGML_BACKEND_DL)

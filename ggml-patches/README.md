@@ -1,21 +1,63 @@
-# Local patches to the vendored ggml
+# Local changes to ggml: the record of why there are none
 
-**There are none.** `ggml/` is upstream's tracked tree at the SHA in
-`ggml/UPSTREAM`, verbatim, minus `.github/`. This directory is kept for the
-mechanism and for the record below.
+*(The directory keeps its `ggml-patches` name because several documents link to
+this file by path. Nothing in it is a patch any more.)*
 
-The mechanism still stands: `scripts/sync-ggml.sh` regenerates `ggml/` from
-upstream plus every `ggml-patches/*.patch` in filename order, and aborts loudly
-if one stops applying. If a local change ever becomes necessary again, add a
-patch file here and re-run the script -- never hand-edit `ggml/`.
+**There are none, and there can no longer be any.** As of 2026-07-27 `ggml/` is
+a git submodule pinned to a commit of `ggml-org/ggml`, not a vendored copy. A
+submodule is a pointer; it cannot carry a local modification. This directory is
+kept because the record below is referenced from several documents, and because
+the next person to want a local change needs to know what happened to the last
+five.
 
-## How this directory emptied
+## Working with the submodule
+
+Clone with `git clone --recurse-submodules`, or run
+`git submodule update --init --recursive` in an existing checkout. A build
+against an uninitialized submodule fails at `add_subdirectory(ggml)` rather than
+silently producing something wrong.
+
+To move to a different upstream commit:
+
+```bash
+git -C ggml fetch origin
+git -C ggml checkout <sha>
+git add ggml && git commit
+```
+
+`git status` reports a modified submodule if anything in `ggml/` is edited, which
+is the check `scripts/sync-ggml.sh` used to perform by regenerating the tree.
+That script is gone; git does its job now.
+
+## If a local change becomes necessary again
+
+The submodule forecloses the patch-on-sync mechanism, deliberately. Reaching for
+a local change means one of:
+
+1. **Upstream it.** Preferred, and not currently available to this project --
+   see the note at the end of the strict-FP32 section below.
+2. **Avoid the operator.** This is what actually retired the last patch: a
+   different upstream operator computed the same value, faster, on more
+   backends. Try this first. It is easy to assume a patch is the only option
+   because it is the first option that comes to mind.
+3. **Fork `ggml-org/ggml` under an organization this project controls** and
+   point the submodule at the fork. Honest about the maintenance it costs, and
+   reversible.
+4. **Revert to vendoring.** Restore the pre-2026-07-27 layout and this
+   directory's patch mechanism. The commit that made the conversion is the
+   reference.
+
+Do not edit `ggml/` in place. It is a checkout of someone else's repository; the
+edit survives until the next `submodule update` and then vanishes without a
+trace, which is the exact failure the patch directory was created to prevent.
+
+## How the patch set emptied
 
 The tree once carried about 400 undocumented local lines, discovered on
-2026-07-26. Nothing recorded them, and one `sync-ggml.sh` run would have
-silently destroyed the packaging installs, an F16 inference path, a CI deadlock
-fix, and the strict-FP32 precision policy at once. They were split into five
-groups and each was measured against the reason given for it.
+2026-07-26. Nothing recorded them, and one re-vendor would have silently
+destroyed the packaging installs, an F16 inference path, a CI deadlock fix, and
+the strict-FP32 precision policy at once. They were split into five groups and
+each was measured against the reason given for it.
 
 Four went that day. Three of those four because the justification did not
 survive measurement, one because a better fix existed on this side of the seam.
@@ -25,12 +67,7 @@ kernel rather than a replacement on this side. That note was wrong on both
 counts, and the group went on 2026-07-27. Each section below records what was
 tried and what the numbers were.
 
-One consequence is worth stating. With no local modification left, `ggml/` could
-become a git submodule pinned to the same SHA, removing 1,992 files and about
-19.5 MB from this repository. A submodule is a pointer and cannot carry a local
-change, so one hunk would have blocked it as surely as seventeen. That
-conversion is deliberately not made here: it changes how the tree is cloned,
-packaged into an sdist, and re-vendored, and it should be its own change.
+The conversion removed 1,992 files and about 19.5 MB from this repository.
 
 ## Removed on 2026-07-27: the templated conv_transpose_1d CUDA kernel
 

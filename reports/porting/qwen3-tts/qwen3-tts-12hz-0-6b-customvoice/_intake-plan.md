@@ -41,6 +41,16 @@ upstream `qwen-tts` package pinned by git revision.
   far off real time, that is a finding about whether this family can satisfy the
   rule at all, and it belongs in the intake record rather than being discovered
   after the graph is written.
+- **Read "Findings From Reading qwentts.cpp" in `docs/porting/families/qwen3-tts.md`
+  before Task 3.** A source read of the reference port recorded three conversion
+  rules that produce no error and wrong output when missed -- the RVQ codebooks
+  are EMA accumulators and must be reconstructed, convolution kernels are forced
+  to F16 at load because ARM's im2col is strict about kernel dtype, and
+  SnakeBeta's alpha and beta pass through `exp()` every forward. It also records
+  that the 15 acoustic codebooks each carry a private embedding table and a
+  private linear head, which the configuration alone does not reveal, and that
+  deep talker layers need a cosine tolerance rather than max-abs. Task 3 Step 5
+  reads the upstream source; these are the specific things to confirm there.
 - Commit contracts, not payloads. Checkpoints go to the git-ignored
   `models/qwen3-tts-12hz-0-6b-customvoice/` cache. No training corpus is
   downloaded, and no checkpoint bytes are committed.

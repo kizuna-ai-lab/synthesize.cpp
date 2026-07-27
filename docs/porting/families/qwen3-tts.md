@@ -1,9 +1,11 @@
 # Qwen3-TTS Family Selection and Port Plan
 
-Status: Selection accepted on 2026-07-26. Intake, conversion, C++
-implementation, and port validation are not started. Operator surface revised on
-2026-07-27: `ggml_col2im_1d` turned out to be upstream already, so the expected
-additions dropped from two to none.
+Status: Selection accepted on 2026-07-26. Conversion, C++ implementation, and
+port validation are not started; intake is in progress, Task 1 of five complete.
+Two revisions on 2026-07-27: the operator surface dropped from two expected
+additions to none, and a source read of `qwentts.cpp` is recorded under
+"Findings From Reading qwentts.cpp" — three conversion rules that fail silently
+and a tolerance shape that would misreport a correct port.
 
 ## Decision
 
@@ -206,11 +208,17 @@ Profiles are measured for this family, not inherited from either predecessor.
 
 Two operators beyond the vendored set were expected here: a Snake activation and
 a 1-D column-to-image scatter-add for transposed convolution. **Both
-expectations were wrong, and the incremental surface is currently zero.** The
-project added a Snake activation for Kokoro, and `ggml_col2im_1d` turned out to
-be upstream already, with CPU, CUDA and Vulkan kernels — VITS was moved onto it
-on 2026-07-27 (`ggml-patches/README.md`). Intake should still measure rather
-than assume, but it starts from "nothing to add" rather than "two to add".
+expectations were wrong, and the incremental surface is zero.** This was
+measured against `qwentts.cpp`, which maintains a ggml fork to supply both as
+fused operators; this project needs neither, and therefore needs no fork.
+
+| Expected operator | Measured status |
+| --- | --- |
+| 1-D column scatter-add | `ggml_col2im_1d` is upstream, with CPU, CUDA and Vulkan kernels. No Metal, which is outside the validation matrix anyway. VITS was moved onto it on 2026-07-27, so it is exercised rather than merely present. |
+| SnakeBeta | `snake()` in `src/arch/kokoro/operations.cpp` already computes `x + sin²(αx)/α` from five ordinary operators. SnakeBeta is `x + sin²(αx)·(1/β)` with β independent — the divisor changes from α to a separate tensor. A parameter on the existing helper, not a new operator. |
+
+A fused `GGML_OP_SNAKE` would be a performance optimization only. Do not add one
+before a profile asks for it.
 
 If a local change does become necessary, there is no longer a mechanism for
 one: `ggml/` became a submodule on 2026-07-27 and a submodule cannot carry a
@@ -272,6 +280,87 @@ distinction is not the individual port; it is one versioned ABI across multiple
 validated families, with Port Validation Suites, Golden Manifests, Model
 Packages, and recorded decisions. That distinction is real but narrower than it
 looked before these repositories were read.
+
+## Findings From Reading qwentts.cpp
+
+Recorded 2026-07-26 from a source read of `ServeurpersoCom/qwentts.cpp`, before
+any of this family's own code exists. Nothing here was copied; these are
+constraints to verify during intake and conversion, not adopted implementation.
+Anything later adopted as *code* triggers the `THIRD_PARTY_NOTICES.md`
+obligation described above.
+
+### Three conversion rules that fail silently
+
+Each of these produces a converter that raises no error and output that is
+wrong.
+
+**The RVQ codebooks are not codebooks.** The checkpoint stores EMA
+accumulators. The codebook has to be reconstructed at convert time:
+
+```python
+embedding = embedding_sum / clip(cluster_usage, 1e-5)[:, None]   # RVQ_EPS = 1e-5
+```
+
+`embed_sum` and `cluster_usage` are stored as pairs and must be matched by
+`(origin, side, layer)`. Skip this and the nearest-neighbour lookup returns
+garbage with no diagnostic. The reconstructed table must stay F32.
+
+**Convolution kernels are forced to F16 at load**, independently of the GGUF
+storage dtype, because ARM's im2col is strict about kernel dtype. This project's
+primary development host is aarch64, so it is directly in the path rather than a
+portability footnote.
+
+**SnakeBeta's α and β pass through `exp()` on every forward** in the reference
+implementation. They can be folded once on the CPU at load, leaving the graph to
+multiply plain F32 buffers. Whether the folding is valid depends on the exact
+forward, which is why Task 3 of the intake plan reads that source.
+
+### Tensor topology the config does not reveal
+
+The 15 acoustic codebooks each carry a **private embedding table and a private
+linear head**. A converter tensor catalog derived from the configuration alone
+will not have them.
+
+### Quantization observations
+
+`qwentts.cpp` keeps at source dtype: the RVQ codebooks and the projections
+wrapping them, the speaker encoder's final fully-connected layer, every snake
+α/β, and every 1-D tensor. Its stated reason for the codebooks is measured
+rather than assumed — Q8_0 and K-quants corrupt the reference-audio encoding and
+destroy voice cloning, and even BF16's mantissa loss is enough to make codes
+drift.
+
+That is the same shape as Kokoro's rule that the decoder's upstream stays at the
+reference dtype, and it fits this project's existing Quantization Profile
+framework without new mechanism. It is an input to profile design, not a
+conclusion; this family's profiles are measured for this family.
+
+### Validation: what transfers and what does not
+
+**Transferable.** Their staged probe table is close to what this family's Golden
+Manifest needs: `Embed`, `TrailingText`, `TTSPadEmbed`, `L0`, `L7`, `L14`,
+`L21`, `L27`, `Final`, `Logits`, `NextEmbStep0`, `TalkerHiddenStep1`.
+
+**Not transferable — their divergence percentages.** Their logs record the
+PyTorch reference on CUDA against C++ on CPU, which compares two kernel stacks.
+`docs/port-validation.md` Phase 1 requires the oracle on CPU, so this project
+compares CPU PyTorch against CPU GGML — a strictly better condition. Their
+figures should not be carried into this family's expectations; measure ours.
+
+**Not transferable — max-absolute tolerances on deep talker layers.** In one of
+their runs the per-layer max-abs is 13.07 / 13.09 / 13.42 at L7 / L14 / L21 and
+**66.8** at L27, while cosine similarity stays at or above 0.9998. Those are
+outlier channels ahead of the final norm. `tests/tolerances/qwen3-tts.json` must
+use a cosine threshold for these stages; a max-abs threshold would report
+catastrophic failure on a correct port.
+
+### Performance shape of the code predictor
+
+Their fix resets the predictor KV cache each frame, prefills two positions
+(`talker_hidden` and `embed(c0)`), then replays 14 single-token steps against a
+graph built lazily at the first frame — uploading `N*4` bytes of code ids per
+step. That takes the inner loop from `O(Σ(g+2)²)` to `O(16)`. Recorded as a
+known-good shape to compare against, not as a design commitment.
 
 ## OmniVoice as Fourth-Family Candidate
 

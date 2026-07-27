@@ -129,12 +129,13 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "chinese",
           "speaker": "vivian",
-          "instruct": "用特别愤怒的语气说"
+          "instruct": "用特别愤怒的语气说",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {
@@ -262,11 +263,12 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "english",
-          "speaker": "aiden"
+          "speaker": "aiden",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {
@@ -393,11 +395,12 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "english",
-          "speaker": "aiden"
+          "speaker": "aiden",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {
@@ -524,11 +527,12 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "english",
-          "speaker": "aiden"
+          "speaker": "aiden",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {
@@ -655,11 +659,12 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "english",
-          "speaker": "aiden"
+          "speaker": "aiden",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {
@@ -787,11 +792,12 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "english",
-          "speaker": "aiden"
+          "speaker": "aiden",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {
@@ -919,11 +925,12 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "english",
-          "speaker": "aiden"
+          "speaker": "aiden",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {
@@ -1050,11 +1057,12 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "english",
-          "speaker": "aiden"
+          "speaker": "aiden",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {
@@ -1181,11 +1189,12 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "english",
-          "speaker": "aiden"
+          "speaker": "aiden",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {
@@ -1312,11 +1321,12 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "english",
-          "speaker": "vivian"
+          "speaker": "vivian",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {
@@ -1444,11 +1454,12 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "chinese",
-          "speaker": "eric"
+          "speaker": "eric",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {
@@ -1557,13 +1568,12 @@
       },
       "coverage": [
         "dialect-override",
-        "language-token-pinned",
-        "terminating-input-verified"
+        "language-token-pinned"
       ],
       "input": {
         "kind": "text_utf8",
         "language_tag": "chinese",
-        "text": "你好，今天天气不错。"
+        "text": "其实我真的有发现，我是一个特别善于观察别人情绪的人。"
       },
       "voice": {
         "kind": "preset_voice",
@@ -1577,11 +1587,12 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "chinese",
-          "speaker": "dylan"
+          "speaker": "dylan",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {
@@ -1690,8 +1701,7 @@
       },
       "coverage": [
         "non-latin-script",
-        "language-token",
-        "terminating-input-verified"
+        "language-token"
       ],
       "input": {
         "kind": "text_utf8",
@@ -1700,8 +1710,8 @@
       },
       "voice": {
         "kind": "preset_voice",
-        "id": "sohee",
-        "oracle_id": "sohee"
+        "id": "ono_anna",
+        "oracle_id": "ono_anna"
       },
       "request": {
         "seed_u64": "0",
@@ -1710,11 +1720,12 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "japanese",
-          "speaker": "sohee"
+          "speaker": "ono_anna",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {
@@ -1842,11 +1853,12 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "korean",
-          "speaker": "sohee"
+          "speaker": "sohee",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {
@@ -1974,11 +1986,12 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "german",
-          "speaker": "ryan"
+          "speaker": "ryan",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {
@@ -2105,11 +2118,12 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "auto",
-          "speaker": "aiden"
+          "speaker": "aiden",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {
@@ -2236,11 +2250,12 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "english",
-          "speaker": "aiden"
+          "speaker": "aiden",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {
@@ -2367,11 +2382,12 @@
       },
       "oracle": {
         "parameters": {
-          "do_sample": false,
-          "subtalker_dosample": false,
+          "do_sample": true,
+          "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "english",
-          "speaker": "aiden"
+          "speaker": "aiden",
+          "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [
           {

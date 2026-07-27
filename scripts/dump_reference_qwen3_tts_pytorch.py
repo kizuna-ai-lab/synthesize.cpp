@@ -9,15 +9,20 @@ stage by stage rather than only at the waveform.
 
 Two properties of this family shape the script.
 
-Decoding must be greedy on *both* heads. ``do_sample`` governs the Talker only;
-the code predictor has its own ``subtalker_dosample``, which upstream defaults
-to true. Setting one and not the other produces a silently non-deterministic
-run, so both are forced here and the manifest records them.
+The oracle samples, and seeds the reference so the capture is regeneratable.
+Greedy decoding was tried first because it is self-reproducible, and rejected:
+it degenerates into a fixed point on some speaker-and-input pairings -- two of
+the manifest's cases ran to the token cap emitting one repeated code, with the
+shipped repetition penalty active -- and it validates a mode no user runs.
+Seeding PyTorch and sampling with the shipped defaults reproduces exactly on
+re-run, terminates on every case tried, and is three to seven times faster on
+the inputs greedy could not finish.
 
-The replay tensors are the codes, not a random stream. Under fully greedy
-decoding the sampled sequence is reproducible, so ``codes.semantic`` and
-``codes.acoustic`` are captured and compared for exact equality later, rather
-than a generator's draws being injected as they are for Kokoro.
+The replay tensors are the codes, not a generator. ``docs/port-validation.md``
+requires captured model inputs "rather than relying on two frameworks to
+implement the same pseudorandom generator", so the seed here only makes the
+*reference* capture repeatable. ``codes.semantic`` and ``codes.acoustic`` are
+what the C++ graph replays, and synthesize.cpp never reproduces MT19937.
 
 Usage:
 
@@ -182,6 +187,10 @@ def run_case(tts, case: dict, output_root: pathlib.Path) -> dict:
     restore_codes = capture_codes(tts, sink)
     started = time.time()
     try:
+        # Seeding immediately before the call is what makes the dump
+        # regeneratable; the case's own seed is used so the seeded cases produce
+        # genuinely distinct references rather than three copies of one.
+        torch.manual_seed(int(case["request"]["seed_u64"]))
         kwargs = dict(
             text=case["input"]["text"],
             language=parameters["language"],
@@ -235,12 +244,10 @@ def run_case(tts, case: dict, output_root: pathlib.Path) -> dict:
     if not np.isfinite(audio).all():
         raise SystemExit(f"{case['id']}: reference produced non-finite PCM")
 
-    # A run that reaches max_new_tokens never emitted EOS, and greedy decoding on
-    # this family can collapse into a fixed point: one case degenerated to a
-    # single repeated code for its last 400 frames and produced 164 seconds of
-    # audio from one sentence, with the shipped repetition penalty active. Such a
-    # dump is not oracle evidence, and accepting it silently would put 2047
-    # frames of garbage into the parity baseline.
+    # A run that reaches max_new_tokens never emitted EOS. Sampling has not been
+    # observed to degenerate the way greedy did, but the guard stays: a capped
+    # dump is not oracle evidence, and accepting one silently would put thousands
+    # of frames of a repeated code into the parity baseline.
     cap = int(parameters["max_new_tokens"])
     if codes.shape[0] >= cap - 1:
         tail = codes[-min(400, codes.shape[0]):, 0]
@@ -273,6 +280,7 @@ def run_case(tts, case: dict, output_root: pathlib.Path) -> dict:
         "real_time_factor": round(wall_seconds / duration, 3) if duration else None,
     }
     metadata = {
+        "seed_u64": case["request"]["seed_u64"],
         "language": parameters["language"],
         "speaker": parameters["speaker"],
         "instruct": parameters.get("instruct"),

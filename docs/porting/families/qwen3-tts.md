@@ -705,6 +705,82 @@ carried across frames — and would need its own validated evidence at a later
 stage. Recording it this way keeps the two claims from being conflated by
 default, which `CONTEXT.md` warns against in both directions.
 
+## What Three More Ports Say
+
+Read on 2026-07-28: `HaujetZhao/Qwen3-TTS-GGUF`, `cgisky1980/Qwen3-TTS-Rust`,
+`mzyfc/Qwen3-TTS-ncnn`. Nothing was copied.
+
+**Licences differ and one is absent.** The Rust port declares
+`MIT OR Apache-2.0` in `Cargo.toml`. The ncnn port states none of its own and
+defers to its `THIRD_PARTY_NOTICES.md`. The GGUF port ships **no licence at
+all** -- the Apache-2.0 headers inside it belong to a vendored copy of upstream
+-- so it is readable but nothing in it may be reused. Treat all three as
+read-only until a licence is confirmed, and remember the
+`THIRD_PARTY_NOTICES.md` obligation applies to code adopted, not to
+understanding gained.
+
+### Every existing port splits the model; this project does not
+
+All three separate the Talker from the Code Predictor and run the codec
+elsewhere: the GGUF and Rust ports drive two llama.cpp GGUFs plus ONNX
+Runtime for the codec, and the ncnn port exports the Talker and Code Predictor
+as separate ncnn graphs. This project's single versioned C ABI over one GGML
+runtime is the harder path, and it is a deliberate difference rather than an
+oversight -- but it is worth knowing that no existing port attempts it.
+
+### The Code Predictor is the bottleneck, not the Talker
+
+The GGUF port states it directly, and the arithmetic is checkable: one second of
+audio is 12.5 frames, and each frame needs 15 sequential Code Predictor steps,
+so the predictor runs 187.5 steps per second against the Talker's 12.5. At the
+0.6B rung the predictor is roughly 0.1B against the Talker's 0.6B, which puts
+about two and a half times more work per second in the predictor. That is why
+the same port reports the 0.6B and 1.7B rungs performing similarly: the rung
+size changes only the Talker.
+
+This is where stage 4's effort belongs, and it explains why `qwentts.cpp`'s
+cache-reset rewrite of the predictor inner loop mattered as much as it did.
+
+### Quantized CPU inference is far faster than the PyTorch reference
+
+| Port | Backend | Quantization | Real-time factor |
+| --- | --- | --- | ---: |
+| Rust | CUDA | Q5_K_M | 0.553 |
+| Rust | CUDA | Q8_0 | 0.640 |
+| Rust | CPU | Q5_K_M | 1.677 |
+| Rust | CPU | Q8_0 | 1.866 |
+| GGUF, 1.7B | discrete GPU | Q5_K | 0.35 |
+| GGUF, 1.7B | CPU | Q5_K | 1.3 |
+| GGUF, 1.7B | integrated GPU | Q5_K | 1.3 |
+
+Two independent implementations put quantized CPU inference between 1.3 and
+1.9, on the same or a larger rung than this project's Stage 1 target. The 9.4
+recorded from this project's own oracle is PyTorch, float32, eager attention --
+an unoptimised reference, not a prediction of what a GGML port achieves.
+
+**This changes the open question about the discrete-output rule.** The cost of
+holding the autoregressive core on CPU is not the six-to-nine times implied by
+comparing the PyTorch CPU reference against CUDA. Measured against these ports
+it is closer to two or three times, from roughly 0.55 to roughly 1.7, and stays
+near real time. That is a far cheaper price for cross-backend determinism than
+the earlier framing suggested, and the decision should be taken against these
+numbers rather than against the reference's.
+
+### Smaller corroborations
+
+The GGUF port exposes **independent seeds for the Talker and the Predictor**,
+which is the same two-sampler structure this project found in
+`do_sample`/`subtalker_dosample`. The ncnn port chose deterministic greedy
+generation for its numerical acceptance work, the approach this project tried
+and abandoned after finding greedy degenerates on some speaker-and-input
+pairings -- worth watching whether they hit the same wall.
+
+Their voice-clone path is in-context learning: reference text and target text
+are concatenated, and the reference audio is injected as a speaker embedding
+plus its codes so the model continues in that voice. That is the mechanism the
+Reference Model Variant Ladder's later rungs will need, and it is not what this
+Stage 1 CustomVoice variant does.
+
 ## Open Questions for Intake
 
 1. Confirm the codec decoder topology against upstream rather than against a

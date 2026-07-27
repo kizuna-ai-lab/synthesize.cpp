@@ -430,7 +430,7 @@
         9.4,
         9.7
       ],
-      "note": "CPU, F32, eager -- an upcast of the checkpoint, kept for comparison only"
+      "note": "CPU, F32, eager -- an upcast of the checkpoint, kept for comparison only. It is a PyTorch reference figure and does NOT predict this project's CPU speed: two independent GGML/llama.cpp ports report quantized CPU real-time factors of 1.3 to 1.9 on the same or a larger rung (Qwen3-TTS-Rust CPU Q5_K_M 1.677, Qwen3-TTS-GGUF 1.7B CPU Q5_K 1.3)."
     }
   },
   "audio_delivery_claim": {
@@ -444,11 +444,12 @@
     ]
   },
   "open_decisions": [
-    "Whether the discrete-output rule applies to this family's autoregressive sampler on the public request path. Applied as written it holds the whole talker on CPU and CUDA buys almost nothing; relaxed, the same text and seed could yield different tokens per backend. Parity validation is unaffected either way because it replays captured codes. Stage 7.",
+    "Whether the discrete-output rule applies to this family's autoregressive sampler on the public request path. Applied as written it holds the whole talker on CPU; relaxed, the same text and seed could yield different tokens per backend. Parity validation is unaffected either way because it replays captured codes. The price is smaller than first recorded: measured against external ports it is roughly 0.55 on CUDA against 1.7 on CPU, both near real time, rather than the six-to-nine times implied by comparing the PyTorch CPU reference with CUDA. Stage 7.",
     "BF16 has a heavier tail than F32: seed 0 on the input \"Hi.\" produced 121 codec frames under BF16 where every other seed tried gave 12 or 13, and F32 never did. This is the shipped model's behaviour and a faithful port reproduces it, but it affects how manifest seeds are chosen and what a user should expect.",
     "SnakeBeta alpha and beta pass through exp() on every forward in the reference; whether they can be folded once at load needs the forward rather than the shapes, and is a stage-3 question.",
     "The 1.7B voice-design rung has not been measured; its real-time factor must not be inferred from the 0.6B figure.",
     "The code predictor cache-reset mitigation described by the reference port is unmeasured here and is a stage-4 implementation concern.",
-    "Whether the codec encoder half (225 tensors) ships in the Model Package at all: Stage 1 uses preset speaker token ids and needs only the decoder side."
+    "Whether the codec encoder half (225 tensors) ships in the Model Package at all: Stage 1 uses preset speaker token ids and needs only the decoder side.",
+    "The Code Predictor, not the Talker, is the compute bottleneck: 15 sequential steps per frame means 187.5 predictor steps per second of audio against the Talker's 12.5. Stage 4 effort belongs there, and the 0.6B versus 1.7B rung choice moves only the Talker."
   ]
 }

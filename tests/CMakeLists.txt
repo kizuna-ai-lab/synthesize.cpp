@@ -160,6 +160,7 @@ if(SYNTH_BUILD_SHARED AND UNIX AND NOT APPLE)
 endif()
 
 synth_add_unit_test(synthesize-kokoro-metadata-test kokoro_metadata_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-metadata-test qwen3_tts_metadata_test.cpp)
 synth_add_unit_test(synthesize-kokoro-lstm-test kokoro_lstm_test.cpp)
 synth_add_unit_test(synthesize-kokoro-catalog-test kokoro_catalog_test.cpp)
 synth_add_unit_test(synthesize-kokoro-plbert-test kokoro_plbert_test.cpp)

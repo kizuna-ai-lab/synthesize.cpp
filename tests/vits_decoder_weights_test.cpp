@@ -44,9 +44,18 @@ int main() {
     synth::test::GgmlContext f16_weight = synth::test::make_ggml_context();
     SYNTH_TEST_CHECK(f16_weight != nullptr);
     synth::test::populate_decoder_weight_tensors(f16_weight.get(), f16_hparams, {}, {}, {}, GGML_TYPE_I32,
-                                                 GGML_TYPE_F16, GGML_TYPE_F16);
+                                                 GGML_TYPE_F16, GGML_TYPE_F32);
     SYNTH_TEST_CHECK(synth::vits::build_decoder_weights(f16_weight.get(), f16_hparams, weights) == SYNTH_OK);
-    SYNTH_TEST_CHECK(weights.stages[0].transpose_conv.weight->type == GGML_TYPE_F16);
+    SYNTH_TEST_CHECK(weights.stages[0].transpose_conv.weight->type == GGML_TYPE_F32);
+
+    // A package built before the transposed convolution moved to a column
+    // matrix multiply carries these tensors halved. It must be refused rather
+    // than run at reduced accuracy on whichever backend loads it.
+    synth::test::GgmlContext stale_f16 = synth::test::make_ggml_context();
+    SYNTH_TEST_CHECK(stale_f16 != nullptr);
+    synth::test::populate_decoder_weight_tensors(stale_f16.get(), f16_hparams, {}, {}, {}, GGML_TYPE_I32, GGML_TYPE_F16,
+                                                 GGML_TYPE_F16);
+    SYNTH_TEST_CHECK(synth::vits::build_decoder_weights(stale_f16.get(), f16_hparams, weights) == SYNTH_ERR_GGUF);
 
     synth::vits::HParams q8_hparams     = hparams;
     q8_hparams.quantization_profile     = synth::vits::QuantizationProfile::Q8Mixed;
@@ -55,10 +64,10 @@ int main() {
     synth::test::GgmlContext q8_weights = synth::test::make_ggml_context();
     SYNTH_TEST_CHECK(q8_weights != nullptr);
     synth::test::populate_decoder_weight_tensors(q8_weights.get(), q8_hparams, {}, {}, {}, GGML_TYPE_I32,
-                                                 GGML_TYPE_Q8_0, GGML_TYPE_F16, true);
+                                                 GGML_TYPE_Q8_0, GGML_TYPE_F32, true);
     SYNTH_TEST_CHECK(synth::vits::build_decoder_weights(q8_weights.get(), q8_hparams, weights) == SYNTH_OK);
     SYNTH_TEST_CHECK(weights.pre.weight->type == GGML_TYPE_Q8_0 && weights.pre.weight->ne[0] == 7 * 32);
-    SYNTH_TEST_CHECK(weights.stages[0].transpose_conv.weight->type == GGML_TYPE_F16);
+    SYNTH_TEST_CHECK(weights.stages[0].transpose_conv.weight->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(weights.post_weight->type == GGML_TYPE_Q8_0 && weights.post_weight->ne[0] == 7 * 32);
 
     synth::test::GgmlContext f16_bias = synth::test::make_ggml_context();

@@ -59,9 +59,9 @@ capabilities:
 validation:
   level: port_validated
   quality_evaluation: not_run
-  date: 2026-07-23
+  date: 2026-07-27
   reference: the pinned upstream PyTorch implementation
-  implementation_revision: workspace-snapshot-2026-07-23
+  implementation_revision: workspace-snapshot-2026-07-27
   cases_per_stage: 12
   stages: 7
   columns:
@@ -69,15 +69,12 @@ validation:
       title: CPU max PCM drift
     - key: dgx_pcm_max_abs
       title: DGX Spark CUDA max PCM drift
-    - key: rtx_pcm_max_abs
-      title: RTX 4070 SUPER CUDA max PCM drift
   metric_note: |
     Drift is the largest absolute difference between one PCM sample and the
     reference's.
   platforms:
     - DGX Spark CPU
     - NVIDIA GB10 CUDA 13.3
-    - NVIDIA RTX 4070 SUPER CUDA 13.3
 
 publication_note: |
   The synthesize.cpp maintainer has chosen to publish these converted artifacts
@@ -98,26 +95,23 @@ quants:
     sha256: bd17e44c7c2d761d33c1527059bd3921f9d3fa9d46bd73b3e020d746a8b7db7b
     tensor_types: 460 F32
     validation:
-      cpu_pcm_max_abs: 0.0002223924
-      dgx_pcm_max_abs: 0.20982037
-      rtx_pcm_max_abs: 0.2027478628
+      cpu_pcm_max_abs: 0.00029484
+      dgx_pcm_max_abs: 0.01902072
   - name: F16
     filename: vits-ljspeech-F16.gguf
-    size: 70.5 MB
-    size_bytes: 70453568
-    sha256: 5fc428ba97416cc164055f509af1b9e120b089bd0bab792ad674c862411d7bca
-    tensor_types: 342 F32 + 118 F16
+    size: 75.8 MB
+    size_bytes: 75778368
+    sha256: 8683788b4dec7b81bf86f1cca024ed790724e491e2df40f77f1fc0bc614f860f
+    tensor_types: 346 F32 + 114 F16
     validation:
-      cpu_pcm_max_abs: 0.01712550
-      dgx_pcm_max_abs: 0.20995625
-      rtx_pcm_max_abs: 0.20820463
+      cpu_pcm_max_abs: 0.01533963
+      dgx_pcm_max_abs: 0.02761611
   - name: Q8_MIXED
     filename: vits-ljspeech-Q8_MIXED.gguf
-    size: 52.9 MB
-    size_bytes: 52890240
-    sha256: df95091f975e78088c4908c3f2adfc381cfa234c3f520ddd3ffe10160ff12ba1
-    tensor_types: 342 F32 + 4 F16 + 114 Q8_0
+    size: 58.2 MB
+    size_bytes: 58215040
+    sha256: f751607f7514fa2aa1dca3ba46738b081c6b6c6b9579bfd22b1b80016551a3eb
+    tensor_types: 346 F32 + 114 Q8_0
     validation:
-      cpu_pcm_max_abs: 0.36679696
-      dgx_pcm_max_abs: 0.32943400
-      rtx_pcm_max_abs: 0.34679114
+      cpu_pcm_max_abs: 0.36558404
+      dgx_pcm_max_abs: 0.37650996

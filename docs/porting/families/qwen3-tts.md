@@ -202,16 +202,20 @@ Profiles are measured for this family, not inherited from either predecessor.
 
 ## GGML Operator Surface
 
-Two operators beyond the current vendored set are expected: a Snake activation
-and a 1-D column-to-image scatter-add for transposed convolution. The project
-already added a Snake activation for Kokoro, so the incremental surface may be
-one operator rather than two — to be measured during intake. `ggml-patches/`
-plus `scripts/sync-ggml.sh` is the established mechanism and no new mechanism is
-needed.
+Two operators beyond the vendored set were expected here: a Snake activation and
+a 1-D column-to-image scatter-add for transposed convolution. **Both
+expectations were wrong, and the incremental surface is currently zero.** The
+project added a Snake activation for Kokoro, and `ggml_col2im_1d` turned out to
+be upstream already, with CPU, CUDA and Vulkan kernels — VITS was moved onto it
+on 2026-07-27 (`ggml-patches/README.md`). Intake should still measure rather
+than assume, but it starts from "nothing to add" rather than "two to add".
 
-Given the outcome recorded in the local patch notes, any operator added here is
-a local patch for this project's use. No upstream submission is planned or
-implied by this design.
+If a local change does become necessary, `ggml-patches/` plus
+`scripts/sync-ggml.sh` is the mechanism, and that directory now holds no patches
+at all. Adding one has a cost it did not have before: it would re-block the
+submodule conversion that the empty patch set makes possible. Given the outcome
+recorded in the local patch notes, any operator added here is for this project's
+use; no upstream submission is planned or implied by this design.
 
 ## Decomposition
 

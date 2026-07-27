@@ -188,7 +188,14 @@ bool resolve_vits_target_spec(const Profile & profile, const std::string & name,
             spec_out = { profile.matrix_weight_type, profile.matrix_weight_layout };
             return true;
         case CatalogRole::TransposeWeight:
-            spec_out = { profile.transpose_weight_type, TensorLayout::Native };
+            // VITS overrides the profile here. Its transposed convolutions run
+            // as a column matrix multiply plus col2im_1d, and CUDA's F16 matrix
+            // multiply accumulates in half precision, so halving these eight
+            // tensors would cost about 3e-3 relative on the decoder's output to
+            // save roughly 5 MB. Kokoro keeps the profile type: its per-tap
+            // decomposition already shipped with F16 weights and measured
+            // tolerances to match.
+            spec_out = { GGML_TYPE_F32, TensorLayout::Native };
             return true;
         case CatalogRole::Sensitive:
             spec_out = { profile.sensitive_type, TensorLayout::Native };

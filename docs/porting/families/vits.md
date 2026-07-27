@@ -1,7 +1,8 @@
 # VITS Port Validation Plan
 
 Status: `vits-ljspeech` and `vits-vctk` F32/F16/Q8_MIXED functional ports
-validated on 2026-07-23.
+validated on 2026-07-23; F16 and Q8_MIXED re-cut and re-measured on 2026-07-27
+when transposed convolution moved to a column matrix multiply.
 
 ## Reference Contract
 
@@ -347,13 +348,14 @@ ADR 0017.
 
 The C++ `synthesize-quantize` tool derives both packages directly from the
 source-F32 GGUF. F16 version 1 stores 118 flow/decoder weights in F16 and keeps
-342 duration-sensitive or scalar tensors in F32. Q8_MIXED version 1 stores 114
-ordinary flow/decoder convolution matrices in Q8_0, four transpose-convolution
-weights in F16, and the same 342 tensors in F32.
+346 duration-sensitive or scalar tensors in F32 -- including the four
+transpose-convolution weights, which stopped being halved on 2026-07-27. Q8_MIXED
+version 1 stores 114 ordinary flow/decoder convolution matrices in Q8_0 and the
+same 346 tensors in F32.
 
-The packages are 70,453,568 and 52,890,240 bytes with SHA-256 values
-`5fc428ba97416cc164055f509af1b9e120b089bd0bab792ad674c862411d7bca` and
-`df95091f975e78088c4908c3f2adfc381cfa234c3f520ddd3ffe10160ff12ba1`.
+The packages are 75,778,368 and 58,215,040 bytes with SHA-256 values
+`8683788b4dec7b81bf86f1cca024ed790724e491e2df40f77f1fc0bc614f860f` and
+`f751607f7514fa2aa1dca3ba46738b081c6b6c6b9579bfd22b1b80016551a3eb`.
 Both are deterministic across two complete quantizer runs.
 
 All seven 12-case stages pass on one-thread CPU, DGX Spark CUDA 13.3, and RTX
@@ -373,9 +375,9 @@ weights in F16, and the same 350 tensors in F32. The runtime validates the
 profile name, version, `general.file_type`, exact tensor type, and native or
 packed shape before allocating model buffers.
 
-The packages are 74,208,224 and 55,047,392 bytes with SHA-256 values
-`ff11efb1106834efb3609647e68642b48a58dbbdbabbc776d3afd83cf46085af` and
-`149438d3a6c817ca6e4ab803a67207a41f62097cc8f586520355610801fb0542`.
+The packages are 79,533,024 and 60,372,192 bytes with SHA-256 values
+`0b3c4e067c6fdd736edb90b7e1d11f6f480e5a832620740178a3119a4ef0913c` and
+`9f6caab60c66cdfa2379a1f1b93dbbd886161cd6f1115431fbe964d198b698e3`.
 Both are deterministic across two complete quantizer runs.
 
 All seven 12-case stages run on one-thread CPU, DGX Spark CUDA 13.3, and RTX
@@ -402,6 +404,13 @@ max-absolute differences of `8.6592436e-3` at `text.m_p` and `1.1620114e-1` at
 `audio.pcm`, against `1.1280179e-5` and `7.4365083e-4` under the gate. The TF32
 figures are what current builds produce for the stages that remain on the primary
 backend.
+
+The `audio.pcm` figure predates the 2026-07-27 operator change and has not been
+re-measured here, because doing so means rebuilding against this checkpoint's
+CUDA 13.0.88 toolkit. `text.m_p` is unaffected: the text encoder contains no
+transposed convolution. The decoder's current CUDA drift under CUDA 13.3 is in
+`tests/tolerances/vits.json`, re-measured across both variants and all three
+profiles on 2026-07-27.
 
 ### Recorded decision: the duration stage is held on CPU
 
@@ -462,6 +471,40 @@ CPU on the same DGX Spark. The full one-thread CPU waveform validator takes
 46.48 seconds. These are development measurements, not a cross-platform release
 performance guarantee. The aggregate environment, placement, accuracy, and
 timing record is `reports/validate/vits/vits-ljspeech-cuda-experimental.json`.
+
+### Recorded decision: transposed convolution is a matrix multiply plus col2im_1d
+
+Recorded 2026-07-27. `decoder.upsample.{0..3}.transpose_conv` no longer calls
+`ggml_conv_transpose_1d`. `transpose_conv1d_without_bias` in
+`src/arch/vits/operations.cpp` merges the kernel's leading
+`[kernel, out_channels]` pair into the column order `ggml_col2im_1d` scatters
+back, transposes so the matrix multiply reduces over the input channels, and
+lets `col2im_1d` do the cropping the wrapper used to do with a view.
+
+The fused operator was the last thing holding a local ggml patch. It needed one
+because upstream's `supports_op` refuses an F16 `src0`, which sent these four
+nodes to the CPU silently, and because the CUDA kernel scales quadratically in
+input length — `ljs-long` took over 240 s unpatched, on the F32 profile. Both
+reasons are the operator's, not ours: `ggml_mul_mat` accepts F16 weights as its
+ordinary path, and `ggml_col2im_1d` has had CPU, CUDA and Vulkan kernels
+upstream all along. The decomposition also runs faster than the patched kernel
+it replaced — 4.9 ms against 33.8 ms for the four stages on GB10, 130 ms against
+204 ms on the CPU — and it is what `ggml-patches/` being empty now rests on.
+
+The weights that feed it stay F32 in every profile, which is the cost side.
+CUDA's F16 matrix multiply accumulates in half precision, where the patched
+kernel had upconverted and accumulated in F32; halving these eight tensors would
+have taken CUDA from bit-exact agreement with the F32 reference to about 3e-3
+relative, to save 5.32 MB. Whole, both backends sit near 1e-6 — better than the
+F16 CPU path managed before, which was 1.6e-3. The F16 package goes from 70.4 MB
+to 75.8 MB and Q8_MIXED from 52.9 MB to 58.2 MB; a package built earlier is
+refused by tensor type at load rather than run at reduced accuracy.
+
+`transpose_conv1d` is exercised with several channels in both directions, on
+every registered backend, against the transposed convolution written out from
+its definition. The single-channel cases that preceded it could not see a
+channel-ordering mistake, which is the one mistake this decomposition can make
+while still producing the right shape.
 
 ## CUDA 13.3 Update 1 Linux Checkpoint
 

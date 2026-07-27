@@ -601,7 +601,7 @@ question 5.
 - Consumes: the recorded outputs of Tasks 1 through 4.
 - Produces: the committed intake contract that stage `2-oracle` builds on.
 
-- [ ] **Step 1: Write `intake.json`**
+- [x] **Step 1: Write `intake.json`**
 
 Mirror the top-level shape of
 `reports/porting/kokoro/kokoro-v1-0/intake.json`. Read that file first, then
@@ -631,7 +631,7 @@ oracle_smoke         text, speaker, language, sample_rate, frames, rtf, greedy
 open_decisions       anything Tasks 2 through 4 could not settle
 ```
 
-- [ ] **Step 2: Write the porting log**
+- [x] **Step 2: Write the porting log**
 
 Create `_porting-log.md` following the structure of
 `reports/porting/kokoro/kokoro-v1-0/_porting-log.md`: a dated heading, a bullet
@@ -639,7 +639,7 @@ list of what was pinned and measured, then subsections for the license audit,
 the stochastic finding, and any open decision. Write what was measured, not what
 was expected. Where a number contradicts the family plan, say so explicitly.
 
-- [ ] **Step 3: Update the family plan**
+- [x] **Step 3: Update the family plan**
 
 In `docs/porting/families/qwen3-tts.md`:
 
@@ -651,7 +651,7 @@ In `docs/porting/families/qwen3-tts.md`:
 3. Strike each of the six Open Questions that Tasks 2 through 4 answered, moving
    the answer into the body. Leave any that remain open, and say why.
 
-- [ ] **Step 4: Verify nothing large or ignored is staged**
+- [x] **Step 4: Verify nothing large or ignored is staged**
 
 ```bash
 git status --short
@@ -662,7 +662,7 @@ Expected: only the three files listed above. If any file under
 `models/` appears, unstage it — the Global Constraints forbid committing
 checkpoint bytes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/intake.json \

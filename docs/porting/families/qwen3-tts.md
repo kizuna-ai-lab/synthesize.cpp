@@ -1,17 +1,47 @@
 # Qwen3-TTS Family Selection and Port Plan
 
-Status: Selection accepted on 2026-07-26. Conversion, C++ implementation, and
-port validation are not started; intake is in progress, Task 1 of five complete.
-Two revisions on 2026-07-27: the operator surface dropped from two expected
-additions to none, and a source read of `qwentts.cpp` is recorded under
-"Findings From Reading qwentts.cpp" — three conversion rules that fail silently
-and a tolerance shape that would misreport a correct port.
+Status: Intake complete on 2026-07-27. Conversion, C++ implementation, and port
+validation are not started. Selection was accepted on 2026-07-26; the intake
+packet is `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
 
 ## Decision
 
 The third Model Family is **Qwen3-TTS 12 Hz** (Qwen team, Alibaba). OmniVoice
 (Xiaomi / k2-fsa) is recorded as the leading fourth-family candidate, deferred
 for a licensing reason recorded below rather than a technical one.
+
+## Reference Contract
+
+The oracle is the pinned `QwenLM/Qwen3-TTS` PyTorch implementation at commit
+`022e286b98fbec7e1e916cb940cdf532cd9f488e` (package version 0.1.1, not published
+to PyPI, so the reference environment pins it by git revision), driving the
+`Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` weights at revision
+`85e237c12c027371202489a0ec509ded67b5e4b5`. Both carry an explicit Apache-2.0
+grant: the repository ships the Apache 2.0 text at the pinned commit, and the
+model card declares `license: apache-2.0` in frontmatter — verified against the
+card at the pinned revision, not only against `main`.
+
+The checkpoint is 13 files and 2,498,388,392 bytes; per-file SHA-256 digests are
+recorded in `intake.json` under `weights.files`. Upstream publishes no digest of
+its own, so unlike Kokoro this provenance is self-measured rather than
+cross-confirmed.
+
+`Qwen3TTSModel.generate_custom_voice` is the pinned inference entry point, driven
+on CPU in F32 with `attn_implementation="eager"`. **It takes two independent
+sampling switches.** `do_sample` governs the Talker and `subtalker_dosample` the
+code predictor, the latter defaulting to `True`; a reproducible oracle requires
+both set to `False`, and setting only one is silently non-deterministic.
+
+Native output is 24,000 Hz mono F32 at a 12.5 Hz frame rate, so one codec frame
+is exactly 1,920 samples. The model consumes raw text through a Qwen2 byte-level
+BPE tokenizer whose vocabulary and merges ship in the variant repository.
+`trust_remote_code` is not required, so `docs/scope.md`'s rule against executable
+code in a Model Package is not engaged.
+
+Nine preset speakers are selected by codec-vocabulary token id rather than by an
+embedding table, which is why this variant carries no speaker encoder. Two of
+them, `eric` and `dylan`, pin a dialect language token regardless of the
+requested language.
 
 ## Why the Selection Criterion Changed
 
@@ -676,9 +706,13 @@ default, which `CONTEXT.md` warns against in both directions.
    stronger claim stays reachable at a later stage with its own evidence, and
    its cost is named under the qwentts findings.
 6. Establish upstream provenance and redistribution permission for publishing
-   converted Model Packages, as was done for Kokoro. Alibaba does not disclose
-   training corpora; the Apache-2.0 grant is the basis relied on, and it is the
-   same basis on which Kokoro was accepted.
+   converted Model Packages, as was done for Kokoro. **Basis settled
+   2026-07-27**, decision deliberately not taken. Both the source at `022e286b`
+   and the checkpoint at `85e237c1` carry an explicit Apache-2.0 grant, audited
+   at the pinned revision rather than at `main`, with no restriction prose in
+   either card. Alibaba does not disclose training corpora, so Apache-2.0 is the
+   basis relied on, the same basis on which Kokoro was accepted. Publishing
+   anything remains a separate act requiring its own confirmation.
 
 ## Accepted Risks
 

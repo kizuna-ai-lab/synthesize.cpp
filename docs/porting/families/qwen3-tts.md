@@ -482,19 +482,130 @@ converted by a user but never published by the project, and what that means for
 a Port Validation Suite whose artifacts are already deliberately uncommitted.
 That question is left open here rather than answered.
 
+## Intake Measurements
+
+Measured on 2026-07-27 from revision `85e237c1` on CPU, not read from a port or
+a paper. These supersede the *(second-hand)* marks in the Architecture section.
+
+### Talker
+
+28 layers, hidden 1024, 16 attention heads over 8 KV heads, `head_dim` 128,
+intermediate 3072, RMSNorm eps 1e-6, `rope_theta` 1e6, codec vocabulary 3072,
+text vocabulary 151936 projected from `text_hidden_size` 2048. The code
+predictor is 5 layers at the same width with vocabulary 2048 and
+`num_code_groups` 16. `model.safetensors` holds 402 tensors and 905,788,672
+parameters across `talker.model` (311), `talker.code_predictor` (86),
+`talker.text_projection` (4) and `talker.codec_head` (1).
+
+`trust_remote_code` is **not** required. The modelling code lives in the
+installed `qwen_tts` package, not in the checkpoint, so `docs/scope.md`'s rule
+against executable code in a Model Package is not engaged.
+
+### The multimodal RoPE collapses exactly, and this is proven
+
+Open question 2 asked whether a 1-D collapse is equivalent. **It is, exactly.**
+
+`talker_config.rope_scaling` declares `mrope_section [24, 20, 20]` — summing to
+64, which is `head_dim / 2` — with `interleaved: true`, so the machinery looks
+real. It is never exercised. Every path that builds `position_ids` in
+`modeling_qwen3_tts.py` produces three identical rows:
+`cache_position.view(1,1,-1).expand(3, ...)`, `position_ids[None,...].expand(3,
+...)`, `position_ids.unsqueeze(0).expand(3,-1,-1)`, and `get_rope_index`, whose
+body is `attention_mask.cumsum(-1) - 1` followed by `.expand(3,-1,-1)`. That
+method's docstring describes temporal/height/width video positions and is
+inherited from Qwen2-VL; this model has no vision branch.
+
+`apply_interleaved_rope` starts from `x[0].clone()` and overwrites strided
+slices with rows 1 and 2. When the rows are equal each write stores the value it
+replaces. Checked directly: with three identical rows the output is
+`torch.equal` to plain 1-D RoPE; with three different rows it is not, differing
+by 5.5 at these shapes. So the operator is genuine and the collapse is safe only
+because of how the positions are built.
+
+**Consequence for stage 4: implement ordinary RoPE.** No sectioning, no
+interleaving. Record the reason, because the config will keep saying otherwise.
+
+### The codec, measured against the tensors rather than its config
+
+12.5 Hz frames at 24 kHz, `decode_upsample_rate` 1920 — which is exactly
+24000/12.5, and decomposes as `upsampling_ratios [2, 2]` then `upsample_rates
+[8, 5, 4, 3]`, four times four hundred and eighty. The two upsample blocks are
+ConvNeXt: `pwconv1` widens 1024 to 4096 and `pwconv2` returns it, the usual
+four-times expansion. `speech_tokenizer/model.safetensors` holds 496 tensors and
+170,557,441 parameters.
+
+The quantizer is 1 + 15, matching `num_code_groups` 16:
+`decoder.quantizer.rvq_first` has one VQ layer and `rvq_rest` has fifteen, each
+codebook `(2048, 256)`, wrapped by `input_proj` 512→256 and `output_proj`
+256→512.
+
+**`speech_tokenizer/config.json` disagrees with its own weights.** It declares
+`codebook_dim: 512` and `semantic_codebook_size: 4096`; the tensors are 256-dim
+and no codebook has 4096 entries anywhere in the file — the only 4096s are the
+ConvNeXt pointwise widths. `codebook_size: 2048` is the one that matches. A
+converter that sizes the codebooks from this config allocates the wrong tables.
+**Size from the tensors.**
+
+### The RVQ EMA rule, confirmed and with a trap the reference port does not hit
+
+The codebooks really are EMA accumulators, as recorded under the findings above.
+The checkpoint adds something that section does not mention: **the two sides use
+different field names for the same pair.**
+
+| Side | Fields | Count |
+| --- | --- | --- |
+| `decoder.quantizer.*.vq.layers.N._codebook` | `embedding_sum`, `cluster_usage` | 16 |
+| `encoder.quantizer.*.layers.N.codebook` | `embed_sum`, `cluster_usage` | 32 |
+
+A conversion rule keyed on `embedding_sum` silently skips every encoder
+codebook, and one keyed on `embed_sum` skips every decoder codebook. Both
+produce a converter that raises nothing. Encoder codebooks also carry an
+`initialized` flag of shape `(1,)`, which is not a weight and must be dropped.
+
+### Voices and languages: three different counts, all correct
+
+`get_supported_speakers()` returns nine: `aiden`, `dylan`, `eric`, `ono_anna`,
+`ryan`, `serena`, `sohee`, `uncle_fu`, `vivian`. They are not embeddings — each
+is a **token id** in the codec vocabulary (2861 to 3066), which is why this
+variant carries no speaker encoder. The tensor inventory confirms that: there
+are no ECAPA-TDNN tensors in either file. The family plan's claim was right.
+
+Two of the nine carry a dialect override in `spk_is_dialect`, which is not a
+boolean but a language name: `eric` → `sichuan_dialect`, `dylan` →
+`beijing_dialect`. Those two names appear in `codec_language_id` and nowhere in
+the public language list, so a dialect is reachable only by selecting its
+speaker, never by asking for it as a language.
+
+That produces three counts which are easy to confuse and are all correct:
+
+| Source | Count | Contents |
+| --- | --- | --- |
+| Model card frontmatter | 10 | the language codes |
+| `get_supported_languages()` | 11 | those 10 plus `auto` |
+| `codec_language_id` | 12 | those 10 plus the 2 dialects |
+
+For the Preset Voice Catalog: nine Voice Profiles, two of which pin the language
+token regardless of the request, and `auto` as a language meaning detect from
+text.
+
 ## Open Questions for Intake
 
 1. Confirm the codec decoder topology against upstream rather than against a
    port: SEANet stage ratios, ConvNeXt upsample factor, DAC strides, and whether
-   SnakeBeta exponentials can be folded at load.
-2. Confirm the RoPE section collapse is exactly equivalent for a
-   text-plus-codec timeline.
+   SnakeBeta exponentials can be folded at load. **Mostly resolved 2026-07-27**
+   from the checkpoint -- ratios, factors and quantizer geometry are under "The
+   codec, measured against the tensors". What remains is the SnakeBeta folding,
+   which needs the forward rather than the shapes.
+2. ~~Confirm the RoPE section collapse is exactly equivalent for a
+   text-plus-codec timeline.~~ **Resolved 2026-07-27**: exactly equivalent, and
+   proven rather than argued. See "The multimodal RoPE collapses exactly".
 3. Measure real CPU speed for the 0.6B Stage 1 variant on project hardware. The
    Code Predictor's per-frame sequential steps are reported to dominate
    generation time; confirm the cost and the documented cache-reset mitigation
    before committing to a CPU claim.
-4. Enumerate the CustomVoice preset speakers and their dialect overrides for the
-   Preset Voice Catalog.
+4. ~~Enumerate the CustomVoice preset speakers and their dialect overrides for
+   the Preset Voice Catalog.~~ **Resolved 2026-07-27**: nine speakers as codec
+   token ids, two with dialect overrides. See "Voices and languages".
 5. Determine whether the causal codec decoder qualifies as Native Streaming
    Synthesis under `CONTEXT.md`, or whether Stage 1 claims only Chunked Audio
    Delivery. `qwentts.cpp` indicates the stronger claim is reachable and names

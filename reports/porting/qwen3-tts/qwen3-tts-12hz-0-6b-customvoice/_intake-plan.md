@@ -288,7 +288,7 @@ Nothing is committed by this task; its outputs are inputs to Task 5.
   the config dimensions. Resolves open questions 1, 2, and 4 in
   `docs/porting/families/qwen3-tts.md`.
 
-- [ ] **Step 1: Enumerate speakers and languages**
+- [x] **Step 1: Enumerate speakers and languages**
 
 Upstream exposes `get_supported_speakers()` and `get_supported_languages()` on
 the model, which is authoritative where documentation is not.
@@ -318,7 +318,7 @@ executable modelling code — that fact must be recorded, because
 `docs/scope.md` forbids loading executable code from a Model Package and the
 converter must therefore reimplement rather than import it.
 
-- [ ] **Step 2: Dump the configuration**
+- [x] **Step 2: Dump the configuration**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python - <<'PY'
@@ -337,7 +337,7 @@ head counts, RoPE base, any `mrope_section` value, the codec codebook count and
 size, the frame rate, and the hop length. These are the facts open questions 1
 and 2 ask to confirm against upstream rather than against a third-party port.
 
-- [ ] **Step 3: Inventory the tensors**
+- [x] **Step 3: Inventory the tensors**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python - <<'PY'
@@ -365,14 +365,14 @@ PY
 Keep this output. It is the basis for the converter's tensor catalog at stage
 `3-convert` and confirms the real parameter count for the record.
 
-- [ ] **Step 4: Record whether the talker and codec are separable**
+- [x] **Step 4: Record whether the talker and codec are separable**
 
 From the Step 3 prefixes, note whether the speaker embedding rows for
 CustomVoice live in the talker file and whether any ECAPA-TDNN speaker-encoder
 tensors are present. The family plan states CustomVoice carries no speaker
 encoder; confirm or correct that here.
 
-- [ ] **Step 5: Read the upstream codec and attention source**
+- [x] **Step 5: Read the upstream codec and attention source**
 
 Open questions 1 and 2 exist specifically because the family plan's codec
 description came from a third-party port and is marked *(second-hand)*. A
@@ -410,7 +410,7 @@ cd /tmp/qwen3tts-src && \
 grep -nE "rope|rotary|mrope|position_ids" qwen_tts/core/models/modeling_qwen3_tts.py | head -40
 ```
 
-- [ ] **Step 6: Record speaker dialect overrides**
+- [x] **Step 6: Record speaker dialect overrides**
 
 Open question 4 asks for the speakers *and* their dialect overrides.
 

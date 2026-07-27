@@ -1,6 +1,6 @@
 # Testing Policy
 
-Status: Confirmed, last updated on 2026-07-26.
+Status: Confirmed, last updated on 2026-07-27.
 
 Testing is a per-slice completion gate. A new converter rule, graph stage,
 runtime control, backend path, or public Interface is not complete merely because
@@ -44,6 +44,15 @@ tests are built. Model-dependent tests remain explicit because their artifacts
 are intentionally not committed.
 
 ## Commands
+
+`ggml/` is a git submodule. Every command below assumes it is checked out:
+
+```bash
+git submodule update --init --recursive
+```
+
+A clone made without `--recurse-submodules` leaves it empty, and the configure
+step fails naming this command rather than reporting a missing `CMakeLists.txt`.
 
 Run the ordinary unit gate:
 

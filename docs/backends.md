@@ -136,6 +136,9 @@ The durable fix was to stop using the fused operator. `ggml_mul_mat` followed by
 weight path, and has CPU, CUDA and Vulkan kernels upstream. Prefer an operator
 every target backend accepts over one that needs a local patch to reach parity
 on a single backend; `ggml-patches/README.md` records what that cost and bought.
+Since 2026-07-27 the point is structural rather than advisory: `ggml/` is a
+submodule and cannot carry a patch at all, so an operator no backend accepts has
+to be replaced rather than worked around.
 
 Where a decomposition changes accumulation — CUDA's F16 matrix multiply
 accumulates in half precision — the tensor types feeding it are part of the

@@ -1,0 +1,9 @@
+{
+  "schema": "synthesize-tolerances-v1",
+  "family": "qwen3-tts",
+  "status": "not-measured-intake-and-manifest-only",
+  "note": "No tolerances are recorded yet. The Golden Manifest for qwen3-tts-12hz-0-6b-customvoice is committed at suite_version 1 and stage 2 captures the oracle; per-stage numbers are measured at stage 5-port-validate and land here then, per profile and per Execution Backend.\n\nTwo constraints are already known and must shape this file when it is filled.\n\nDeep talker layers need a cosine threshold rather than max-abs. Reading the reference port showed per-layer max-abs of 13.07 / 13.09 / 13.42 at L7 / L14 / L21 and 66.8 at L27 while cosine similarity held at or above 0.9998; those are outlier channels ahead of the final norm, and a max-abs threshold would report catastrophic failure on a correct port.\n\nThe code sequence is a structural probe, not a numeric one. Greedy decoding with both do_sample and subtalker_dosample false is bit-reproducible, so codes.semantic and codes.acoustic are compared for exact equality; any difference is a defect rather than drift.",
+  "reference_stage": "source-f32-cpu",
+  "suite_version": 1,
+  "stages": {}
+}

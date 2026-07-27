@@ -96,13 +96,27 @@ class GoldenManifestSchemaTest(unittest.TestCase):
                     )
 
     def test_single_valued_source_roles_are_not_duplicated(self):
+        """A role may repeat, but never with the same locator.
+
+        This asserted at most one `checkpoint` and one `config` until
+        2026-07-27, when qwen3-tts arrived with two genuine checkpoints -- the
+        talker and the speech tokenizer are separate files with separate
+        digests, and pinning only one would leave the other unpinned in the
+        contract that exists to pin them.
+
+        The guard the old form actually provided was against copy-paste: the
+        same artifact listed twice, or a second one whose locator was never
+        updated. That is what is checked now, and it applies to every role
+        rather than only to two, so a duplicated frontend resource is caught as
+        well.
+        """
         for path, manifest in self.manifests:
             with self.subTest(manifest=path.name):
-                roles = [artifact["role"] for artifact in manifest["source"]["artifacts"]]
-                for role in ("checkpoint", "config"):
-                    self.assertLessEqual(
-                        roles.count(role), 1, f"duplicate {role} source artifact"
-                    )
+                locators = [artifact["locator"] for artifact in manifest["source"]["artifacts"]]
+                duplicates = {loc for loc in locators if locators.count(loc) > 1}
+                self.assertFalse(
+                    duplicates, f"source artifacts repeat a locator: {sorted(duplicates)}"
+                )
 
     def test_tolerance_file_is_committed(self):
         for path, manifest in self.manifests:

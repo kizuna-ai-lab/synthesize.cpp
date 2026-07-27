@@ -1,0 +1,2517 @@
+{
+  "$schema": "../../../docs/schemas/synthesize-golden-manifest-v1.schema.json",
+  "schema": "synthesize-golden-manifest-v1",
+  "suite_version": 1,
+  "family": "qwen3-tts",
+  "variant": "qwen3-tts-12hz-0-6b-customvoice",
+  "source": {
+    "repository": "https://github.com/QwenLM/Qwen3-TTS",
+    "revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
+    "artifacts": [
+      {
+        "role": "checkpoint",
+        "locator": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice/resolve/85e237c12c027371202489a0ec509ded67b5e4b5/model.safetensors",
+        "sha256": "bc3c7e785eb961179c25450d1acff03f839e0002f2f3a5aeb67b5735c0fa2adb"
+      },
+      {
+        "role": "checkpoint",
+        "locator": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice/resolve/85e237c12c027371202489a0ec509ded67b5e4b5/speech_tokenizer/model.safetensors",
+        "sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
+      },
+      {
+        "role": "config",
+        "locator": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice/resolve/85e237c12c027371202489a0ec509ded67b5e4b5/config.json",
+        "sha256": "81aca2b6fac304944d8acf345272d8a9a727d5fc2e2e66b222ab4729340c7455"
+      },
+      {
+        "role": "frontend-resource",
+        "locator": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice/resolve/85e237c12c027371202489a0ec509ded67b5e4b5/vocab.json",
+        "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+      },
+      {
+        "role": "frontend-resource",
+        "locator": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice/resolve/85e237c12c027371202489a0ec509ded67b5e4b5/merges.txt",
+        "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3"
+      },
+      {
+        "role": "license",
+        "locator": "https://github.com/QwenLM/Qwen3-TTS/blob/022e286b98fbec7e1e916cb940cdf532cd9f488e/LICENSE",
+        "sha256": "a44a6081c73ad75f0255bb2bb5cab74ef1829565a895a24e53a4f11290ab7655"
+      }
+    ]
+  },
+  "reference": {
+    "implementation": "QwenLM/Qwen3-TTS@022e286b98fbec7e1e916cb940cdf532cd9f488e",
+    "framework": "pytorch-2.13.0",
+    "runner": "scripts/dump_reference_qwen3_tts_pytorch.py",
+    "environment_lock": "scripts/envs/qwen3-tts/uv.lock",
+    "dtype": "float32",
+    "device": "cpu"
+  },
+  "package_contract": {
+    "native_audio": {
+      "sample_rate_hz": 24000,
+      "channels": 1,
+      "sample_format": "f32le"
+    },
+    "input_kinds": [
+      "text_utf8"
+    ],
+    "frontend": {
+      "provider": "synthesize.qwen_bpe",
+      "contract_version": 1
+    },
+    "language_tags": [
+      "auto",
+      "chinese",
+      "english",
+      "french",
+      "german",
+      "italian",
+      "japanese",
+      "korean",
+      "portuguese",
+      "russian",
+      "spanish"
+    ],
+    "voices": {
+      "mode": "preset-catalog",
+      "default_id": null,
+      "preset_ids": [
+        "aiden",
+        "dylan",
+        "eric",
+        "ono_anna",
+        "ryan",
+        "serena",
+        "sohee",
+        "uncle_fu",
+        "vivian"
+      ]
+    },
+    "stochastic": true,
+    "speaking_rate_range": [
+      1.0,
+      1.0
+    ],
+    "max_input_tokens": 1024,
+    "max_output_frames": 15728640
+  },
+  "tolerance_file": "tests/tolerances/qwen3-tts.json",
+  "case_artifact_root": "build/goldens/qwen3-tts",
+  "cases": [
+    {
+      "id": "qwen3-upstream-customvoice",
+      "origin": {
+        "kind": "upstream_example",
+        "locator": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice/blob/85e237c12c027371202489a0ec509ded67b5e4b5/README.md"
+      },
+      "coverage": [
+        "upstream-example",
+        "baseline",
+        "repeatability",
+        "instruct-ignored-by-this-variant"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "chinese",
+        "text": "其实我真的有发现，我是一个特别善于观察别人情绪的人。"
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "vivian",
+        "oracle_id": "vivian"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "chinese",
+          "speaker": "vivian",
+          "instruct": "用特别愤怒的语气说"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-minimal",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "minimal-sequence",
+        "short-utterance"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Hi."
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "aiden",
+        "oracle_id": "aiden"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "english",
+          "speaker": "aiden"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-short",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "short-sequence"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Qwen3-TTS is awesome!"
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "aiden",
+        "oracle_id": "aiden"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "english",
+          "speaker": "aiden"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-punctuation",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "punctuation"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Wait... really? Yes!"
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "aiden",
+        "oracle_id": "aiden"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "english",
+          "speaker": "aiden"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-normalization",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "normalization-shaped"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Dr. Smith paid $12.50 on January 3rd."
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "aiden",
+        "oracle_id": "aiden"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "english",
+          "speaker": "aiden"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-medium",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "medium-sequence",
+        "broad-symbol-use"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "The quick brown fox jumps over the lazy dog."
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "aiden",
+        "oracle_id": "aiden"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "english",
+          "speaker": "aiden"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-long",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "long-sequence",
+        "allocation-growth"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "A small speech synthesis library should produce the same finite waveform whenever its model, input, controls, and random seed are unchanged."
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "aiden",
+        "oracle_id": "aiden"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "english",
+          "speaker": "aiden"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-repetition",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "repeated-tokens"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "No, no, no; yes, yes, yes."
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "aiden",
+        "oracle_id": "aiden"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "english",
+          "speaker": "aiden"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-speaker-first",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "voice-catalog-first"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Qwen3-TTS is awesome!"
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "aiden",
+        "oracle_id": "aiden"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "english",
+          "speaker": "aiden"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-speaker-last",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "voice-catalog-last"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Qwen3-TTS is awesome!"
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "vivian",
+        "oracle_id": "vivian"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "english",
+          "speaker": "vivian"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-speaker-dialect-sichuan",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "dialect-override",
+        "language-token-pinned"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "chinese",
+        "text": "其实我真的有发现，我是一个特别善于观察别人情绪的人。"
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "eric",
+        "oracle_id": "eric"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "chinese",
+          "speaker": "eric"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-speaker-dialect-beijing",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "dialect-override",
+        "language-token-pinned",
+        "terminating-input-verified"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "chinese",
+        "text": "你好，今天天气不错。"
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "dylan",
+        "oracle_id": "dylan"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "chinese",
+          "speaker": "dylan"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-lang-japanese",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "non-latin-script",
+        "language-token",
+        "terminating-input-verified"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "japanese",
+        "text": "こんにちは、世界。"
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "sohee",
+        "oracle_id": "sohee"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "japanese",
+          "speaker": "sohee"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-lang-korean",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "non-latin-script",
+        "language-token"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "korean",
+        "text": "안녕하세요, 세계."
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "sohee",
+        "oracle_id": "sohee"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "korean",
+          "speaker": "sohee"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-lang-german",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "latin-diacritics",
+        "language-token"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "german",
+        "text": "Grüße aus München, es ist schön hier."
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "ryan",
+        "oracle_id": "ryan"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "german",
+          "speaker": "ryan"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-lang-auto",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "language-auto-detect"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "auto",
+        "text": "The quick brown fox jumps over the lazy dog."
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "aiden",
+        "oracle_id": "aiden"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "auto",
+          "speaker": "aiden"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-seed-one",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "alternate-stochastic-path"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Qwen3-TTS is awesome!"
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "aiden",
+        "oracle_id": "aiden"
+      },
+      "request": {
+        "seed_u64": "1",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "english",
+          "speaker": "aiden"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-seed-forty-two",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "alternate-stochastic-path"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Qwen3-TTS is awesome!"
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "aiden",
+        "oracle_id": "aiden"
+      },
+      "request": {
+        "seed_u64": "42",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": false,
+          "subtalker_dosample": false,
+          "max_new_tokens": 2048,
+          "language": "english",
+          "speaker": "aiden"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    }
+  ],
+  "relations": [
+    {
+      "kind": "artifact_differs",
+      "phase": "public_request",
+      "cases": [
+        "qwen3-short",
+        "qwen3-seed-one",
+        "qwen3-seed-forty-two"
+      ],
+      "artifact": "audio.pcm"
+    },
+    {
+      "kind": "artifact_differs",
+      "phase": "oracle_replay",
+      "cases": [
+        "qwen3-speaker-first",
+        "qwen3-speaker-last"
+      ],
+      "artifact": "audio.pcm"
+    },
+    {
+      "kind": "artifact_differs",
+      "phase": "oracle_replay",
+      "cases": [
+        "qwen3-upstream-customvoice",
+        "qwen3-speaker-dialect-sichuan",
+        "qwen3-speaker-dialect-beijing"
+      ],
+      "artifact": "audio.pcm"
+    },
+    {
+      "kind": "frame_count_order",
+      "phase": "oracle_replay",
+      "cases": [
+        "qwen3-minimal",
+        "qwen3-medium",
+        "qwen3-long"
+      ],
+      "order": "increasing"
+    }
+  ]
+}

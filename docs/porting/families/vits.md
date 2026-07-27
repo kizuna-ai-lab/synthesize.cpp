@@ -368,10 +368,11 @@ perceptual-quality acceptance remain deferred.
 ### VCTK F16 and Q8_MIXED packages
 
 The C++ `synthesize-quantize` tool derives both packages directly from the
-source-F32 GGUF. F16 version 1 stores 123 flow/decoder weights in F16 and keeps
-350 duration-sensitive or scalar tensors in F32. Q8_MIXED version 1 stores 119
-ordinary flow/decoder convolution matrices in Q8_0, four transpose-convolution
-weights in F16, and the same 350 tensors in F32. The runtime validates the
+source-F32 GGUF. F16 version 1 stores 119 flow/decoder weights in F16 and keeps
+354 duration-sensitive or scalar tensors in F32 -- including the four
+transpose-convolution weights, which stopped being halved on 2026-07-27.
+Q8_MIXED version 1 stores 119 ordinary flow/decoder convolution matrices in Q8_0
+and the same 354 tensors in F32. The runtime validates the
 profile name, version, `general.file_type`, exact tensor type, and native or
 packed shape before allocating model buffers.
 

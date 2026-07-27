@@ -1,7 +1,9 @@
 # Qwen3-TTS Family Selection and Port Plan
 
 Status: Selection accepted on 2026-07-26. Intake, conversion, C++
-implementation, and port validation are not started.
+implementation, and port validation are not started. Operator surface revised on
+2026-07-27: `ggml_col2im_1d` turned out to be upstream already, so the expected
+additions dropped from two to none.
 
 ## Decision
 

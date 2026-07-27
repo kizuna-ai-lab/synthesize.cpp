@@ -190,6 +190,59 @@ int run_transpose_conv_multichannel_case(ggml_backend_dev_t device,
     return 0;
 }
 
+// Every rejection the helper promises, so a degenerate request reports rather
+// than reaching a GGML assertion. These are graph-construction guards, so no
+// backend is involved and one context serves them all.
+int run_transpose_conv_rejections() {
+    synth::test::GgmlContext context = synth::test::make_ggml_context();
+    SYNTH_TEST_CHECK(context != nullptr);
+    ggml_context * graph = context.get();
+
+    const int64_t kernel = 4, out_channels = 3, in_channels = 2, length = 5;
+    ggml_tensor * weight = ggml_new_tensor_3d(graph, GGML_TYPE_F32, kernel, out_channels, in_channels);
+    ggml_tensor * input  = ggml_new_tensor_2d(graph, GGML_TYPE_F32, in_channels, length);
+    ggml_tensor * bias   = ggml_new_tensor_1d(graph, GGML_TYPE_F32, out_channels);
+
+    using synth::vits::transpose_conv1d;
+    using synth::vits::transpose_conv1d_without_bias;
+
+    SYNTH_TEST_CHECK(transpose_conv1d_without_bias(nullptr, input, weight, 2, 0) == nullptr);
+    SYNTH_TEST_CHECK(transpose_conv1d_without_bias(graph, nullptr, weight, 2, 0) == nullptr);
+    SYNTH_TEST_CHECK(transpose_conv1d_without_bias(graph, input, nullptr, 2, 0) == nullptr);
+
+    SYNTH_TEST_CHECK(transpose_conv1d_without_bias(graph, input, weight, 0, 0) == nullptr);
+    SYNTH_TEST_CHECK(transpose_conv1d_without_bias(graph, input, weight, -1, 0) == nullptr);
+    SYNTH_TEST_CHECK(transpose_conv1d_without_bias(graph, input, weight, 2, -1) == nullptr);
+
+    // The input's leading dimension is the kernel's input-channel count; the
+    // matrix multiply reduces over it, so a mismatch is not merely a bad shape.
+    ggml_tensor * extra_channel = ggml_new_tensor_2d(graph, GGML_TYPE_F32, in_channels + 1, length);
+    SYNTH_TEST_CHECK(transpose_conv1d_without_bias(graph, extra_channel, weight, 2, 0) == nullptr);
+
+    // A batched kernel has no meaning here and the column reshape would silently
+    // fold the batch into the channel axis.
+    ggml_tensor * batched = ggml_new_tensor_4d(graph, GGML_TYPE_F32, kernel, out_channels, in_channels, 2);
+    SYNTH_TEST_CHECK(transpose_conv1d_without_bias(graph, input, batched, 2, 0) == nullptr);
+
+    // Cropping at or past the whole signal. One step gives a raw length of
+    // `kernel`, so padding kernel/2 removes all of it and ggml_col2im_1d would
+    // abort rather than report; one less still builds.
+    ggml_tensor * single_step = ggml_new_tensor_2d(graph, GGML_TYPE_F32, in_channels, 1);
+    SYNTH_TEST_CHECK(transpose_conv1d_without_bias(graph, single_step, weight, 2, int(kernel / 2)) == nullptr);
+    SYNTH_TEST_CHECK(transpose_conv1d_without_bias(graph, single_step, weight, 2, int(kernel / 2) - 1) != nullptr);
+
+    // The public wrapper adds the bias to the contract and forwards the rest.
+    const synth::vits::TransposeConv1dWeights complete{ weight, bias };
+    const synth::vits::TransposeConv1dWeights without_bias{ weight, nullptr };
+    const synth::vits::TransposeConv1dWeights without_weight{ nullptr, bias };
+    SYNTH_TEST_CHECK(transpose_conv1d(graph, input, without_bias, 2, 0) == nullptr);
+    SYNTH_TEST_CHECK(transpose_conv1d(graph, input, without_weight, 2, 0) == nullptr);
+    SYNTH_TEST_CHECK(transpose_conv1d(nullptr, input, complete, 2, 0) == nullptr);
+    SYNTH_TEST_CHECK(transpose_conv1d(graph, input, complete, 0, 0) == nullptr);
+    SYNTH_TEST_CHECK(transpose_conv1d(graph, input, complete, 2, 0) != nullptr);
+    return 0;
+}
+
 int run_transpose_conv(ggml_backend_dev_t device) {
     SYNTH_TEST_CHECK(run_transpose_conv_case(device, std::vector<float>(4, 1.0f), { 1.0f, 2.0f }, 2, 1,
                                              { 1.0f, 3.0f, 3.0f, 2.0f }) == 0);
@@ -216,6 +269,8 @@ int run_transpose_conv(ggml_backend_dev_t device) {
 }  // namespace
 
 int main() {
+    SYNTH_TEST_CHECK(run_transpose_conv_rejections() == 0);
+
     ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
     SYNTH_TEST_CHECK(cpu != nullptr);
     SYNTH_TEST_CHECK(run_transpose_conv(cpu) == 0);

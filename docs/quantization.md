@@ -24,10 +24,14 @@ The GGUF metadata identifies the profile name and version, source-model checksum
 
 VITS `F16` version 1 keeps the complete text encoder, stochastic duration
 predictor, speaker embedding, every bias, normalization parameter, and scalar in
-F32. Acoustic-flow and decoder weights use F16. This assignment was selected
-after an all-F16 duration path changed `ceil` decisions; retaining the complete
-duration-decision domain in F32 restores exact duration structure in all 12
-port-validation cases for both current VITS variants.
+F32, along with the decoder's four transpose-convolution weights. The remaining
+acoustic-flow and decoder weights use F16.
+
+Two separate reasons put tensors in that F32 group. The duration-decision domain
+is there because an all-F16 duration path changed `ceil` decisions; keeping it
+whole restores exact duration structure in all 12 port-validation cases for both
+current VITS variants. The transpose-convolution weights are there for a
+different reason, given in the Q8_MIXED section below.
 
 Generate it from the source-F32 artifact:
 
@@ -46,7 +50,10 @@ For VITS version 1, the complete text encoder, stochastic duration predictor,
 speaker embedding, biases, normalization parameters, and scalars remain F32.
 The 44 acoustic-flow matrix weights and 75 ordinary decoder-convolution matrix
 weights use `GGML_TYPE_Q8_0`. The decoder's four transpose-convolution weights
-remain F16 because that operator has a different native layout and kernel.
+are F32. They were F16 until 2026-07-27, when the transposed convolution became
+a column matrix multiply plus `ggml_col2im_1d`: CUDA's F16 matrix multiply
+accumulates in half precision, where the operator it replaced accumulated in
+F32. A package that stores them halved is refused with `SYNTH_ERR_GGUF`.
 
 Ordinary Q8 convolution weights are stored as `[kernel * input_channels,
 output_channels]` packed matrices instead of native `[kernel, input_channels,
@@ -76,9 +83,13 @@ Both figures are 5,324,800 bytes larger than the ones first recorded here. On
 halved: they now feed a column matrix multiply, whose CUDA F16 path accumulates
 in half precision where the operator they replaced accumulated in F32, so
 halving them would cost about 3e-3 relative on the decoder's output
-(`ggml-patches/README.md`). No other tensor's profile assignment changed. CPU, GB10 CUDA 13.3, and RTX 4070 SUPER
-CUDA 13.3 execute both public synthesis paths; both CUDA hosts report zero
-executable CPU fallback. All platforms preserve the 12/12 duration structures.
+(`ggml-patches/README.md`). No other tensor's profile assignment changed.
+
+CPU and GB10 CUDA 13.3 execute both public synthesis paths on the re-cut
+packages, with zero executable CPU fallback and 12/12 duration structures
+preserved. RTX 4070 SUPER CUDA 13.3 ran the same paths for the packages cut on
+2026-07-23; that host was not available for the re-cut, so it is not claimed
+here.
 The larger waveform drift is recorded, but no tolerance or perceptual-quality
 acceptance claim is made.
 

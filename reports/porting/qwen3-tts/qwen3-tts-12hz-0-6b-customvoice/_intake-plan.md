@@ -181,7 +181,7 @@ git commit -m "Lock the qwen3-tts CPU reference environment"
 - Produces: a local checkpoint directory, a per-file SHA-256 table, and a
   license finding. Task 5 records all three.
 
-- [ ] **Step 1: Confirm the cache path is git-ignored**
+- [x] **Step 1: Confirm the cache path is git-ignored**
 
 ```bash
 git check-ignore -v models/qwen3-tts-12hz-0-6b-customvoice || echo "NOT IGNORED"
@@ -191,7 +191,7 @@ Expected: a line naming the `.gitignore` rule that covers it. If it prints
 `NOT IGNORED`, stop and add the rule before downloading anything — committing
 checkpoint bytes violates the Global Constraints.
 
-- [ ] **Step 2: Download the pinned revision**
+- [x] **Step 2: Download the pinned revision**
 
 The variant repository bundles the talker weights, the `speech_tokenizer/`
 codec, and the byte-level BPE vocabulary, so this is the only download needed.
@@ -213,7 +213,7 @@ Expected: the path is printed and the directory contains `config.json`,
 `tokenizer_config.json`, `preprocessor_config.json`, and a `speech_tokenizer/`
 subdirectory.
 
-- [ ] **Step 3: Measure every downloaded file**
+- [x] **Step 3: Measure every downloaded file**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python -c "
@@ -230,7 +230,7 @@ print(json.dumps(out, indent=2))
 
 Keep this JSON array. Task 5 embeds it under `weights.files`.
 
-- [ ] **Step 4: Audit the license**
+- [x] **Step 4: Audit the license**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python - <<'PY'
@@ -251,12 +251,17 @@ PY
 Expected: `license: apache-2.0` in frontmatter for both, and no prose line
 asserting a non-commercial or training-data-derived restriction.
 
-**This step is a gate.** If a restriction appears, stop the whole plan and
+**This step is a gate, and it was run before Step 2 rather than after.** The
+ordering in this plan would have discovered a blocking restriction only after
+pulling 2.5 GB; running it first cannot change the answer. It was also re-run
+against the downloaded card, because Step 4 as written fetches `main` while the
+plan pins revision `85e237c1` -- those are not necessarily the same bytes.
+If a restriction appears, stop the whole plan and
 report it — this is the exact failure that removed OmniVoice from consideration,
 and `docs/porting/families/qwen3-tts.md` records that a downstream port's
 README is not a license source.
 
-- [ ] **Step 5: Verify the upstream source license**
+- [x] **Step 5: Verify the upstream source license**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python -c "

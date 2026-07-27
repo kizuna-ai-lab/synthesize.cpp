@@ -158,9 +158,21 @@ with the GPU unused.
 That number is not merely a note about the oracle. Every sampled token
 conditions the next, so `docs/backends.md`'s discrete-output rule holds the
 autoregressive core on CPU on every Execution Backend, and the CPU figure is
-therefore approximately the pinned CUDA figure too. Kokoro paid 95 percent of
-synthesis time to hold two stages of seven, and VITS 29 percent to hold one
-graph; this family holds the loop itself.
+therefore **not** automatically the CUDA figure. Upstream deploys this model on
+CUDA with bfloat16 and FlashAttention 2 -- the only device guidance its card
+gives -- so the figure above is a floor set by this project's CPU-oracle rule
+rather than a measurement of the model as its authors run it.
+
+Whether CUDA helps is then a policy question. `docs/backends.md`'s
+discrete-output rule would hold the autoregressive core on CPU on every backend,
+and applied as written it makes CUDA nearly worthless here: Kokoro paid 95
+percent of synthesis time to hold two stages of seven and VITS 29 percent to
+hold one graph, while this family would hold the loop itself. But port
+validation replays the captured codes, so the sampler does not run in the graph
+being compared and cannot affect stage 5. The rule bites only on the public
+request path, where the real question is whether the same text and seed must
+yield the same tokens on every backend -- cheap to promise for VITS and Kokoro,
+very expensive to promise here. Stage 7 decides it.
 
 Roughly ten times slower than real time on this host is the honest planning
 number for a Stage 1 CPU claim. The 1.7B voice-design rung has not been

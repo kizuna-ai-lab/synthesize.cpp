@@ -411,7 +411,7 @@
     "finite": true,
     "peak": 0.5742930173873901,
     "reproducible_across_processes": true,
-    "real_time_factor_note": "this is approximately the CUDA figure as well: every sampled token conditions the next, so the discrete-output rule in docs/backends.md holds the autoregressive core on CPU on every Execution Backend"
+    "real_time_factor_note": "CPU, F32, eager attention. This is a floor set by this project's Phase 1 CPU-oracle rule, not a measurement of the model as upstream deploys it: the model card's only device guidance is CUDA with bfloat16 and FlashAttention 2. It is NOT automatically the CUDA figure. docs/backends.md's discrete-output rule would hold the autoregressive core on CPU on every backend, which applied as written makes CUDA nearly worthless here, but port validation replays the captured codes so the sampler never runs in the compared graph. The rule bites only on the public request path, and whether to pay it for a stochastic family is a stage-7 decision that has not been taken."
   },
   "audio_delivery_claim": {
     "stage_1": "chunked_audio_delivery",
@@ -424,6 +424,7 @@
     ]
   },
   "open_decisions": [
+    "Whether the discrete-output rule applies to this family's autoregressive sampler on the public request path. Applied as written it holds the whole talker on CPU and CUDA buys almost nothing; relaxed, the same text and seed could yield different tokens per backend. Parity validation is unaffected either way because it replays captured codes. Stage 7.",
     "SnakeBeta alpha and beta pass through exp() on every forward in the reference; whether they can be folded once at load needs the forward rather than the shapes, and is a stage-3 question.",
     "The 1.7B voice-design rung has not been measured; its real-time factor must not be inferred from the 0.6B figure.",
     "The code predictor cache-reset mitigation described by the reference port is unmeasured here and is a stage-4 implementation concern.",

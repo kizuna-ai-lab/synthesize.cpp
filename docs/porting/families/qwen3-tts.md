@@ -634,11 +634,35 @@ Greedy on CPU, F32, eager attention, `aiden` in `english`, text
 **That number is about the family, not about the oracle.** Every sampled token
 conditions the next, so `docs/backends.md`'s discrete-output rule holds the
 autoregressive core on CPU on every Execution Backend — the CPU figure is
-therefore approximately the pinned CUDA figure too. Kokoro paid 95 % of
-synthesis time to hold two stages of seven and VITS 29 % to hold one graph; this
-family holds the loop itself. Roughly ten times slower than real time on this
-host is the honest planning number for a Stage 1 CPU claim, and it should be
-re-measured on the 1.7B ladder rung before that rung is promised anything.
+therefore **not** automatically the CUDA figure, and the earlier claim that it was
+has been withdrawn. Two things make it a decision rather than an implication.
+
+Upstream deploys this model on CUDA with bfloat16 and FlashAttention 2; that is
+the only device guidance its model card gives. The figure above is CPU, F32 and
+eager attention because `docs/port-validation.md` Phase 1 requires a CPU oracle,
+so it is a floor set by this project's validation rule, not a measurement of the
+model as its authors run it.
+
+Whether CUDA helps then depends on a policy question this family raises for the
+first time. `docs/backends.md`'s discrete-output rule would hold the
+autoregressive core on CPU on every backend, because each sampled token is a
+discrete value conditioning the next. Applied as written, CUDA buys almost
+nothing here -- Kokoro paid 95 % of synthesis time to hold two stages of seven
+and VITS 29 % to hold one graph, while this family would hold the loop itself.
+
+But the rule exists to keep *structural* results identical across backends, and
+this family is stochastic by design. Port validation replays the captured codes,
+so the sampler does not run in the graph being compared and its TF32 sensitivity
+cannot affect stage 5 at all. The rule bites only on the public request path,
+where the question becomes whether the same text and seed must yield the same
+tokens on CPU and CUDA. That promise is cheap for VITS and Kokoro and very
+expensive here.
+
+Stage 7 has to take that decision deliberately and record it. Until it does, the
+honest planning number for a Stage 1 **CPU** claim is roughly ten times slower
+than real time, and nothing is claimed about CUDA.
+
+The 1.7B ladder rung must be measured before it is promised anything.
 
 ### Greedy is reproducible, but only with both switches
 
@@ -694,9 +718,11 @@ default, which `CONTEXT.md` warns against in both directions.
    proven rather than argued. See "The multimodal RoPE collapses exactly".
 3. ~~Measure real CPU speed for the 0.6B Stage 1 variant on project hardware.~~
    **Resolved 2026-07-27**: real-time factor 9.4 to 9.7 greedy on CPU, and that
-   is approximately the CUDA figure too because the discrete-output rule holds
-   the autoregressive core on CPU. See "CPU oracle smoke". The cache-reset
-   mitigation is still unmeasured here; it is a stage-4 implementation concern.
+   is a floor set by this project's CPU-oracle rule, not a measurement of the
+   model as upstream deploys it (CUDA, bfloat16, FlashAttention 2). Whether CUDA
+   helps is a stage-7 policy decision, not an implication -- see "CPU oracle
+   smoke". The cache-reset mitigation is still unmeasured here; it is a stage-4
+   implementation concern.
 4. ~~Enumerate the CustomVoice preset speakers and their dialect overrides for
    the Preset Voice Catalog.~~ **Resolved 2026-07-27**: nine speakers as codec
    token ids, two with dialect overrides. See "Voices and languages".

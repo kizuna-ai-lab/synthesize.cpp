@@ -588,6 +588,69 @@ For the Preset Voice Catalog: nine Voice Profiles, two of which pin the language
 token regardless of the request, and `auto` as a language meaning detect from
 text.
 
+### CPU oracle smoke, and what its speed says about the family
+
+Greedy on CPU, F32, eager attention, `aiden` in `english`, text
+"Qwen3-TTS is awesome!", on the aarch64 GB10 host with the GPU unused.
+
+| | value |
+| --- | --- |
+| sample rate | 24000 |
+| frames / duration | 97,920 / 4.08 s |
+| wall time | 39.6 s and 38.4 s |
+| **real-time factor** | **9.7 and 9.4** |
+| finite, peak | yes, 0.574 |
+
+**That number is about the family, not about the oracle.** Every sampled token
+conditions the next, so `docs/backends.md`'s discrete-output rule holds the
+autoregressive core on CPU on every Execution Backend — the CPU figure is
+therefore approximately the pinned CUDA figure too. Kokoro paid 95 % of
+synthesis time to hold two stages of seven and VITS 29 % to hold one graph; this
+family holds the loop itself. Roughly ten times slower than real time on this
+host is the honest planning number for a Stage 1 CPU claim, and it should be
+re-measured on the 1.7B ladder rung before that rung is promised anything.
+
+### Greedy is reproducible, but only with both switches
+
+The first attempt at this measurement produced two "greedy" runs that differed:
+69,120 against 65,280 frames, diverging at sample 20 — inside the very first
+frame. That looked like the material finding this plan warned about, that a
+greedy oracle is not reproducible against itself and the replay seam needs more
+than a captured code sequence.
+
+It was not. `generate_custom_voice` takes **two** sampling switches, and
+`do_sample` governs only the Talker. The sub-talker has its own
+`subtalker_dosample`, which defaults to `True`, so the code predictor was
+sampling under a nominally greedy call.
+
+With `do_sample=False` **and** `subtalker_dosample=False`, two runs in separate
+processes are bit-identical: 97,920 frames each, `max_abs_diff` exactly 0.0,
+peak agreeing to the last digit at 0.5742930173873901.
+
+So the reproducible CPU oracle Phase 1 requires does exist, and the
+stochastic-replay seam needs only the captured code sequence the family plan
+assumed. **Any script that captures this oracle must set both switches**;
+setting one is silently non-deterministic, which is a worse failure than an
+error.
+
+Unseeded sampling behaves as expected and sets the stochastic capability: two
+runs gave 51,840 and 76,800 frames, differing by 0.70 over the common prefix.
+
+### Stage 1 claims Chunked Audio Delivery
+
+`CONTEXT.md` defines Native Streaming Synthesis as a *validated* capability to
+produce usable audio incrementally, so architecture alone cannot earn the claim.
+The call used here returns a complete waveform, and upstream is explicit that
+its own flag does not change that: `non_streaming_mode` "currently only
+simulates streaming text input when set to `false`, rather than enabling true
+streaming input or streaming generation".
+
+Stage 1 therefore claims **Chunked Audio Delivery**. The stronger claim remains
+reachable — the findings above name its cost, three pieces of decoder state
+carried across frames — and would need its own validated evidence at a later
+stage. Recording it this way keeps the two claims from being conflated by
+default, which `CONTEXT.md` warns against in both directions.
+
 ## Open Questions for Intake
 
 1. Confirm the codec decoder topology against upstream rather than against a
@@ -599,20 +662,19 @@ text.
 2. ~~Confirm the RoPE section collapse is exactly equivalent for a
    text-plus-codec timeline.~~ **Resolved 2026-07-27**: exactly equivalent, and
    proven rather than argued. See "The multimodal RoPE collapses exactly".
-3. Measure real CPU speed for the 0.6B Stage 1 variant on project hardware. The
-   Code Predictor's per-frame sequential steps are reported to dominate
-   generation time; confirm the cost and the documented cache-reset mitigation
-   before committing to a CPU claim.
+3. ~~Measure real CPU speed for the 0.6B Stage 1 variant on project hardware.~~
+   **Resolved 2026-07-27**: real-time factor 9.4 to 9.7 greedy on CPU, and that
+   is approximately the CUDA figure too because the discrete-output rule holds
+   the autoregressive core on CPU. See "CPU oracle smoke". The cache-reset
+   mitigation is still unmeasured here; it is a stage-4 implementation concern.
 4. ~~Enumerate the CustomVoice preset speakers and their dialect overrides for
    the Preset Voice Catalog.~~ **Resolved 2026-07-27**: nine speakers as codec
    token ids, two with dialect overrides. See "Voices and languages".
-5. Determine whether the causal codec decoder qualifies as Native Streaming
-   Synthesis under `CONTEXT.md`, or whether Stage 1 claims only Chunked Audio
-   Delivery. `qwentts.cpp` indicates the stronger claim is reachable and names
-   its cost — carrying causal-conv left context, transposed-conv overlap carry,
-   and the transformer KV ring across frames. Confirm against upstream, and
-   record which claim this project makes as a stage-4 decision rather than
-   letting it be settled by omission.
+5. ~~Determine whether the causal codec decoder qualifies as Native Streaming
+   Synthesis under `CONTEXT.md`.~~ **Resolved 2026-07-27**: Stage 1 claims
+   Chunked Audio Delivery. See "Stage 1 claims Chunked Audio Delivery". The
+   stronger claim stays reachable at a later stage with its own evidence, and
+   its cost is named under the qwentts findings.
 6. Establish upstream provenance and redistribution permission for publishing
    converted Model Packages, as was done for Kokoro. Alibaba does not disclose
    training corpora; the Apache-2.0 grant is the basis relied on, and it is the

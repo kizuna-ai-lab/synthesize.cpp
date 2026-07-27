@@ -461,9 +461,12 @@ record as a finding about the family rather than as a note about the oracle —
 Kokoro cost 95 percent and VITS 29 percent for holding two stages and one graph
 respectively, and this family holds far more.
 
-- [ ] **Step 1: Run one greedy synthesis on CPU**
+- [x] **Step 1: Run one greedy synthesis on CPU**
 
-`do_sample=False` selects greedy decoding on both the talker and the sub-talker,
+`do_sample=False` was assumed here to select greedy decoding on both the talker
+and the sub-talker. **That is wrong** -- it governs the Talker only, and the
+sub-talker's `subtalker_dosample` defaults to `True`. Both must be set to
+`False`, or the run is silently non-deterministic. Corrected 2026-07-27;
 which is what makes an autoregressive oracle reproducible. Upstream defaults are
 `do_sample=True, top_k=50, top_p=1.0, temperature=0.9, repetition_penalty=1.05`.
 
@@ -518,12 +521,12 @@ If this fails because CPU lacks a kernel used by the model, record the exact
 error and stop; a CPU oracle is mandatory and its absence is a finding that
 changes the family plan, not something to work around by moving to CUDA.
 
-- [ ] **Step 2: Repeat the identical greedy call**
+- [x] **Step 2: Repeat the identical greedy call**
 
 Re-run the exact command from Step 1, writing to `_smoke_b.wav` instead of
 `_smoke_a.wav`.
 
-- [ ] **Step 3: Compare the two runs**
+- [x] **Step 3: Compare the two runs**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python - <<'PY'
@@ -545,7 +548,7 @@ stochastic-replay approach in `docs/porting/families/qwen3-tts.md` needs more
 than a captured code sequence, which is a material finding for stage
 `5-port-validate`.
 
-- [ ] **Step 4: Measure the sampled path for the stochastic capability**
+- [x] **Step 4: Measure the sampled path for the stochastic capability**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python - <<'PY'
@@ -575,7 +578,7 @@ Expected: two unseeded sampled runs differ, and may differ in length. This
 establishes that the package sets the stochastic capability, matching how
 Kokoro's intake recorded its own stochastic behaviour.
 
-- [ ] **Step 5: Decide the audio delivery claim**
+- [x] **Step 5: Decide the audio delivery claim**
 
 Using the Step 1 and Step 2 evidence plus the `CONTEXT.md` definitions, decide
 whether Stage 1 claims **Chunked Audio Delivery** only, or whether the causal

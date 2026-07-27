@@ -77,7 +77,7 @@ upstream `qwen-tts` package pinned by git revision.
   `from qwen_tts import Qwen3TTSModel` succeeds on CPU. Every later task runs
   its Python through `uv run --project scripts/envs/qwen3-tts`.
 
-- [ ] **Step 1: Write the environment declaration**
+- [x] **Step 1: Write the environment declaration**
 
 Create `scripts/envs/qwen3-tts/pyproject.toml`. The `qwen-tts` package is not on
 PyPI, so it is pinned by git revision. `gradio` is excluded because it is only
@@ -108,7 +108,7 @@ dependencies = [
 package = false
 ```
 
-- [ ] **Step 2: Resolve and lock**
+- [x] **Step 2: Resolve and lock**
 
 ```bash
 uv lock --project scripts/envs/qwen3-tts
@@ -119,7 +119,7 @@ Expected: `scripts/envs/qwen3-tts/uv.lock` is created. If resolution fails on
 package with an explicit version to `dependencies` and re-run. Record any such
 addition and its reason in the porting log in Task 5.
 
-- [ ] **Step 3: Verify the import path works on CPU**
+- [x] **Step 3: Verify the import path works on CPU**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python -c "
@@ -139,7 +139,7 @@ does not depend on this.
 If `import qwen_tts` fails on a missing module, add that module to
 `dependencies`, re-run Step 2, and repeat this step.
 
-- [ ] **Step 4: Record the resolved versions**
+- [x] **Step 4: Record the resolved versions**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python -c "
@@ -152,7 +152,7 @@ for p in ['torch','transformers','accelerate','numpy','librosa','soundfile','ein
 Keep this output. Task 5 copies it verbatim into `intake.json` under
 `reference_environment`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/envs/qwen3-tts/pyproject.toml scripts/envs/qwen3-tts/uv.lock

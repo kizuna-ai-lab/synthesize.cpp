@@ -1,0 +1,21 @@
+[project]
+name = "synthesize-qwen3-tts-reference"
+version = "0.0.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "accelerate==1.12.0",
+    "einops==0.8.1",
+    "gguf==0.19.0",
+    "huggingface-hub==0.36.2",
+    "librosa==0.11.0",
+    "numpy==1.26.4",
+    "qwen-tts @ git+https://github.com/QwenLM/Qwen3-TTS@022e286b98fbec7e1e916cb940cdf532cd9f488e",
+    "scipy==1.13.1",
+    "soundfile==0.13.1",
+    "torch>=2.7,<3",
+    "torchaudio",
+    "transformers==4.57.3",
+]
+
+[tool.uv]
+package = false

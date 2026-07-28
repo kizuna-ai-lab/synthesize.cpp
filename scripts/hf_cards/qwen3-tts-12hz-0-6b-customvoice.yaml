@@ -1,0 +1,136 @@
+# Hugging Face card specification for jiangzhuo9357/qwen3-tts-12hz-0-6b-customvoice-gguf.
+#
+# Prepared, not published. Publishing is a separate act requiring its own
+# confirmation.
+
+model_slug: qwen3-tts-12hz-0-6b-customvoice
+display_name: Qwen3-TTS 12Hz 0.6B CustomVoice
+model_family: qwen3-tts
+target_repo: jiangzhuo9357/qwen3-tts-12hz-0-6b-customvoice-gguf
+
+source:
+  repository_label: QwenLM/Qwen3-TTS
+  repository: https://github.com/QwenLM/Qwen3-TTS
+  revision: 022e286b98fbec7e1e916cb940cdf532cd9f488e
+  card_url: https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice/blob/85e237c12c027371202489a0ec509ded67b5e4b5/README.md
+  card_path: models/upstream/qwen3-tts-12hz-0-6b-customvoice/README.md
+  checkpoint_name: Qwen3-TTS-12Hz-0.6B-CustomVoice
+  checkpoint_url: https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice/tree/85e237c12c027371202489a0ec509ded67b5e4b5
+
+architecture_label: Qwen3-TTS
+
+license_note: |
+  Both the pinned source at `022e286b` and the checkpoint at `85e237c1` carry an
+    explicit Apache-2.0 grant, audited at those revisions rather than at `main`,
+    with no restriction prose in either card.
+
+    Alibaba does not disclose the training corpora, so Apache-2.0 is the basis
+    relied on — the same basis on which Kokoro was accepted.
+
+license: apache-2.0
+license_name: apache-2.0
+license_link: https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
+library_name: synthesize.cpp
+pipeline_tag: text-to-speech
+languages:
+  - en
+tags:
+  - gguf
+  - synthesize.cpp
+  - text-to-speech
+  - tts
+  - qwen3-tts
+  - autoregressive
+  - rvq
+  - multi-voice
+  - cpu
+  - cuda
+
+summary: |
+  A self-contained Qwen3-TTS inference package converted from the official
+  12 Hz 0.6B CustomVoice checkpoint. It is an autoregressive talker over a
+  residual-vector-quantized codec: a 28-layer Qwen3 decoder emits one semantic
+  code per 80 ms frame, a 5-layer code predictor expands it into fifteen
+  acoustic codes, and a SEANet decoder turns the finished stream into 24 kHz
+  audio. Nine preset Voices ship with it, and the package carries its own
+  byte-pair text frontend, so raw UTF-8 text goes in and audio comes out.
+
+capabilities:
+  sample_rate_hz: 24000
+  voice_count: 9
+  voice_ids: preset-catalog
+  voice_mode: preset_catalog
+  input_kinds:
+    - text_utf8
+    - token_ids
+  frontend_provider: synthesize.qwen_bpe
+
+validation:
+  level: port_validated
+  quality_evaluation: not_run
+  date: 2026-07-28
+  reference: the pinned upstream PyTorch implementation at bfloat16 on CUDA
+  implementation_revision: workspace-snapshot-2026-07-28
+  cases_per_stage: 18
+  stages: 3
+  columns:
+    - key: cpu_pcm_cosine
+      title: CPU waveform cosine
+    - key: cuda_pcm_cosine
+      title: DGX Spark CUDA waveform cosine
+  metric_note: |
+    Cosine similarity is the measure, not a sample-wise bound, and the codes are
+    replayed rather than reproduced. The oracle draws its codes from PyTorch's
+    generator and this port from its own seeded stream, so reproducing the same
+    codes is neither possible nor the claim: parity replays the oracle's codes
+    and compares everything downstream of the draw on identical inputs.
+
+    The deep talker layers carry outlier channels ahead of the final norm — a
+    max-abs of 17.4 at layer 27 while cosine holds at 0.99992 — so a sample-wise
+    threshold would report catastrophic failure on a correct port. The figure
+    quoted is the worst case over the suite. The oracle ran bfloat16 on CUDA and
+    the CPU column runs F32, so these cover a dtype and a device difference as
+    well as an implementation one.
+  platforms:
+    - DGX Spark CPU
+    - NVIDIA GB10 CUDA 13.3
+
+publication_note: |
+  Both the source and the checkpoint carry an explicit Apache-2.0 grant, so no
+  redistribution assumption is required for this variant.
+
+  Only English is declared. The checkpoint also carries codec language tokens for
+  German, Spanish, Chinese, Japanese, French, Korean, Russian, Italian and
+  Brazilian Portuguese, and two of its nine speakers pin a Chinese dialect; those
+  paths load and run, but no language beyond `en` has its own validation cases,
+  so none is advertised.
+
+  The speech tokenizer's encoder half is deliberately not carried. Synthesis runs
+  one way — codes to audio — so nothing in this package can reach it, and its
+  first sixteen codebooks duplicated the decoder's exactly. Dropping it removed
+  161 tensors and 225 MB.
+
+usage:
+  profile: F16
+  voice: aiden
+  phonemes: "Qwen3-TTS is awesome!"
+
+quants:
+  - name: BF16
+    filename: qwen3-tts-12hz-0-6b-customvoice-BF16.gguf
+    size: 2168.8 MB
+    size_bytes: 2274116736
+    sha256: aa96f152a113e199ac038eaa5b24a631268a84cdca6b423e9bc29562a66c6dae
+    tensor_types: 402 BF16 + 255 F32
+    validation:
+      cpu_pcm_cosine: 0.999427
+      cuda_pcm_cosine: not_measured
+  - name: F16
+    filename: qwen3-tts-12hz-0-6b-customvoice-F16.gguf
+    size: 2168.9 MB
+    size_bytes: 2274279040
+    sha256: db19d6317d156ad3d7fd18f3bcd31a5ae4fffbc175aeec3f226f1037c07a36f6
+    tensor_types: 266 F16 + 391 F32
+    validation:
+      cpu_pcm_cosine: 0.999427
+      cuda_pcm_cosine: 0.999404

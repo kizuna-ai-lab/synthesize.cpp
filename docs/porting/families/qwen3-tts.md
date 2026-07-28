@@ -1577,6 +1577,38 @@ deployment choice rather than a default, which is what the backend request on
 
 The repeated-run cleanup the contract asks for is not written.
 
+## Stage 8: Publication, Prepared
+
+The model card is written and rendered from
+`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml`, with the digests checked
+against the packages on disk by the generator. **Nothing has been published.**
+Publishing is an outward-facing act and needs its own confirmation, which has not
+been given; see `OUTWARD_INTERACTION_POLICY.md`.
+
+| profile | size | sha256 (first 16) | CPU cosine | CUDA cosine |
+| --- | --- | --- | --- | --- |
+| BF16 (source) | 2168.8 MB | `aa96f152a113e199` | 0.999427 | not measured |
+| F16 | 2168.9 MB | `db19d6317d156ad3` | 0.999427 | 0.999404 |
+
+What the card declares and why:
+
+- **`port_validated`, quality evaluation not run.** No arena or listening
+  evidence supports a quality claim for this family and the project has no
+  capability to produce one, which the intake accepted as a risk.
+- **English only.** The checkpoint carries codec language tokens for nine more
+  languages and two of its speakers pin a Chinese dialect; those paths load and
+  run, but none has its own validation cases, so none is advertised.
+- **Two profiles, not three.** Q8_MIXED is not shipped, for the reason above.
+- **The encoder half is absent**, and the card says so rather than leaving a
+  reader to wonder why a speech tokenizer package cannot tokenize speech.
+
+### What a publication would still need
+
+- A decision on whether to publish at all, which is jiangzhuo's.
+- The CUDA column for the source profile, which was never measured -- the
+  accelerator work was done under F16.
+- The repeated-run cleanup stage 7 owes.
+
 ## Open Questions for Intake
 
 1. Confirm the codec decoder topology against upstream rather than against a

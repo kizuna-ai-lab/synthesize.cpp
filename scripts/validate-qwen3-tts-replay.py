@@ -51,6 +51,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cases", nargs="*", default=None)
     parser.add_argument("--check", action="store_true",
                         help="fail when a measurement exceeds the committed tolerance")
+    parser.add_argument("--tolerances", type=pathlib.Path,
+                        default=pathlib.Path("tests/tolerances/qwen3-tts.json"))
+    parser.add_argument("--stage", default="source-bf16-oracle-vs-f32-cpu")
     return parser.parse_args()
 
 
@@ -170,6 +173,40 @@ def main() -> int:
     if failures:
         print(f"\n{len(failures)} case(s) failed to run: {failures}")
         return 1
+    if not arguments.check:
+        return 0
+
+    # A tolerance is a reviewed number in a committed file. Refusing to run
+    # rather than inventing one is the point: a threshold the suite writes for
+    # itself proves nothing.
+    tolerances = json.loads(arguments.tolerances.read_text(encoding="utf-8"))
+    stage = tolerances.get("stages", {}).get(arguments.stage)
+    if not stage:
+        print(f"\ntolerance stage {arguments.stage!r} is not recorded in {arguments.tolerances}")
+        return 1
+
+    breaches = []
+    for outcome in results:
+        for probe, measurement in outcome.get("probes", {}).items():
+            limits = stage.get("probes", {}).get(probe)
+            if limits is None:
+                breaches.append(f"{outcome['case']}/{probe}: no tolerance recorded")
+                continue
+            if "max_abs" not in measurement:
+                breaches.append(f"{outcome['case']}/{probe}: {measurement}")
+                continue
+            if "max_abs" in limits and measurement["max_abs"] > limits["max_abs"]:
+                breaches.append(f"{outcome['case']}/{probe}: max_abs {measurement['max_abs']:.6g} "
+                                f"exceeds {limits['max_abs']:.6g}")
+            if "min_cosine" in limits and measurement["cosine"] < limits["min_cosine"]:
+                breaches.append(f"{outcome['case']}/{probe}: cosine {measurement['cosine']:.6f} "
+                                f"below {limits['min_cosine']:.6f}")
+    if breaches:
+        print(f"\n{len(breaches)} tolerance breach(es):")
+        for breach in breaches[:20]:
+            print(f"  {breach}")
+        return 1
+    print(f"\nall probes within the {arguments.stage} tolerances")
     return 0
 
 

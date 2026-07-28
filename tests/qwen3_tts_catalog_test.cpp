@@ -157,17 +157,16 @@ std::vector<Entry> expected_entries(const synth::qwen3tts::HParams & h) {
     add(out, "talker.model.codec_embedding.weight", { hidden, h.talker.codec_vocab_size });
     add(out, "talker.codec_head.weight", { hidden, h.talker.codec_vocab_size });
     for (uint32_t layer = 0; layer < h.talker.layer_count; ++layer) {
-        add_decoder_layer(out, "talker.model.layers." + std::to_string(layer) + ".", hidden,
-                          h.talker.intermediate_size, h.talker.head_dim, h.talker.attention_head_count,
-                          h.talker.key_value_head_count);
+        add_decoder_layer(out, "talker.model.layers." + std::to_string(layer) + ".", hidden, h.talker.intermediate_size,
+                          h.talker.head_dim, h.talker.attention_head_count, h.talker.key_value_head_count);
     }
     add(out, "talker.model.norm.weight", { hidden });
 
     const int64_t predictor_hidden = h.code_predictor.hidden_size;
     for (uint32_t layer = 0; layer < h.code_predictor.layer_count; ++layer) {
         add_decoder_layer(out, "talker.code_predictor.model.layers." + std::to_string(layer) + ".", predictor_hidden,
-                          h.talker.intermediate_size, h.code_predictor.head_dim,
-                          h.code_predictor.attention_head_count, h.code_predictor.key_value_head_count);
+                          h.talker.intermediate_size, h.code_predictor.head_dim, h.code_predictor.attention_head_count,
+                          h.code_predictor.key_value_head_count);
     }
     add(out, "talker.code_predictor.model.norm.weight", { predictor_hidden });
     for (uint32_t group = 0; group + 1 < h.code_predictor.code_group_count; ++group) {
@@ -184,11 +183,10 @@ std::vector<Entry> expected_entries(const synth::qwen3tts::HParams & h) {
         const std::string prefix = "codec.decoder.quantizer." + rvq + ".";
         add(out, prefix + "input_proj.weight", { 1, codec.codebook_dim, inner });
         add(out, prefix + "output_proj.weight", { 1, inner, codec.codebook_dim });
-        const uint32_t count = rvq == "rvq_first" ? codec.semantic_quantizer_count
-                                                  : codec.quantizer_count - codec.semantic_quantizer_count;
+        const uint32_t count = rvq == "rvq_first" ? codec.semantic_quantizer_count :
+                                                    codec.quantizer_count - codec.semantic_quantizer_count;
         for (uint32_t index = 0; index < count; ++index) {
-            add(out, prefix + "vq.layers." + std::to_string(index) + ".codebook",
-                { inner, codec.codebook_size });
+            add(out, prefix + "vq.layers." + std::to_string(index) + ".codebook", { inner, codec.codebook_size });
         }
     }
 
@@ -198,9 +196,9 @@ std::vector<Entry> expected_entries(const synth::qwen3tts::HParams & h) {
     add_linear(out, transformer + "input_proj", codec.latent_dim, codec.hidden_size);
     add_linear(out, transformer + "output_proj", codec.hidden_size, codec.latent_dim);
     for (uint32_t layer = 0; layer < codec.layer_count; ++layer) {
-        const std::string base  = transformer + "layers." + std::to_string(layer) + ".";
-        const int64_t     attn  = int64_t(codec.attention_head_count) * codec.head_dim;
-        const int64_t     kv    = int64_t(codec.key_value_head_count) * codec.head_dim;
+        const std::string base = transformer + "layers." + std::to_string(layer) + ".";
+        const int64_t     attn = int64_t(codec.attention_head_count) * codec.head_dim;
+        const int64_t     kv   = int64_t(codec.key_value_head_count) * codec.head_dim;
         add(out, base + "input_layernorm.weight", { codec.hidden_size });
         add(out, base + "self_attn.q_proj.weight", { codec.hidden_size, attn });
         add(out, base + "self_attn.k_proj.weight", { codec.hidden_size, kv });
@@ -216,8 +214,8 @@ std::vector<Entry> expected_entries(const synth::qwen3tts::HParams & h) {
     add(out, transformer + "norm.weight", { codec.hidden_size });
 
     for (size_t stage = 0; stage < codec.upsampling_ratios.size(); ++stage) {
-        const std::string base    = "codec.decoder.upsample." + std::to_string(stage) + ".";
-        const int64_t     latent  = codec.latent_dim;
+        const std::string base   = "codec.decoder.upsample." + std::to_string(stage) + ".";
+        const int64_t     latent = codec.latent_dim;
         add_transpose_conv(out, base + "0.conv", codec.upsampling_ratios[stage], latent, latent);
         add(out, base + "1.dwconv.conv.weight", { 7, 1, latent });
         add(out, base + "1.dwconv.conv.bias", { latent });
@@ -444,13 +442,13 @@ int check_rejections(const synth::qwen3tts::HParams & h, const std::vector<Entry
 // package is too small to notice.
 int check_real_package_count() {
     synth::qwen3tts::HParams h;
-    h.talker.layer_count                  = 28;
-    h.code_predictor.layer_count          = 5;
-    h.code_predictor.code_group_count     = 16;
-    h.codec.decoder.quantizer_count       = 16;
-    h.codec.decoder.layer_count           = 8;
-    h.codec.decoder.upsample_rates        = { 8, 5, 4, 3 };
-    h.codec.decoder.upsampling_ratios     = { 2, 2 };
+    h.talker.layer_count              = 28;
+    h.code_predictor.layer_count      = 5;
+    h.code_predictor.code_group_count = 16;
+    h.codec.decoder.quantizer_count   = 16;
+    h.codec.decoder.layer_count       = 8;
+    h.codec.decoder.upsample_rates    = { 8, 5, 4, 3 };
+    h.codec.decoder.upsampling_ratios = { 2, 2 };
     SYNTH_TEST_CHECK(synth::qwen3tts::expected_tensor_count(h) == 657);
     return 0;
 }

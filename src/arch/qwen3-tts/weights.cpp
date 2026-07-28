@@ -287,7 +287,11 @@ bool read_tokens(const GgufMetadata & meta, HParams & hparams) {
            meta.u32("synthesize.qwen3-tts.token.assistant_token_id", t.assistant) &&
            meta.u32("synthesize.qwen3-tts.token.codec_bos_id", t.codec_bos) &&
            meta.u32("synthesize.qwen3-tts.token.codec_eos_token_id", t.codec_eos) &&
-           meta.u32("synthesize.qwen3-tts.token.codec_pad_id", t.codec_pad);
+           meta.u32("synthesize.qwen3-tts.token.codec_pad_id", t.codec_pad) &&
+           meta.u32("synthesize.qwen3-tts.token.codec_think_id", t.codec_think) &&
+           meta.u32("synthesize.qwen3-tts.token.codec_nothink_id", t.codec_nothink) &&
+           meta.u32("synthesize.qwen3-tts.token.codec_think_bos_id", t.codec_think_bos) &&
+           meta.u32("synthesize.qwen3-tts.token.codec_think_eos_id", t.codec_think_eos);
 }
 
 bool read_voices(const GgufMetadata & meta, HParams & hparams) {

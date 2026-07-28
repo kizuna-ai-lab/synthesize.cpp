@@ -88,15 +88,23 @@ struct CodecParams {
 
 // Token ids the graph needs by value rather than by name.
 struct SpecialTokens {
-    uint32_t tts_bos   = 0;
-    uint32_t tts_eos   = 0;
-    uint32_t tts_pad   = 0;
-    uint32_t im_start  = 0;
-    uint32_t im_end    = 0;
-    uint32_t assistant = 0;
-    uint32_t codec_bos = 0;
-    uint32_t codec_eos = 0;
-    uint32_t codec_pad = 0;
+    uint32_t tts_bos         = 0;
+    uint32_t tts_eos         = 0;
+    uint32_t tts_pad         = 0;
+    uint32_t im_start        = 0;
+    uint32_t im_end          = 0;
+    uint32_t assistant       = 0;
+    uint32_t codec_bos       = 0;
+    uint32_t codec_eos       = 0;
+    uint32_t codec_pad       = 0;
+    // The prompt's codec side opens with one of these: think when the request
+    // names a language, nothink when it asks for auto. The two are not
+    // interchangeable -- the nothink prompt carries no language token at all
+    // rather than a default one, so it is one position shorter.
+    uint32_t codec_think     = 0;
+    uint32_t codec_nothink   = 0;
+    uint32_t codec_think_bos = 0;
+    uint32_t codec_think_eos = 0;
 };
 
 // A preset Voice is a codec-vocabulary token id, not a row of an embedding

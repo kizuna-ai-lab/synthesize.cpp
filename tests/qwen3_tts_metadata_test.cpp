@@ -126,6 +126,10 @@ GgufContext valid_metadata() {
     gguf_set_val_u32(g, "synthesize.qwen3-tts.token.codec_bos_id", 2149);
     gguf_set_val_u32(g, "synthesize.qwen3-tts.token.codec_eos_token_id", 2150);
     gguf_set_val_u32(g, "synthesize.qwen3-tts.token.codec_pad_id", 2148);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.token.codec_think_id", 2154);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.token.codec_nothink_id", 2155);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.token.codec_think_bos_id", 2156);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.token.codec_think_eos_id", 2157);
 
     const std::vector<std::string> speakers    = { "aiden",    "sohee", "ono_anna", "eric",  "dylan",
                                                    "uncle_fu", "ryan",  "vivian",   "serena" };

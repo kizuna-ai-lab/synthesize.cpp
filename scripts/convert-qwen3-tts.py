@@ -468,7 +468,11 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
     for key in ("tts_bos_token_id", "tts_eos_token_id", "tts_pad_token_id",
                 "im_start_token_id", "im_end_token_id", "assistant_token_id"):
         writer.add_uint32(f"synthesize.qwen3-tts.token.{key}", int(config[key]))
-    for key in ("codec_bos_id", "codec_eos_token_id", "codec_pad_id"):
+    # The think/nothink pair opens the codec side of the prompt: a request that
+    # names a language emits think, its language token, and think_eos; one that
+    # asks for auto emits nothink instead and no language token at all.
+    for key in ("codec_bos_id", "codec_eos_token_id", "codec_pad_id", "codec_think_id",
+                "codec_nothink_id", "codec_think_bos_id", "codec_think_eos_id"):
         writer.add_uint32(f"synthesize.qwen3-tts.token.{key}", int(talker[key]))
 
     # Preset Voice Catalog: speakers are codec-vocabulary token ids, not

@@ -57,9 +57,9 @@ class Resolver {
         size_t axis = 0;
         for (int64_t want : expected) {
             if (axis >= GGML_MAX_DIMS || want <= 0 || tensor->ne[axis] != want) {
-                return fail("tensor %s has shape [%lld, %lld, %lld, %lld], expected axis %zu to be %lld",
-                            name.c_str(), (long long) tensor->ne[0], (long long) tensor->ne[1],
-                            (long long) tensor->ne[2], (long long) tensor->ne[3], axis, (long long) want);
+                return fail("tensor %s has shape [%lld, %lld, %lld, %lld], expected axis %zu to be %lld", name.c_str(),
+                            (long long) tensor->ne[0], (long long) tensor->ne[1], (long long) tensor->ne[2],
+                            (long long) tensor->ne[3], axis, (long long) want);
             }
             ++axis;
         }
@@ -177,8 +177,8 @@ bool resolve_decoder_layers(Resolver &                         resolver,
     const int64_t attention_inner = int64_t(heads) * head_dim;
     const int64_t kv_inner        = int64_t(kv_heads) * head_dim;
     for (uint32_t index = 0; index < layer_count; ++index) {
-        const std::string        base  = index_of(prefix, index, ".");
-        DecoderLayerWeights &    layer = layers[index];
+        const std::string     base     = index_of(prefix, index, ".");
+        DecoderLayerWeights & layer    = layers[index];
         layer.input_layernorm          = resolver.find(base + "input_layernorm.weight", { hidden });
         layer.q_proj                   = resolver.find(base + "self_attn.q_proj.weight", { hidden, attention_inner });
         layer.k_proj                   = resolver.find(base + "self_attn.k_proj.weight", { hidden, kv_inner });
@@ -198,12 +198,14 @@ bool resolve_decoder_layers(Resolver &                         resolver,
 
 bool resolve_talker(Resolver & resolver, const HParams & hparams, TalkerWeights & talker) {
     const TalkerParams & p = hparams.talker;
-    talker.text_embedding  = resolver.find("talker.model.text_embedding.weight", { p.text_hidden_size, p.text_vocab_size });
+    talker.text_embedding =
+        resolver.find("talker.model.text_embedding.weight", { p.text_hidden_size, p.text_vocab_size });
     resolver.linear("talker.text_projection.linear_fc1", p.text_hidden_size, p.text_hidden_size,
                     talker.text_projection_1);
     resolver.linear("talker.text_projection.linear_fc2", p.text_hidden_size, p.hidden_size, talker.text_projection_2);
-    talker.codec_embedding = resolver.find("talker.model.codec_embedding.weight", { p.hidden_size, p.codec_vocab_size });
-    talker.codec_head      = resolver.find("talker.codec_head.weight", { p.hidden_size, p.codec_vocab_size });
+    talker.codec_embedding =
+        resolver.find("talker.model.codec_embedding.weight", { p.hidden_size, p.codec_vocab_size });
+    talker.codec_head = resolver.find("talker.codec_head.weight", { p.hidden_size, p.codec_vocab_size });
     resolve_decoder_layers(resolver, "talker.model.layers.", p.layer_count, p.hidden_size, p.intermediate_size,
                            p.head_dim, p.attention_head_count, p.key_value_head_count, talker.layers);
     talker.norm = resolver.find("talker.model.norm.weight", { p.hidden_size });
@@ -215,8 +217,8 @@ bool resolve_code_predictor(Resolver & resolver, const HParams & hparams, CodePr
     // The predictor shares the talker's feed-forward width; the package does not
     // declare a separate one, so it is checked against the talker's.
     resolve_decoder_layers(resolver, "talker.code_predictor.model.layers.", p.layer_count, p.hidden_size,
-                           hparams.talker.intermediate_size, p.head_dim, p.attention_head_count,
-                           p.key_value_head_count, predictor.layers);
+                           hparams.talker.intermediate_size, p.head_dim, p.attention_head_count, p.key_value_head_count,
+                           predictor.layers);
     predictor.norm = resolver.find("talker.code_predictor.model.norm.weight", { p.hidden_size });
 
     // One private table and one private head per acoustic group. Group 0 is the
@@ -225,10 +227,11 @@ bool resolve_code_predictor(Resolver & resolver, const HParams & hparams, CodePr
     predictor.codec_embedding.assign(acoustic, nullptr);
     predictor.lm_head.assign(acoustic, nullptr);
     for (uint32_t group = 0; group < acoustic; ++group) {
-        predictor.codec_embedding[group] = resolver.find(
-            index_of("talker.code_predictor.model.codec_embedding.", group, ".weight"), { p.hidden_size, p.vocab_size });
-        predictor.lm_head[group] =
-            resolver.find(index_of("talker.code_predictor.lm_head.", group, ".weight"), { p.hidden_size, p.vocab_size });
+        predictor.codec_embedding[group] =
+            resolver.find(index_of("talker.code_predictor.model.codec_embedding.", group, ".weight"),
+                          { p.hidden_size, p.vocab_size });
+        predictor.lm_head[group] = resolver.find(index_of("talker.code_predictor.lm_head.", group, ".weight"),
+                                                 { p.hidden_size, p.vocab_size });
     }
 
     // The reference projects the talker's hidden state into the predictor's
@@ -244,14 +247,14 @@ bool resolve_code_predictor(Resolver & resolver, const HParams & hparams, CodePr
     return resolver.ok();
 }
 
-bool resolve_quantizer(Resolver &              resolver,
-                       const std::string &     prefix,
+bool resolve_quantizer(Resolver &                 resolver,
+                       const std::string &        prefix,
                        const CodecDecoderParams & p,
-                       uint32_t                codebook_count,
-                       CodecQuantizerWeights & quantizer) {
+                       uint32_t                   codebook_count,
+                       CodecQuantizerWeights &    quantizer) {
     // The quantizer works at half the codebook dimension, with a kernel-1
     // convolution on either side changing the width. Neither carries a bias.
-    const int64_t inner  = p.codebook_dim / 2;
+    const int64_t inner   = p.codebook_dim / 2;
     quantizer.input_proj  = resolver.find(prefix + "input_proj.weight", { 1, p.codebook_dim, inner });
     quantizer.output_proj = resolver.find(prefix + "output_proj.weight", { 1, inner, p.codebook_dim });
     quantizer.codebooks.assign(codebook_count, nullptr);
@@ -276,18 +279,17 @@ bool resolve_codec_transformer(Resolver &                 resolver,
         const std::string              base  = index_of(prefix + "layers.", index, ".");
         CodecTransformerLayerWeights & layer = transformer.layers[index];
         layer.input_layernorm                = resolver.find(base + "input_layernorm.weight", { p.hidden_size });
-        layer.q_proj                         = resolver.find(base + "self_attn.q_proj.weight",
-                                                             { p.hidden_size, attention_inner });
-        layer.k_proj    = resolver.find(base + "self_attn.k_proj.weight", { p.hidden_size, kv_inner });
-        layer.v_proj    = resolver.find(base + "self_attn.v_proj.weight", { p.hidden_size, kv_inner });
-        layer.o_proj    = resolver.find(base + "self_attn.o_proj.weight", { attention_inner, p.hidden_size });
+        layer.q_proj = resolver.find(base + "self_attn.q_proj.weight", { p.hidden_size, attention_inner });
+        layer.k_proj = resolver.find(base + "self_attn.k_proj.weight", { p.hidden_size, kv_inner });
+        layer.v_proj = resolver.find(base + "self_attn.v_proj.weight", { p.hidden_size, kv_inner });
+        layer.o_proj = resolver.find(base + "self_attn.o_proj.weight", { attention_inner, p.hidden_size });
         // Per-branch layer scales, which a Qwen3 block does not have; leaving
         // them unbound would run the residual branches at unit gain.
         layer.self_attn_layer_scale    = resolver.find(base + "self_attn_scale.scale", { p.hidden_size });
         layer.post_attention_layernorm = resolver.find(base + "post_attn_norm.weight", { p.hidden_size });
-        layer.gate_proj = resolver.find(base + "mlp.gate_proj.weight", { p.hidden_size, p.intermediate_size });
-        layer.up_proj   = resolver.find(base + "mlp.up_proj.weight", { p.hidden_size, p.intermediate_size });
-        layer.down_proj = resolver.find(base + "mlp.down_proj.weight", { p.intermediate_size, p.hidden_size });
+        layer.gate_proj       = resolver.find(base + "mlp.gate_proj.weight", { p.hidden_size, p.intermediate_size });
+        layer.up_proj         = resolver.find(base + "mlp.up_proj.weight", { p.hidden_size, p.intermediate_size });
+        layer.down_proj       = resolver.find(base + "mlp.down_proj.weight", { p.intermediate_size, p.hidden_size });
         layer.mlp_layer_scale = resolver.find(base + "mlp_scale.scale", { p.hidden_size });
     }
     transformer.norm = resolver.find(prefix + "norm.weight", { p.hidden_size });
@@ -298,8 +300,8 @@ bool resolve_codec(Resolver & resolver, const HParams & hparams, CodecDecoderWei
     const CodecDecoderParams & p = hparams.codec.decoder;
 
     resolve_quantizer(resolver, "codec.decoder.quantizer.rvq_first.", p, p.semantic_quantizer_count, codec.semantic);
-    resolve_quantizer(resolver, "codec.decoder.quantizer.rvq_rest.", p,
-                      p.quantizer_count - p.semantic_quantizer_count, codec.acoustic);
+    resolve_quantizer(resolver, "codec.decoder.quantizer.rvq_rest.", p, p.quantizer_count - p.semantic_quantizer_count,
+                      codec.acoustic);
 
     resolver.conv("codec.decoder.pre_conv.conv", 3, p.codebook_dim, p.latent_dim, codec.pre_conv);
     resolve_codec_transformer(resolver, p, codec.pre_transformer);
@@ -326,7 +328,7 @@ bool resolve_codec(Resolver & resolver, const HParams & hparams, CodecDecoderWei
     codec.stages.resize(p.upsample_rates.size());
     int64_t width = p.dim;
     for (size_t stage = 0; stage < p.upsample_rates.size(); ++stage) {
-        const std::string    base = index_of("codec.decoder.decoder.", stage + 1, ".block.");
+        const std::string    base     = index_of("codec.decoder.decoder.", stage + 1, ".block.");
         CodecResidualStage & residual = codec.stages[stage];
         const int64_t        narrower = width / 2;
         resolver.snake_beta(base + "0", width, residual.act);
@@ -367,12 +369,12 @@ uint64_t expected_tensor_count(const HParams & hparams) {
     uint64_t predictor = 1 + uint64_t(hparams.code_predictor.layer_count) * kPerDecoderLayer;
     predictor += 2ull * (hparams.code_predictor.code_group_count - 1);
 
-    uint64_t quantizers = 2 * 2 + codec.quantizer_count;                 // two projections each, plus codebooks
-    uint64_t transformer = 4 + 1 + uint64_t(codec.layer_count) * 11;     // projections, norm, layers
+    uint64_t quantizers  = 2 * 2 + codec.quantizer_count;             // two projections each, plus codebooks
+    uint64_t transformer = 4 + 1 + uint64_t(codec.layer_count) * 11;  // projections, norm, layers
     uint64_t upsample    = uint64_t(codec.upsampling_ratios.size()) * 11;
-    uint64_t residual    = 2;                                            // the stack's input convolution
+    uint64_t residual    = 2;                                         // the stack's input convolution
     residual += uint64_t(codec.upsample_rates.size()) * (2 + 2 + 3 * 8);
-    residual += 2 + 2;                                                   // output activation and convolution
+    residual += 2 + 2;                                                // output activation and convolution
     return talker + predictor + quantizers + 2 + transformer + upsample + residual;
 }
 

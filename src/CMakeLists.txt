@@ -14,6 +14,8 @@ add_library(synthesize
     arch/qwen3-tts/code-predictor.cpp
     arch/qwen3-tts/code-predictor-host.cpp
     arch/qwen3-tts/operations.cpp
+    arch/qwen3-tts/talker.cpp
+    arch/qwen3-tts/talker-host.cpp
     arch/qwen3-tts/weights.cpp
     arch/kokoro/catalog.cpp
     arch/kokoro/decoder.cpp

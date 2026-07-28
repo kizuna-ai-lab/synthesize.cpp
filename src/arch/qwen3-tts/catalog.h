@@ -42,7 +42,7 @@ struct SnakeBetaWeights {
 
 // The autoregressive language model that emits one semantic code per frame.
 struct TalkerWeights {
-    ggml_tensor * text_embedding = nullptr;
+    ggml_tensor *                    text_embedding = nullptr;
     // Two layers wide-then-narrow, which is what brings the text tower's width
     // down to the talker's.
     LinearWeights                    text_projection_1;
@@ -66,7 +66,7 @@ struct CodecTransformerLayerWeights {
     ggml_tensor * gate_proj                = nullptr;
     ggml_tensor * up_proj                  = nullptr;
     ggml_tensor * down_proj                = nullptr;
-    ggml_tensor * mlp_layer_scale           = nullptr;
+    ggml_tensor * mlp_layer_scale          = nullptr;
 };
 
 struct CodecTransformerWeights {

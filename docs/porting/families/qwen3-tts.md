@@ -1,8 +1,11 @@
 # Qwen3-TTS Family Selection and Port Plan
 
-Status: Intake complete on 2026-07-27. Conversion, C++ implementation, and port
-validation are not started. Selection was accepted on 2026-07-26; the intake
-packet is `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
+Status: Confirmed 2026-07-28. Intake, the oracle and conversion are complete;
+the C++ implementation is under way -- the shared decoder block and the code
+predictor are built and tested, the talker, text frontend, codec decoder and
+public seam are not. Port validation is not started. Selection was accepted on
+2026-07-26; the intake packet is
+`reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
 
 ## Decision
 
@@ -847,6 +850,80 @@ with a new code id, which is what `qwentts.cpp` reports taking its inner loop
 from quadratic to constant. **This is the one place where this port should
 expect to beat the reference substantially rather than merely match it**, and
 it is where stage 4's effort belongs.
+
+## The Code Predictor as Built
+
+Built 2026-07-28 in `src/arch/qwen3-tts/code-predictor.{h,cpp}` and its `-host`
+counterpart, over the shared decoder block in `operations.{h,cpp}`.
+
+Three things about the block are specific enough to get wrong silently, and all
+three are now pinned by a test against the reference's own
+`Qwen3TTSDecoderLayer`:
+
+- **Per-head QK-Norm.** Qwen3 normalizes each head of q and k at `head_dim`
+  before rope, not the packed projection. Qwen2 has no such norm at all, so a
+  block carried over from a Qwen2 port would simply lack it.
+- **NEOX rope.** The halves of each head rotate against each other. The
+  interleaved GPT-J layout applies the same angles to the wrong elements, which
+  degrades quality without failing anything.
+- **Grouped attention by broadcast.** `ggml_mul_mat` maps query head `i` to key
+  head `i/(q_heads/kv_heads)`, which is exactly the blocked grouping the
+  reference's `repeat_interleave` produces, so no materialized repeat is needed.
+
+The talker and the predictor share this block exactly: 16 query heads over 8
+key/value heads, `head_dim` 128, hidden 1024, intermediate 3072, `rope_theta`
+1e6, `rms_norm_eps` 1e-6, every layer `full_attention` with no sliding window.
+They differ only in layer count -- 28 against 5 -- and in rope type.
+
+**The key/value cache is written in place through a view, never grown by
+concatenation.** For the predictor's sixteen positions the two are equivalent.
+For the talker they are not: concatenation copies the whole cache once per step,
+which turns an utterance from linear into quadratic. The block therefore takes a
+persistent cache and a graph, and expands its cache writes before the reads that
+depend on them.
+
+### The step schedule
+
+Per frame the reference calls `generate()` once and takes fifteen steps inside
+it. Written out, that is one prefill of two positions -- the talker's hidden
+state and its embedding of the semantic code -- followed by fourteen
+single-token steps, sixteen positions in total, producing fifteen acoustic
+codes. The cache is per frame and starts empty each time.
+
+The table and head indices are not aligned, which is the trap:
+
+| call | positions | embedding table | output head | code produced |
+| --- | --- | --- | --- | --- |
+| prefill | 0, 1 | none -- the talker supplies both | 0 | group 1 |
+| step g (1..14) | g+1 | g-1 | g | group g+1 |
+
+A call embeds the *previous* code through the table of the group that code
+belongs to, one behind its own head. A wrong table still yields plausible codes
+and only subtly wrong audio, so the mapping lives in
+`code_predictor_schedule()` as data rather than as arithmetic scattered through
+a loop, and is unit-tested at the real group count of sixteen.
+
+`small_to_mtp_projection` is an `Identity` for this variant because the talker
+and predictor hidden sizes both equal 1024, so the package carries no tensor for
+it. The 1.7B rung would need one, and the builder rejects a projection bound on
+one side only.
+
+### Selection is a host seam
+
+Sampling turns a distribution into a value that indexes the next step's
+embedding table, so a code differing by one between backends changes the entire
+rest of the frame. That places it and its input path on the CPU under
+`docs/backends.md`. The filter order is the reference's -- temperature, then
+top-k, then top-p, then the draw -- and the package's generation defaults for
+this head are temperature 0.9, top-k 50, and top-p 1.0, which keeps the whole
+distribution and is therefore inert unless a request overrides it.
+
+The draw itself is not comparable to the reference: PyTorch's generator and this
+project's seeded stream are different streams by construction, which is why the
+Port Validation Contract replays codes rather than reproducing them. What must
+match is the distribution behind the draw, so the frame test decodes greedily
+and compares every step's logits. They agree to 4.8e-07 on the CPU and 8.3e-07
+on CUDA, and every code matches.
 
 ## Open Questions for Intake
 

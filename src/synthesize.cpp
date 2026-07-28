@@ -235,10 +235,15 @@ synth_status_t read_model_family(const char * model_path, synth::ModelFamily & f
 
 synth::ModelInfo shared_info(const synth::vits::ModelInfo & info) {
     synth::ModelInfo shared;
-    shared.family               = synth::ModelFamily::Vits;
-    shared.has_package_default  = info.has_package_default;
-    shared.preset_voice_ids     = info.preset_voice_ids;
-    shared.preset_voice_flags   = info.preset_voice_flags;
+    shared.family              = synth::ModelFamily::Vits;
+    shared.has_package_default = info.has_package_default;
+    shared.preset_voice_ids    = info.preset_voice_ids;
+    shared.preset_voice_flags  = info.preset_voice_flags;
+    // English-only, and now says so rather than relying on the validator having
+    // assumed it. Regional fallback keeps "en-GB" and "en-029" accepted.
+    shared.languages           = {
+        { "en", SYNTH_LANGUAGE_DEFAULT | SYNTH_LANGUAGE_REGIONAL_FALLBACK }
+    };
     shared.text_frontend        = info.text_frontend;
     shared.input_flags          = info.input_flags;
     shared.capability_flags     = info.capability_flags;
@@ -255,10 +260,13 @@ synth::ModelInfo shared_info(const synth::vits::ModelInfo & info) {
 
 synth::ModelInfo shared_info(const synth::kokoro::ModelInfo & info) {
     synth::ModelInfo shared;
-    shared.family               = synth::ModelFamily::Kokoro;
-    shared.has_package_default  = info.has_package_default;
-    shared.preset_voice_ids     = info.preset_voice_ids;
-    shared.preset_voice_flags   = info.preset_voice_flags;
+    shared.family              = synth::ModelFamily::Kokoro;
+    shared.has_package_default = info.has_package_default;
+    shared.preset_voice_ids    = info.preset_voice_ids;
+    shared.preset_voice_flags  = info.preset_voice_flags;
+    shared.languages           = {
+        { "en", SYNTH_LANGUAGE_DEFAULT | SYNTH_LANGUAGE_REGIONAL_FALLBACK }
+    };
     shared.text_frontend        = info.text_frontend;
     shared.input_flags          = info.input_flags;
     shared.capability_flags     = info.capability_flags;
@@ -284,6 +292,13 @@ synth::ModelInfo shared_info(const synth::qwen3tts::ModelInfo &         info,
     // This family declares no per-Voice flags, so every entry is zero rather
     // than absent: the two lists are read in step.
     shared.preset_voice_flags.assign(info.preset_voice_ids.size(), 0);
+    // Every language the package declares, not just the one the validator used
+    // to allow. No entry is marked DEFAULT: a request that names no language
+    // gets this family's no-think prompt, which carries no language token at
+    // all, so there is no language it silently falls back to.
+    for (const std::string & tag : info.language_tags) {
+        shared.languages.push_back({ tag, SYNTH_LANGUAGE_REGIONAL_FALLBACK });
+    }
     shared.text_frontend        = std::move(frontend);
     shared.input_flags          = info.input_flags;
     shared.capability_flags     = info.capability_flags;
@@ -656,7 +671,7 @@ synth_status_t synth_model_get_language_count(const synth_model_t * model, uint6
     if (model == nullptr) {
         return SYNTH_ERR_INVALID_ARG;
     }
-    *out_count = 1;
+    *out_count = model->info.languages.size();
     return SYNTH_OK;
 }
 
@@ -671,13 +686,15 @@ synth_status_t synth_model_get_language(const synth_model_t *         model,
     }
     const uint64_t struct_size = out_language->struct_size;
     synth_language_capability_init(out_language, struct_size);
-    if (index != 0) {
+    if (index >= model->info.languages.size()) {
         return SYNTH_ERR_INVALID_ARG;
     }
-    static const char            language_tag[] = "en";
-    const char *                 tag            = language_tag;
-    const uint64_t               tag_size       = 2;
-    const synth_language_flags_t flags          = SYNTH_LANGUAGE_DEFAULT | SYNTH_LANGUAGE_REGIONAL_FALLBACK;
+    // Borrowed from the Loaded Model, which outlives the capability the caller
+    // is handed, exactly as the preset Voice ids are.
+    const synth::LanguageCapability & entry    = model->info.languages[static_cast<size_t>(index)];
+    const char *                      tag      = entry.tag.c_str();
+    const uint64_t                    tag_size = entry.tag.size();
+    const synth_language_flags_t      flags    = static_cast<synth_language_flags_t>(entry.flags);
     write_visible(out_language, offsetof(synth_language_capability_t, tag), &tag, sizeof(tag));
     write_visible(out_language, offsetof(synth_language_capability_t, tag_size), &tag_size, sizeof(tag_size));
     write_visible(out_language, offsetof(synth_language_capability_t, flags), &flags, sizeof(flags));

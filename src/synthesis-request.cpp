@@ -82,17 +82,34 @@ bool valid_bcp47_shape(const char * value, size_t size) {
     return true;
 }
 
-bool supported_english_tag(const char * value, size_t size) {
-    if (equals_ascii_case(value, size, "en")) {
-        return true;
+// Whether the model declared this language, rather than whether it is English.
+//
+// The hardcoded English test this replaced was invisible while every family was
+// English-only, and wrong the moment one was not: Qwen3-TTS declares ten
+// languages and could be asked for exactly one of them through the public
+// interface. A model's own declaration is the only thing that can answer this.
+//
+// Matching is exact first, then on the primary subtag for entries that accept a
+// region -- which is what keeps "en-GB" and "en-029" working for a model that
+// declares plain "en".
+bool declared_language(const ModelInfo & info, const char * value, size_t size) {
+    for (const LanguageCapability & entry : info.languages) {
+        if (equals_ascii_case(value, size, entry.tag.c_str())) {
+            return true;
+        }
     }
-    if ((size != 5 && size != 6) || !equals_ascii_case(value, 2, "en") || value[2] != '-') {
+    const char * separator = static_cast<const char *>(std::memchr(value, '-', size));
+    if (separator == nullptr) {
         return false;
     }
-    if (size == 5) {
-        return ascii_alpha(value[3]) && ascii_alpha(value[4]);
+    const size_t primary = static_cast<size_t>(separator - value);
+    for (const LanguageCapability & entry : info.languages) {
+        if ((entry.flags & SYNTH_LANGUAGE_REGIONAL_FALLBACK) != 0 &&
+            equals_ascii_case(value, primary, entry.tag.c_str())) {
+            return true;
+        }
     }
-    return ascii_digit(value[3]) && ascii_digit(value[4]) && ascii_digit(value[5]);
+    return false;
 }
 
 }  // namespace
@@ -143,7 +160,7 @@ synth_status_t prepare_synthesis_request(const ModelInfo &          info,
             !valid_bcp47_shape(language_tag, static_cast<size_t>(language_size))) {
             return SYNTH_ERR_INVALID_ARG;
         }
-        if (!supported_english_tag(language_tag, static_cast<size_t>(language_size))) {
+        if (!declared_language(info, language_tag, static_cast<size_t>(language_size))) {
             return SYNTH_ERR_UNSUPPORTED_LANGUAGE;
         }
     }

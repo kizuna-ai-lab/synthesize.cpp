@@ -172,19 +172,20 @@ class Persistent {
 // The package's two dialect entries are deliberately absent. They are speaker
 // overrides the reference reaches through spk_is_dialect, not languages a
 // request can ask for.
+constexpr std::pair<const char *, const char *> kTags[] = {
+    { "en", "english"    },
+    { "de", "german"     },
+    { "es", "spanish"    },
+    { "zh", "chinese"    },
+    { "ja", "japanese"   },
+    { "fr", "french"     },
+    { "ko", "korean"     },
+    { "ru", "russian"    },
+    { "it", "italian"    },
+    { "pt", "portuguese" },
+};
+
 std::string language_name_for_tag(const std::string & tag) {
-    static const std::pair<const char *, const char *> kTags[] = {
-        { "en", "english"    },
-        { "de", "german"     },
-        { "es", "spanish"    },
-        { "zh", "chinese"    },
-        { "ja", "japanese"   },
-        { "fr", "french"     },
-        { "ko", "korean"     },
-        { "ru", "russian"    },
-        { "it", "italian"    },
-        { "pt", "portuguese" },
-    };
     const size_t      cut     = tag.find('-');
     const std::string primary = cut == std::string::npos ? tag : tag.substr(0, cut);
     for (const std::pair<const char *, const char *> & entry : kTags) {
@@ -192,6 +193,18 @@ std::string language_name_for_tag(const std::string & tag) {
             std::equal(primary.begin(), primary.end(), entry.first,
                        [](char left, char right) { return std::tolower(left) == right; })) {
             return entry.second;
+        }
+    }
+    return std::string();
+}
+
+// The reverse: the package's own name for a language back to the tag a request
+// carries. Empty for a name this bridge does not cover, which is how the two
+// dialect entries stay out of the published list.
+std::string tag_for_language_name(const std::string & name) {
+    for (const std::pair<const char *, const char *> & entry : kTags) {
+        if (name == entry.second) {
+            return entry.first;
         }
     }
     return std::string();
@@ -291,7 +304,18 @@ synth_status_t Model::get_info(ModelInfo & output) const {
     for (const PresetVoice & voice : hparams.preset_voices) {
         output.preset_voice_ids.push_back(voice.id);
     }
-    output.language_names    = hparams.language_names;
+    output.language_names = hparams.language_names;
+    // The same bridge as language_name_for_tag, walked the other way, so the
+    // core can publish what a caller may ask for without knowing this package
+    // names its languages in full. A name with no tag -- the two dialect
+    // entries -- is dropped: they are speaker overrides, not languages a
+    // request can name.
+    for (const std::string & name : hparams.language_names) {
+        const std::string tag = tag_for_language_name(name);
+        if (!tag.empty()) {
+            output.language_tags.push_back(tag);
+        }
+    }
     output.frontend_present  = hparams.frontend_present;
     output.frontend_provider = hparams.frontend_provider;
     return SYNTH_OK;

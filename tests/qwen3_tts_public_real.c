@@ -14,6 +14,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+/* Monotonic, because a real-time factor divides by it and a wall clock that can
+ * step backwards would report a negative synthesis. */
+static double now_seconds(void) {
+    struct timespec moment;
+    clock_gettime(CLOCK_MONOTONIC, &moment);
+    return (double) moment.tv_sec + (double) moment.tv_nsec * 1e-9;
+}
 
 static void write_pcm(const char * path, const float * samples, uint64_t count) {
     FILE * file = fopen(path, "wb");
@@ -59,8 +68,10 @@ int main(int argc, char ** argv) {
         return 2;
     }
 
-    synth_model_t * model  = NULL;
-    synth_status_t  status = synth_model_load(model_path, &load_params, &model);
+    const double    load_started = now_seconds();
+    synth_model_t * model        = NULL;
+    synth_status_t  status       = synth_model_load(model_path, &load_params, &model);
+    const double    load_seconds = now_seconds() - load_started;
     if (status != SYNTH_OK) {
         fprintf(stderr, "load -> %d\n", (int) status);
         return 1;
@@ -93,7 +104,9 @@ int main(int argc, char ** argv) {
     memset(&result, 0, sizeof result);
     result.struct_size = sizeof result;
 
-    status = synth_synthesize_to_buffer(context, &request, &audio, &result);
+    const double synthesis_started = now_seconds();
+    status                         = synth_synthesize_to_buffer(context, &request, &audio, &result);
+    const double synthesis_seconds = now_seconds() - synthesis_started;
     if (status != SYNTH_OK) {
         fprintf(stderr, "synthesize -> %d\n", (int) status);
         synth_context_free(context);
@@ -104,9 +117,10 @@ int main(int argc, char ** argv) {
     write_pcm(out_path, audio->samples, audio->frame_count);
     printf(
         "{\"status\": %d, \"frames\": %llu, \"sample_rate\": %u, \"actual_seed\": \"%llu\", "
+        "\"load_seconds\": %.4f, \"synthesis_seconds\": %.4f, "
         "\"resolved_voice\": \"%.*s\", \"resolved_language\": \"%.*s\"}\n",
         (int) status, (unsigned long long) audio->frame_count, audio->sample_rate,
-        (unsigned long long) result.actual_seed, (int) result.resolved_voice_id_size,
+        (unsigned long long) result.actual_seed, load_seconds, synthesis_seconds, (int) result.resolved_voice_id_size,
         result.resolved_voice_id == NULL ? "" : result.resolved_voice_id, (int) result.resolved_language_tag_size,
         result.resolved_language_tag == NULL ? "" : result.resolved_language_tag);
 

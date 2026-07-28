@@ -1275,13 +1275,34 @@ directly; `ggml_add` and `ggml_mul` abort inside `binary_op`. Every norm gain an
 bias in the talker half is BF16 because that is what the checkpoint stores, so
 they are cast where they meet an elementwise operator.
 
-### Two seam limits worth naming
+### The language seam, and how it was found
 
-The core's language capability is English-only: `synth_model_get_language_count`
-returns 1 and the request validator accepts only `en` tags. This family is the
-first multilingual one, so nine of its ten requestable languages cannot be asked
-for through the public interface yet. Extending that is a core change touching
-every family's contract, not a Qwen3-TTS change.
+The core used to be English-only in two places: `synth_model_get_language_count`
+returned 1 with a hardcoded `"en"`, and the request validator ran a
+`supported_english_tag` check before dispatch. This family is the first
+multilingual one, so nine of its ten requestable languages were unreachable
+through the public interface -- and therefore through the CLI and both bindings.
+
+That was noted here as a known limit and shipped anyway, which is the part worth
+recording. Every one of the eighteen Golden cases passes with Chinese, Japanese,
+German and Korean text, because the replay harness drives the family directly and
+never crosses the validator. Stage 5's public-request phase did cross it, but only
+ever with `en`. A gate that no test approaches is a gate that stays shut, and it
+took someone asking for a long Chinese sentence to find it.
+
+The fix moves the declaration to where `docs/languages.md` already said it lived:
+`ModelInfo::languages` carries BCP-47 tags with `SYNTH_LANGUAGE_*` flags, each
+family fills it, the validator matches against it, and the enumeration reports it.
+VITS and Kokoro declare `en` with regional fallback, which is exactly what the
+hardcoded test did for them. This family maps its package's full names --
+`chinese`, `japanese` -- to tags on the way out, dropping the two dialect entries,
+which are speaker overrides rather than requestable languages.
+
+One divergence to settle: `docs/languages.md` says a multilingual variant without
+a declared default requires an explicit tag. This family declares no
+`SYNTH_LANGUAGE_DEFAULT`, and omitting the tag gives the reference's no-think
+prompt, which carries no language token at all rather than falling back to one.
+That is the reference's behaviour and is not the same as "has no default".
 
 The turn wrapper lives in the frontend rather than in the core. The core runs the
 frontend, and for this family wrapping the request in an assistant turn is part

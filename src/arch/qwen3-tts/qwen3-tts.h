@@ -30,6 +30,10 @@ struct ModelInfo {
     bool                     has_package_default = false;
     std::vector<std::string> preset_voice_ids;
     std::vector<std::string> language_names;
+    // The same languages named in BCP-47, which is what the public interface
+    // speaks. Shorter than `language_names` whenever the package carries an
+    // entry that is not a requestable language -- the dialect overrides.
+    std::vector<std::string> language_tags;
 
     bool        frontend_present = false;
     std::string frontend_provider;

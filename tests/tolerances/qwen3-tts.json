@@ -10,14 +10,96 @@
       "description": "The oracle's codes replayed through the port on CPU, compared against its prefill probes and waveform.",
       "cases": 18,
       "probes": {
-        "talker.hidden_l0": { "min_cosine": 0.99996, "observed_min_cosine": 0.999992, "observed_max_abs": 0.0837879 },
-        "talker.hidden_l7": { "min_cosine": 0.99993, "observed_min_cosine": 0.999986, "observed_max_abs": 4.5256 },
-        "talker.hidden_l14": { "min_cosine": 0.999855, "observed_min_cosine": 0.999971, "observed_max_abs": 7.62683 },
-        "talker.hidden_l21": { "min_cosine": 0.99971, "observed_min_cosine": 0.999942, "observed_max_abs": 12.0525 },
-        "talker.hidden_l27": { "min_cosine": 0.999575, "observed_min_cosine": 0.999915, "observed_max_abs": 17.3939 },
-        "talker.final": { "min_cosine": 0.99726, "observed_min_cosine": 0.999452, "observed_max_abs": 3.83554 },
-        "talker.logits": { "min_cosine": 0.99761, "observed_min_cosine": 0.999522, "observed_max_abs": 1.44078 },
-        "audio.pcm": { "min_cosine": 0.997135, "max_abs": 0.5, "observed_min_cosine": 0.999427, "observed_max_abs": 0.154108 }
+        "talker.hidden_l0": {
+          "min_cosine": 0.99996,
+          "observed_min_cosine": 0.999992,
+          "observed_max_abs": 0.0837879
+        },
+        "talker.hidden_l7": {
+          "min_cosine": 0.99993,
+          "observed_min_cosine": 0.999986,
+          "observed_max_abs": 4.5256
+        },
+        "talker.hidden_l14": {
+          "min_cosine": 0.999855,
+          "observed_min_cosine": 0.999971,
+          "observed_max_abs": 7.62683
+        },
+        "talker.hidden_l21": {
+          "min_cosine": 0.99971,
+          "observed_min_cosine": 0.999942,
+          "observed_max_abs": 12.0525
+        },
+        "talker.hidden_l27": {
+          "min_cosine": 0.999575,
+          "observed_min_cosine": 0.999915,
+          "observed_max_abs": 17.3939
+        },
+        "talker.final": {
+          "min_cosine": 0.99726,
+          "observed_min_cosine": 0.999452,
+          "observed_max_abs": 3.83554
+        },
+        "talker.logits": {
+          "min_cosine": 0.99761,
+          "observed_min_cosine": 0.999522,
+          "observed_max_abs": 1.44078
+        },
+        "audio.pcm": {
+          "min_cosine": 0.997135,
+          "max_abs": 0.5,
+          "observed_min_cosine": 0.999427,
+          "observed_max_abs": 0.154108
+        }
+      }
+    },
+    "f16-vs-oracle": {
+      "phase": "oracle_replay",
+      "description": "The F16 profile replayed on CPU against the same oracle artifacts as the source profile.",
+      "cases": 18,
+      "note": "F16 is not looser than the source profile and on the deep talker layers it is slightly tighter, which follows from where the bits are: F16 carries ten mantissa bits against bfloat16's seven, so halving a bfloat16 talker weight loses nothing, and what this profile does spend is the codec's F32 halving. The gain is correspondingly small -- 2019 MB against 2168.",
+      "probes": {
+        "audio.pcm": {
+          "min_cosine": 0.997123,
+          "observed_min_cosine": 0.999425,
+          "observed_max_abs": 0.156364,
+          "max_abs": 0.5
+        },
+        "talker.final": {
+          "min_cosine": 0.997149,
+          "observed_min_cosine": 0.99943,
+          "observed_max_abs": 4.215685
+        },
+        "talker.hidden_l0": {
+          "min_cosine": 0.999947,
+          "observed_min_cosine": 0.999989,
+          "observed_max_abs": 0.116451
+        },
+        "talker.hidden_l14": {
+          "min_cosine": 0.999885,
+          "observed_min_cosine": 0.999977,
+          "observed_max_abs": 6.948486
+        },
+        "talker.hidden_l21": {
+          "min_cosine": 0.999756,
+          "observed_min_cosine": 0.999951,
+          "observed_max_abs": 10.949402
+        },
+        "talker.hidden_l27": {
+          "min_cosine": 0.999628,
+          "observed_min_cosine": 0.999926,
+          "observed_max_abs": 16.714966
+        },
+        "talker.hidden_l7": {
+          "min_cosine": 0.999954,
+          "observed_min_cosine": 0.999991,
+          "observed_max_abs": 3.775635
+        },
+        "talker.logits": {
+          "min_cosine": 0.997291,
+          "observed_min_cosine": 0.999458,
+          "observed_max_abs": 1.696855
+        }
       }
     }
   }

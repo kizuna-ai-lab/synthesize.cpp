@@ -1,8 +1,8 @@
 # Qwen3-TTS Family Selection and Port Plan
 
 Status: Confirmed 2026-07-28. Intake, the oracle and conversion are complete;
-stage 4 is complete and stage 5 phase 2 -- oracle replay on CPU -- passes. The
-public-request phase, the quantization profiles and the Execution Backends are
+stages 4 and 5 are complete -- oracle replay and the public seam both pass -- and
+stage 6 has the F16 profile measured. Q8_MIXED and the Execution Backends are
 not done. Port validation is not started. Selection was accepted on
 2026-07-26; the intake packet is
 `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
@@ -1418,6 +1418,74 @@ Phases 4 and 5 of the contract -- the quantization profiles and the Execution
 Backends -- are stages 6 and 7 and have not started. Neither validator is
 registered with CTest yet: both need the package, so they belong to the
 integration tier this family still does not have.
+
+## Stage 6: Quantization Profiles
+
+### The quantizer refused this family
+
+Its source profile is mixed -- a bfloat16 talker and an F32 codec -- and the tool
+accepted only F32 and F16 sources. `dequantize_to_f32` already handled BF16
+through its type traits, so the guard was the whole of it.
+
+### Where the policy lands
+
+Classification is by name, as for the other two families, so a converter or
+runtime change cannot have a storage type assigned to it by a catch-all suffix
+rule. What differs is which tensors are held:
+
+- **The quantizer's codebooks and both kernel-one projections stay at the
+  reference dtype.** A residual codebook's later levels carry small magnitudes,
+  so a relative error there is a large one against the residual it is meant to
+  correct. The whole quantizer is under 35 MB of a 2 GB package.
+- **Per-head norms, the codec's per-branch layer scales and the SnakeBeta curves
+  stay exact.** Each multiplies or seeds a whole head or branch, the layer scales
+  start near 0.01, and together they are a rounding error of the file.
+- **The six transposed convolutions stay F32**, the override VITS makes for the
+  same reason: they run as a column matrix multiply into `col2im_1d` and CUDA's
+  F16 multiply accumulates in half precision.
+
+The catalog carries a **role per tensor** rather than re-deriving one from the
+name. The quantizer classifies by name and the runtime by role; having the
+runtime repeat the name classification is how the two drift apart.
+
+### F16 buys almost nothing here
+
+| profile | size | against source |
+| --- | --- | --- |
+| BF16 (source) | 2168 MB | -- |
+| F16 | 2019 MB | -7 % |
+| Q8_MIXED | 1139 MB | -47 %, not shipped |
+
+The talker is **already two bytes**, so F16's gain is the codec's F32 halving
+minus the norms it widens back to F32. Anyone assuming F16 is the obvious ship
+target for this family should see that number first.
+
+Its accuracy is a wash, and on the deep talker layers slightly *better* than the
+source profile -- which follows from where the bits are: F16 carries ten mantissa
+bits against bfloat16's seven, so halving a bfloat16 talker weight loses nothing.
+
+| probe | source cosine | F16 cosine |
+| --- | --- | --- |
+| talker.hidden_l7 | 0.999986 | 0.999991 |
+| talker.hidden_l21 | 0.999942 | 0.999951 |
+| talker.hidden_l27 | 0.999915 | 0.999926 |
+| talker.logits | 0.999522 | 0.999458 |
+| audio.pcm | 0.999427 | 0.999425 |
+
+All eighteen cases pass under the committed `f16-vs-oracle` stage.
+
+### Q8_MIXED is refused, with its reason
+
+It is the profile worth having -- 47 % -- and it needs a runtime change rather
+than a policy one. Packing is what gets a convolution kernel to a whole number of
+Q8_0 blocks: a kernel of three against 512 channels is a row of three, which no
+block size divides. This family's codec reads kernels as `[kernel, in, out]`
+through `ggml_im2col`, so a packed kernel is not something its graph builders can
+consume.
+
+The package was produced, the catalog was confirmed to reject it for exactly that
+reason, and the tool now refuses the profile rather than writing a package
+nothing loads.
 
 ## Open Questions for Intake
 

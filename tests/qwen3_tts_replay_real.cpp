@@ -48,8 +48,7 @@ bool write_f32(const std::string & path, const std::vector<float> & values) {
     if (!output) {
         return false;
     }
-    output.write(reinterpret_cast<const char *>(values.data()),
-                 std::streamsize(values.size() * sizeof(float)));
+    output.write(reinterpret_cast<const char *>(values.data()), std::streamsize(values.size() * sizeof(float)));
     return bool(output);
 }
 

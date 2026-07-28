@@ -322,6 +322,10 @@ if(SYNTH_BUILD_PYTHON_TESTS)
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 
+add_executable(synthesize-qwen3-tts-public-real qwen3_tts_public_real.c)
+target_link_libraries(synthesize-qwen3-tts-public-real PRIVATE synthesize)
+synth_register_integration_target(synthesize-qwen3-tts-public-real)
+
 add_executable(synthesize-qwen3-tts-replay-real qwen3_tts_replay_real.cpp)
 target_include_directories(synthesize-qwen3-tts-replay-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(synthesize-qwen3-tts-replay-real PRIVATE synthesize ggml)

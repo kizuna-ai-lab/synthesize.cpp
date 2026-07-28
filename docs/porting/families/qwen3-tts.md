@@ -1391,12 +1391,33 @@ oracle built one without. That is one position longer, and it surfaced as a shap
 mismatch rather than a number -- the honest failure, but the cause was the
 harness and not the port.
 
+### Phase 3: the public seam
+
+`scripts/validate-qwen3-tts-public.py` drives `synth_synthesize` the way a caller
+does, injecting nothing. Eight checks, each of which can break while every tensor
+comparison still passes:
+
+| check | result |
+| --- | --- |
+| the seed is reported as requested | 7 in, 7 out |
+| the same seed reproduces byte for byte | identical digests |
+| a different seed changes the audio | seed 7 and seed 8 differ |
+| a random seed is reported concretely | reported 11889680619108445593 |
+| the reported random seed reproduces | identical digests |
+| a different Voice changes the audio | aiden and vivian differ |
+| the resolved Voice is reported | `vivian` |
+| a dialect speaker still synthesizes | 21,120 frames |
+
+Byte-identical rather than close, because the sampler is the only stochastic part
+and it is seeded. Reporting a seed that does not reproduce would be worse than
+reporting none, so the random-seed path is replayed rather than merely observed.
+
 ### Not done in this stage
 
-Phase 3, the public-request runs -- seed reporting, same-seed repeatability,
-Voice selection and cleanup without tensor injection -- has not been written.
-Phases 4 and 5 are the quantization profiles and the Execution Backends, which
-are stages 6 and 7.
+Phases 4 and 5 of the contract -- the quantization profiles and the Execution
+Backends -- are stages 6 and 7 and have not started. Neither validator is
+registered with CTest yet: both need the package, so they belong to the
+integration tier this family still does not have.
 
 ## Open Questions for Intake
 

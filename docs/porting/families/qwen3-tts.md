@@ -2,8 +2,8 @@
 
 Status: Confirmed 2026-07-28. Intake, the oracle and conversion are complete;
 the C++ implementation is under way -- the shared decoder block, the code
-predictor and the tensor catalog are built and tested, the talker graph, text
-frontend, codec decoder and public seam are not. Port validation is not started. Selection was accepted on
+predictor, the tensor catalog and the talker graph are built and tested, the
+text frontend, codec decoder and public seam are not. Port validation is not started. Selection was accepted on
 2026-07-26; the intake packet is
 `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
 
@@ -1017,6 +1017,84 @@ One shape trap is worth naming because it survives an element-count check:
 converter that confused them produces a package with exactly the right number of
 elements in every tensor, so the catalog resolves them through separate helpers
 and the test pins the swap as a rejection.
+
+## The Talker as Built
+
+Built 2026-07-28 in `src/arch/qwen3-tts/talker.{h,cpp}` and its `-host`
+counterpart.
+
+### The multimodal rope really does collapse
+
+The talker's attention is the shared block's except that it goes through the
+reference's `apply_multimodal_rotary_pos_emb` with `interleaved=True` and
+`mrope_section = [24, 20, 20]`, where the code predictor uses the plain helper.
+Intake argued from the shapes that this is exactly plain rope for this model
+because every `position_ids` path yields three identical rows. That argument is
+now checked: the test runs the real `Qwen3TTSTalkerModel` with a scaled-down but
+genuinely interleaved section shape, and the port's hidden state agrees to
+3.6e-07 on the CPU. Position ids are plain `0..n-1` --
+`attention_mask.cumsum(-1) - 1` with no left padding at batch one, and
+`position_id_per_seconds` never enters.
+
+### Two towers meet at every position
+
+The talker's input is a sum, not a concatenation. The text side is a token from
+the 151936-entry text embedding at width 2048, brought to 1024 by
+`text_projection`: two linears **with biases** and a SiLU between them. The codec
+side is a row of the talker's own 3072-entry codec embedding. Both are pinned by
+the test, because a mistake in either is a wrong voice rather than an error.
+
+### The prompt layout
+
+Every entry below is off-by-one bait, and none of it fails loudly:
+
+| position | text side | codec side |
+| --- | --- | --- |
+| 0..2 | the role prefix's tokens | *none* |
+| 3 | tts_pad | codec_think, or codec_nothink for auto |
+| 4 | tts_pad | codec_think_bos |
+| 5 | tts_pad | the language token, **absent** for auto |
+| 6 | tts_pad | codec_think_eos |
+| 7 | tts_pad | the speaker token, absent without a preset Voice |
+| 8 | **tts_bos** | codec_pad |
+| 9 | the **first** text token | codec_bos |
+
+Ten positions with a language and a speaker, nine for either alone, eight for
+neither. What makes it a trap:
+
+- The codec stream is one longer than the text stream beside it, because its last
+  token belongs to the position after it.
+- The single tts_bos in the whole prompt sits one before the end.
+- codec_bos pairs with the first text token, not with a pad -- which is why the
+  schedule below starts at the *second* text token.
+- Asking for auto is a shorter prompt, not the same prompt with a default
+  language. nothink replaces think and no language token is emitted at all.
+
+Decode step `k` then adds, on top of that frame's sixteen summed code
+embeddings, `trailing[k]` -- the text tokens from the second onward, then one
+tts_eos -- and the projected tts_pad embedding for every step past the end. That
+last part is what lets the talker keep emitting frames after the text runs out.
+
+A frame whose **semantic code** is `codec_eos` ends the utterance, and that frame
+is not part of it.
+
+### The layout is a host seam
+
+It is entirely discrete -- token ids and which table each position reads -- so it
+returns positions rather than tensors, and the graph only performs the two
+lookups and the sum. The flattener then checks what the graph relies on instead
+of assuming it: every position carries a text token, and the codec positions form
+a contiguous tail. A gap would mean the codec stream is not a tail, and the graph
+accumulates it into the text stream as one.
+
+### A test hazard worth recording
+
+Reading an intermediate back after `ggml_backend_graph_compute` is unsound
+without `ggml_set_output`: the graph allocator is free to reuse its buffer for a
+later node. This test reads four tensors including two intermediates, and
+`ggml_acc` was handed the text tower's own buffer, so the prefill readback was
+off by 2.05 while the final logits were correct to 3.9e-07. Marking the outputs
+fixed it. A test that reads only the final tensor never meets this.
 
 ## Open Questions for Intake
 

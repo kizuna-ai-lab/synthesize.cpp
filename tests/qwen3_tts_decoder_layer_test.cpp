@@ -40,12 +40,10 @@ constexpr uint64_t kSeed         = 20260728u;
 
 // 4 positions x 8 hidden, position-major.
 constexpr float kExpectedHidden[] = {
-    -0.143100798f, 1.05902505f,   1.13132095f,   2.02069712f,  -1.90775514f, -0.991743386f,
-    -1.49144959f,  -1.66155756f,  0.469848841f,  0.263561219f, 1.36933374f,  2.16476631f,
-    -1.00003767f,  -0.356122792f, -1.26636958f,  -0.329140633f, 0.64148581f, 0.391249448f,
-    0.120782375f,  0.221909165f,  -0.311113715f, -0.196477801f, 0.0848978162f, -0.968586683f,
-    0.42898649f,   1.1952492f,    0.931253195f,  1.30417335f,  -1.0430665f,  -0.94602108f,
-    -0.610675633f, -1.12255645f,
+    -0.143100798f, 1.05902505f,  1.13132095f,  2.02069712f,  -1.90775514f,  -0.991743386f, -1.49144959f,  -1.66155756f,
+    0.469848841f,  0.263561219f, 1.36933374f,  2.16476631f,  -1.00003767f,  -0.356122792f, -1.26636958f,  -0.329140633f,
+    0.64148581f,   0.391249448f, 0.120782375f, 0.221909165f, -0.311113715f, -0.196477801f, 0.0848978162f, -0.968586683f,
+    0.42898649f,   1.1952492f,   0.931253195f, 1.30417335f,  -1.0430665f,   -0.94602108f,  -0.610675633f, -1.12255645f,
 };
 
 // The twin of LcgStream in the reference script. Every value is a 24-bit
@@ -136,18 +134,27 @@ bool run_case(ggml_backend_dev_t device, float & max_diff) {
     }
 
     LcgStream stream(kSeed);
+
     struct Assignment {
         ggml_tensor * tensor;
         float         scale;
         float         offset;
     };
+
     // The order and the scales are the reference script's, not a convention:
     // reordering either line silently changes every weight.
     const Assignment assignments[] = {
-        { t_input_norm, 0.25f, 1.0f }, { t_q_proj, 0.5f, 0.0f },   { t_k_proj, 0.5f, 0.0f },
-        { t_v_proj, 0.5f, 0.0f },      { t_o_proj, 0.5f, 0.0f },   { t_q_norm, 0.25f, 1.0f },
-        { t_k_norm, 0.25f, 1.0f },     { t_post_norm, 0.25f, 1.0f }, { t_gate_proj, 0.5f, 0.0f },
-        { t_up_proj, 0.5f, 0.0f },     { t_down_proj, 0.5f, 0.0f },
+        { t_input_norm, 0.25f, 1.0f },
+        { t_q_proj,     0.5f,  0.0f },
+        { t_k_proj,     0.5f,  0.0f },
+        { t_v_proj,     0.5f,  0.0f },
+        { t_o_proj,     0.5f,  0.0f },
+        { t_q_norm,     0.25f, 1.0f },
+        { t_k_norm,     0.25f, 1.0f },
+        { t_post_norm,  0.25f, 1.0f },
+        { t_gate_proj,  0.5f,  0.0f },
+        { t_up_proj,    0.5f,  0.0f },
+        { t_down_proj,  0.5f,  0.0f },
     };
     for (const Assignment & assignment : assignments) {
         const std::vector<float> values =
@@ -174,9 +181,8 @@ bool run_case(ggml_backend_dev_t device, float & max_diff) {
     ggml_backend_tensor_set(t_prefill_mask, mask.data(), 0, ggml_nbytes(t_prefill_mask));
 
     constexpr size_t kNodeBudget = 512;
-    Context          graph_ctx =
-        make_context(ggml_tensor_overhead() * (kNodeBudget + 64) + ggml_graph_overhead_custom(kNodeBudget, false),
-                     true);
+    Context          graph_ctx   = make_context(
+        ggml_tensor_overhead() * (kNodeBudget + 64) + ggml_graph_overhead_custom(kNodeBudget, false), true);
     ggml_cgraph * graph = ggml_new_graph_custom(graph_ctx.get(), kNodeBudget, false);
 
     synth::qwen3tts::DecoderLayerWeights weights;
@@ -204,9 +210,9 @@ bool run_case(ggml_backend_dev_t device, float & max_diff) {
 
     // The cached step passes no mask: a single query attending to its whole
     // cache is causal by construction.
-    cache.filled              = kPrefill;
-    ggml_tensor * step_out    = synth::qwen3tts::decoder_layer(graph_ctx.get(), graph, t_step, t_step_pos, nullptr,
-                                                               weights, shape, cache);
+    cache.filled = kPrefill;
+    ggml_tensor * step_out =
+        synth::qwen3tts::decoder_layer(graph_ctx.get(), graph, t_step, t_step_pos, nullptr, weights, shape, cache);
 
     if (prefill_out == nullptr || step_out == nullptr || prefill_out->ne[0] != int64_t(kHidden) ||
         prefill_out->ne[1] != int64_t(kPrefill) || step_out->ne[1] != 1) {
@@ -251,8 +257,7 @@ bool run_case(ggml_backend_dev_t device, float & max_diff) {
 // A shape the block cannot build is a wiring defect, so it returns nullptr
 // rather than aborting inside ggml on an assertion the caller cannot catch.
 int check_rejections() {
-    Context        context =
-        make_context(ggml_tensor_overhead() * 64 + ggml_graph_overhead() + 4096, true);
+    Context        context = make_context(ggml_tensor_overhead() * 64 + ggml_graph_overhead() + 4096, true);
     ggml_context * ctx     = context.get();
 
     synth::qwen3tts::DecoderLayerWeights weights;
@@ -292,35 +297,35 @@ int check_rejections() {
 
     // Positions must be I32; an F32 vector would be read as garbage indices.
     ggml_tensor * float_positions = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, kPrefill);
-    SYNTH_TEST_CHECK(synth::qwen3tts::decoder_layer(ctx, graph, input, float_positions, mask, weights, shape,
-                                                    cache) == nullptr);
+    SYNTH_TEST_CHECK(synth::qwen3tts::decoder_layer(ctx, graph, input, float_positions, mask, weights, shape, cache) ==
+                     nullptr);
 
     // One position id per token, no more and no fewer.
     ggml_tensor * short_positions = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, kPrefill - 1);
-    SYNTH_TEST_CHECK(synth::qwen3tts::decoder_layer(ctx, graph, input, short_positions, mask, weights, shape,
-                                                    cache) == nullptr);
+    SYNTH_TEST_CHECK(synth::qwen3tts::decoder_layer(ctx, graph, input, short_positions, mask, weights, shape, cache) ==
+                     nullptr);
 
     // A mask narrower than the key count would be applied to the wrong keys.
     ggml_tensor * short_mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kPrefill - 1, kPrefill);
-    SYNTH_TEST_CHECK(synth::qwen3tts::decoder_layer(ctx, graph, input, positions, short_mask, weights, shape,
-                                                    cache) == nullptr);
+    SYNTH_TEST_CHECK(synth::qwen3tts::decoder_layer(ctx, graph, input, positions, short_mask, weights, shape, cache) ==
+                     nullptr);
 
     // Grouped attention needs the head counts to divide.
     synth::qwen3tts::AttentionShape ungrouped = shape;
     ungrouped.key_value_head_count            = 3;
-    SYNTH_TEST_CHECK(synth::qwen3tts::decoder_layer(ctx, graph, input, positions, mask, weights, ungrouped,
-                                                    cache) == nullptr);
+    SYNTH_TEST_CHECK(synth::qwen3tts::decoder_layer(ctx, graph, input, positions, mask, weights, ungrouped, cache) ==
+                     nullptr);
 
     // An input whose width disagrees with the declared hidden size.
     ggml_tensor * wide_input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kHidden + 1, kPrefill);
-    SYNTH_TEST_CHECK(synth::qwen3tts::decoder_layer(ctx, graph, wide_input, positions, mask, weights, shape,
-                                                    cache) == nullptr);
+    SYNTH_TEST_CHECK(synth::qwen3tts::decoder_layer(ctx, graph, wide_input, positions, mask, weights, shape, cache) ==
+                     nullptr);
 
     // A cache too short for the positions this call would write.
     synth::qwen3tts::KvCache overflowing = cache;
     overflowing.filled                   = kPositions - 1;
-    SYNTH_TEST_CHECK(synth::qwen3tts::decoder_layer(ctx, graph, input, positions, nullptr, weights, shape,
-                                                    overflowing) == nullptr);
+    SYNTH_TEST_CHECK(
+        synth::qwen3tts::decoder_layer(ctx, graph, input, positions, nullptr, weights, shape, overflowing) == nullptr);
 
     // No cache at all: the block has nowhere to put the keys it just projected.
     synth::qwen3tts::KvCache absent;

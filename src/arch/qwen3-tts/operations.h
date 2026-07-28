@@ -54,9 +54,7 @@ struct KvCache {
 ggml_tensor * rms_norm(ggml_context * context, ggml_tensor * input, ggml_tensor * weight, float eps);
 
 // SwiGLU: down(silu(gate(x)) * up(x)).
-ggml_tensor * swiglu_mlp(ggml_context *              context,
-                         ggml_tensor *               input,
-                         const DecoderLayerWeights & weights);
+ggml_tensor * swiglu_mlp(ggml_context * context, ggml_tensor * input, const DecoderLayerWeights & weights);
 
 // One decoder layer over `positions` tokens.
 //

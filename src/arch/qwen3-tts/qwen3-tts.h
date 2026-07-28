@@ -47,14 +47,26 @@ struct SynthesisOutput {
 struct SynthesisRequest {
     std::vector<int32_t> token_ids;  // the tokenized assistant turn
     std::string          voice_id;
-    std::string          language;  // "auto" selects the no-think prompt
+    std::string          language;   // "auto" selects the no-think prompt
     uint64_t             seed        = 0;
     bool                 sample      = true;
     float                temperature = 0.9f;
     uint32_t             top_k       = 50;
     float                top_p       = 1.0f;
     int                  threads     = 0;
+    // The most frames this request may emit. The talker's cache is sized from
+    // it, so it bounds memory as well as length; zero takes the family default.
+    uint64_t             max_frames  = 0;
 };
+
+// The talker attends over the whole utterance, so its cache grows with it: at
+// 28 layers, 8 key/value heads and a head width of 128, one frame costs 229 kB.
+// The package declares a limit of fifteen million frames, which is a generic
+// "no limit" rather than a length anyone synthesizes, and sizing the cache from
+// it asks for three terabytes. This ceiling is what a request gets when it does
+// not ask for less: 2048 frames is about 164 seconds of audio and 481 MB of
+// cache. A request wanting more must say so.
+constexpr uint64_t kDefaultMaxFrames = 2048;
 
 class Model {
   public:
@@ -71,6 +83,12 @@ class Model {
     synth_status_t                      get_info(ModelInfo & output) const;
     ggml_backend_device *               primary_device() const;
     std::shared_ptr<const TextFrontend> text_frontend() const;
+
+    // What the core runtime needs by value: the frame geometry it reports, and
+    // the vocabulary the *frontend's* ids index, which is the text tower's and
+    // not the codec's -- the core range-checks the tokens it is handed.
+    uint32_t samples_per_frame() const;
+    uint32_t text_vocab_size() const;
 
     // Wraps text in the assistant turn the reference uses and tokenizes it. The
     // template is a fixed string rather than something the package carries, so it

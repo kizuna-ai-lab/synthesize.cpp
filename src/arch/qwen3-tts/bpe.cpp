@@ -26,7 +26,7 @@ namespace synth::qwen3tts {
 namespace {
 
 bool in_ranges(uint32_t codepoint, const CodepointRange * ranges, size_t count) {
-    size_t low = 0;
+    size_t low  = 0;
     size_t high = count;
     while (low < high) {
         const size_t middle = low + (high - low) / 2;
@@ -57,8 +57,8 @@ bool is_whitespace(uint32_t codepoint) {
 // byte is taken as itself rather than rejected: the caller is tokenizing text
 // that has already been accepted at the public seam.
 uint32_t decode_utf8(const std::string & text, size_t offset, size_t & length) {
-    const unsigned char lead = static_cast<unsigned char>(text[offset]);
-    size_t              want = 1;
+    const unsigned char lead      = static_cast<unsigned char>(text[offset]);
+    size_t              want      = 1;
     uint32_t            codepoint = lead;
     if ((lead & 0xE0) == 0xC0) {
         want      = 2;
@@ -125,7 +125,7 @@ class PreTokenizer {
         std::vector<std::string> pieces;
         size_t                   index = 0;
         while (index < points_.size()) {
-            const size_t next = match(index);
+            const size_t next  = match(index);
             // Every branch of the pattern consumes at least one code point, and
             // the last is `\s+`, so a zero-width match would be a defect here.
             const size_t taken = next > index ? next : index + 1;
@@ -207,8 +207,7 @@ class PreTokenizer {
             }
             if (has(start) && !is_whitespace(at(start)) && !is_letter(at(start)) && !is_number(at(start))) {
                 cursor = start;
-                while (has(cursor) && !is_whitespace(at(cursor)) && !is_letter(at(cursor)) &&
-                       !is_number(at(cursor))) {
+                while (has(cursor) && !is_whitespace(at(cursor)) && !is_letter(at(cursor)) && !is_number(at(cursor))) {
                     ++cursor;
                 }
                 while (has(cursor) && (at(cursor) == '\r' || at(cursor) == '\n')) {
@@ -291,10 +290,16 @@ void append_utf8(std::string & out, uint32_t codepoint) {
 
 class BpeFrontend : public TextFrontend {
   public:
-    BpeFrontend(std::unordered_map<std::string, int32_t> vocab,
-                std::unordered_map<std::string, int32_t> ranks,
-                std::vector<std::pair<std::string, int32_t>> specials) :
-        vocab_(std::move(vocab)), ranks_(std::move(ranks)), specials_(std::move(specials)),
+    BpeFrontend(std::unordered_map<std::string, int32_t>     vocab,
+                std::unordered_map<std::string, int32_t>     ranks,
+                std::vector<std::pair<std::string, int32_t>> specials,
+                std::string                                  prefix,
+                std::string                                  suffix) :
+        vocab_(std::move(vocab)),
+        ranks_(std::move(ranks)),
+        specials_(std::move(specials)),
+        prefix_(std::move(prefix)),
+        suffix_(std::move(suffix)),
         byte_table_(byte_to_codepoint()) {
         // Longest first, so a marker that is a prefix of another cannot win.
         std::sort(specials_.begin(), specials_.end(),
@@ -312,7 +317,10 @@ class BpeFrontend : public TextFrontend {
         if (input_kind != SYNTH_INPUT_TEXT_UTF8 || (input_data == nullptr && input_size != 0)) {
             return SYNTH_ERR_INVALID_ARG;
         }
-        const std::string text(static_cast<const char *>(input_data), static_cast<size_t>(input_size));
+        // The turn wrapper goes on before tokenizing, so its markers are
+        // matched as the special tokens they are rather than as text.
+        const std::string text =
+            prefix_ + std::string(static_cast<const char *>(input_data), static_cast<size_t>(input_size)) + suffix_;
 
         // Special markers are matched literally and never split, which is what
         // lets the prompt template's own markers survive tokenization.
@@ -407,10 +415,12 @@ class BpeFrontend : public TextFrontend {
         }
     }
 
-    std::unordered_map<std::string, int32_t>    vocab_;
-    std::unordered_map<std::string, int32_t>    ranks_;
+    std::unordered_map<std::string, int32_t>     vocab_;
+    std::unordered_map<std::string, int32_t>     ranks_;
     std::vector<std::pair<std::string, int32_t>> specials_;
-    std::array<uint32_t, 256>                   byte_table_;
+    std::string                                  prefix_;
+    std::string                                  suffix_;
+    std::array<uint32_t, 256>                    byte_table_;
 };
 
 }  // namespace
@@ -457,7 +467,8 @@ synth_status_t make_bpe_frontend(const BpeFrontendConfig & config, std::unique_p
         specials.push_back(marker);
     }
 
-    output = std::make_unique<BpeFrontend>(std::move(vocab), std::move(ranks), std::move(specials));
+    output = std::make_unique<BpeFrontend>(std::move(vocab), std::move(ranks), std::move(specials), config.prefix,
+                                           config.suffix);
     return SYNTH_OK;
 }
 

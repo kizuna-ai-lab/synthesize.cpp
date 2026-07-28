@@ -12,6 +12,7 @@ namespace synth {
 enum class ModelFamily {
     Vits,
     Kokoro,
+    Qwen3Tts,
 };
 
 // What the core runtime needs from a Loaded Model, with nothing family-specific

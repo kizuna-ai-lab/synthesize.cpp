@@ -16,20 +16,27 @@ namespace synth::qwen3tts {
 // frontend maps one symbol to one id, and this maps a byte sequence to a
 // sequence of merged pieces.
 struct BpeFrontendConfig {
-    std::string provider_id;
-    uint32_t    contract_version = 0;
+    std::string                                  provider_id;
+    uint32_t                                     contract_version = 0;
     // Dense table indexed by token id, in the byte-level alphabet -- the vocab
     // entries are not UTF-8 text, they are bytes remapped into printable code
     // points so that every byte has a character.
-    std::vector<std::string> vocab;
+    std::vector<std::string>                     vocab;
     // Ranked merges, most preferred first, each a pair separated by one space.
-    std::vector<std::string> merges;
+    std::vector<std::string>                     merges;
     // Matched literally and never split, which is what lets the prompt
     // template's markers survive tokenization.
     //
     // Each carries its own id because these are *added* tokens: `<|im_start|>` is
     // 151644 against a vocabulary of 151643, so it cannot be looked up there.
     std::vector<std::pair<std::string, int32_t>> special_tokens;
+    // Wrapped around the input before tokenizing. The reference puts every
+    // request inside an assistant turn, and the talker's prompt layout then
+    // slices the result at two fixed token counts -- so the wrapping is part of
+    // turning text into the ids this model consumes, not something the caller
+    // does. See qwen_assistant_turn.
+    std::string                                  prefix;
+    std::string                                  suffix;
 };
 
 synth_status_t make_bpe_frontend(const BpeFrontendConfig & config, std::unique_ptr<TextFrontend> & output);

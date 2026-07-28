@@ -53,8 +53,8 @@ ggml_tensor * build_code_predictor(ggml_context *               context,
 
     ggml_tensor * hidden = input;
     if (weights.input_projection != nullptr) {
-        hidden =
-            ggml_add(context, ggml_mul_mat(context, weights.input_projection, hidden), weights.input_projection_bias);
+        hidden = ggml_add(context, ggml_mul_mat(context, weights.input_projection, hidden),
+                          as_f32(context, weights.input_projection_bias));
     }
 
     for (size_t index = 0; index < weights.layers.size(); ++index) {

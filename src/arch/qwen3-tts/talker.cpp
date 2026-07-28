@@ -24,10 +24,10 @@ ggml_tensor * build_text_projection(ggml_context * context, const TalkerWeights 
     }
     ggml_tensor * hidden = ggml_get_rows(context, weights.text_embedding, token_ids);
     hidden               = ggml_add(context, ggml_mul_mat(context, weights.text_projection_1.weight, hidden),
-                                    weights.text_projection_1.bias);
+                                    as_f32(context, weights.text_projection_1.bias));
     hidden               = ggml_silu(context, hidden);
     return ggml_add(context, ggml_mul_mat(context, weights.text_projection_2.weight, hidden),
-                    weights.text_projection_2.bias);
+                    as_f32(context, weights.text_projection_2.bias));
 }
 
 ggml_tensor * build_talker_prefill_input(ggml_context *        context,

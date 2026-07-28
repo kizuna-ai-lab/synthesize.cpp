@@ -50,6 +50,14 @@ struct KvCache {
     int64_t       filled = 0;
 };
 
+// Brings a weight to F32 when it is not already there.
+//
+// ggml's matrix multiply reads a BF16 weight directly, but its elementwise
+// operations do not: a norm gain or a bias arriving as BF16 aborts inside
+// binary_op rather than being converted. Every such weight in the talker half is
+// BF16, because that is what the checkpoint stores.
+ggml_tensor * as_f32(ggml_context * context, ggml_tensor * weight);
+
 // RMSNorm with a learned gain, which is what every norm in this family is.
 ggml_tensor * rms_norm(ggml_context * context, ggml_tensor * input, ggml_tensor * weight, float eps);
 

@@ -12,24 +12,25 @@
 // summed into the talker's next input, and the codec turns the finished code
 // stream into audio in one pass at the end.
 
-#include "qwen3-tts.h"
-
 #include "backend-plan.h"
 #include "bpe.h"
 #include "catalog.h"
 #include "code-predictor-host.h"
 #include "code-predictor.h"
 #include "codec.h"
-#include "gguf-metadata.h"
-#include "gguf.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml.h"
+#include "gguf-metadata.h"
+#include "gguf.h"
+#include "qwen3-tts.h"
 #include "random-stream.h"
 #include "talker-host.h"
 #include "talker.h"
 #include "weights.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <fstream>
 #include <new>
@@ -145,6 +146,38 @@ class Persistent {
     ggml_backend_buffer_t buffer_  = nullptr;
 };
 
+// The public interface speaks BCP-47 and the package names its languages in
+// full, so the two are bridged here rather than in either of them. Only the
+// primary subtag is used: a region says nothing this model can act on.
+//
+// The package's two dialect entries are deliberately absent. They are speaker
+// overrides the reference reaches through spk_is_dialect, not languages a
+// request can ask for.
+std::string language_name_for_tag(const std::string & tag) {
+    static const std::pair<const char *, const char *> kTags[] = {
+        { "en", "english"    },
+        { "de", "german"     },
+        { "es", "spanish"    },
+        { "zh", "chinese"    },
+        { "ja", "japanese"   },
+        { "fr", "french"     },
+        { "ko", "korean"     },
+        { "ru", "russian"    },
+        { "it", "italian"    },
+        { "pt", "portuguese" },
+    };
+    const size_t      cut     = tag.find('-');
+    const std::string primary = cut == std::string::npos ? tag : tag.substr(0, cut);
+    for (const std::pair<const char *, const char *> & entry : kTags) {
+        if (primary.size() == std::strlen(entry.first) &&
+            std::equal(primary.begin(), primary.end(), entry.first,
+                       [](char left, char right) { return std::tolower(left) == right; })) {
+            return entry.second;
+        }
+    }
+    return std::string();
+}
+
 void read_floats(const ggml_tensor * tensor, std::vector<float> & output) {
     output.resize(size_t(ggml_nelements(tensor)));
     ggml_backend_tensor_get(tensor, output.data(), 0, ggml_nbytes(tensor));
@@ -185,7 +218,7 @@ struct Model::Impl {
     }
 
     AttentionShape predictor_shape() const {
-        AttentionShape shape = talker_shape();
+        AttentionShape shape       = talker_shape();
         shape.attention_head_count = hparams.code_predictor.attention_head_count;
         shape.key_value_head_count = hparams.code_predictor.key_value_head_count;
         shape.head_dim             = hparams.code_predictor.head_dim;
@@ -199,7 +232,7 @@ Model::Model(std::unique_ptr<Impl> implementation) : implementation_(std::move(i
 Model::~Model() = default;
 
 synth_status_t Model::get_info(ModelInfo & output) const {
-    output = ModelInfo{};
+    output                  = ModelInfo{};
     const HParams & hparams = implementation_->hparams;
 
     output.variant              = hparams.model_variant;
@@ -241,15 +274,21 @@ std::shared_ptr<const TextFrontend> Model::text_frontend() const {
     return implementation_->frontend;
 }
 
+uint32_t Model::samples_per_frame() const {
+    return implementation_->hparams.codec.hop_length;
+}
+
+uint32_t Model::text_vocab_size() const {
+    return implementation_->hparams.talker.text_vocab_size;
+}
+
 synth_status_t Model::tokenize_request(const std::string & text, std::vector<int32_t> & token_ids) const {
     token_ids.clear();
     if (implementation_->frontend == nullptr) {
         return SYNTH_ERR_TEXT_FRONTEND;
     }
-    // The assistant turn is a fixed string the reference wraps every request in,
-    // and the talker's layout then slices the result at its two fixed counts.
-    const std::string turn = qwen_assistant_turn(text);
-    return implementation_->frontend->prepare(SYNTH_INPUT_TEXT_UTF8, turn.data(), turn.size(),
+    // The frontend applies the turn wrapper itself, so this hands it the text.
+    return implementation_->frontend->prepare(SYNTH_INPUT_TEXT_UTF8, text.data(), text.size(),
                                               implementation_->hparams.max_input_tokens, token_ids);
 }
 
@@ -270,18 +309,22 @@ synth_status_t Model::resolve_voice(const std::string & voice_id,
 
     // "auto" is the no-think prompt, which carries no language token at all
     // rather than a default one.
+    const std::string requested = language == "auto" ? std::string() : language_name_for_tag(language);
     if (language.empty() || language == "auto") {
         std::string resolved;
         // A speaker pinning a dialect still contributes its token under auto,
         // because the reference resolves the override before the request.
         if (!voice.dialect_override.empty() &&
-            resolve_language_token(implementation_->hparams, language, voice, language_token, resolved)) {
+            resolve_language_token(implementation_->hparams, requested, voice, language_token, resolved)) {
             has_language = true;
         }
         return SYNTH_OK;
     }
+    if (requested.empty()) {
+        return SYNTH_ERR_UNSUPPORTED_LANGUAGE;
+    }
     std::string resolved;
-    if (!resolve_language_token(implementation_->hparams, language, voice, language_token, resolved)) {
+    if (!resolve_language_token(implementation_->hparams, requested, voice, language_token, resolved)) {
         return SYNTH_ERR_UNSUPPORTED_LANGUAGE;
     }
     has_language = true;
@@ -324,8 +367,7 @@ synth_status_t Model::load(const std::string &      path,
         if (status != SYNTH_OK) {
             return status;
         }
-        status = build_model_weights(implementation->weights_context, implementation->hparams,
-                                     implementation->weights);
+        status = build_model_weights(implementation->weights_context, implementation->hparams, implementation->weights);
         if (status != SYNTH_OK) {
             return status;
         }
@@ -343,8 +385,15 @@ synth_status_t Model::load(const std::string &      path,
             // they carry their ids rather than being looked up in it.
             config.special_tokens = {
                 { "<|im_start|>", int32_t(implementation->hparams.tokens.im_start) },
-                {   "<|im_end|>",   int32_t(implementation->hparams.tokens.im_end) },
+                { "<|im_end|>",   int32_t(implementation->hparams.tokens.im_end)   },
             };
+            // The reference wraps every request in an assistant turn, and the
+            // talker's layout slices the tokenized result at its two fixed
+            // counts, so the wrapping belongs here rather than in the caller.
+            const std::string turn   = qwen_assistant_turn("");
+            const size_t      middle = turn.find("<|im_end|>");
+            config.prefix            = turn.substr(0, middle);
+            config.suffix            = turn.substr(middle);
             std::unique_ptr<TextFrontend> frontend;
             status = make_bpe_frontend(config, frontend);
             if (status != SYNTH_OK) {
@@ -386,8 +435,7 @@ struct Caches {
     CodePredictorCache predictor;
 };
 
-synth_status_t open_caches(const HParams & hparams, ggml_backend_t backend, int64_t talker_capacity,
-                           Caches & caches) {
+synth_status_t open_caches(const HParams & hparams, ggml_backend_t backend, int64_t talker_capacity, Caches & caches) {
     const uint32_t layers = hparams.talker.layer_count + hparams.code_predictor.layer_count;
     if (!caches.storage.open(size_t(layers) * 2 + 8)) {
         return SYNTH_ERR_OOM;
@@ -442,7 +490,7 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> & codes,
     if (!inputs.open(8)) {
         return SYNTH_ERR_OOM;
     }
-    ggml_context * ictx = inputs.context();
+    ggml_context * ictx    = inputs.context();
     // The codec reads one level per row, so the frame-major stream the loop
     // accumulates is transposed on the way in.
     ggml_tensor *  t_codes = ggml_new_tensor_2d(ictx, GGML_TYPE_I32, int64_t(frame_count), int64_t(groups));
@@ -476,8 +524,7 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> & codes,
     if (!run.ok()) {
         return SYNTH_ERR_OOM;
     }
-    ggml_tensor * wav =
-        build_codec_decoder(run.context(), t_codes, t_pos, t_mask, impl.weights.codec, hparams);
+    ggml_tensor * wav = build_codec_decoder(run.context(), t_codes, t_pos, t_mask, impl.weights.codec, hparams);
     if (wav == nullptr) {
         return SYNTH_ERR_INTERNAL;
     }
@@ -490,7 +537,7 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> & codes,
 }
 
 synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisOutput & output) const {
-    output = SynthesisOutput{};
+    output                  = SynthesisOutput{};
     const Impl &    impl    = *implementation_;
     const HParams & hparams = impl.hparams;
     const uint32_t  groups  = hparams.talker.code_group_count;
@@ -529,15 +576,18 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     std::vector<int32_t> prompt_text;
     std::vector<int32_t> prompt_codec;
     int64_t              codec_offset = 0;
-    status = flatten_talker_prompt(hparams, prompt, prompt_text, prompt_codec, codec_offset);
+    status                            = flatten_talker_prompt(hparams, prompt, prompt_text, prompt_codec, codec_offset);
     if (status != SYNTH_OK) {
         return status;
     }
 
-    const int64_t  prefill    = int64_t(prompt.positions.size());
-    const uint64_t max_frames = hparams.max_output_frames;
+    const int64_t prefill    = int64_t(prompt.positions.size());
+    // The cache is sized from what this request may actually emit, not from the
+    // package's declared ceiling; see kDefaultMaxFrames.
+    uint64_t      max_frames = request.max_frames != 0 ? request.max_frames : kDefaultMaxFrames;
+    max_frames               = std::min(max_frames, hparams.max_output_frames);
     // The talker attends over the prompt plus one position per frame it emits.
-    Caches         caches;
+    Caches caches;
     status = open_caches(hparams, impl.backend_plan->cpu_backend(), prefill + int64_t(max_frames) + 1, caches);
     if (status != SYNTH_OK) {
         return status;
@@ -621,8 +671,7 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         ggml_tensor * positions = nullptr;
         ggml_tensor * mask      = nullptr;
         if (frame == 0) {
-            input     = build_talker_prefill_input(tctx, impl.weights.talker, t_prompt_text, t_prompt_codec,
-                                                   codec_offset);
+            input = build_talker_prefill_input(tctx, impl.weights.talker, t_prompt_text, t_prompt_codec, codec_offset);
             positions = t_prompt_pos;
             mask      = t_prompt_mask;
         } else {
@@ -638,8 +687,7 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
             if (acoustic == nullptr) {
                 return SYNTH_ERR_INTERNAL;
             }
-            input     = build_talker_step_input(tctx, impl.weights.talker, ggml_add(tctx, acoustic, semantic),
-                                                t_step_text);
+            input = build_talker_step_input(tctx, impl.weights.talker, ggml_add(tctx, acoustic, semantic), t_step_text);
             positions = t_step_pos;
         }
         if (input == nullptr) {
@@ -698,8 +746,7 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
             } else {
                 set_i32(t_previous, frame_codes[plan.embedding_table + 1]);
                 set_i32(t_one_pos, int32_t(plan.first_position));
-                step_input = code_predictor_embed(pctx, impl.weights.code_predictor, plan.embedding_table,
-                                                  t_previous);
+                step_input = code_predictor_embed(pctx, impl.weights.code_predictor, plan.embedding_table, t_previous);
                 step_pos   = t_one_pos;
             }
             if (step_input == nullptr) {
@@ -708,8 +755,8 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
 
             set_filled(caches.predictor, predictor_filled);
             ggml_tensor * step_logits =
-                build_code_predictor(pctx, run.graph(), step_input, step_pos, step_mask,
-                                     impl.weights.code_predictor, predictor_shape, plan.lm_head, caches.predictor);
+                build_code_predictor(pctx, run.graph(), step_input, step_pos, step_mask, impl.weights.code_predictor,
+                                     predictor_shape, plan.lm_head, caches.predictor);
             if (step_logits == nullptr) {
                 return SYNTH_ERR_INTERNAL;
             }

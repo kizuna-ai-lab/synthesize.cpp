@@ -17,11 +17,18 @@ constexpr int kRopeModeNeox = GGML_ROPE_TYPE_NEOX;
 
 }  // namespace
 
+ggml_tensor * as_f32(ggml_context * context, ggml_tensor * weight) {
+    if (context == nullptr || weight == nullptr || weight->type == GGML_TYPE_F32) {
+        return weight;
+    }
+    return ggml_cast(context, weight, GGML_TYPE_F32);
+}
+
 ggml_tensor * rms_norm(ggml_context * context, ggml_tensor * input, ggml_tensor * weight, float eps) {
     if (context == nullptr || input == nullptr || weight == nullptr) {
         return nullptr;
     }
-    return ggml_mul(context, ggml_rms_norm(context, input, eps), weight);
+    return ggml_mul(context, ggml_rms_norm(context, input, eps), as_f32(context, weight));
 }
 
 ggml_tensor * swiglu_mlp(ggml_context * context, ggml_tensor * input, const DecoderLayerWeights & weights) {

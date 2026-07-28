@@ -1,10 +1,8 @@
 # Qwen3-TTS Family Selection and Port Plan
 
 Status: Confirmed 2026-07-28. Intake, the oracle and conversion are complete;
-the C++ implementation is under way -- the shared decoder block, the code
-predictor, the tensor catalog, the talker graph, the codec decoder and the text
-frontend are built and tested; the orchestration and the public seam that wire
-them together are not. Port validation is not started. Selection was accepted on
+stage 4 is complete: synthesis runs end to end through `synth_synthesize`. Port
+validation (stage 5) has not started. Port validation is not started. Selection was accepted on
 2026-07-26; the intake packet is
 `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
 
@@ -1227,6 +1225,76 @@ The comparison against the real vocabulary needs the package, so it belongs to
 the integration tier this family does not have. The unit test pins the split
 against the reference pattern's own output, which is the only stage checkable
 without a 151k-entry vocabulary.
+
+## Orchestration and the Public Seam
+
+Built 2026-07-28 in `src/arch/qwen3-tts/model.cpp` and wired through
+`src/synthesize.cpp`. `"Hello there."` with the `aiden` voice produces fifteen
+frames, 28,800 samples at 24 kHz -- 1.20 seconds of audio in the range
+[-0.42, 0.61].
+
+### Placement: everything is on the CPU
+
+The sampled code is a discrete output, and `docs/backends.md` holds a discrete
+output and every stage feeding it on CPU. Here that is the talker *and* the code
+predictor, which the intake measured at **73.5 %** of synthesis. The codec, the
+only stage that could sit on an accelerator, is **4.9 %**.
+
+So every graph runs on the CPU scheduler and the weights live in the CPU buffer.
+No mirroring is needed, because nothing reads them from two places -- unlike
+Kokoro and VITS, where the held stages were a minority and the rest stayed on the
+primary backend. Whether the codec is worth a second buffer for a 4.9 % ceiling
+is stage 7's decision, with the measurement in hand.
+
+### Four seam findings
+
+None of these could have been found by a unit test: all four live at the boundary
+between the family and the core.
+
+**`ModelInfo::vocab_size` means the vocabulary the frontend's ids index.** The
+core range-checks every returned token against it. That is the text tower's
+151,936, not the codec's 3,072; mapping it to the codec's rejected every request
+with `SYNTH_ERR_INVALID_ARG` and no diagnostic.
+
+**The core resolves an absent language tag to `"en"`.** The package names its
+languages in full (`english`, `chinese`, …), so the family bridges BCP-47 to
+those names on the primary subtag alone. The two dialect entries are deliberately
+absent from that table: they are speaker overrides the reference reaches through
+`spk_is_dialect`, not languages a request can ask for.
+
+**The declared frame limit is not a cache size.** The talker attends over the
+whole utterance at 229 kB a frame, and the package declares fifteen million
+frames -- a generic "no limit". Sizing the cache from it asked for **three
+terabytes**. It now comes from the request's effective limit, with a default of
+2048 frames: about 164 seconds and 481 MB.
+
+**ggml's elementwise operators reject BF16.** `ggml_mul_mat` reads a BF16 weight
+directly; `ggml_add` and `ggml_mul` abort inside `binary_op`. Every norm gain and
+bias in the talker half is BF16 because that is what the checkpoint stores, so
+they are cast where they meet an elementwise operator.
+
+### Two seam limits worth naming
+
+The core's language capability is English-only: `synth_model_get_language_count`
+returns 1 and the request validator accepts only `en` tags. This family is the
+first multilingual one, so nine of its ten requestable languages cannot be asked
+for through the public interface yet. Extending that is a core change touching
+every family's contract, not a Qwen3-TTS change.
+
+The turn wrapper lives in the frontend rather than in the core. The core runs the
+frontend, and for this family wrapping the request in an assistant turn is part
+of turning text into the ids the model consumes -- so it belongs there rather
+than as a family branch in the core.
+
+### Not yet measured
+
+Synthesis of 1.2 seconds took 30 seconds of wall clock on CPU. That is a
+real-time factor of 25 against the reference's measured 9.4, and it is expected
+to be dominated by rebuilding a graph per decode step -- 15 predictor steps and
+one talker step per frame, each allocating a scheduler. `qwentts.cpp` reports
+building the predictor's inner graph once and replaying it. That is stage 7's
+work and the intake already named it as where this port should beat the
+reference rather than match it.
 
 ## Open Questions for Intake
 

@@ -440,6 +440,46 @@ int check_configuration_rejections() {
     return 0;
 }
 
+int check_turn_wrapping() {
+    // The frontend applies the turn wrapper itself, because the core runs the
+    // frontend and this family's model consumes the wrapped ids rather than the
+    // bare text.
+    synth::qwen3tts::BpeFrontendConfig config;
+    config.contract_version = 1;
+    config.vocab            = { "a", "b", "<|im_start|>", "<|im_end|>", "\n" };
+    config.special_tokens   = {
+        { "<|im_start|>", 2 },
+        { "<|im_end|>",   3 }
+    };
+    config.prefix = "<|im_start|>";
+    config.suffix = "<|im_end|>";
+
+    std::unique_ptr<synth::TextFrontend> frontend;
+    SYNTH_TEST_CHECK(synth::qwen3tts::make_bpe_frontend(config, frontend) == SYNTH_OK);
+
+    std::vector<int32_t> ids;
+    SYNTH_TEST_CHECK(frontend->prepare(SYNTH_INPUT_TEXT_UTF8, "a", 1, 0, ids) == SYNTH_OK);
+    // The markers come back as their own ids, so the wrapper is tokenized as the
+    // special tokens it is made of rather than as text.
+    SYNTH_TEST_CHECK(ids.size() == 3);
+    SYNTH_TEST_CHECK(ids[0] == 2 && ids[2] == 3);
+
+    // An empty request still carries the turn, which is what makes the talker's
+    // fixed slice counts meaningful.
+    SYNTH_TEST_CHECK(frontend->prepare(SYNTH_INPUT_TEXT_UTF8, "", 0, 0, ids) == SYNTH_OK);
+    SYNTH_TEST_CHECK(ids.size() == 2);
+
+    // Without a wrapper the ids are the text's alone.
+    synth::qwen3tts::BpeFrontendConfig bare = config;
+    bare.prefix.clear();
+    bare.suffix.clear();
+    std::unique_ptr<synth::TextFrontend> unwrapped;
+    SYNTH_TEST_CHECK(synth::qwen3tts::make_bpe_frontend(bare, unwrapped) == SYNTH_OK);
+    SYNTH_TEST_CHECK(unwrapped->prepare(SYNTH_INPUT_TEXT_UTF8, "a", 1, 0, ids) == SYNTH_OK);
+    SYNTH_TEST_CHECK(ids.size() == 1 && ids[0] == 0);
+    return 0;
+}
+
 int check_assistant_turn() {
     // A fixed string, not a template the package carries.
     SYNTH_TEST_CHECK(synth::qwen3tts::qwen_assistant_turn("hi") ==
@@ -457,6 +497,7 @@ int main() {
     SYNTH_TEST_CHECK(check_pretokenize() == 0);
     SYNTH_TEST_CHECK(check_frontend() == 0);
     SYNTH_TEST_CHECK(check_configuration_rejections() == 0);
+    SYNTH_TEST_CHECK(check_turn_wrapping() == 0);
     SYNTH_TEST_CHECK(check_assistant_turn() == 0);
     return 0;
 }

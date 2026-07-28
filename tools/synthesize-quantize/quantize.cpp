@@ -127,6 +127,20 @@ bool quantize_file(const std::string & input_path,
         resolve_target_spec = resolve_vits_target_spec;
     } else if (architecture == "kokoro") {
         resolve_target_spec = resolve_kokoro_target_spec;
+    } else if (architecture == "qwen3-tts") {
+        // Q8_MIXED packs a matrix weight into one row. Kokoro unpacks the
+        // two-dimensional ones again below, but this family's convolution
+        // kernels genuinely need the packing to reach a whole number of Q8_0
+        // blocks -- a kernel of three against 512 channels is a row of three --
+        // and its graph builders read kernels as [kernel, in, out] through
+        // im2col. Supporting it is a runtime change, not a policy one, so the
+        // profile is refused rather than written as a package nothing loads.
+        if (std::string(profile->name) == "Q8_MIXED") {
+            return fail(error_out,
+                        "qwen3-tts has no Q8_MIXED profile yet: its codec reads convolution kernels as "
+                        "[kernel, in, out] and packing them is a runtime change");
+        }
+        resolve_target_spec = resolve_qwen3_tts_target_spec;
     } else {
         return fail(error_out, "unsupported input GGUF general.architecture: " + architecture);
     }
@@ -155,7 +169,10 @@ bool quantize_file(const std::string & input_path,
         if (tensor == nullptr) {
             return fail(error_out, "input tensor catalog is inconsistent");
         }
-        if (tensor->type != GGML_TYPE_F32 && tensor->type != GGML_TYPE_F16) {
+        // BF16 joins the list because Qwen3-TTS's source profile is mixed: its
+        // talker half is the checkpoint's bfloat16 and its codec half is F32.
+        // dequantize_to_f32 already handles any type carrying a to_float trait.
+        if (tensor->type != GGML_TYPE_F32 && tensor->type != GGML_TYPE_F16 && tensor->type != GGML_TYPE_BF16) {
             return fail(error_out, "unsupported source tensor type for " + std::string(name));
         }
         TargetSpec target{};

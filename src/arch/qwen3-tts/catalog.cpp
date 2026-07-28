@@ -27,10 +27,25 @@ namespace synth::qwen3tts {
 
 namespace {
 
-// The talker's half of the package carries the checkpoint's own BF16; the codec
-// comes from the speech tokenizer, which is stored F32. Under the source profile
-// both are carried through unchanged, so the expected type follows the half.
+// Under the source profile the expected type follows the half: the talker's
+// carries the checkpoint's own BF16 and the codec's the speech tokenizer's F32.
+// Every other profile is decided by what the tensor *is*, which is why the
+// resolver carries a role rather than deriving one from the name -- the
+// quantizer classifies by name and the two must not drift apart.
 enum class Half { Talker, Codec };
+
+enum class Role {
+    // Everything a profile is allowed to halve or pack.
+    Matrix,
+    // A transposed convolution, which runs as a column matrix multiply into
+    // col2im_1d. CUDA's F16 multiply accumulates in half precision, so these
+    // stay F32 under every profile.
+    Transpose,
+    // Norms, biases, layer scales, SnakeBeta curves, the quantizer's tables:
+    // each multiplies or seeds a whole branch, and together they are a rounding
+    // error of the file.
+    Sensitive,
+};
 
 // A resolution pass, so the failure is reported once with its reason rather than
 // unwound through a chain of booleans.
@@ -42,7 +57,7 @@ class Resolver {
 
     const std::set<std::string> & resolved() const { return resolved_; }
 
-    ggml_tensor * find(const std::string & name, std::initializer_list<int64_t> expected) {
+    ggml_tensor * find(const std::string & name, std::initializer_list<int64_t> expected, Role role = Role::Sensitive) {
         if (!ok_) {
             return nullptr;
         }
@@ -50,9 +65,9 @@ class Resolver {
         if (tensor == nullptr) {
             return fail("missing tensor %s", name.c_str());
         }
-        if (tensor->type != expected_type(name)) {
+        if (tensor->type != expected_type(name, role)) {
             return fail("tensor %s has type %s, expected %s under the %s profile", name.c_str(),
-                        ggml_type_name(tensor->type), ggml_type_name(expected_type(name)), profile_name());
+                        ggml_type_name(tensor->type), ggml_type_name(expected_type(name, role)), profile_name());
         }
         size_t axis = 0;
         for (int64_t want : expected) {
@@ -74,7 +89,7 @@ class Resolver {
 
     // A Linear's weight is [in, out] once reversed.
     bool linear(const std::string & prefix, int64_t in, int64_t out, LinearWeights & target, bool with_bias = true) {
-        target.weight = find(prefix + ".weight", { in, out });
+        target.weight = find(prefix + ".weight", { in, out }, Role::Matrix);
         if (with_bias) {
             target.bias = find(prefix + ".bias", { out });
         }
@@ -82,7 +97,7 @@ class Resolver {
     }
 
     bool conv(const std::string & prefix, int64_t kernel, int64_t in, int64_t out, Conv1dWeights & target) {
-        target.weight = find(prefix + ".weight", { kernel, in, out });
+        target.weight = find(prefix + ".weight", { kernel, in, out }, Role::Matrix);
         target.bias   = find(prefix + ".bias", { out });
         return ok_;
     }
@@ -96,7 +111,7 @@ class Resolver {
     }
 
     bool transpose_conv(const std::string & prefix, int64_t kernel, int64_t in, int64_t out, Conv1dWeights & target) {
-        target.weight = find(prefix + ".weight", { kernel, out, in });
+        target.weight = find(prefix + ".weight", { kernel, out, in }, Role::Transpose);
         target.bias   = find(prefix + ".bias", { out });
         return ok_;
     }
@@ -114,16 +129,19 @@ class Resolver {
     }
 
   private:
-    ggml_type expected_type(const std::string & name) const {
+    ggml_type expected_type(const std::string & name, Role role) const {
         const Half half = name.compare(0, 6, "codec.") == 0 ? Half::Codec : Half::Talker;
         switch (hparams_.quantization_profile) {
             case QuantizationProfile::BF16:
+                // The source profile carries both halves through unchanged, so
+                // the role does not enter: what the checkpoint stored is what
+                // the package holds.
                 return half == Half::Codec ? GGML_TYPE_F32 : GGML_TYPE_BF16;
             case QuantizationProfile::F16:
+                return role == Role::Matrix ? GGML_TYPE_F16 : GGML_TYPE_F32;
             case QuantizationProfile::Q8Mixed:
-                break;
+                return role == Role::Matrix ? GGML_TYPE_Q8_0 : GGML_TYPE_F32;
         }
-        // Unreachable: the profile is refused before any tensor is resolved.
         return GGML_TYPE_F32;
     }
 
@@ -177,21 +195,21 @@ bool resolve_decoder_layers(Resolver &                         resolver,
     const int64_t attention_inner = int64_t(heads) * head_dim;
     const int64_t kv_inner        = int64_t(kv_heads) * head_dim;
     for (uint32_t index = 0; index < layer_count; ++index) {
-        const std::string     base     = index_of(prefix, index, ".");
-        DecoderLayerWeights & layer    = layers[index];
-        layer.input_layernorm          = resolver.find(base + "input_layernorm.weight", { hidden });
-        layer.q_proj                   = resolver.find(base + "self_attn.q_proj.weight", { hidden, attention_inner });
-        layer.k_proj                   = resolver.find(base + "self_attn.k_proj.weight", { hidden, kv_inner });
-        layer.v_proj                   = resolver.find(base + "self_attn.v_proj.weight", { hidden, kv_inner });
-        layer.o_proj                   = resolver.find(base + "self_attn.o_proj.weight", { attention_inner, hidden });
+        const std::string     base  = index_of(prefix, index, ".");
+        DecoderLayerWeights & layer = layers[index];
+        layer.input_layernorm       = resolver.find(base + "input_layernorm.weight", { hidden });
+        layer.q_proj = resolver.find(base + "self_attn.q_proj.weight", { hidden, attention_inner }, Role::Matrix);
+        layer.k_proj = resolver.find(base + "self_attn.k_proj.weight", { hidden, kv_inner }, Role::Matrix);
+        layer.v_proj = resolver.find(base + "self_attn.v_proj.weight", { hidden, kv_inner }, Role::Matrix);
+        layer.o_proj = resolver.find(base + "self_attn.o_proj.weight", { attention_inner, hidden }, Role::Matrix);
         // Qwen3 normalizes each head at head_dim, not the packed projection, so
         // these are narrow where a per-projection norm would be hidden-wide.
-        layer.q_norm                   = resolver.find(base + "self_attn.q_norm.weight", { head_dim });
-        layer.k_norm                   = resolver.find(base + "self_attn.k_norm.weight", { head_dim });
+        layer.q_norm = resolver.find(base + "self_attn.q_norm.weight", { head_dim });
+        layer.k_norm = resolver.find(base + "self_attn.k_norm.weight", { head_dim });
         layer.post_attention_layernorm = resolver.find(base + "post_attn_norm.weight", { hidden });
-        layer.gate_proj                = resolver.find(base + "mlp.gate_proj.weight", { hidden, intermediate });
-        layer.up_proj                  = resolver.find(base + "mlp.up_proj.weight", { hidden, intermediate });
-        layer.down_proj                = resolver.find(base + "mlp.down_proj.weight", { intermediate, hidden });
+        layer.gate_proj = resolver.find(base + "mlp.gate_proj.weight", { hidden, intermediate }, Role::Matrix);
+        layer.up_proj   = resolver.find(base + "mlp.up_proj.weight", { hidden, intermediate }, Role::Matrix);
+        layer.down_proj = resolver.find(base + "mlp.down_proj.weight", { intermediate, hidden }, Role::Matrix);
     }
     return resolver.ok();
 }
@@ -199,13 +217,13 @@ bool resolve_decoder_layers(Resolver &                         resolver,
 bool resolve_talker(Resolver & resolver, const HParams & hparams, TalkerWeights & talker) {
     const TalkerParams & p = hparams.talker;
     talker.text_embedding =
-        resolver.find("talker.model.text_embedding.weight", { p.text_hidden_size, p.text_vocab_size });
+        resolver.find("talker.model.text_embedding.weight", { p.text_hidden_size, p.text_vocab_size }, Role::Matrix);
     resolver.linear("talker.text_projection.linear_fc1", p.text_hidden_size, p.text_hidden_size,
                     talker.text_projection_1);
     resolver.linear("talker.text_projection.linear_fc2", p.text_hidden_size, p.hidden_size, talker.text_projection_2);
     talker.codec_embedding =
-        resolver.find("talker.model.codec_embedding.weight", { p.hidden_size, p.codec_vocab_size });
-    talker.codec_head = resolver.find("talker.codec_head.weight", { p.hidden_size, p.codec_vocab_size });
+        resolver.find("talker.model.codec_embedding.weight", { p.hidden_size, p.codec_vocab_size }, Role::Matrix);
+    talker.codec_head = resolver.find("talker.codec_head.weight", { p.hidden_size, p.codec_vocab_size }, Role::Matrix);
     resolve_decoder_layers(resolver, "talker.model.layers.", p.layer_count, p.hidden_size, p.intermediate_size,
                            p.head_dim, p.attention_head_count, p.key_value_head_count, talker.layers);
     talker.norm = resolver.find("talker.model.norm.weight", { p.hidden_size });
@@ -229,9 +247,9 @@ bool resolve_code_predictor(Resolver & resolver, const HParams & hparams, CodePr
     for (uint32_t group = 0; group < acoustic; ++group) {
         predictor.codec_embedding[group] =
             resolver.find(index_of("talker.code_predictor.model.codec_embedding.", group, ".weight"),
-                          { p.hidden_size, p.vocab_size });
+                          { p.hidden_size, p.vocab_size }, Role::Matrix);
         predictor.lm_head[group] = resolver.find(index_of("talker.code_predictor.lm_head.", group, ".weight"),
-                                                 { p.hidden_size, p.vocab_size });
+                                                 { p.hidden_size, p.vocab_size }, Role::Matrix);
     }
 
     // The reference projects the talker's hidden state into the predictor's
@@ -279,17 +297,22 @@ bool resolve_codec_transformer(Resolver &                 resolver,
         const std::string              base  = index_of(prefix + "layers.", index, ".");
         CodecTransformerLayerWeights & layer = transformer.layers[index];
         layer.input_layernorm                = resolver.find(base + "input_layernorm.weight", { p.hidden_size });
-        layer.q_proj = resolver.find(base + "self_attn.q_proj.weight", { p.hidden_size, attention_inner });
-        layer.k_proj = resolver.find(base + "self_attn.k_proj.weight", { p.hidden_size, kv_inner });
-        layer.v_proj = resolver.find(base + "self_attn.v_proj.weight", { p.hidden_size, kv_inner });
-        layer.o_proj = resolver.find(base + "self_attn.o_proj.weight", { attention_inner, p.hidden_size });
+        layer.q_proj =
+            resolver.find(base + "self_attn.q_proj.weight", { p.hidden_size, attention_inner }, Role::Matrix);
+        layer.k_proj = resolver.find(base + "self_attn.k_proj.weight", { p.hidden_size, kv_inner }, Role::Matrix);
+        layer.v_proj = resolver.find(base + "self_attn.v_proj.weight", { p.hidden_size, kv_inner }, Role::Matrix);
+        layer.o_proj =
+            resolver.find(base + "self_attn.o_proj.weight", { attention_inner, p.hidden_size }, Role::Matrix);
         // Per-branch layer scales, which a Qwen3 block does not have; leaving
         // them unbound would run the residual branches at unit gain.
         layer.self_attn_layer_scale    = resolver.find(base + "self_attn_scale.scale", { p.hidden_size });
         layer.post_attention_layernorm = resolver.find(base + "post_attn_norm.weight", { p.hidden_size });
-        layer.gate_proj       = resolver.find(base + "mlp.gate_proj.weight", { p.hidden_size, p.intermediate_size });
-        layer.up_proj         = resolver.find(base + "mlp.up_proj.weight", { p.hidden_size, p.intermediate_size });
-        layer.down_proj       = resolver.find(base + "mlp.down_proj.weight", { p.intermediate_size, p.hidden_size });
+        layer.gate_proj =
+            resolver.find(base + "mlp.gate_proj.weight", { p.hidden_size, p.intermediate_size }, Role::Matrix);
+        layer.up_proj =
+            resolver.find(base + "mlp.up_proj.weight", { p.hidden_size, p.intermediate_size }, Role::Matrix);
+        layer.down_proj =
+            resolver.find(base + "mlp.down_proj.weight", { p.intermediate_size, p.hidden_size }, Role::Matrix);
         layer.mlp_layer_scale = resolver.find(base + "mlp_scale.scale", { p.hidden_size });
     }
     transformer.norm = resolver.find(prefix + "norm.weight", { p.hidden_size });
@@ -383,14 +406,6 @@ synth_status_t build_model_weights(ggml_context * context, const HParams & hpara
         return SYNTH_ERR_INVALID_ARG;
     }
     weights = ModelWeights{};
-
-    // Only the source profile has a defined storage-type rule for this family;
-    // no quantized package exists yet, and guessing one would accept a package
-    // nothing has ever produced.
-    if (hparams.quantization_profile != QuantizationProfile::BF16) {
-        std::fprintf(stderr, "qwen3-tts: no quantized package exists for this family yet\n");
-        return SYNTH_ERR_GGUF;
-    }
 
     Resolver resolver(context, hparams);
     if (!resolve_talker(resolver, hparams, weights.talker) ||

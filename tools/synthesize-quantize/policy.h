@@ -47,4 +47,14 @@ bool resolve_vits_target_spec(const Profile & profile, const std::string & name,
 bool resolve_kokoro_target_type(const Profile & profile, const std::string & name, ggml_type & type_out);
 bool resolve_kokoro_target_spec(const Profile & profile, const std::string & name, TargetSpec & spec_out);
 
+// And for Qwen3-TTS. Its split follows the same principle as the other two and
+// lands differently: the quantizer's codebooks and both of its kernel-one
+// projections stay at the reference dtype, because a residual codebook's later
+// levels carry small magnitudes and a relative error there is a large one
+// against the residual it corrects. Per-head norms, layer scales and the
+// SnakeBeta curves stay exact for the same reason -- each multiplies a whole
+// branch or head, and together they are a rounding error of the file.
+bool resolve_qwen3_tts_target_type(const Profile & profile, const std::string & name, ggml_type & type_out);
+bool resolve_qwen3_tts_target_spec(const Profile & profile, const std::string & name, TargetSpec & spec_out);
+
 }  // namespace synth::quantize

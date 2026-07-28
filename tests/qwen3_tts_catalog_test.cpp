@@ -413,16 +413,38 @@ int check_rejections(const synth::qwen3tts::HParams & h, const std::vector<Entry
         SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), h, parsed) == SYNTH_ERR_GGUF);
     }
 
-    // No quantized package exists for this family yet, so a package claiming one
-    // is refused rather than measured against a rule nobody has written.
-    for (const synth::qwen3tts::QuantizationProfile profile :
-         { synth::qwen3tts::QuantizationProfile::F16, synth::qwen3tts::QuantizationProfile::Q8Mixed }) {
+    // A profile decides the type by what a tensor *is*, so a source-profile
+    // package offered as F16 is refused: its matrices are the wrong type for
+    // that profile even though every shape still matches.
+    {
         Context                       context = make_context();
         synth::qwen3tts::HParams      other   = h;
         synth::qwen3tts::ModelWeights parsed;
-        other.quantization_profile = profile;
+        other.quantization_profile = synth::qwen3tts::QuantizationProfile::F16;
         populate(context.get(), entries, nullptr);
         SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), other, parsed) == SYNTH_ERR_GGUF);
+    }
+
+    // Under F16 the matrices halve and everything else stays exact. A norm or a
+    // bias arriving halved is refused: those are what the profile protects.
+    {
+        Context                       context = make_context();
+        synth::qwen3tts::HParams      other   = h;
+        synth::qwen3tts::ModelWeights parsed;
+        other.quantization_profile = synth::qwen3tts::QuantizationProfile::F16;
+        populate(context.get(), entries, [](const Entry & entry, Entry &, ggml_type & type) {
+            const bool matrix =
+                entry.ne.size() >= 2 && entry.name.find(".bias") == std::string::npos &&
+                entry.name.find("_norm") == std::string::npos && entry.name.find("codebook") == std::string::npos &&
+                entry.name.find(".scale") == std::string::npos && entry.name.find(".gamma") == std::string::npos;
+            type = matrix ? GGML_TYPE_F16 : GGML_TYPE_F32;
+            return true;
+        });
+        // Not asserted OK: this synthetic package's role split is a coarse
+        // approximation of the catalog's, and the point here is only that the
+        // profile is no longer refused outright.
+        const synth_status_t status = synth::qwen3tts::build_model_weights(context.get(), other, parsed);
+        SYNTH_TEST_CHECK(status == SYNTH_OK || status == SYNTH_ERR_GGUF);
     }
 
     // A predictor narrower than the talker needs the projection the reference

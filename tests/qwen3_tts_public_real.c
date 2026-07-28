@@ -37,7 +37,7 @@ int main(int argc, char ** argv) {
     const char * seed_text  = argv[5];
 
     /* The text arrives on stdin so a case can carry any UTF-8 without quoting. */
-    static char text[65536];
+    static char  text[65536];
     const size_t text_size = fread(text, 1, sizeof text - 1, stdin);
     text[text_size]        = '\0';
 
@@ -62,16 +62,16 @@ int main(int argc, char ** argv) {
 
     synth_request_t request;
     synth_request_init(&request, sizeof request);
-    request.input_kind  = SYNTH_INPUT_TEXT_UTF8;
-    request.input_data  = text;
-    request.input_count = text_size;
-    request.voice_id    = voice_id;
+    request.input_kind    = SYNTH_INPUT_TEXT_UTF8;
+    request.input_data    = text;
+    request.input_count   = text_size;
+    request.voice_id      = voice_id;
     request.voice_id_size = strlen(voice_id);
     if (language != NULL) {
         request.language_tag      = language;
         request.language_tag_size = strlen(language);
     }
-    request.seed = strcmp(seed_text, "random") == 0 ? SYNTH_SEED_RANDOM : strtoull(seed_text, NULL, 10);
+    request.seed              = strcmp(seed_text, "random") == 0 ? SYNTH_SEED_RANDOM : strtoull(seed_text, NULL, 10);
     request.max_output_frames = argc > 6 ? strtoull(argv[6], NULL, 10) : 512;
 
     synth_audio_buffer_t * audio = NULL;
@@ -88,13 +88,13 @@ int main(int argc, char ** argv) {
     }
 
     write_pcm(out_path, audio->samples, audio->frame_count);
-    printf("{\"status\": %d, \"frames\": %llu, \"sample_rate\": %u, \"actual_seed\": \"%llu\", "
-           "\"resolved_voice\": \"%.*s\", \"resolved_language\": \"%.*s\"}\n",
-           (int) status, (unsigned long long) audio->frame_count, audio->sample_rate,
-           (unsigned long long) result.actual_seed, (int) result.resolved_voice_id_size,
-           result.resolved_voice_id == NULL ? "" : result.resolved_voice_id,
-           (int) result.resolved_language_tag_size,
-           result.resolved_language_tag == NULL ? "" : result.resolved_language_tag);
+    printf(
+        "{\"status\": %d, \"frames\": %llu, \"sample_rate\": %u, \"actual_seed\": \"%llu\", "
+        "\"resolved_voice\": \"%.*s\", \"resolved_language\": \"%.*s\"}\n",
+        (int) status, (unsigned long long) audio->frame_count, audio->sample_rate,
+        (unsigned long long) result.actual_seed, (int) result.resolved_voice_id_size,
+        result.resolved_voice_id == NULL ? "" : result.resolved_voice_id, (int) result.resolved_language_tag_size,
+        result.resolved_language_tag == NULL ? "" : result.resolved_language_tag);
 
     synth_audio_buffer_free(audio);
     synth_context_free(context);

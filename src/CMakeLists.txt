@@ -10,6 +10,7 @@ add_library(synthesize
     synthesis-request.cpp
     text-frontend.cpp
     voice-profile.cpp
+    arch/qwen3-tts/operations.cpp
     arch/qwen3-tts/weights.cpp
     arch/kokoro/catalog.cpp
     arch/kokoro/decoder.cpp

@@ -18,18 +18,18 @@ enum class QuantizationProfile : uint32_t {
 
 // The autoregressive language model that emits one semantic code per frame.
 struct TalkerParams {
-    uint32_t layer_count           = 0;
-    uint32_t hidden_size           = 0;
-    uint32_t attention_head_count  = 0;
-    uint32_t key_value_head_count  = 0;
-    uint32_t head_dim              = 0;
-    uint32_t intermediate_size     = 0;
-    uint32_t codec_vocab_size      = 0;
-    uint32_t text_vocab_size       = 0;
-    uint32_t text_hidden_size      = 0;
-    uint32_t code_group_count      = 0;
-    float    rms_norm_eps          = 0.0f;
-    float    rope_theta            = 0.0f;
+    uint32_t    layer_count          = 0;
+    uint32_t    hidden_size          = 0;
+    uint32_t    attention_head_count = 0;
+    uint32_t    key_value_head_count = 0;
+    uint32_t    head_dim             = 0;
+    uint32_t    intermediate_size    = 0;
+    uint32_t    codec_vocab_size     = 0;
+    uint32_t    text_vocab_size      = 0;
+    uint32_t    text_hidden_size     = 0;
+    uint32_t    code_group_count     = 0;
+    float       rms_norm_eps         = 0.0f;
+    float       rope_theta           = 0.0f;
     // The package declares "1d" because the checkpoint's own mrope_section is
     // inert: every position_ids path in the reference yields three identical
     // rows, which makes the interleaved form exactly plain rope. Loading
@@ -58,15 +58,15 @@ struct CodecParams {
 
 // Token ids the graph needs by value rather than by name.
 struct SpecialTokens {
-    uint32_t tts_bos            = 0;
-    uint32_t tts_eos            = 0;
-    uint32_t tts_pad            = 0;
-    uint32_t im_start           = 0;
-    uint32_t im_end             = 0;
-    uint32_t assistant          = 0;
-    uint32_t codec_bos          = 0;
-    uint32_t codec_eos          = 0;
-    uint32_t codec_pad          = 0;
+    uint32_t tts_bos   = 0;
+    uint32_t tts_eos   = 0;
+    uint32_t tts_pad   = 0;
+    uint32_t im_start  = 0;
+    uint32_t im_end    = 0;
+    uint32_t assistant = 0;
+    uint32_t codec_bos = 0;
+    uint32_t codec_eos = 0;
+    uint32_t codec_pad = 0;
 };
 
 // A preset Voice is a codec-vocabulary token id, not a row of an embedding

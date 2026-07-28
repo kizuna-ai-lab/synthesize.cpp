@@ -75,8 +75,8 @@ bool read_capabilities(const GgufMetadata & meta, HParams & hparams) {
         return false;
     }
     if (hparams.output_channel_count != 1 || hparams.output_sample_rate == 0) {
-        std::fprintf(stderr, "qwen3-tts: package declares %u channels at %u Hz\n",
-                     hparams.output_channel_count, hparams.output_sample_rate);
+        std::fprintf(stderr, "qwen3-tts: package declares %u channels at %u Hz\n", hparams.output_channel_count,
+                     hparams.output_sample_rate);
         return false;
     }
     if (hparams.max_input_tokens == 0 || hparams.max_output_frames == 0) {
@@ -87,10 +87,10 @@ bool read_capabilities(const GgufMetadata & meta, HParams & hparams) {
     // degenerate range. A package claiming otherwise would promise a control the
     // graph cannot honour.
     if (hparams.min_speaking_rate != 1.0f || hparams.max_speaking_rate != 1.0f) {
-        std::fprintf(stderr, "qwen3-tts: speaking rate is not adjustable in this family, "
-                             "but the package declares [%f, %f]\n",
-                     static_cast<double>(hparams.min_speaking_rate),
-                     static_cast<double>(hparams.max_speaking_rate));
+        std::fprintf(stderr,
+                     "qwen3-tts: speaking rate is not adjustable in this family, "
+                     "but the package declares [%f, %f]\n",
+                     static_cast<double>(hparams.min_speaking_rate), static_cast<double>(hparams.max_speaking_rate));
         return false;
     }
     return true;
@@ -179,8 +179,8 @@ bool read_codec(const GgufMetadata & meta, HParams & hparams) {
         return false;
     }
     if (codec.sample_rate != hparams.output_sample_rate) {
-        std::fprintf(stderr, "qwen3-tts: codec runs at %u Hz but the package declares %u Hz\n",
-                     codec.sample_rate, hparams.output_sample_rate);
+        std::fprintf(stderr, "qwen3-tts: codec runs at %u Hz but the package declares %u Hz\n", codec.sample_rate,
+                     hparams.output_sample_rate);
         return false;
     }
     // One frame is exactly hop_length samples. Deriving the relation rather than
@@ -188,9 +188,8 @@ bool read_codec(const GgufMetadata & meta, HParams & hparams) {
     // rate and hop disagree, which would drift the audio length per frame.
     const double implied = static_cast<double>(codec.sample_rate) / static_cast<double>(codec.hop_length);
     if (implied < codec.frame_rate_hz - 1e-6 || implied > codec.frame_rate_hz + 1e-6) {
-        std::fprintf(stderr, "qwen3-tts: %u Hz over hop %u is %f frames per second, not %f\n",
-                     codec.sample_rate, codec.hop_length, implied,
-                     static_cast<double>(codec.frame_rate_hz));
+        std::fprintf(stderr, "qwen3-tts: %u Hz over hop %u is %f frames per second, not %f\n", codec.sample_rate,
+                     codec.hop_length, implied, static_cast<double>(codec.frame_rate_hz));
         return false;
     }
     return true;
@@ -218,8 +217,7 @@ bool read_voices(const GgufMetadata & meta, HParams & hparams) {
         return false;
     }
     if (mode != "preset-catalog" || preset_count == 0) {
-        std::fprintf(stderr, "qwen3-tts: unsupported voice mode %s with %u presets\n", mode.c_str(),
-                     preset_count);
+        std::fprintf(stderr, "qwen3-tts: unsupported voice mode %s with %u presets\n", mode.c_str(), preset_count);
         return false;
     }
 
@@ -231,18 +229,17 @@ bool read_voices(const GgufMetadata & meta, HParams & hparams) {
         !meta.string_array("synthesize.qwen3-tts.speakers.dialect_override", dialects)) {
         return false;
     }
-    if (names.size() != token_ids.size() || names.size() != dialects.size() ||
-        names.size() != preset_count) {
-        std::fprintf(stderr, "qwen3-tts: speaker catalog is %zu/%zu/%zu against %u presets\n",
-                     names.size(), token_ids.size(), dialects.size(), preset_count);
+    if (names.size() != token_ids.size() || names.size() != dialects.size() || names.size() != preset_count) {
+        std::fprintf(stderr, "qwen3-tts: speaker catalog is %zu/%zu/%zu against %u presets\n", names.size(),
+                     token_ids.size(), dialects.size(), preset_count);
         return false;
     }
 
     hparams.preset_voices.clear();
     hparams.preset_voices.reserve(preset_count);
     for (uint32_t index = 0; index < preset_count; ++index) {
-        std::string declared;
-        uint32_t    flags = 0;
+        std::string       declared;
+        uint32_t          flags  = 0;
         const std::string prefix = "synthesize.voice." + std::to_string(index) + ".";
         if (!meta.string(prefix + "id", declared) || !meta.u32(prefix + "flags", flags)) {
             return false;
@@ -251,8 +248,8 @@ bool read_voices(const GgufMetadata & meta, HParams & hparams) {
         // catalog. If they disagree the package is internally inconsistent, and
         // trusting either one would pick a different speaker than the other.
         if (declared != names[index]) {
-            std::fprintf(stderr, "qwen3-tts: voice %u is %s in the catalog and %s in the speaker table\n",
-                         index, declared.c_str(), names[index].c_str());
+            std::fprintf(stderr, "qwen3-tts: voice %u is %s in the catalog and %s in the speaker table\n", index,
+                         declared.c_str(), names[index].c_str());
             return false;
         }
         if (token_ids[index] >= hparams.talker.codec_vocab_size) {
@@ -260,8 +257,7 @@ bool read_voices(const GgufMetadata & meta, HParams & hparams) {
                          names[index].c_str(), token_ids[index]);
             return false;
         }
-        hparams.preset_voices.push_back(
-            PresetVoice{ names[index], token_ids[index], dialects[index], flags });
+        hparams.preset_voices.push_back(PresetVoice{ names[index], token_ids[index], dialects[index], flags });
     }
     // This family names no package default; every request selects a Voice.
     return !hparams.has_package_default;
@@ -269,14 +265,12 @@ bool read_voices(const GgufMetadata & meta, HParams & hparams) {
 
 bool read_languages(const GgufMetadata & meta, HParams & hparams) {
     if (!meta.string_array("synthesize.qwen3-tts.languages.names", hparams.language_names) ||
-        !meta.positive_i32_array("synthesize.qwen3-tts.languages.token_ids",
-                                 hparams.language_token_ids)) {
+        !meta.positive_i32_array("synthesize.qwen3-tts.languages.token_ids", hparams.language_token_ids)) {
         return false;
     }
-    if (hparams.language_names.empty() ||
-        hparams.language_names.size() != hparams.language_token_ids.size()) {
-        std::fprintf(stderr, "qwen3-tts: %zu language names against %zu token ids\n",
-                     hparams.language_names.size(), hparams.language_token_ids.size());
+    if (hparams.language_names.empty() || hparams.language_names.size() != hparams.language_token_ids.size()) {
+        std::fprintf(stderr, "qwen3-tts: %zu language names against %zu token ids\n", hparams.language_names.size(),
+                     hparams.language_token_ids.size());
         return false;
     }
     // Every dialect a speaker can pin must exist as a language token, or that
@@ -290,8 +284,8 @@ bool read_languages(const GgufMetadata & meta, HParams & hparams) {
             found = found || name == voice.dialect_override;
         }
         if (!found) {
-            std::fprintf(stderr, "qwen3-tts: speaker %s pins dialect %s, which is not a language\n",
-                         voice.id.c_str(), voice.dialect_override.c_str());
+            std::fprintf(stderr, "qwen3-tts: speaker %s pins dialect %s, which is not a language\n", voice.id.c_str(),
+                         voice.dialect_override.c_str());
             return false;
         }
     }
@@ -311,8 +305,8 @@ bool read_frontend(const GgufMetadata & meta, HParams & hparams) {
         return false;
     }
     if (hparams.frontend_provider != "synthesize.qwen_bpe" || hparams.frontend_contract_version != 1) {
-        std::fprintf(stderr, "qwen3-tts: unsupported frontend %s version %u\n",
-                     hparams.frontend_provider.c_str(), hparams.frontend_contract_version);
+        std::fprintf(stderr, "qwen3-tts: unsupported frontend %s version %u\n", hparams.frontend_provider.c_str(),
+                     hparams.frontend_contract_version);
         return false;
     }
     return true;
@@ -324,13 +318,12 @@ synth_status_t read_hparams(const gguf_context * gguf, HParams & hparams) {
     if (gguf == nullptr) {
         return SYNTH_ERR_INVALID_ARG;
     }
-    hparams = HParams{};
+    hparams                 = HParams{};
     const GgufMetadata meta = metadata(gguf);
     const bool ok = read_identity(meta, hparams) && read_quantization(meta, hparams) &&
                     read_capabilities(meta, hparams) && read_talker(meta, hparams) &&
-                    read_code_predictor(meta, hparams) && read_codec(meta, hparams) &&
-                    read_tokens(meta, hparams) && read_voices(meta, hparams) &&
-                    read_languages(meta, hparams) && read_frontend(meta, hparams);
+                    read_code_predictor(meta, hparams) && read_codec(meta, hparams) && read_tokens(meta, hparams) &&
+                    read_voices(meta, hparams) && read_languages(meta, hparams) && read_frontend(meta, hparams);
     return ok ? SYNTH_OK : SYNTH_ERR_GGUF;
 }
 

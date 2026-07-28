@@ -30,10 +30,10 @@ struct GgufDeleter {
 
 using GgufContext = std::unique_ptr<gguf_context, GgufDeleter>;
 
-constexpr uint32_t kCodecVocab  = 3072;
-constexpr uint32_t kSampleRate  = 24000;
-constexpr uint32_t kHopLength   = 1920;
-constexpr uint32_t kCodeGroups  = 16;
+constexpr uint32_t kCodecVocab = 3072;
+constexpr uint32_t kSampleRate = 24000;
+constexpr uint32_t kHopLength  = 1920;
+constexpr uint32_t kCodeGroups = 16;
 
 void set_string_array(gguf_context * g, const char * key, const std::vector<std::string> & values) {
     std::vector<const char *> raw;
@@ -105,14 +105,13 @@ GgufContext valid_metadata() {
     gguf_set_val_u32(g, "synthesize.qwen3-tts.token.codec_eos_token_id", 2150);
     gguf_set_val_u32(g, "synthesize.qwen3-tts.token.codec_pad_id", 2148);
 
-    const std::vector<std::string> speakers = { "aiden", "sohee", "ono_anna", "eric", "dylan",
-                                                "uncle_fu", "ryan", "vivian", "serena" };
-    const std::vector<int32_t> speaker_ids  = { 2861, 2864, 2873, 2875, 2878, 3010, 3061, 3065, 3066 };
-    const std::vector<std::string> dialects = { "", "", "", "sichuan_dialect", "beijing_dialect",
-                                                "", "", "", "" };
+    const std::vector<std::string> speakers    = { "aiden",    "sohee", "ono_anna", "eric",  "dylan",
+                                                   "uncle_fu", "ryan",  "vivian",   "serena" };
+    const std::vector<int32_t>     speaker_ids = { 2861, 2864, 2873, 2875, 2878, 3010, 3061, 3065, 3066 };
+    const std::vector<std::string> dialects    = { "", "", "", "sichuan_dialect", "beijing_dialect", "", "", "", "" };
     set_string_array(g, "synthesize.qwen3-tts.speakers.names", speakers);
-    gguf_set_arr_data(g, "synthesize.qwen3-tts.speakers.token_ids", GGUF_TYPE_INT32,
-                      speaker_ids.data(), static_cast<int>(speaker_ids.size()));
+    gguf_set_arr_data(g, "synthesize.qwen3-tts.speakers.token_ids", GGUF_TYPE_INT32, speaker_ids.data(),
+                      static_cast<int>(speaker_ids.size()));
     set_string_array(g, "synthesize.qwen3-tts.speakers.dialect_override", dialects);
 
     gguf_set_val_str(g, "synthesize.voice.mode", "preset-catalog");
@@ -124,14 +123,15 @@ GgufContext valid_metadata() {
         gguf_set_val_u32(g, (prefix + "flags").c_str(), 0);
     }
 
-    const std::vector<std::string> languages = { "english", "german", "spanish", "chinese",
-                                                 "japanese", "french", "sichuan_dialect", "korean",
-                                                 "russian", "italian", "portuguese", "beijing_dialect" };
-    const std::vector<int32_t> language_ids  = { 2050, 2053, 2054, 2055, 2058, 2061,
-                                                 2062, 2064, 2069, 2070, 2071, 2074 };
+    const std::vector<std::string> languages    = { "english",  "german",  "spanish",         "chinese",
+                                                    "japanese", "french",  "sichuan_dialect", "korean",
+                                                    "russian",  "italian", "portuguese",      "beijing_dialect" };
+    const std::vector<int32_t>     language_ids = {
+        2050, 2053, 2054, 2055, 2058, 2061, 2062, 2064, 2069, 2070, 2071, 2074
+    };
     set_string_array(g, "synthesize.qwen3-tts.languages.names", languages);
-    gguf_set_arr_data(g, "synthesize.qwen3-tts.languages.token_ids", GGUF_TYPE_INT32,
-                      language_ids.data(), static_cast<int>(language_ids.size()));
+    gguf_set_arr_data(g, "synthesize.qwen3-tts.languages.token_ids", GGUF_TYPE_INT32, language_ids.data(),
+                      static_cast<int>(language_ids.size()));
 
     gguf_set_val_bool(g, "synthesize.frontend.present", true);
     gguf_set_val_str(g, "synthesize.frontend.provider", "synthesize.qwen_bpe");
@@ -170,7 +170,7 @@ int run_valid_package() {
 }
 
 int run_voice_and_language_routing() {
-    GgufContext context = valid_metadata();
+    GgufContext              context = valid_metadata();
     synth::qwen3tts::HParams hparams;
     SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(context.get(), hparams) == SYNTH_OK);
 
@@ -203,58 +203,63 @@ int run_voice_and_language_routing() {
 }
 
 int run_rejections() {
-    SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) {
-        gguf_set_val_str(g, "synthesize.quantization.profile", "F32");
-    }, "F32 is not this family's source profile") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "synthesize.quantization.profile", "F32"); },
+                        "F32 is not this family's source profile") == 0);
 
-    SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) {
-        gguf_set_val_str(g, "synthesize.qwen3-tts.talker.rope_type", "mrope");
-    }, "sectioned rope is not implemented") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "synthesize.qwen3-tts.talker.rope_type", "mrope"); },
+                        "sectioned rope is not implemented") == 0);
 
-    SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) {
-        gguf_set_val_u32(g, "synthesize.qwen3-tts.talker.key_value_head_count", 5);
-    }, "query heads must divide by key/value heads") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.talker.key_value_head_count", 5); },
+            "query heads must divide by key/value heads") == 0);
 
-    SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) {
-        gguf_set_val_u32(g, "synthesize.qwen3-tts.code_predictor.code_group_count", 15);
-    }, "the two heads disagree about the codes per frame") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.code_predictor.code_group_count", 15); },
+            "the two heads disagree about the codes per frame") == 0);
 
-    SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) {
-        gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.hop_length", 1024);
-    }, "hop and frame rate must agree with the sample rate") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.hop_length", 1024); },
+                        "hop and frame rate must agree with the sample rate") == 0);
 
-    SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) {
-        gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.sample_rate", 16000);
-    }, "codec rate must match the declared output rate") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.sample_rate", 16000); },
+                        "codec rate must match the declared output rate") == 0);
 
-    SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) {
-        gguf_set_val_f32(g, "synthesize.capabilities.max_speaking_rate", 1.25f);
-    }, "this family has no speaking-rate control to promise") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_f32(g, "synthesize.capabilities.max_speaking_rate", 1.25f); },
+            "this family has no speaking-rate control to promise") == 0);
 
-    SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) {
-        gguf_set_val_str(g, "synthesize.voice.3.id", "someone-else");
-    }, "voice catalog and speaker table must name the same voices") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "synthesize.voice.3.id", "someone-else"); },
+                        "voice catalog and speaker table must name the same voices") == 0);
 
-    SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) {
-        const std::vector<std::string> shortened = { "english", "chinese" };
-        set_string_array(g, "synthesize.qwen3-tts.languages.names", shortened);
-    }, "a pinned dialect must exist as a language token") == 0);
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             const std::vector<std::string> shortened = { "english", "chinese" };
+                             set_string_array(g, "synthesize.qwen3-tts.languages.names", shortened);
+                         },
+                         "a pinned dialect must exist as a language token") == 0);
 
-    SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) {
-        gguf_set_val_bool(g, "synthesize.frontend.present", false);
-    }, "a raw-text family needs a frontend") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected([](gguf_context * g) { gguf_set_val_bool(g, "synthesize.frontend.present", false); },
+                        "a raw-text family needs a frontend") == 0);
 
-    SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) {
-        gguf_set_val_str(g, "synthesize.audio.sample_format", "s16le");
-    }, "only f32le is produced") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "synthesize.audio.sample_format", "s16le"); },
+                        "only f32le is produced") == 0);
 
-    SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) {
-        gguf_set_val_u32(g, "synthesize.qwen3-tts.architecture_version", 2);
-    }, "an unknown architecture version") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.architecture_version", 2); },
+                        "an unknown architecture version") == 0);
 
-    SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) {
-        gguf_set_val_bool(g, "synthesize.voice.has_package_default", true);
-    }, "this family names no package default voice") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected([](gguf_context * g) { gguf_set_val_bool(g, "synthesize.voice.has_package_default", true); },
+                        "this family names no package default voice") == 0);
     return 0;
 }
 

@@ -1,9 +1,9 @@
 # Qwen3-TTS Family Selection and Port Plan
 
 Status: Confirmed 2026-07-28. Intake, the oracle and conversion are complete;
-the C++ implementation is under way -- the shared decoder block and the code
-predictor are built and tested, the talker, text frontend, codec decoder and
-public seam are not. Port validation is not started. Selection was accepted on
+the C++ implementation is under way -- the shared decoder block, the code
+predictor and the tensor catalog are built and tested, the talker graph, text
+frontend, codec decoder and public seam are not. Port validation is not started. Selection was accepted on
 2026-07-26; the intake packet is
 `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
 
@@ -924,6 +924,99 @@ Port Validation Contract replays codes rather than reproducing them. What must
 match is the distribution behind the draw, so the frame test decodes greedily
 and compares every step's logits. They agree to 4.8e-07 on the CPU and 8.3e-07
 on CUDA, and every code matches.
+
+## The Package as Cut
+
+Re-cut 2026-07-28: **657 tensors, 2274 MB**, down from 818 and 2493.
+
+### The codec encoder is not carried
+
+The speech tokenizer's encoder half turns audio into codes. Synthesis runs the
+other way, so no graph in this package can reach it, and this checkpoint could
+not use it regardless: `model.safetensors` is 402 tensors, all `talker.`, with
+no speaker encoder at all, and the reference builds voice-clone prompts from the
+**Base** variant. Sixteen of the encoder's codebooks and both of its quantizer
+projections were bit-identical to the decoder's, so part of the 225 MB was
+literally the same weights stored twice.
+
+Dropping it is reversible for one conversion run, and leaves the catalog
+covering exactly what a graph can reach -- no region that is present, unread and
+therefore unvalidated. Reference Audio voice cloning is expected to need a
+different checkpoint variant, which re-cuts the package anyway.
+
+### Two defects the catalog surfaced
+
+Both would have failed at load, and neither was visible before something tried
+to resolve tensors by name.
+
+**27 names exceeded `GGML_MAX_NAME`.** GGML stores a tensor name in a fixed
+64-byte field and truncates past it without a word. A truncated name is not
+findable by the name the catalog asks for, and two names differing only past the
+cut become one tensor. Five path patterns overflowed, the longest at 70
+characters. The components that made them long are shortened --
+`post_attention_layernorm` to `post_attn_norm`, `self_attn_layer_scale` to
+`self_attn_scale`, `mlp_layer_scale` to `mlp_scale`, `_codebook.codebook` to
+`codebook` -- and the converter now refuses to emit any name at or over the
+limit, which is the part that keeps it from recurring.
+
+**The Voice catalog and the speaker table were ordered differently.** The
+generic `synthesize.voice.N.id` list was alphabetical and
+`synthesize.qwen3-tts.speakers.names` was by codec token id. They describe one
+catalog and the loader reads them index by index, so every entry named one
+speaker and would have selected another. The loader's own consistency check
+refused the package outright, which is how this was found. Both now follow the
+manifest's order.
+
+### Codec geometry is in the package
+
+The package carried only sample rate, hop and frame rate, which is not enough to
+derive a single codec tensor's shape. It now carries the decoder's own numbers
+under `synthesize.qwen3-tts.codec.decoder.*`, and the converter checks them
+rather than copying them: the upsample factors must multiply to exactly one
+frame of samples (8 x 5 x 4 x 3 x 2 x 2 = 1920), the residual stack must halve
+once per stage, and the codec must take the number of code groups the talker
+emits.
+
+| | value |
+| --- | --- |
+| latent / decoder dim | 1024 / 1536 |
+| codebook dim / size | 512 (quantizer runs at 256) / 2048 |
+| quantizers | 16, of which 1 semantic |
+| transformer | 8 layers, hidden 512, intermediate 1024, 16 heads x 64, sliding window 72 |
+| residual stages | rates 8, 5, 4, 3 -- widths 1536 -> 768 -> 384 -> 192 -> 96 |
+| ConvNeXt upsample | ratios 2, 2 at latent width |
+
+## The Tensor Catalog
+
+Built 2026-07-28 in `src/arch/qwen3-tts/catalog.{h,cpp}`.
+
+Every entry is resolved by canonical name with its storage type and shape
+checked, and the shape is **derived from the package's hyper-parameters** rather
+than written out. A package whose metadata and tensors disagree is refused at
+load; past that point the mistake stops being an error and becomes wrong audio.
+Under the source profile the type follows the half -- the talker carries the
+checkpoint's BF16, the codec the tokenizer's F32. No quantized package exists
+for this family yet, so a package claiming one is refused rather than measured
+against a rule nobody has written.
+
+After resolution the package is swept: **a tensor the catalog never asked for is
+an error.** A name nobody resolves is a name nobody checked.
+
+Confidence comes from two independent statements of the same package agreeing.
+The unit test writes the entry list out by hand from the checkpoint's layout
+while the catalog derives it from hyper-parameters; and `expected_tensor_count()`
+derives the total by arithmetic while the resolver derives it by enumeration. On
+the real package the arithmetic gives 657 against 657 present, and every region
+binds -- 28 talker layers, 15 predictor heads, 4 residual stages, 15 acoustic
+codebooks.
+
+One shape trap is worth naming because it survives an element-count check:
+`Conv1d` stores `[out, in, kernel]` and `ConvTranspose1d` stores
+`[in, out, kernel]`, so GGML reports `[kernel, in, out]` against
+`[kernel, out, in]`. The two differ only in the order of the trailing pair. A
+converter that confused them produces a package with exactly the right number of
+elements in every tensor, so the catalog resolves them through separate helpers
+and the test pins the swap as a rejection.
 
 ## Open Questions for Intake
 

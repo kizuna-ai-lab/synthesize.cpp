@@ -95,6 +95,28 @@ GgufContext valid_metadata() {
     gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.hop_length", kHopLength);
     gguf_set_val_f32(g, "synthesize.qwen3-tts.codec.frame_rate_hz", 12.5f);
 
+    // The decoder's real geometry: four residual stages at 8, 5, 4 and 3, two
+    // ConvNeXt stages at 2, and 8 x 5 x 4 x 3 x 2 x 2 = 1920 samples a frame.
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.latent_dim", 1024);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.dim", 1536);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.codebook_dim", 512);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.codebook_size", 2048);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.quantizer_count", kCodeGroups);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.semantic_quantizer_count", 1);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.hidden_size", 512);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.intermediate_size", 1024);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.layer_count", 8);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.attention_head_count", 16);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.key_value_head_count", 16);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.head_dim", 64);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.sliding_window", 72);
+    gguf_set_val_f32(g, "synthesize.qwen3-tts.codec.decoder.rms_norm_eps", 1e-5f);
+    gguf_set_val_f32(g, "synthesize.qwen3-tts.codec.decoder.rope_theta", 10000.0f);
+    const int32_t rates[]  = { 8, 5, 4, 3 };
+    const int32_t ratios[] = { 2, 2 };
+    gguf_set_arr_data(g, "synthesize.qwen3-tts.codec.decoder.upsample_rates", GGUF_TYPE_INT32, rates, 4);
+    gguf_set_arr_data(g, "synthesize.qwen3-tts.codec.decoder.upsampling_ratios", GGUF_TYPE_INT32, ratios, 2);
+
     gguf_set_val_u32(g, "synthesize.qwen3-tts.token.tts_bos_token_id", 151672);
     gguf_set_val_u32(g, "synthesize.qwen3-tts.token.tts_eos_token_id", 151673);
     gguf_set_val_u32(g, "synthesize.qwen3-tts.token.tts_pad_token_id", 151671);
@@ -228,6 +250,41 @@ int run_rejections() {
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.sample_rate", 16000); },
                         "codec rate must match the declared output rate") == 0);
+
+    // Every codec tensor's shape is derived from the decoder geometry, so a
+    // package whose geometry is wrong builds the wrong graph rather than failing.
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             const int32_t rates[] = { 8, 5, 4, 2 };
+                             gguf_set_arr_data(g, "synthesize.qwen3-tts.codec.decoder.upsample_rates", GGUF_TYPE_INT32,
+                                               rates, 4);
+                         },
+                         "the upsample factors must multiply to exactly one frame of samples") == 0);
+
+    SYNTH_TEST_CHECK(
+        expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.dim", 1000); },
+                        "the residual stack must halve once per stage") == 0);
+
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.quantizer_count", 12); },
+            "the codec must take the number of code groups the talker emits") == 0);
+
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.semantic_quantizer_count", 16);
+                         },
+                         "the semantic quantizers must leave acoustic groups behind them") == 0);
+
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.codebook_dim", 511); },
+            "the quantizer runs at half the codebook width, so it must be even") == 0);
+
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.decoder.key_value_head_count", 5); },
+            "codec query heads must divide its key/value heads") == 0);
 
     SYNTH_TEST_CHECK(
         expect_rejected(

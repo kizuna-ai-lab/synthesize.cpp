@@ -44,22 +44,20 @@ constexpr uint64_t kSeed         = 20260728u;
 
 // 4 steps x 12 vocabulary, step-major.
 constexpr float kExpectedLogits[] = {
-    1.9114958f,    -0.212811843f, 1.81460583f,   2.15212417f,   -1.72130978f,  -0.198428839f,
-    -1.54300416f,  0.720535517f,  0.50348711f,   0.191554591f,  0.970674276f,  -0.16088739f,
-    -0.593399167f, -0.888796091f, -0.427311599f, -0.94523102f,  0.212974012f,  -1.77432179f,
-    -0.49431631f,  -0.437291354f, 0.21668376f,   0.218171254f,  0.404909164f,  -0.116344802f,
-    -0.667533398f, 0.424502909f,  -0.613975763f, -0.831218541f, -0.259975433f, -1.6156106f,
-    -0.0992554128f, 1.09658647f,  0.340317011f,  -0.661373615f, 1.68910265f,   1.56436217f,
-    -0.615264773f, 0.371960461f,  1.15123785f,   -1.37388122f,  -0.60074091f,  0.562539399f,
-    1.37328827f,   -0.0802822039f, 1.40103304f,  0.397551984f,  -0.820950806f, -0.809743226f,
+    1.9114958f,    -0.212811843f,  1.81460583f,    2.15212417f,   -1.72130978f,  -0.198428839f, -1.54300416f,
+    0.720535517f,  0.50348711f,    0.191554591f,   0.970674276f,  -0.16088739f,  -0.593399167f, -0.888796091f,
+    -0.427311599f, -0.94523102f,   0.212974012f,   -1.77432179f,  -0.49431631f,  -0.437291354f, 0.21668376f,
+    0.218171254f,  0.404909164f,   -0.116344802f,  -0.667533398f, 0.424502909f,  -0.613975763f, -0.831218541f,
+    -0.259975433f, -1.6156106f,    -0.0992554128f, 1.09658647f,   0.340317011f,  -0.661373615f, 1.68910265f,
+    1.56436217f,   -0.615264773f,  0.371960461f,   1.15123785f,   -1.37388122f,  -0.60074091f,  0.562539399f,
+    1.37328827f,   -0.0802822039f, 1.40103304f,    0.397551984f,  -0.820950806f, -0.809743226f,
 };
 
 constexpr int32_t kExpectedCodes[] = { 3, 10, 10, 8 };
 
 // Sum of each acoustic code's embedding from its own group's table.
 constexpr float kExpectedSummedEmbedding[] = {
-    0.253510892f, -0.330078065f, 0.119186223f, -0.536568522f,
-    0.450968087f, 0.44172591f,   0.703374445f, 0.344540179f,
+    0.253510892f, -0.330078065f, 0.119186223f, -0.536568522f, 0.450968087f, 0.44172591f, 0.703374445f, 0.344540179f,
 };
 
 class LcgStream {
@@ -99,8 +97,7 @@ Context make_context(size_t bytes) {
 constexpr size_t kNodeBudget = 1024;
 
 Context make_graph_context() {
-    return make_context(ggml_tensor_overhead() * (kNodeBudget + 64) +
-                        ggml_graph_overhead_custom(kNodeBudget, false));
+    return make_context(ggml_tensor_overhead() * (kNodeBudget + 64) + ggml_graph_overhead_custom(kNodeBudget, false));
 }
 
 synth::qwen3tts::AttentionShape make_shape() {
@@ -117,17 +114,17 @@ synth::qwen3tts::AttentionShape make_shape() {
 // Everything the frame needs on one device, so the persistent tensors and the
 // backend stay together for the whole loop.
 struct Fixture {
-    ggml_backend_t                       backend = nullptr;
-    Context                              persistent;
-    ggml_backend_buffer_t                buffer = nullptr;
+    ggml_backend_t                        backend = nullptr;
+    Context                               persistent;
+    ggml_backend_buffer_t                 buffer = nullptr;
     synth::qwen3tts::CodePredictorWeights weights;
     synth::qwen3tts::CodePredictorCache   cache;
-    ggml_tensor *                        prefill      = nullptr;
-    ggml_tensor *                        token        = nullptr;
-    ggml_tensor *                        prefill_pos  = nullptr;
-    ggml_tensor *                        step_pos     = nullptr;
-    ggml_tensor *                        prefill_mask = nullptr;
-    ggml_tensor *                        codes        = nullptr;
+    ggml_tensor *                         prefill      = nullptr;
+    ggml_tensor *                         token        = nullptr;
+    ggml_tensor *                         prefill_pos  = nullptr;
+    ggml_tensor *                         step_pos     = nullptr;
+    ggml_tensor *                         prefill_mask = nullptr;
+    ggml_tensor *                         codes        = nullptr;
 
     ~Fixture() {
         if (buffer != nullptr) {
@@ -152,7 +149,7 @@ bool build_fixture(ggml_backend_dev_t device, Fixture & fixture) {
     std::vector<ggml_tensor *> ordered;
     std::vector<float>         scales;
     std::vector<float>         offsets;
-    auto add = [&](ggml_tensor * tensor, float scale, float offset) {
+    auto                       add = [&](ggml_tensor * tensor, float scale, float offset) {
         ordered.push_back(tensor);
         scales.push_back(scale);
         offsets.push_back(offset);
@@ -163,12 +160,12 @@ bool build_fixture(ggml_backend_dev_t device, Fixture & fixture) {
     for (uint32_t index = 0; index < kLayers; ++index) {
         synth::qwen3tts::DecoderLayerWeights & layer = fixture.weights.layers[index];
         layer.input_layernorm = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.25f, 1.0f);
-        layer.q_proj    = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kHeads * kHeadDim), 0.5f, 0.0f);
-        layer.k_proj    = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kKvHeads * kHeadDim), 0.5f, 0.0f);
-        layer.v_proj    = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kKvHeads * kHeadDim), 0.5f, 0.0f);
-        layer.o_proj    = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHeads * kHeadDim, kHidden), 0.5f, 0.0f);
-        layer.q_norm    = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHeadDim), 0.25f, 1.0f);
-        layer.k_norm    = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHeadDim), 0.25f, 1.0f);
+        layer.q_proj          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kHeads * kHeadDim), 0.5f, 0.0f);
+        layer.k_proj          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kKvHeads * kHeadDim), 0.5f, 0.0f);
+        layer.v_proj          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kKvHeads * kHeadDim), 0.5f, 0.0f);
+        layer.o_proj          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHeads * kHeadDim, kHidden), 0.5f, 0.0f);
+        layer.q_norm          = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHeadDim), 0.25f, 1.0f);
+        layer.k_norm          = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHeadDim), 0.25f, 1.0f);
         layer.post_attention_layernorm = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.25f, 1.0f);
         layer.gate_proj = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kIntermediate), 0.5f, 0.0f);
         layer.up_proj   = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kIntermediate), 0.5f, 0.0f);
@@ -214,8 +211,8 @@ bool build_fixture(ggml_backend_dev_t device, Fixture & fixture) {
     const int32_t prefill_positions[2] = { 0, 1 };
     ggml_backend_tensor_set(fixture.prefill_pos, prefill_positions, 0, ggml_nbytes(fixture.prefill_pos));
 
-    const float infinity  = std::numeric_limits<float>::infinity();
-    const float mask[4]   = { 0.0f, -infinity, 0.0f, 0.0f };
+    const float infinity = std::numeric_limits<float>::infinity();
+    const float mask[4]  = { 0.0f, -infinity, 0.0f, 0.0f };
     ggml_backend_tensor_set(fixture.prefill_mask, mask, 0, ggml_nbytes(fixture.prefill_mask));
     return true;
 }
@@ -246,14 +243,14 @@ bool run_frame(ggml_backend_dev_t device, float & max_diff, std::vector<int32_t>
         return false;
     }
 
-    const synth::qwen3tts::AttentionShape        shape    = make_shape();
+    const synth::qwen3tts::AttentionShape                 shape = make_shape();
     const std::vector<synth::qwen3tts::CodePredictorStep> schedule =
         synth::qwen3tts::code_predictor_schedule(kCodeGroups);
     if (schedule.size() != kCodeGroups - 1) {
         return false;
     }
 
-    synth::NormalRandomStream stream(1u);
+    synth::NormalRandomStream       stream(1u);
     synth::qwen3tts::SamplingParams greedy;
     greedy.enabled = false;
 
@@ -292,9 +289,8 @@ bool run_frame(ggml_backend_dev_t device, float & max_diff, std::vector<int32_t>
         for (uint32_t layer = 0; layer < kLayers; ++layer) {
             fixture.cache.layers[layer].filled = filled;
         }
-        ggml_tensor * logits =
-            synth::qwen3tts::build_code_predictor(graph_ctx.get(), graph, input, positions, mask, fixture.weights,
-                                                  shape, step.lm_head, fixture.cache);
+        ggml_tensor * logits = synth::qwen3tts::build_code_predictor(
+            graph_ctx.get(), graph, input, positions, mask, fixture.weights, shape, step.lm_head, fixture.cache);
         if (logits == nullptr || logits->ne[0] != int64_t(kVocab) || logits->ne[1] != 1) {
             return false;
         }
@@ -457,9 +453,9 @@ int check_rejections() {
 
     // A projection bound on one side only would drop its bias without a word.
     synth::qwen3tts::CodePredictorWeights half_projected = weights;
-    half_projected.input_projection = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kHidden, kHidden);
-    SYNTH_TEST_CHECK(synth::qwen3tts::build_code_predictor(ctx, graph, input, positions, nullptr, half_projected,
-                                                           shape, 0, cache) == nullptr);
+    half_projected.input_projection                      = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kHidden, kHidden);
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_code_predictor(ctx, graph, input, positions, nullptr, half_projected, shape,
+                                                           0, cache) == nullptr);
 
     // Embedding tables are addressed by group; one outside the catalog is a
     // defect, not a lookup to clamp.

@@ -167,6 +167,88 @@ bool read_code_predictor(const GgufMetadata & meta, HParams & hparams) {
     return true;
 }
 
+bool read_codec_decoder(const GgufMetadata & meta, HParams & hparams) {
+    CodecDecoderParams & decoder = hparams.codec.decoder;
+    const std::string    prefix  = "synthesize.qwen3-tts.codec.decoder.";
+    if (!meta.u32(prefix + "latent_dim", decoder.latent_dim) || !meta.u32(prefix + "dim", decoder.dim) ||
+        !meta.u32(prefix + "codebook_dim", decoder.codebook_dim) ||
+        !meta.u32(prefix + "codebook_size", decoder.codebook_size) ||
+        !meta.u32(prefix + "quantizer_count", decoder.quantizer_count) ||
+        !meta.u32(prefix + "semantic_quantizer_count", decoder.semantic_quantizer_count) ||
+        !meta.u32(prefix + "hidden_size", decoder.hidden_size) ||
+        !meta.u32(prefix + "intermediate_size", decoder.intermediate_size) ||
+        !meta.u32(prefix + "layer_count", decoder.layer_count) ||
+        !meta.u32(prefix + "attention_head_count", decoder.attention_head_count) ||
+        !meta.u32(prefix + "key_value_head_count", decoder.key_value_head_count) ||
+        !meta.u32(prefix + "head_dim", decoder.head_dim) ||
+        !meta.u32(prefix + "sliding_window", decoder.sliding_window) ||
+        !meta.f32(prefix + "rms_norm_eps", decoder.rms_norm_eps) ||
+        !meta.f32(prefix + "rope_theta", decoder.rope_theta) ||
+        !meta.positive_i32_array(prefix + "upsample_rates", decoder.upsample_rates) ||
+        !meta.positive_i32_array(prefix + "upsampling_ratios", decoder.upsampling_ratios)) {
+        return false;
+    }
+    if (decoder.latent_dim == 0 || decoder.dim == 0 || decoder.codebook_dim == 0 || decoder.codebook_size == 0 ||
+        decoder.hidden_size == 0 || decoder.intermediate_size == 0 || decoder.layer_count == 0 ||
+        decoder.head_dim == 0 || decoder.key_value_head_count == 0 || decoder.upsample_rates.empty() ||
+        decoder.upsampling_ratios.empty()) {
+        std::fprintf(stderr, "qwen3-tts: codec decoder geometry contains a zero dimension\n");
+        return false;
+    }
+    if (decoder.rms_norm_eps <= 0.0f || decoder.rope_theta <= 0.0f) {
+        std::fprintf(stderr, "qwen3-tts: codec decoder declares a non-positive rms_norm_eps or rope_theta\n");
+        return false;
+    }
+    if (decoder.attention_head_count % decoder.key_value_head_count != 0) {
+        std::fprintf(stderr, "qwen3-tts: codec decoder query heads do not divide its key/value heads\n");
+        return false;
+    }
+    // The quantizer runs at half the codebook dimension, with a projection on
+    // either side; an odd width would round the halving and shift every table.
+    if (decoder.codebook_dim % 2 != 0) {
+        std::fprintf(stderr, "qwen3-tts: codec codebook_dim %u is not even\n", decoder.codebook_dim);
+        return false;
+    }
+    if (decoder.semantic_quantizer_count == 0 || decoder.semantic_quantizer_count >= decoder.quantizer_count) {
+        std::fprintf(stderr, "qwen3-tts: %u semantic quantizers leave no acoustic groups behind them\n",
+                     decoder.semantic_quantizer_count);
+        return false;
+    }
+    // The talker and the codec must agree on how many codes a frame holds, or
+    // the decoder would be handed a frame it cannot reconstruct.
+    if (decoder.quantizer_count != hparams.talker.code_group_count) {
+        std::fprintf(stderr, "qwen3-tts: the codec takes %u code groups but the talker emits %u\n",
+                     decoder.quantizer_count, hparams.talker.code_group_count);
+        return false;
+    }
+    // The residual stack halves its width once per rate, so the narrowest stage
+    // must still be a whole number of channels.
+    uint32_t narrowest = decoder.dim;
+    for (size_t stage = 0; stage < decoder.upsample_rates.size(); ++stage) {
+        if (narrowest % 2 != 0) {
+            std::fprintf(stderr, "qwen3-tts: codec decoder width %u does not halve %zu times\n", decoder.dim,
+                         decoder.upsample_rates.size());
+            return false;
+        }
+        narrowest /= 2;
+    }
+    // Every upsample factor multiplies out to exactly one frame of samples.
+    // Deriving this rather than trusting the hop is what catches a package whose
+    // stack and frame geometry disagree, which would drift the output length.
+    uint64_t total = 1;
+    for (const std::vector<uint32_t> & factors : { decoder.upsample_rates, decoder.upsampling_ratios }) {
+        for (uint32_t factor : factors) {
+            total *= factor;
+        }
+    }
+    if (total != hparams.codec.hop_length) {
+        std::fprintf(stderr, "qwen3-tts: the codec upsample factors multiply to %llu, not the hop %u\n",
+                     static_cast<unsigned long long>(total), hparams.codec.hop_length);
+        return false;
+    }
+    return true;
+}
+
 bool read_codec(const GgufMetadata & meta, HParams & hparams) {
     CodecParams & codec = hparams.codec;
     if (!meta.u32("synthesize.qwen3-tts.codec.sample_rate", codec.sample_rate) ||
@@ -192,7 +274,7 @@ bool read_codec(const GgufMetadata & meta, HParams & hparams) {
                      codec.hop_length, implied, static_cast<double>(codec.frame_rate_hz));
         return false;
     }
-    return true;
+    return read_codec_decoder(meta, hparams);
 }
 
 bool read_tokens(const GgufMetadata & meta, HParams & hparams) {

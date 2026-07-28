@@ -50,10 +50,40 @@ struct CodePredictorParams {
     uint32_t code_group_count     = 0;
 };
 
+// The codec decoder's geometry. The speech tokenizer's encoder half is
+// deliberately absent from the package: synthesis runs codes to audio only, this
+// checkpoint carries no speaker encoder to clone with, and the encoder's first
+// sixteen codebooks duplicated the decoder's exactly. Every codec tensor's
+// expected shape is derived from these numbers.
+struct CodecDecoderParams {
+    uint32_t              latent_dim               = 0;
+    // The residual stack's widest point, halved once per upsample rate.
+    uint32_t              dim                      = 0;
+    uint32_t              codebook_dim             = 0;
+    uint32_t              codebook_size            = 0;
+    uint32_t              quantizer_count          = 0;
+    uint32_t              semantic_quantizer_count = 0;
+    uint32_t              hidden_size              = 0;
+    uint32_t              intermediate_size        = 0;
+    uint32_t              layer_count              = 0;
+    uint32_t              attention_head_count     = 0;
+    uint32_t              key_value_head_count     = 0;
+    uint32_t              head_dim                 = 0;
+    uint32_t              sliding_window           = 0;
+    float                 rms_norm_eps             = 0.0f;
+    float                 rope_theta               = 0.0f;
+    // One transposed convolution per rate in the residual stack, and one
+    // ConvNeXt stage per ratio ahead of it. Together they multiply to the hop.
+    std::vector<uint32_t> upsample_rates;
+    std::vector<uint32_t> upsampling_ratios;
+};
+
 struct CodecParams {
     uint32_t sample_rate   = 0;
     uint32_t hop_length    = 0;
     float    frame_rate_hz = 0.0f;
+
+    CodecDecoderParams decoder;
 };
 
 // Token ids the graph needs by value rather than by name.

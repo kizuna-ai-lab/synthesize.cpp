@@ -25,8 +25,8 @@ struct CodePredictorWeights {
     // The reference projects the talker's hidden state into the predictor's
     // width. This variant's widths agree, so its projection is an Identity and
     // the package carries no tensor; a rung whose widths differ would bind both.
-    ggml_tensor * input_projection      = nullptr;
-    ggml_tensor * input_projection_bias = nullptr;
+    ggml_tensor *                    input_projection      = nullptr;
+    ggml_tensor *                    input_projection_bias = nullptr;
 };
 
 // One cache per layer, all of the same capacity. The predictor's cache covers a
@@ -66,8 +66,6 @@ ggml_tensor * build_code_predictor(ggml_context *               context,
 // the talker consumes as the next frame's input. `codes` is an I32 vector of
 // code_group_count - 1 ids, one per acoustic group in order. The talker adds its
 // own embedding of the semantic code to this.
-ggml_tensor * sum_code_embeddings(ggml_context *               context,
-                                  const CodePredictorWeights & weights,
-                                  ggml_tensor *                codes);
+ggml_tensor * sum_code_embeddings(ggml_context * context, const CodePredictorWeights & weights, ggml_tensor * codes);
 
 }  // namespace synth::qwen3tts

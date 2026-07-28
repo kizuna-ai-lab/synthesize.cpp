@@ -64,7 +64,7 @@ uint32_t select_code(const std::vector<float> & logits, const SamplingParams & p
 
     // top-k first, matching the reference's warper order. A k at or above the
     // vocabulary keeps everything, which is what the reference's clamp does.
-    const size_t keep = params.top_k == 0 ? scores.size() : std::min<size_t>(params.top_k, scores.size());
+    const size_t        keep = params.top_k == 0 ? scores.size() : std::min<size_t>(params.top_k, scores.size());
     std::vector<size_t> order(scores.size());
     std::iota(order.begin(), order.end(), size_t(0));
     // Descending by score, ties broken by the lower index, so the survivors are
@@ -81,8 +81,8 @@ uint32_t select_code(const std::vector<float> & logits, const SamplingParams & p
     // to least likely, everything past the point where the mass reaches top_p is
     // dropped. The most likely code is always kept, which is what the
     // reference's min_tokens_to_keep guarantees.
-    const float highest = filtered[order[0]];
-    double      total   = 0.0;
+    const float         highest = filtered[order[0]];
+    double              total   = 0.0;
     std::vector<double> weights(scores.size(), 0.0);
     for (size_t rank = 0; rank < keep; ++rank) {
         const size_t index = order[rank];
@@ -112,7 +112,7 @@ uint32_t select_code(const std::vector<float> & logits, const SamplingParams & p
         return uint32_t(order[0]);
     }
 
-    const double draw       = double(stream.next_uniform()) * retained;
+    const double draw        = double(stream.next_uniform()) * retained;
     double       accumulated = 0.0;
     for (size_t rank = 0; rank < survivors; ++rank) {
         accumulated += weights[order[rank]];

@@ -41,8 +41,8 @@ ggml_tensor * build_code_predictor(ggml_context *               context,
                                    uint32_t                     lm_head,
                                    const CodePredictorCache &   cache) {
     if (context == nullptr || graph == nullptr || input == nullptr || weights.norm == nullptr ||
-        weights.layers.empty() || weights.layers.size() != cache.layers.size() ||
-        lm_head >= weights.lm_head.size() || weights.lm_head[lm_head] == nullptr) {
+        weights.layers.empty() || weights.layers.size() != cache.layers.size() || lm_head >= weights.lm_head.size() ||
+        weights.lm_head[lm_head] == nullptr) {
         return nullptr;
     }
     // A projection is either fully bound or absent; a half-bound one would
@@ -53,8 +53,8 @@ ggml_tensor * build_code_predictor(ggml_context *               context,
 
     ggml_tensor * hidden = input;
     if (weights.input_projection != nullptr) {
-        hidden = ggml_add(context, ggml_mul_mat(context, weights.input_projection, hidden),
-                          weights.input_projection_bias);
+        hidden =
+            ggml_add(context, ggml_mul_mat(context, weights.input_projection, hidden), weights.input_projection_bias);
     }
 
     for (size_t index = 0; index < weights.layers.size(); ++index) {
@@ -79,11 +79,8 @@ ggml_tensor * build_code_predictor(ggml_context *               context,
     return ggml_mul_mat(context, weights.lm_head[lm_head], ggml_cont(context, last));
 }
 
-ggml_tensor * sum_code_embeddings(ggml_context *               context,
-                                  const CodePredictorWeights & weights,
-                                  ggml_tensor *                codes) {
-    if (context == nullptr || codes == nullptr || codes->type != GGML_TYPE_I32 ||
-        weights.codec_embedding.empty() ||
+ggml_tensor * sum_code_embeddings(ggml_context * context, const CodePredictorWeights & weights, ggml_tensor * codes) {
+    if (context == nullptr || codes == nullptr || codes->type != GGML_TYPE_I32 || weights.codec_embedding.empty() ||
         codes->ne[0] != static_cast<int64_t>(weights.codec_embedding.size())) {
         return nullptr;
     }

@@ -58,7 +58,10 @@ def parse_args() -> argparse.Namespace:
 
 
 # The public interface speaks BCP-47 and the manifest names languages in full,
-# the same bridge the family makes internally.
+# the same bridge the family makes internally. "auto" passes through: it is the
+# reference's no-think prompt, which is a position shorter than any named
+# language, and a fallback that quietly turned it into "en" made the port build a
+# prompt one position longer than the oracle's.
 LANGUAGE_TAGS = {
     "english": "en", "german": "de", "spanish": "es", "chinese": "zh", "japanese": "ja",
     "french": "fr", "korean": "ko", "russian": "ru", "italian": "it", "portuguese": "pt",
@@ -99,7 +102,7 @@ def run_case(arguments: argparse.Namespace, case: dict, oracle_root: pathlib.Pat
     language = case["input"].get("language_tag", "english")
     command = [
         str(arguments.runner), str(arguments.model), str(oracle), str(work),
-        case["voice"]["id"], LANGUAGE_TAGS.get(language, "en"),
+        case["voice"]["id"], "auto" if language == "auto" else LANGUAGE_TAGS[language],
         *[str(layer) for layer in PROBE_LAYERS],
     ]
     finished = subprocess.run(command, capture_output=True, text=True)

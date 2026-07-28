@@ -68,8 +68,7 @@ synth_status_t build_talker_prompt(const HParams & hparams, const TalkerPromptRe
     }
     // The first token of the text shares its position with codec_bos. Everything
     // after it is handed to the decode loop one step at a time.
-    out.positions.push_back(
-        paired(TalkerInputPosition::Text::Token, codec.back(), request.text_tokens.front()));
+    out.positions.push_back(paired(TalkerInputPosition::Text::Token, codec.back(), request.text_tokens.front()));
 
     out.trailing.reserve(request.text_tokens.size());
     for (size_t index = 1; index < request.text_tokens.size(); ++index) {
@@ -106,10 +105,10 @@ bool resolve_text_token(const HParams & hparams, const TalkerInputPosition & pos
 }  // namespace
 
 synth_status_t flatten_talker_prompt(const HParams &        hparams,
-                                    const TalkerPrompt &   prompt,
-                                    std::vector<int32_t> & text_tokens,
-                                    std::vector<int32_t> & codec_tokens,
-                                    int64_t &              codec_offset) {
+                                     const TalkerPrompt &   prompt,
+                                     std::vector<int32_t> & text_tokens,
+                                     std::vector<int32_t> & codec_tokens,
+                                     int64_t &              codec_offset) {
     text_tokens.clear();
     codec_tokens.clear();
     codec_offset = 0;

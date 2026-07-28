@@ -52,12 +52,12 @@ struct TalkerPromptRequest {
     std::vector<uint32_t> text_tokens;
     // Absent selects the reference's no-think path, which emits no language token
     // at all rather than a default one.
-    bool     has_language   = false;
-    uint32_t language_token = 0;
+    bool                  has_language   = false;
+    uint32_t              language_token = 0;
     // Absent when no preset Voice was selected. A speaker is a codec-vocabulary
     // token, not an embedding, which is why it sits in this stream.
-    bool     has_speaker   = false;
-    uint32_t speaker_token = 0;
+    bool                  has_speaker    = false;
+    uint32_t              speaker_token  = 0;
 };
 
 // Lays out the prefill and the trailing schedule.

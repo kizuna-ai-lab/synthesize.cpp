@@ -23,9 +23,9 @@ ggml_tensor * build_text_projection(ggml_context * context, const TalkerWeights 
         return nullptr;
     }
     ggml_tensor * hidden = ggml_get_rows(context, weights.text_embedding, token_ids);
-    hidden = ggml_add(context, ggml_mul_mat(context, weights.text_projection_1.weight, hidden),
-                      weights.text_projection_1.bias);
-    hidden = ggml_silu(context, hidden);
+    hidden               = ggml_add(context, ggml_mul_mat(context, weights.text_projection_1.weight, hidden),
+                                    weights.text_projection_1.bias);
+    hidden               = ggml_silu(context, hidden);
     return ggml_add(context, ggml_mul_mat(context, weights.text_projection_2.weight, hidden),
                     weights.text_projection_2.bias);
 }
@@ -54,9 +54,9 @@ ggml_tensor * build_talker_prefill_input(ggml_context *        context,
 }
 
 ggml_tensor * build_talker_step_input(ggml_context *        context,
-                                     const TalkerWeights & weights,
-                                     ggml_tensor *         summed_codes,
-                                     ggml_tensor *         text_token) {
+                                      const TalkerWeights & weights,
+                                      ggml_tensor *         summed_codes,
+                                      ggml_tensor *         text_token) {
     if (context == nullptr || summed_codes == nullptr) {
         return nullptr;
     }
@@ -99,10 +99,9 @@ ggml_tensor * build_talker_step(ggml_context *         context,
     // Only the last position predicts, and its hidden state is also what the code
     // predictor prefills with, so both come from the same view.
     const int64_t positions = hidden->ne[1];
-    ggml_tensor * last =
-        ggml_cont(context, ggml_view_2d(context, hidden, hidden->ne[0], 1, hidden->nb[1],
-                                        static_cast<size_t>(positions - 1) * hidden->nb[1]));
-    *out_hidden = last;
+    ggml_tensor * last      = ggml_cont(context, ggml_view_2d(context, hidden, hidden->ne[0], 1, hidden->nb[1],
+                                                              static_cast<size_t>(positions - 1) * hidden->nb[1]));
+    *out_hidden             = last;
     return ggml_mul_mat(context, weights.codec_head, last);
 }
 

@@ -164,6 +164,7 @@ synth_add_unit_test(synthesize-qwen3-tts-metadata-test qwen3_tts_metadata_test.c
 synth_add_unit_test(synthesize-qwen3-tts-catalog-test qwen3_tts_catalog_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-decoder-layer-test qwen3_tts_decoder_layer_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-talker-test qwen3_tts_talker_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-codec-ops-test qwen3_tts_codec_ops_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-code-predictor-test qwen3_tts_code_predictor_test.cpp)
 synth_add_unit_test(synthesize-kokoro-lstm-test kokoro_lstm_test.cpp)
 synth_add_unit_test(synthesize-kokoro-catalog-test kokoro_catalog_test.cpp)

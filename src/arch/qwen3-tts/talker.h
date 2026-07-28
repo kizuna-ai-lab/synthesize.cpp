@@ -42,9 +42,9 @@ ggml_tensor * build_talker_prefill_input(ggml_context *        context,
 // plus the text this step contributes. The sum comes from the code predictor's
 // tables and the talker's own for group 0; see sum_code_embeddings.
 ggml_tensor * build_talker_step_input(ggml_context *        context,
-                                     const TalkerWeights & weights,
-                                     ggml_tensor *         summed_codes,
-                                     ggml_tensor *         text_token);
+                                      const TalkerWeights & weights,
+                                      ggml_tensor *         summed_codes,
+                                      ggml_tensor *         text_token);
 
 // Runs the talker over `input` ([hidden_size, positions]) and returns the logits
 // of the last position, [codec_vocab_size, 1]. `out_hidden` receives that

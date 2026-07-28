@@ -1351,6 +1351,53 @@ frame-major. Transposed codes decode to audio rather than to an error.
 
 Before these, layer 0 sat at a cosine of **-0.01**.
 
+### Measured tolerances
+
+All eighteen Golden cases pass. The oracle runs bfloat16 on CUDA and the port
+runs F32 on CPU, so these cover a dtype and a device difference as well as an
+implementation one -- which is the comparison the contract asks for.
+
+| probe | worst cosine | worst max-abs | gate |
+| --- | --- | --- | --- |
+| talker.hidden_l0 | 0.999992 | 0.084 | cosine 0.99996 |
+| talker.hidden_l7 | 0.999986 | 4.53 | cosine 0.99993 |
+| talker.hidden_l14 | 0.999971 | 7.63 | cosine 0.999855 |
+| talker.hidden_l21 | 0.999942 | 12.05 | cosine 0.99971 |
+| talker.hidden_l27 | 0.999915 | 17.39 | cosine 0.999575 |
+| talker.final | 0.999452 | 3.84 | cosine 0.99726 |
+| talker.logits | 0.999522 | 1.44 | cosine 0.99761 |
+| audio.pcm | 0.999427 | 0.154 | cosine 0.997135, max-abs 0.5 |
+
+Every threshold is **five times the measured deviation in (1 - cosine)**. That
+headroom absorbs run-to-run variation and stays far tighter than any defect this
+suite caught: a transposed code stream gave cosine 0.017 and a prompt one
+position short gave -0.01.
+
+The talker probes gate on cosine alone, and max-abs is recorded as observed. The
+deep layers carry outlier channels ahead of the final norm -- 17.4 at L27 against
+a cosine of 0.99992 -- so a max-abs gate would report catastrophic failure on a
+correct port. The waveform gates on both, because a listener hears the waveform
+and a cosine over it would hide a constant offset.
+
+`--check` reads the file and refuses to run when a stage is not recorded in it,
+so a tolerance stays an input to validation rather than something the suite
+writes for itself.
+
+### A fifth defect, in the harness
+
+A dictionary fallback in the validator turned the manifest's `"auto"` language
+into `"en"`, so the port built a prompt carrying a language token where the
+oracle built one without. That is one position longer, and it surfaced as a shape
+mismatch rather than a number -- the honest failure, but the cause was the
+harness and not the port.
+
+### Not done in this stage
+
+Phase 3, the public-request runs -- seed reporting, same-seed repeatability,
+Voice selection and cleanup without tensor injection -- has not been written.
+Phases 4 and 5 are the quantization profiles and the Execution Backends, which
+are stages 6 and 7.
+
 ## Open Questions for Intake
 
 1. Confirm the codec decoder topology against upstream rather than against a

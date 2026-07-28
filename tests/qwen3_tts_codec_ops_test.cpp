@@ -41,75 +41,52 @@ constexpr uint64_t kSeed        = 20260728u;
 
 // ne = [6 channels, 7 length].
 constexpr float kExpectedCausalConv[] = {
-    -0.044349093f, -0.113175407f, -0.0532087423f, 0.357307076f,
-    0.225883022f, 0.10605213f, -0.0804323256f, -0.0914198756f,
-    -0.330780745f, 0.121067591f, -0.293832153f, 0.0818357095f,
-    0.319016904f, -0.0427661352f, -0.0826792866f, 0.330877572f,
-    -0.00236040354f, -0.104884334f, -0.187254056f, 0.0129179731f,
-    -0.440484613f, 0.196778163f, 0.068801932f, 0.0170272384f,
-    0.231575072f, -0.315061659f, -0.109611161f, 0.429358721f,
-    0.0634099245f, -0.272652298f, -0.371566862f, 0.312565029f,
-    -0.0644516051f, -0.253964871f, 0.721820414f, 0.0443798751f,
-    0.24401167f, 0.00472286716f, -0.123672083f, 0.431849808f,
-    0.283916533f, -0.358228385f,
+    -0.044349093f,  -0.113175407f, -0.0532087423f,  0.357307076f,  0.225883022f,   0.10605213f,   -0.0804323256f,
+    -0.0914198756f, -0.330780745f, 0.121067591f,    -0.293832153f, 0.0818357095f,  0.319016904f,  -0.0427661352f,
+    -0.0826792866f, 0.330877572f,  -0.00236040354f, -0.104884334f, -0.187254056f,  0.0129179731f, -0.440484613f,
+    0.196778163f,   0.068801932f,  0.0170272384f,   0.231575072f,  -0.315061659f,  -0.109611161f, 0.429358721f,
+    0.0634099245f,  -0.272652298f, -0.371566862f,   0.312565029f,  -0.0644516051f, -0.253964871f, 0.721820414f,
+    0.0443798751f,  0.24401167f,   0.00472286716f,  -0.123672083f, 0.431849808f,   0.283916533f,  -0.358228385f,
 };
 
 // ne = [4 channels, 7 length].
 constexpr float kExpectedDepthwise[] = {
-    -0.110034592f, -0.164307237f, -0.164613813f, -0.0801490396f,
-    -0.0955354795f, -0.205003217f, -0.190139636f, -0.266549885f,
-    -0.0687134713f, -0.178187236f, -0.339178383f, -0.054378029f,
-    -0.189022914f, -0.0767542943f, -0.0484885909f, 0.043512255f,
-    0.0629738122f, -0.161004007f, -0.311598599f, 0.0872185677f,
-    -0.439835906f, -0.118405335f, -0.130255714f, -0.0524706952f,
-    0.0108251609f, -0.136212245f, -0.120674387f, -0.36198777f,
+    -0.110034592f,  -0.164307237f,  -0.164613813f,  -0.0801490396f, -0.0955354795f, -0.205003217f, -0.190139636f,
+    -0.266549885f,  -0.0687134713f, -0.178187236f,  -0.339178383f,  -0.054378029f,  -0.189022914f, -0.0767542943f,
+    -0.0484885909f, 0.043512255f,   0.0629738122f,  -0.161004007f,  -0.311598599f,  0.0872185677f, -0.439835906f,
+    -0.118405335f,  -0.130255714f,  -0.0524706952f, 0.0108251609f,  -0.136212245f,  -0.120674387f, -0.36198777f,
 };
 
 // ne = [6 channels, 14 length].
 constexpr float kExpectedTransposed[] = {
-    -0.185159475f, 0.294198006f, -0.3488608f, 0.399559528f,
-    -0.115084536f, -0.155954868f, 0.210257739f, 0.243169487f,
-    -0.231953323f, 0.286713481f, -0.303467155f, -0.151800901f,
-    0.468250245f, 0.397378683f, -0.363762021f, -0.243587315f,
-    -0.452624351f, -0.0850169212f, 0.0366950631f, 0.312010765f,
-    -0.326329172f, 0.283921391f, -0.325410426f, -0.229189426f,
-    -0.0458339676f, 0.0441707373f, -0.120846435f, 0.26471436f,
-    0.105467021f, -0.161327124f, -0.0450076759f, -0.264992744f,
-    -0.465083718f, 0.556341648f, -0.178614214f, 0.00243459642f,
-    0.0298268571f, -0.204512745f, -0.0544818193f, 0.0391616374f,
-    -0.240094557f, -0.464788556f, -0.292717189f, 0.0151424259f,
-    -0.163343504f, -0.00114241242f, -0.00104613602f, 0.0131613612f,
-    0.0433805846f, 0.374323159f, -0.468574762f, 0.124293894f,
-    -0.163627997f, 0.0110455155f, 0.329000503f, 0.35879451f,
-    -0.380473644f, 0.0751181692f, -0.276529878f, -0.27585572f,
-    -0.086698547f, -0.305549145f, -0.210307121f, 0.905746937f,
-    0.00916711986f, 0.119378388f, -0.109759197f, -0.0641605258f,
-    0.0637532473f, 0.243605196f, -0.193075776f, -0.0104810148f,
-    0.0492940322f, 0.757307947f, -0.384620816f, 0.193260342f,
-    -0.532383502f, -0.362530947f, 0.358118802f, 0.800749063f,
-    0.15528664f, 0.115284026f, -0.353857428f, -0.635562778f,
+    -0.185159475f,  0.294198006f,   -0.3488608f,    0.399559528f,    -0.115084536f,   -0.155954868f, 0.210257739f,
+    0.243169487f,   -0.231953323f,  0.286713481f,   -0.303467155f,   -0.151800901f,   0.468250245f,  0.397378683f,
+    -0.363762021f,  -0.243587315f,  -0.452624351f,  -0.0850169212f,  0.0366950631f,   0.312010765f,  -0.326329172f,
+    0.283921391f,   -0.325410426f,  -0.229189426f,  -0.0458339676f,  0.0441707373f,   -0.120846435f, 0.26471436f,
+    0.105467021f,   -0.161327124f,  -0.0450076759f, -0.264992744f,   -0.465083718f,   0.556341648f,  -0.178614214f,
+    0.00243459642f, 0.0298268571f,  -0.204512745f,  -0.0544818193f,  0.0391616374f,   -0.240094557f, -0.464788556f,
+    -0.292717189f,  0.0151424259f,  -0.163343504f,  -0.00114241242f, -0.00104613602f, 0.0131613612f, 0.0433805846f,
+    0.374323159f,   -0.468574762f,  0.124293894f,   -0.163627997f,   0.0110455155f,   0.329000503f,  0.35879451f,
+    -0.380473644f,  0.0751181692f,  -0.276529878f,  -0.27585572f,    -0.086698547f,   -0.305549145f, -0.210307121f,
+    0.905746937f,   0.00916711986f, 0.119378388f,   -0.109759197f,   -0.0641605258f,  0.0637532473f, 0.243605196f,
+    -0.193075776f,  -0.0104810148f, 0.0492940322f,  0.757307947f,    -0.384620816f,   0.193260342f,  -0.532383502f,
+    -0.362530947f,  0.358118802f,   0.800749063f,   0.15528664f,     0.115284026f,    -0.353857428f, -0.635562778f,
 };
 
 // ne = [4 channels, 7 length].
 constexpr float kExpectedSnakeBeta[] = {
-    0.211418718f, -0.211093172f, 0.340142608f, 0.0482888743f,
-    0.374764264f, 0.557753801f, -0.124428213f, -0.318217635f,
-    0.270131081f, -0.0398793221f, 0.302310228f, -0.267833978f,
-    -0.354219884f, -0.0402596407f, -0.100752652f, -0.0567697249f,
-    0.549094796f, 0.490957767f, 0.0119910855f, 0.370509863f,
-    -0.354136705f, -0.213347778f, 0.149043277f, 0.568386793f,
-    -0.0294143446f, 0.192955092f, 0.547572315f, -0.00632938929f,
+    0.211418718f,  -0.211093172f,  0.340142608f,   0.0482888743f,  0.374764264f,  0.557753801f,  -0.124428213f,
+    -0.318217635f, 0.270131081f,   -0.0398793221f, 0.302310228f,   -0.267833978f, -0.354219884f, -0.0402596407f,
+    -0.100752652f, -0.0567697249f, 0.549094796f,   0.490957767f,   0.0119910855f, 0.370509863f,  -0.354136705f,
+    -0.213347778f, 0.149043277f,   0.568386793f,   -0.0294143446f, 0.192955092f,  0.547572315f,  -0.00632938929f,
 };
 
 // ne = [4 channels, 7 length].
 constexpr float kExpectedConvNeXt[] = {
-    0.348275661f, -0.42144388f, -0.763700426f, 0.145622522f,
-    0.879683495f, 0.751017928f, 0.273373425f, -0.420851588f,
-    0.645706713f, -0.0742798895f, -0.749853969f, -0.0716668367f,
-    -0.308953762f, -0.130112231f, -1.11264944f, 0.0203875005f,
-    0.60067457f, 0.509364724f, -0.230222121f, 0.251232028f,
-    -0.501762629f, -0.498339742f, -0.78526181f, 0.478380471f,
-    0.787209988f, 0.248576686f, -0.0628299415f, 0.135890499f,
+    0.348275661f,  -0.42144388f,  -0.763700426f,  0.145622522f,  0.879683495f,   0.751017928f,   0.273373425f,
+    -0.420851588f, 0.645706713f,  -0.0742798895f, -0.749853969f, -0.0716668367f, -0.308953762f,  -0.130112231f,
+    -1.11264944f,  0.0203875005f, 0.60067457f,    0.509364724f,  -0.230222121f,  0.251232028f,   -0.501762629f,
+    -0.498339742f, -0.78526181f,  0.478380471f,   0.787209988f,  0.248576686f,   -0.0628299415f, 0.135890499f,
 };
 
 class LcgStream {
@@ -197,7 +174,7 @@ bool build_fixture(ggml_backend_dev_t device, Fixture & fixture) {
     std::vector<ggml_tensor *> ordered;
     std::vector<float>         scales;
     std::vector<float>         offsets;
-    auto add = [&](ggml_tensor * tensor, float scale, float offset) {
+    auto                       add = [&](ggml_tensor * tensor, float scale, float offset) {
         ordered.push_back(tensor);
         scales.push_back(scale);
         offsets.push_back(offset);
@@ -240,8 +217,7 @@ bool build_fixture(ggml_backend_dev_t device, Fixture & fixture) {
 
     LcgStream stream(kSeed);
     for (size_t index = 0; index < ordered.size(); ++index) {
-        std::vector<float> values =
-            stream.fill(size_t(ggml_nelements(ordered[index])), scales[index], offsets[index]);
+        std::vector<float> values = stream.fill(size_t(ggml_nelements(ordered[index])), scales[index], offsets[index]);
         if (ordered[index] == fixture.signal) {
             // The reference draws the signal channel-major in its own sense --
             // [channels, length] with time contiguous. This layout has channels
@@ -265,27 +241,26 @@ bool run_case(ggml_backend_dev_t device, float & max_diff) {
         return false;
     }
 
-    Context graph_ctx = make_context(ggml_tensor_overhead() * (kNodeBudget + 64) +
-                                     ggml_graph_overhead_custom(kNodeBudget, false));
-    ggml_cgraph * graph = ggml_new_graph_custom(graph_ctx.get(), kNodeBudget, false);
-    ggml_context * ctx  = graph_ctx.get();
+    Context graph_ctx =
+        make_context(ggml_tensor_overhead() * (kNodeBudget + 64) + ggml_graph_overhead_custom(kNodeBudget, false));
+    ggml_cgraph *  graph = ggml_new_graph_custom(graph_ctx.get(), kNodeBudget, false);
+    ggml_context * ctx   = graph_ctx.get();
 
-    ggml_tensor * conv = synth::qwen3tts::codec_causal_conv1d(ctx, fixture.signal, fixture.conv, kDilation);
+    ggml_tensor * conv      = synth::qwen3tts::codec_causal_conv1d(ctx, fixture.signal, fixture.conv, kDilation);
     ggml_tensor * depthwise = synth::qwen3tts::codec_causal_depthwise_conv1d(ctx, fixture.signal, fixture.depthwise);
     ggml_tensor * transposed =
         synth::qwen3tts::codec_causal_transpose_conv1d(ctx, fixture.signal, fixture.transposed, kStride);
     ggml_tensor * snake    = synth::qwen3tts::codec_snake_beta(ctx, fixture.signal, fixture.snake);
     ggml_tensor * convnext = synth::qwen3tts::codec_convnext_block(ctx, fixture.signal, fixture.convnext);
-    if (conv == nullptr || depthwise == nullptr || transposed == nullptr || snake == nullptr ||
-        convnext == nullptr) {
+    if (conv == nullptr || depthwise == nullptr || transposed == nullptr || snake == nullptr || convnext == nullptr) {
         return false;
     }
 
     // A causal convolution keeps the input's length; a transposed one at stride s
     // multiplies it.
     if (conv->ne[1] != kLength || conv->ne[0] != kOutChannels || depthwise->ne[1] != kLength ||
-        depthwise->ne[0] != kChannels || transposed->ne[1] != kLength * kStride ||
-        transposed->ne[0] != kOutChannels || snake->ne[1] != kLength || convnext->ne[1] != kLength) {
+        depthwise->ne[0] != kChannels || transposed->ne[1] != kLength * kStride || transposed->ne[0] != kOutChannels ||
+        snake->ne[1] != kLength || convnext->ne[1] != kLength) {
         return false;
     }
 
@@ -302,8 +277,8 @@ bool run_case(ggml_backend_dev_t device, float & max_diff) {
         ok = ggml_backend_graph_compute(fixture.backend, graph) == GGML_STATUS_SUCCESS;
     }
     if (ok) {
-        const float * expected[] = { kExpectedCausalConv, kExpectedDepthwise, kExpectedTransposed,
-                                     kExpectedSnakeBeta, kExpectedConvNeXt };
+        const float * expected[] = { kExpectedCausalConv, kExpectedDepthwise, kExpectedTransposed, kExpectedSnakeBeta,
+                                     kExpectedConvNeXt };
         const size_t  counts[]   = { std::size(kExpectedCausalConv), std::size(kExpectedDepthwise),
                                      std::size(kExpectedTransposed), std::size(kExpectedSnakeBeta),
                                      std::size(kExpectedConvNeXt) };

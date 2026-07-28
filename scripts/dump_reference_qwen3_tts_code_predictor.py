@@ -148,12 +148,20 @@ def run(seed: int):
     return codes, logits, summed
 
 
+def literal(value: float) -> str:
+    """A C++ float literal. %.9g renders 1.0 as "1", and "1f" does not compile."""
+    text = f"{value:.9g}"
+    if not any(mark in text for mark in (".", "e", "n", "i")):
+        text += ".0"
+    return text + "f"
+
+
 def emit(codes, logits, summed) -> None:
     print(f"// {CODE_GROUPS - 1} steps x {VOCAB} vocabulary, step-major.")
     print("constexpr float kExpectedLogits[] = {")
     flat = logits.reshape(-1).tolist()
     for start in range(0, len(flat), 4):
-        print("    " + ", ".join(f"{value:.9g}f" for value in flat[start : start + 4]) + ",")
+        print("    " + ", ".join(literal(value) for value in flat[start : start + 4]) + ",")
     print("};")
     print()
     print("constexpr int32_t kExpectedCodes[] = { " + ", ".join(str(code) for code in codes) + " };")
@@ -162,7 +170,7 @@ def emit(codes, logits, summed) -> None:
     print("constexpr float kExpectedSummedEmbedding[] = {")
     values = summed.tolist()
     for start in range(0, len(values), 4):
-        print("    " + ", ".join(f"{value:.9g}f" for value in values[start : start + 4]) + ",")
+        print("    " + ", ".join(literal(value) for value in values[start : start + 4]) + ",")
     print("};")
 
 

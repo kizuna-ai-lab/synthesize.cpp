@@ -140,12 +140,20 @@ def run(seed: int) -> torch.Tensor:
     return output[0].view(POSITIONS, HIDDEN)
 
 
+def literal(value: float) -> str:
+    """A C++ float literal. %.9g renders 1.0 as "1", and "1f" does not compile."""
+    text = f"{value:.9g}"
+    if not any(mark in text for mark in (".", "e", "n", "i")):
+        text += ".0"
+    return text + "f"
+
+
 def emit(values: torch.Tensor) -> None:
     flat = values.reshape(-1).tolist()
     print(f"// {POSITIONS} positions x {HIDDEN} hidden, position-major.")
     print("constexpr float kExpectedHidden[] = {")
     for start in range(0, len(flat), 4):
-        row = ", ".join(f"{value:.9g}f" for value in flat[start : start + 4])
+        row = ", ".join(literal(value) for value in flat[start : start + 4])
         print(f"    {row},")
     print("};")
 

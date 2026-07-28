@@ -154,12 +154,20 @@ def run(seed: int):
     return text.view(POSITIONS, HIDDEN), inputs.view(POSITIONS, HIDDEN), hidden[0, -1], logits.view(-1)
 
 
+def literal(value: float) -> str:
+    """A C++ float literal. %.9g renders 1.0 as "1", and "1f" does not compile."""
+    text = f"{value:.9g}"
+    if not any(mark in text for mark in (".", "e", "n", "i")):
+        text += ".0"
+    return text + "f"
+
+
 def emit_block(name: str, values: torch.Tensor, comment: str) -> None:
     print(f"// {comment}")
     print(f"constexpr float {name}[] = {{")
     flat = values.reshape(-1).tolist()
     for start in range(0, len(flat), 4):
-        print("    " + ", ".join(f"{value:.9g}f" for value in flat[start : start + 4]) + ",")
+        print("    " + ", ".join(literal(value) for value in flat[start : start + 4]) + ",")
     print("};")
     print()
 

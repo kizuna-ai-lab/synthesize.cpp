@@ -1,9 +1,10 @@
 # Qwen3-TTS Family Selection and Port Plan
 
 Status: Confirmed 2026-07-28. Intake, the oracle and conversion are complete;
-stages 4 and 5 are complete -- oracle replay and the public seam both pass -- and
-stage 6 has the F16 profile measured. Q8_MIXED and the Execution Backends are
-not done. Port validation is not started. Selection was accepted on
+stages 4 through 7 have their measured work done: oracle replay and the public
+seam pass, the F16 profile is measured, and the codec runs on CUDA while the
+autoregressive half stays on the CPU. Q8_MIXED, the public backend control and
+stage 8 are not done. Port validation is not started. Selection was accepted on
 2026-07-26; the intake packet is
 `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
 
@@ -1494,6 +1495,73 @@ consume.
 The package was produced, the catalog was confirmed to reject it for exactly that
 reason, and the tool now refuses the profile rather than writing a package
 nothing loads.
+
+## Stage 7: Execution Backends
+
+### What can move, and what cannot
+
+The talker and the code predictor feed a sampled code. `docs/backends.md` holds a
+discrete output and every stage upstream of it on the CPU, so neither can move --
+together they are 59 percent of wall clock under the F16 profile. The codec is
+the one stage that is free, and it is the other 41.
+
+The intake estimated that share at 4.9 percent from the reference's own timings.
+It is four times that here, because this port's autoregressive half is much
+faster relative to its codec than PyTorch's was. Measuring rather than inheriting
+the estimate is what made the placement worth doing.
+
+### The measurement
+
+A 37-frame case, same build, F16 profile:
+
+| | codec | wall |
+| --- | --- | --- |
+| codec on CPU | 8.44 s | 20.69 s |
+| codec on CUDA | **0.24 s** | **12.50 s** |
+
+Thirty-five times on the stage and 1.66 end to end.
+
+The codec half gets same-named twins on the primary backend and the catalog binds
+it against those. The talker and the predictor get none: a second copy of 1.8 GB
+that can never leave the CPU would be read by nothing. The package sweep still
+runs over the package alone, because a twin is a placement detail rather than a
+tensor the package carries.
+
+### Placement is proven by the probes, not asserted
+
+Running the whole suite with the codec on CUDA leaves **six of the eight probes
+bit-identical** to the CPU stage, and `talker.final` agreeing to six decimals --
+CPU reduction order is not bit-stable across runs at different thread
+schedules. Only the waveform moved, and only in the sixth decimal of its cosine,
+which is the codec's tensor-core arithmetic.
+
+That is the shape a correct split has. Had the talker moved, its probes would
+have shifted with it.
+
+| probe | CPU F16 | codec on CUDA |
+| --- | --- | --- |
+| talker.hidden_l0 | 0.999989 | 0.999989 |
+| talker.hidden_l27 | 0.999926 | 0.999926 |
+| talker.logits | 0.999458 | 0.999458 |
+| audio.pcm | 0.999427 | **0.999404** |
+
+All eighteen cases pass under the committed `f16-cuda-codec-vs-oracle` stage.
+
+### Hardware note
+
+Asking for `GGML_BACKEND_DEVICE_TYPE_GPU` misses this machine entirely: the
+GB10's CUDA device reports as **integrated**. The runner takes the first device
+that is not the CPU rather than the first that calls itself a GPU, and anyone
+testing on Spark hardware will need the same.
+
+### Not done in this stage
+
+The split is reachable from the family API and from an environment variable on
+the test runner, but **not from the public seam**: `synth_model_load` with
+`SYNTH_BACKEND_CUDA` still loads everything on the CPU, because the model's
+`load` is what chooses the split and the seam passes a device rather than a
+policy. Wiring that is the remaining work, along with the repeated-run cleanup
+the contract asks for.
 
 ## Open Questions for Intake
 

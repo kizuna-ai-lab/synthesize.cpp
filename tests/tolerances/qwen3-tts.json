@@ -101,6 +101,55 @@
           "observed_max_abs": 1.696855
         }
       }
+    },
+    "f16-cuda-codec-vs-oracle": {
+      "phase": "oracle_replay",
+      "description": "The F16 profile with the codec on CUDA and the autoregressive half on CPU, against the same oracle artifacts.",
+      "cases": 18,
+      "note": "Placement is proven by the measurements rather than asserted: every talker probe is identical to the CPU stage's, because the talker did not move and could not -- its output feeds a sampled code, which docs/backends.md holds on the CPU. Only the waveform changed, and only in the sixth decimal of its cosine, which is the codec's tensor-core arithmetic.\n\nThe stage exists because the codec is 41 percent of wall clock under this profile and 35 times faster there: 8.44 seconds to 0.24 on a 37-frame case, taking the whole synthesis from 20.69 to 12.50.",
+      "probes": {
+        "audio.pcm": {
+          "min_cosine": 0.997018,
+          "observed_min_cosine": 0.999404,
+          "observed_max_abs": 0.1602,
+          "max_abs": 0.5
+        },
+        "talker.final": {
+          "min_cosine": 0.997149,
+          "observed_min_cosine": 0.99943,
+          "observed_max_abs": 4.215685
+        },
+        "talker.hidden_l0": {
+          "min_cosine": 0.999947,
+          "observed_min_cosine": 0.999989,
+          "observed_max_abs": 0.116451
+        },
+        "talker.hidden_l14": {
+          "min_cosine": 0.999885,
+          "observed_min_cosine": 0.999977,
+          "observed_max_abs": 6.948486
+        },
+        "talker.hidden_l21": {
+          "min_cosine": 0.999756,
+          "observed_min_cosine": 0.999951,
+          "observed_max_abs": 10.949402
+        },
+        "talker.hidden_l27": {
+          "min_cosine": 0.999628,
+          "observed_min_cosine": 0.999926,
+          "observed_max_abs": 16.714966
+        },
+        "talker.hidden_l7": {
+          "min_cosine": 0.999954,
+          "observed_min_cosine": 0.999991,
+          "observed_max_abs": 3.775635
+        },
+        "talker.logits": {
+          "min_cosine": 0.997291,
+          "observed_min_cosine": 0.999458,
+          "observed_max_abs": 1.696839
+        }
+      }
     }
   }
 }

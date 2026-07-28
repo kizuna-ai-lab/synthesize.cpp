@@ -1,8 +1,9 @@
 # Qwen3-TTS Family Selection and Port Plan
 
 Status: Confirmed 2026-07-28. Intake, the oracle and conversion are complete;
-stage 4 is complete: synthesis runs end to end through `synth_synthesize`. Port
-validation (stage 5) has not started. Port validation is not started. Selection was accepted on
+stage 4 is complete and stage 5 phase 2 -- oracle replay on CPU -- passes. The
+public-request phase, the quantization profiles and the Execution Backends are
+not done. Port validation is not started. Selection was accepted on
 2026-07-26; the intake packet is
 `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
 
@@ -1295,6 +1296,60 @@ one talker step per frame, each allocating a scheduler. `qwentts.cpp` reports
 building the predictor's inner graph once and replaying it. That is stage 7's
 work and the intake already named it as where this port should beat the
 reference rather than match it.
+
+## Stage 5: Oracle Replay
+
+`scripts/validate-qwen3-tts-replay.py` drives `synthesize-qwen3-tts-replay-real`
+over the Golden Manifest's cases and compares the port against the oracle's
+artifacts.
+
+### Why replay rather than reproduce
+
+The oracle sampled its codes from PyTorch's generator, and this port draws from
+its own seeded stream. Reproducing the same codes is not possible and is not the
+claim; the contract's seam is to **replay** the oracle's codes and compare
+everything downstream of the draw on identical inputs. So `run_synthesis` takes
+an optional code stream, and with it set the loop never samples and never
+consults the stop code -- the replay's length ends it.
+
+### What is compared, and how
+
+The oracle hooks the talker's **first forward alone** -- the prefill, the pass a
+port reproduces without the sampled history behind it. So the probes are the
+whole prompt's hidden states at layers 0, 7, 14, 21 and 27, the final norm, and
+the codec head over every prompt position. The waveform is compared separately,
+after the oracle's codes are fed back through the codec.
+
+Deep talker layers are compared by **cosine similarity, not max-abs**. The
+tolerance file recorded this before any measurement existed, from reading the
+reference port: per-layer max-abs of 13.07 / 13.09 / 13.42 at L7 / L14 / L21 and
+66.8 at L27 while cosine held at or above 0.9998. Those are outlier channels
+ahead of the final norm, and a max-abs threshold would report catastrophic
+failure on a correct port. The measurements below have the same shape.
+
+### Four defects it found
+
+None was reachable by a unit test: all four are agreements with the reference
+that only the reference can settle.
+
+**The prompt was the streaming layout.** `generate_custom_voice` defaults to
+`non_streaming_mode=True`, which puts the whole text in the prompt and leaves the
+decode loop nothing but padding to contribute. The streaming layout puts one
+token in the prompt and feeds the rest a frame at a time. Both synthesize speech.
+
+**The codec block was one position short.** `tts_bos` pairs with `codec_pad`, and
+only `codec_bos` is held back for the position closing the prompt.
+
+**The probes were captured per frame rather than over the prefill.** A per-frame
+capture has exactly the same shape as a prefill capture whenever the frame count
+happens to equal the prompt length -- which it did on the first case tried. That
+is how a wrong capture survives a shape check.
+
+**The replay adapter read the acoustic codes level-major.** The oracle splits
+column 0 from columns 1..15 of a `[frames, 16]` block, so that stream is
+frame-major. Transposed codes decode to audio rather than to an error.
+
+Before these, layer 0 sat at a cosine of **-0.01**.
 
 ## Open Questions for Intake
 

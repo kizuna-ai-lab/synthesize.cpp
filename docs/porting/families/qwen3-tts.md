@@ -3,7 +3,8 @@
 Status: Confirmed 2026-07-28. Intake, the oracle and conversion are complete;
 the C++ implementation is under way -- the shared decoder block, the code
 predictor, the tensor catalog, the talker graph, the codec decoder and the text
-frontend are built and tested; the public seam that wires them together is not. Port validation is not started. Selection was accepted on
+frontend are built and tested; the orchestration and the public seam that wire
+them together are not. Port validation is not started. Selection was accepted on
 2026-07-26; the intake packet is
 `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
 

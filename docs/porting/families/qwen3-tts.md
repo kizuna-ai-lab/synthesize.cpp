@@ -2,8 +2,8 @@
 
 Status: Confirmed 2026-07-28. Intake, the oracle and conversion are complete;
 the C++ implementation is under way -- the shared decoder block, the code
-predictor, the tensor catalog, the talker graph and the codec decoder are built
-and tested; the text frontend and the public seam are not. Port validation is not started. Selection was accepted on
+predictor, the tensor catalog, the talker graph, the codec decoder and the text
+frontend are built and tested; the public seam that wires them together is not. Port validation is not started. Selection was accepted on
 2026-07-26; the intake packet is
 `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
 
@@ -1171,6 +1171,61 @@ The package binds `quantizer.*.input_proj` for both quantizers -- four tensors,
 about 1 MB -- and nothing reads them. They are the encode direction of the
 projection pair. The catalog resolves them so the package sweep stays absolute;
 dropping them would mean filtering inside a module rather than at a prefix.
+
+## The Text Frontend as Built
+
+Built 2026-07-28 in `src/arch/qwen3-tts/bpe.{h,cpp}`. Byte-level byte-pair, which
+no frontend in this project provided: the symbol-map frontend maps one symbol to
+one id, and this maps a byte sequence to a sequence of merged pieces.
+
+Against the real 151,643-entry vocabulary it reproduces the reference
+tokenizer's ids **exactly on all thirteen cases**, including Chinese, Japanese,
+Korean, an emoji outside the basic plane, contractions and the prompt template.
+
+### The pre-tokenizer is the risky stage
+
+The Qwen pattern is
+
+    (?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+
+
+No C++ standard library implements `\p{L}`, so it is written out branch by
+branch, first-match-wins, and the classes come from `src/unicode-ranges.h` --
+806 ranges generated from Python's own Unicode data by
+`scripts/generate-unicode-ranges.py`. Classifying by hand would be wrong exactly
+at the edges, and the edges are where text-to-speech input lands.
+
+Two rules in that pattern are easy to miss and change every downstream token:
+
+- **A leading space belongs to the word after it**, so `" ab"` is one piece.
+- **Whitespace gives up its last character** when a non-space follows, which is
+  what makes that possible.
+
+Merging is greedy by **rank**, not by position: the lowest-ranked pair anywhere
+in the piece merges first. Taking pairs left to right produces a different and
+equally plausible tokenization.
+
+### Special tokens are added tokens
+
+`<|im_start|>` is id 151644 against a vocabulary of 151643. They sit *past* the
+vocabulary and cannot be looked up in it, so each is configured with its own id,
+taken from the package's token metadata. This was found by running the frontend
+against the real package, which refused it.
+
+### The prompt template is a fixed string
+
+The checkpoint carries no chat template. The reference wraps every request in
+
+    <|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n
+
+and slices the result at 3 and -5 -- the role prefix and the closing markers --
+which is exactly what the talker's prompt layout expects.
+
+### Not registered yet
+
+The comparison against the real vocabulary needs the package, so it belongs to
+the integration tier this family does not have. The unit test pins the split
+against the reference pattern's own output, which is the only stage checkable
+without a 151k-entry vocabulary.
 
 ## Open Questions for Intake
 

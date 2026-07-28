@@ -54,24 +54,17 @@ constexpr int32_t kCodes[] = { 0, 1, 2, 3, 4, 0, 2, 3, 4, 0, 1, 2, 4, 0, 1, 2, 3
 
 // 72 samples: 6 frames at a hop of 12.
 constexpr float kExpectedWaveform[] = {
-    0.0430629253f, 0.0496943593f, 0.0436964817f, 0.0537883528f,
-    0.0343213938f, 0.0550069213f, -0.082467854f, -0.0596274622f,
-    0.0598963052f, 0.0130123179f, 0.337962568f, 0.0279859975f,
-    0.0683623478f, -0.0621552467f, 0.0229360592f, -0.0729538947f,
-    0.00223509921f, 0.0241887886f, -0.218194619f, -0.330903053f,
-    -0.076504536f, -0.285010159f, 0.263241231f, -0.0534071475f,
-    0.359312177f, 0.325519681f, -0.206268966f, -0.0114302905f,
-    0.0267978404f, -0.22471419f, -0.353043377f, -0.384356141f,
-    -0.138252422f, -0.276507944f, 0.489850342f, -0.0675853714f,
-    0.42872259f, 0.0550262257f, -0.103630424f, 0.0320492275f,
-    0.187197894f, -0.182592958f, 0.233706757f, -0.11331404f,
-    -0.0645799935f, -0.16113542f, 0.347144365f, -0.0391040556f,
-    0.415682077f, 0.3803415f, -0.0819592997f, -0.533792496f,
-    0.0512245595f, -0.682382584f, -0.273802608f, -0.296162218f,
-    -0.220653296f, 0.568420529f, 0.728501797f, 0.134239987f,
-    1.0f, 0.530099988f, 0.176891223f, -0.101559699f,
-    0.0180694181f, -0.350834429f, -0.413589388f, -0.636791766f,
-    -0.157987878f, 0.28005743f, 0.289192557f, 0.20970346f,
+    0.0430629253f,  0.0496943593f,  0.0436964817f,  0.0537883528f, 0.0343213938f, 0.0550069213f,  -0.082467854f,
+    -0.0596274622f, 0.0598963052f,  0.0130123179f,  0.337962568f,  0.0279859975f, 0.0683623478f,  -0.0621552467f,
+    0.0229360592f,  -0.0729538947f, 0.00223509921f, 0.0241887886f, -0.218194619f, -0.330903053f,  -0.076504536f,
+    -0.285010159f,  0.263241231f,   -0.0534071475f, 0.359312177f,  0.325519681f,  -0.206268966f,  -0.0114302905f,
+    0.0267978404f,  -0.22471419f,   -0.353043377f,  -0.384356141f, -0.138252422f, -0.276507944f,  0.489850342f,
+    -0.0675853714f, 0.42872259f,    0.0550262257f,  -0.103630424f, 0.0320492275f, 0.187197894f,   -0.182592958f,
+    0.233706757f,   -0.11331404f,   -0.0645799935f, -0.16113542f,  0.347144365f,  -0.0391040556f, 0.415682077f,
+    0.3803415f,     -0.0819592997f, -0.533792496f,  0.0512245595f, -0.682382584f, -0.273802608f,  -0.296162218f,
+    -0.220653296f,  0.568420529f,   0.728501797f,   0.134239987f,  1.0f,          0.530099988f,   0.176891223f,
+    -0.101559699f,  0.0180694181f,  -0.350834429f,  -0.413589388f, -0.636791766f, -0.157987878f,  0.28005743f,
+    0.289192557f,   0.20970346f,
 };
 
 class LcgStream {
@@ -116,8 +109,8 @@ Context make_context(size_t bytes) {
 
 synth::qwen3tts::HParams make_hparams() {
     synth::qwen3tts::HParams h;
-    h.talker.code_group_count = uint32_t(kQuantizers);
-    h.codec.hop_length        = 12;
+    h.talker.code_group_count               = uint32_t(kQuantizers);
+    h.codec.hop_length                      = 12;
     synth::qwen3tts::CodecDecoderParams & p = h.codec.decoder;
     p.latent_dim                            = uint32_t(kLatentDim);
     p.dim                                   = uint32_t(kDecoderDim);
@@ -140,13 +133,13 @@ synth::qwen3tts::HParams make_hparams() {
 }
 
 struct Fixture {
-    ggml_backend_t                     backend = nullptr;
-    Context                            persistent;
-    ggml_backend_buffer_t              buffer = nullptr;
+    ggml_backend_t                       backend = nullptr;
+    Context                              persistent;
+    ggml_backend_buffer_t                buffer = nullptr;
     synth::qwen3tts::CodecDecoderWeights weights;
-    ggml_tensor *                      codes     = nullptr;
-    ggml_tensor *                      positions = nullptr;
-    ggml_tensor *                      mask      = nullptr;
+    ggml_tensor *                        codes     = nullptr;
+    ggml_tensor *                        positions = nullptr;
+    ggml_tensor *                        mask      = nullptr;
 
     ~Fixture() {
         if (buffer != nullptr) {
@@ -169,7 +162,7 @@ bool build_fixture(ggml_backend_dev_t device, Fixture & fixture) {
     std::vector<ggml_tensor *> ordered;
     std::vector<float>         scales;
     std::vector<float>         offsets;
-    auto add = [&](ggml_tensor * tensor, float scale, float offset) {
+    auto                       add = [&](ggml_tensor * tensor, float scale, float offset) {
         ordered.push_back(tensor);
         scales.push_back(scale);
         offsets.push_back(offset);
@@ -215,17 +208,17 @@ bool build_fixture(ggml_backend_dev_t device, Fixture & fixture) {
     add_linear(transformer.output_proj, kHidden, kLatentDim);
     transformer.layers.resize(size_t(kLayers));
     for (synth::qwen3tts::CodecTransformerLayerWeights & layer : transformer.layers) {
-        const int64_t inner     = kHeads * kHeadDim;
-        layer.input_layernorm   = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.25f, 1.0f);
-        layer.q_proj            = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, inner), 0.5f, 0.0f);
-        layer.k_proj            = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, inner), 0.5f, 0.0f);
-        layer.v_proj            = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, inner), 0.5f, 0.0f);
-        layer.o_proj            = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, inner, kHidden), 0.5f, 0.0f);
+        const int64_t inner            = kHeads * kHeadDim;
+        layer.input_layernorm          = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.25f, 1.0f);
+        layer.q_proj                   = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, inner), 0.5f, 0.0f);
+        layer.k_proj                   = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, inner), 0.5f, 0.0f);
+        layer.v_proj                   = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, inner), 0.5f, 0.0f);
+        layer.o_proj                   = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, inner, kHidden), 0.5f, 0.0f);
         layer.self_attn_layer_scale    = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.1f, 0.2f);
         layer.post_attention_layernorm = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.25f, 1.0f);
-        layer.gate_proj = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kIntermediate), 0.5f, 0.0f);
-        layer.up_proj   = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kIntermediate), 0.5f, 0.0f);
-        layer.down_proj = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kIntermediate, kHidden), 0.5f, 0.0f);
+        layer.gate_proj       = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kIntermediate), 0.5f, 0.0f);
+        layer.up_proj         = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kIntermediate), 0.5f, 0.0f);
+        layer.down_proj       = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kIntermediate, kHidden), 0.5f, 0.0f);
         layer.mlp_layer_scale = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.1f, 0.2f);
     }
     transformer.norm = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.25f, 1.0f);
@@ -301,8 +294,8 @@ bool run_case(ggml_backend_dev_t device, float & max_diff) {
         return false;
     }
 
-    Context graph_ctx = make_context(ggml_tensor_overhead() * (kNodeBudget + 64) +
-                                     ggml_graph_overhead_custom(kNodeBudget, false));
+    Context graph_ctx =
+        make_context(ggml_tensor_overhead() * (kNodeBudget + 64) + ggml_graph_overhead_custom(kNodeBudget, false));
     ggml_cgraph * graph = ggml_new_graph_custom(graph_ctx.get(), kNodeBudget, false);
 
     ggml_tensor * wav = synth::qwen3tts::build_codec_decoder(graph_ctx.get(), fixture.codes, fixture.positions,
@@ -329,7 +322,7 @@ bool run_case(ggml_backend_dev_t device, float & max_diff) {
         if (values.size() != std::size(kExpectedWaveform)) {
             return false;
         }
-        double sum = 0.0;
+        double sum  = 0.0;
         size_t over = 0;
         for (size_t index = 0; index < values.size(); ++index) {
             const float one = std::fabs(values[index] - kExpectedWaveform[index]);
@@ -389,8 +382,8 @@ int check_rejections() {
     synth::qwen3tts::CodecTransformerLayerWeights layer;
     ggml_tensor *                                 input     = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kHidden, kFrames);
     ggml_tensor *                                 positions = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, kFrames);
-    ggml_tensor *                                 mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kFrames, kFrames);
-    synth::qwen3tts::AttentionShape                shape;
+    ggml_tensor *                                 mask      = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kFrames, kFrames);
+    synth::qwen3tts::AttentionShape               shape;
     shape.hidden_size          = uint32_t(kHidden);
     shape.attention_head_count = uint32_t(kHeads);
     shape.key_value_head_count = uint32_t(kHeads);

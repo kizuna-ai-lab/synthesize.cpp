@@ -280,7 +280,7 @@ int check_resolution(const synth::qwen3tts::HParams & h, const std::vector<Entry
     Context                       context = make_context();
     synth::qwen3tts::ModelWeights weights;
     populate(context.get(), entries, nullptr);
-    SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), h, weights) == SYNTH_OK);
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_OK);
 
     // The count the catalog resolves and the count derived by arithmetic are two
     // independent statements of the same package, so they must agree.
@@ -316,7 +316,7 @@ int check_resolution(const synth::qwen3tts::HParams & h, const std::vector<Entry
 
 int check_rejections(const synth::qwen3tts::HParams & h, const std::vector<Entry> & entries) {
     synth::qwen3tts::ModelWeights weights;
-    SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(nullptr, h, weights) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(nullptr, nullptr, h, weights) == SYNTH_ERR_INVALID_ARG);
 
     // Any single missing entry is a package defect. One is taken from each
     // region so a whole region cannot go unresolved unnoticed.
@@ -335,7 +335,7 @@ int check_rejections(const synth::qwen3tts::HParams & h, const std::vector<Entry
             }
             return false;
         });
-        SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), h, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
     }
 
     // A shape that disagrees with the declared hyper-parameters.
@@ -352,7 +352,7 @@ int check_rejections(const synth::qwen3tts::HParams & h, const std::vector<Entry
             }
             return false;
         });
-        SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), h, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
     }
 
     // A transposed convolution stored in a plain convolution's order. The two
@@ -368,7 +368,7 @@ int check_rejections(const synth::qwen3tts::HParams & h, const std::vector<Entry
             }
             return false;
         });
-        SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), h, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
     }
 
     // The two halves carry different storage types under the source profile, so
@@ -384,7 +384,7 @@ int check_rejections(const synth::qwen3tts::HParams & h, const std::vector<Entry
             }
             return false;
         });
-        SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), h, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
     }
 
     // A trailing axis the catalog does not expect, so a silently reshaped tensor
@@ -399,7 +399,7 @@ int check_rejections(const synth::qwen3tts::HParams & h, const std::vector<Entry
             }
             return false;
         });
-        SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), h, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
     }
 
     // A tensor nobody looks up is a tensor nobody checks. This is what would
@@ -410,7 +410,7 @@ int check_rejections(const synth::qwen3tts::HParams & h, const std::vector<Entry
         populate(context.get(), entries, nullptr);
         ggml_tensor * stray = ggml_new_tensor_1d(context.get(), GGML_TYPE_F32, 4);
         ggml_set_name(stray, "codec.encoder.downsample.conv.weight");
-        SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), h, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
     }
 
     // A profile decides the type by what a tensor *is*, so a source-profile
@@ -422,7 +422,7 @@ int check_rejections(const synth::qwen3tts::HParams & h, const std::vector<Entry
         synth::qwen3tts::ModelWeights parsed;
         other.quantization_profile = synth::qwen3tts::QuantizationProfile::F16;
         populate(context.get(), entries, nullptr);
-        SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), other, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, other, parsed) == SYNTH_ERR_GGUF);
     }
 
     // Under F16 the matrices halve and everything else stays exact. A norm or a
@@ -443,7 +443,7 @@ int check_rejections(const synth::qwen3tts::HParams & h, const std::vector<Entry
         // Not asserted OK: this synthetic package's role split is a coarse
         // approximation of the catalog's, and the point here is only that the
         // profile is no longer refused outright.
-        const synth_status_t status = synth::qwen3tts::build_model_weights(context.get(), other, parsed);
+        const synth_status_t status = synth::qwen3tts::build_model_weights(context.get(), nullptr, other, parsed);
         SYNTH_TEST_CHECK(status == SYNTH_OK || status == SYNTH_ERR_GGUF);
     }
 
@@ -455,7 +455,7 @@ int check_rejections(const synth::qwen3tts::HParams & h, const std::vector<Entry
         synth::qwen3tts::ModelWeights parsed;
         other.code_predictor.hidden_size = h.talker.hidden_size / 2;
         populate(context.get(), entries, nullptr);
-        SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), other, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, other, parsed) == SYNTH_ERR_GGUF);
     }
     return 0;
 }

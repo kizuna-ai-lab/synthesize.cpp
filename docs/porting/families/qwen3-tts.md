@@ -781,6 +781,73 @@ plus its codes so the model continues in that voice. That is the mechanism the
 Reference Model Variant Ladder's later rungs will need, and it is not what this
 Stage 1 CustomVoice variant does.
 
+## Where the Time Actually Goes
+
+Measured 2026-07-28 on the pinned reference, one sentence of English, with the
+talker, the code predictor and the codec timed separately.
+
+| | talker.model | code predictor | codec decode |
+| --- | --- | --- | --- |
+| CUDA BF16 | 38 calls, 1.00 s, 30.0 % | **555 calls, 1.45 s, 43.5 %** | 0.16 s, 4.9 % |
+| CPU F32 | 42 calls, 8.97 s, 27.1 % | **615 calls, 22.46 s, 67.9 %** | 1.19 s, 3.6 % |
+
+The call counts confirm the structure rather than assuming it: 555/37 and
+615/41 are both exactly 15 predictor steps per frame.
+
+### The codec is not worth outsourcing
+
+The other three ports run the codec in a second runtime -- ONNX Runtime in two,
+specialised ncnn graphs in the third. On these measurements that cannot be a
+performance decision: the codec is **3.6 % to 4.9 % of synthesis**, at a
+real-time factor of 0.053 on CUDA and 0.370 on CPU. Both are far under real
+time, and a perfect codec would return at most four percent.
+
+Against that, a second runtime costs a second dependency, a second backend
+abstraction beside `BackendPlan`, and a Model Package that is no longer one
+GGUF. The operator surface argument that might justify it does not apply here
+either: intake measured the incremental surface at zero, because
+`ggml_col2im_1d` is upstream and already exercised by VITS, and SnakeBeta is a
+parameter on Kokoro's existing `snake()`.
+
+**Decision: implement the codec in GGML like every other stage.** The reason
+the other ports outsourced it is build effort, not speed, and this project has
+already paid most of that cost in two earlier families.
+
+### The code predictor is overhead-bound, which makes it an opportunity
+
+It is the largest single cost, and it is *not* compute-bound. One step is
+5 layers at hidden 1024 with intermediate 3072 and a 2048-entry head:
+
+    per-token MACs   80.7 M      ->  161 MFLOP
+    CPU F32   36.51 ms/step      ->   4.4 GFLOP/s
+    CUDA BF16  2.61 ms/step      ->  61.9 GFLOP/s
+
+A GB10 is a teraflop-class device, so the reference is running the predictor at
+well under one percent of the hardware. The arithmetic is tiny; the cost is
+what surrounds it.
+
+The reason is visible in the reference. Every frame calls a full HuggingFace
+`generate()` on the predictor for its fifteen steps -- generation-config
+resolution, logits processors, stopping criteria and cache allocation, twelve
+and a half times per second of audio.
+
+The loop this project has to build is small and completely static:
+
+1. reset the predictor's KV cache for the frame;
+2. prefill exactly two positions, the talker hidden state and the embedding of
+   the semantic code;
+3. run `code_group_count - 1` single-token steps, where step *i* uses **its own**
+   embedding table and **its own** output head -- the private tables per code
+   group that the configuration does not reveal;
+4. sum the sixteen code embeddings to form the next talker input, adding the
+   trailing text hidden state while one remains.
+
+Every step has identical shapes, so the graph can be built once and replayed
+with a new code id, which is what `qwentts.cpp` reports taking its inner loop
+from quadratic to constant. **This is the one place where this port should
+expect to beat the reference substantially rather than merely match it**, and
+it is where stage 4's effort belongs.
+
 ## Open Questions for Intake
 
 1. Confirm the codec decoder topology against upstream rather than against a

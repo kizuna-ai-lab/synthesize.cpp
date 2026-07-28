@@ -138,7 +138,17 @@ struct ModelWeights {
 // instead of producing wrong audio later. Afterwards the package is swept: a
 // tensor the catalog never asked for is an error, not something to ignore,
 // because a name nobody resolves is a name nobody checked.
-synth_status_t build_model_weights(ggml_context * context, const HParams & hparams, ModelWeights & weights);
+// `codec_context`, when non-null, holds same-named twins of the codec half and
+// the codec is bound against those instead. That is what lets the codec run on
+// an accelerator while the talker and the code predictor stay on the CPU, which
+// docs/backends.md requires of them: their output feeds a sampled code.
+//
+// The sweep still covers `context` alone, because that is the package. A twin is
+// a placement detail and not a tensor the package carries.
+synth_status_t build_model_weights(ggml_context *  context,
+                                   ggml_context *  codec_context,
+                                   const HParams & hparams,
+                                   ModelWeights &  weights);
 
 // The number of tensors a package for these hyper-parameters must contain.
 // Exposed so a caller can size a context before resolving anything.

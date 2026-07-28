@@ -12,10 +12,12 @@
 // downstream of the draw is then compared on identical inputs.
 
 #include "arch/qwen3-tts/qwen3-tts.h"
+#include "ggml-backend.h"
 
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -51,6 +53,18 @@ bool write_f32(const std::string & path, const std::vector<float> & values) {
     }
     output.write(reinterpret_cast<const char *>(values.data()), std::streamsize(values.size() * sizeof(float)));
     return bool(output);
+}
+
+// The first device that is not the CPU. Asking for GGML_BACKEND_DEVICE_TYPE_GPU
+// by name misses this machine entirely: its CUDA device reports as integrated.
+ggml_backend_dev_t first_accelerator() {
+    for (size_t index = 0; index < ggml_backend_dev_count(); ++index) {
+        ggml_backend_dev_t device = ggml_backend_dev_get(index);
+        if (device != nullptr && ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+            return device;
+        }
+    }
+    return nullptr;
 }
 
 }  // namespace
@@ -95,8 +109,14 @@ int main(int argc, char ** argv) {
         }
     }
 
+    // SYNTH_QWEN3_TTS_ACCELERATE places the codec on the primary backend while
+    // the talker and the code predictor stay on the CPU, which is what stage 7
+    // measures.
+    const char *                            accelerate = std::getenv("SYNTH_QWEN3_TTS_ACCELERATE");
     std::unique_ptr<synth::qwen3tts::Model> model;
-    synth_status_t                          status = synth::qwen3tts::Model::load_cpu(model_path, model);
+    synth_status_t status = accelerate != nullptr && accelerate[0] == '1' ?
+                                synth::qwen3tts::Model::load(model_path, first_accelerator(), true, model) :
+                                synth::qwen3tts::Model::load_cpu(model_path, model);
     if (status != SYNTH_OK) {
         std::fprintf(stderr, "load -> %d\n", int(status));
         return 1;

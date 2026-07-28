@@ -409,7 +409,10 @@ uint64_t expected_tensor_count(const HParams & hparams) {
     return talker + predictor + quantizers + 2 + transformer + upsample + residual;
 }
 
-synth_status_t build_model_weights(ggml_context * context, const HParams & hparams, ModelWeights & weights) {
+synth_status_t build_model_weights(ggml_context *  context,
+                                   ggml_context *  codec_context,
+                                   const HParams & hparams,
+                                   ModelWeights &  weights) {
     if (context == nullptr) {
         return SYNTH_ERR_INVALID_ARG;
     }
@@ -417,9 +420,20 @@ synth_status_t build_model_weights(ggml_context * context, const HParams & hpara
 
     Resolver resolver(context, hparams);
     if (!resolve_talker(resolver, hparams, weights.talker) ||
-        !resolve_code_predictor(resolver, hparams, weights.code_predictor) ||
-        !resolve_codec(resolver, hparams, weights.codec)) {
+        !resolve_code_predictor(resolver, hparams, weights.code_predictor)) {
         return SYNTH_ERR_GGUF;
+    }
+    // The codec is resolved twice when a twin context exists: once against the
+    // package so the sweep below sees its names, and once against the twins,
+    // which is what the graph binds to.
+    if (!resolve_codec(resolver, hparams, weights.codec)) {
+        return SYNTH_ERR_GGUF;
+    }
+    if (codec_context != nullptr) {
+        Resolver twins(codec_context, hparams);
+        if (!resolve_codec(twins, hparams, weights.codec)) {
+            return SYNTH_ERR_GGUF;
+        }
     }
 
     // A tensor nobody looked up is a tensor nobody checked, so the package is

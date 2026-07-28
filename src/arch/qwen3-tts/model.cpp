@@ -88,7 +88,9 @@ class GraphRun {
     // number rather than an argument.
     double setup_seconds = 0.0;
 
-    synth_status_t run(ggml_tensor * output, const char * stage, int threads) {
+    // `on_primary` places the graph on the primary backend rather than the CPU.
+    // Only the codec ever asks for it: everything else feeds a sampled code.
+    synth_status_t run(ggml_tensor * output, const char * stage, int threads, bool on_primary = false) {
         if (!ok() || output == nullptr) {
             return SYNTH_ERR_INTERNAL;
         }
@@ -97,7 +99,8 @@ class GraphRun {
         // A CPU-only scheduler over CPU-resident weights is one split; forcing
         // nodes onto CPU inside a mixed graph is not the same thing and was
         // measured five times slower. See docs/backends.md.
-        scheduler_ = plan_.create_cpu_scheduler(size_t(ggml_graph_size(graph_)) + kSchedulerLeafAllowance);
+        const size_t hash_size = size_t(ggml_graph_size(graph_)) + kSchedulerLeafAllowance;
+        scheduler_             = on_primary ? plan_.create_scheduler(hash_size) : plan_.create_cpu_scheduler(hash_size);
         if (scheduler_ == nullptr) {
             return SYNTH_ERR_BACKEND;
         }
@@ -206,6 +209,12 @@ struct Model::Impl {
     ggml_context *                      weights_context = nullptr;
     std::unique_ptr<BackendPlan>        backend_plan;
     ggml_backend_buffer_t               weights_buffer = nullptr;
+    // Twins of the codec half on the primary backend, present only when that is
+    // not the CPU. The talker and the code predictor have no twins: their output
+    // feeds a sampled code and docs/backends.md holds them on the CPU, so a
+    // second copy would never be read.
+    ggml_context *                      codec_context  = nullptr;
+    ggml_backend_buffer_t               codec_buffer   = nullptr;
     HParams                             hparams;
     std::shared_ptr<const TextFrontend> frontend;
     ModelWeights                        weights;
@@ -213,6 +222,12 @@ struct Model::Impl {
     ~Impl() {
         if (weights_buffer != nullptr) {
             ggml_backend_buffer_free(weights_buffer);
+        }
+        if (codec_buffer != nullptr) {
+            ggml_backend_buffer_free(codec_buffer);
+        }
+        if (codec_context != nullptr) {
+            ggml_free(codec_context);
         }
         if (weights_context != nullptr) {
             ggml_free(weights_context);
@@ -383,7 +398,33 @@ synth_status_t Model::load(const std::string &      path,
         if (status != SYNTH_OK) {
             return status;
         }
-        status = build_model_weights(implementation->weights_context, implementation->hparams, implementation->weights);
+        // Twins of the codec half, so it can run on the primary backend while
+        // the autoregressive half stays on the CPU. Declared before binding,
+        // because the catalog binds the codec against them.
+        const bool split = implementation->backend_plan->primary() != implementation->backend_plan->cpu_backend();
+        if (split) {
+            ggml_init_params twin_params{};
+            twin_params.mem_size          = ggml_tensor_overhead() * 1024;
+            twin_params.no_alloc          = true;
+            implementation->codec_context = ggml_init(twin_params);
+            if (implementation->codec_context == nullptr) {
+                return SYNTH_ERR_OOM;
+            }
+            for (ggml_tensor * tensor = ggml_get_first_tensor(implementation->weights_context); tensor != nullptr;
+                 tensor               = ggml_get_next_tensor(implementation->weights_context, tensor)) {
+                if (std::strncmp(tensor->name, "codec.", 6) != 0) {
+                    continue;
+                }
+                ggml_tensor * twin =
+                    ggml_new_tensor(implementation->codec_context, tensor->type, ggml_n_dims(tensor), tensor->ne);
+                if (twin == nullptr) {
+                    return SYNTH_ERR_OOM;
+                }
+                ggml_set_name(twin, tensor->name);
+            }
+        }
+        status = build_model_weights(implementation->weights_context, implementation->codec_context,
+                                     implementation->hparams, implementation->weights);
         if (status != SYNTH_OK) {
             return status;
         }
@@ -429,6 +470,26 @@ synth_status_t Model::load(const std::string &      path,
         status = stream_tensor_data(path, implementation->gguf, implementation->weights_context, "qwen3-tts");
         if (status != SYNTH_OK) {
             return status;
+        }
+        if (implementation->codec_context != nullptr) {
+            implementation->codec_buffer =
+                ggml_backend_alloc_ctx_tensors(implementation->codec_context, implementation->backend_plan->primary());
+            if (implementation->codec_buffer == nullptr) {
+                return SYNTH_ERR_OOM;
+            }
+            ggml_backend_buffer_set_usage(implementation->codec_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+            // Copy after streaming, so the twins carry what the package holds.
+            std::vector<unsigned char> scratch;
+            for (ggml_tensor * twin = ggml_get_first_tensor(implementation->codec_context); twin != nullptr;
+                 twin               = ggml_get_next_tensor(implementation->codec_context, twin)) {
+                const ggml_tensor * source = ggml_get_tensor(implementation->weights_context, twin->name);
+                if (source == nullptr || ggml_nbytes(source) != ggml_nbytes(twin)) {
+                    return SYNTH_ERR_GGUF;
+                }
+                scratch.resize(ggml_nbytes(source));
+                ggml_backend_tensor_get(source, scratch.data(), 0, scratch.size());
+                ggml_backend_tensor_set(twin, scratch.data(), 0, scratch.size());
+            }
         }
 
         output = std::unique_ptr<Model>(new Model(std::move(implementation)));
@@ -519,7 +580,8 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> & codes,
     ggml_tensor *  t_codes = ggml_new_tensor_2d(ictx, GGML_TYPE_I32, int64_t(frame_count), int64_t(groups));
     ggml_tensor *  t_pos   = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, int64_t(frame_count));
     ggml_tensor *  t_mask  = ggml_new_tensor_2d(ictx, GGML_TYPE_F32, int64_t(frame_count), int64_t(frame_count));
-    if (!inputs.commit(impl.backend_plan->cpu_backend())) {
+    if (!inputs.commit(impl.codec_context != nullptr ? impl.backend_plan->primary() :
+                                                       impl.backend_plan->cpu_backend())) {
         return SYNTH_ERR_OOM;
     }
 
@@ -552,7 +614,7 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> & codes,
         return SYNTH_ERR_INTERNAL;
     }
     const double         started = now_seconds();
-    const synth_status_t status  = run.run(wav, "qwen3-tts.codec", threads);
+    const synth_status_t status  = run.run(wav, "qwen3-tts.codec", threads, impl.codec_context != nullptr);
     if (status != SYNTH_OK) {
         return status;
     }

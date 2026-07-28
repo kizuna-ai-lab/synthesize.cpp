@@ -53,28 +53,39 @@ synth_status_t build_talker_prompt(const HParams & hparams, const TalkerPromptRe
     codec.push_back(tokens.codec_pad);
     codec.push_back(tokens.codec_bos);
 
-    out.positions.reserve(request.role_tokens.size() + codec.size());
+    // The whole text sits in the prefill. `generate_custom_voice` defaults to
+    // the reference's non-streaming mode, which puts every text token in the
+    // prompt and leaves the decode loop nothing but padding to add -- the
+    // streaming layout, which feeds the text one token per frame, is a different
+    // entry point this variant does not use. The two produce different prefill
+    // lengths and different audio, and neither errors.
+    out.positions.reserve(request.role_tokens.size() + codec.size() + request.text_tokens.size() + 2);
     for (uint32_t token : request.role_tokens) {
         out.positions.push_back(text_only(TalkerInputPosition::Text::Token, token));
     }
 
     // The text stream beside the codec stream is padding all the way to its last
-    // entry, which is tts_bos. It is one shorter than the codec stream, because
-    // the codec stream's final token belongs to the position after it.
+    // entry, which is tts_bos. Only the codec stream's final token, codec_bos,
+    // belongs to a position after this block -- tts_bos pairs with codec_pad.
     for (size_t index = 0; index + 1 < codec.size(); ++index) {
         const bool last = index + 2 == codec.size();
         out.positions.push_back(
             paired(last ? TalkerInputPosition::Text::TtsBos : TalkerInputPosition::Text::TtsPad, codec[index]));
     }
-    // The first token of the text shares its position with codec_bos. Everything
-    // after it is handed to the decode loop one step at a time.
-    out.positions.push_back(paired(TalkerInputPosition::Text::Token, codec.back(), request.text_tokens.front()));
 
-    out.trailing.reserve(request.text_tokens.size());
-    for (size_t index = 1; index < request.text_tokens.size(); ++index) {
-        out.trailing.push_back(text_only(TalkerInputPosition::Text::Token, request.text_tokens[index]));
+    // Then the text itself, every token against a codec pad, and one tts_eos
+    // closing it.
+    const uint32_t codec_pad = codec[codec.size() - 2];
+    for (uint32_t token : request.text_tokens) {
+        out.positions.push_back(paired(TalkerInputPosition::Text::Token, codec_pad, token));
     }
-    out.trailing.push_back(text_only(TalkerInputPosition::Text::TtsEos));
+    out.positions.push_back(paired(TalkerInputPosition::Text::TtsEos, codec_pad));
+    // codec_bos closes the prompt against a pad, not against a text token.
+    out.positions.push_back(paired(TalkerInputPosition::Text::TtsPad, codec.back()));
+
+    // Nothing is left for the decode loop to contribute, so every step adds the
+    // projected tts_pad embedding. The schedule is empty rather than holding one
+    // pad, because talker_step_text_token already pads past its end.
     return SYNTH_OK;
 }
 

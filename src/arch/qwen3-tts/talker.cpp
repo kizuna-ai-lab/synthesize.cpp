@@ -67,21 +67,27 @@ ggml_tensor * build_talker_step_input(ggml_context *        context,
     return ggml_add(context, summed_codes, text);
 }
 
-ggml_tensor * build_talker_step(ggml_context *         context,
-                                ggml_cgraph *          graph,
-                                ggml_tensor *          input,
-                                ggml_tensor *          position_ids,
-                                ggml_tensor *          mask,
-                                const TalkerWeights &  weights,
-                                const AttentionShape & shape,
-                                const TalkerCache &    cache,
-                                ggml_tensor **         out_hidden) {
+ggml_tensor * build_talker_step(ggml_context *               context,
+                                ggml_cgraph *                graph,
+                                ggml_tensor *                input,
+                                ggml_tensor *                position_ids,
+                                ggml_tensor *                mask,
+                                const TalkerWeights &        weights,
+                                const AttentionShape &       shape,
+                                const TalkerCache &          cache,
+                                ggml_tensor **               out_hidden,
+                                std::vector<ggml_tensor *> * out_layers,
+                                ggml_tensor **               out_all_hidden) {
     if (context == nullptr || graph == nullptr || input == nullptr || out_hidden == nullptr ||
         weights.norm == nullptr || weights.codec_head == nullptr || weights.layers.empty() ||
         weights.layers.size() != cache.layers.size()) {
         return nullptr;
     }
     *out_hidden = nullptr;
+    if (out_layers != nullptr) {
+        out_layers->clear();
+        out_layers->reserve(weights.layers.size());
+    }
 
     ggml_tensor * hidden = input;
     for (size_t index = 0; index < weights.layers.size(); ++index) {
@@ -90,10 +96,18 @@ ggml_tensor * build_talker_step(ggml_context *         context,
         if (hidden == nullptr) {
             return nullptr;
         }
+        if (out_layers != nullptr) {
+            out_layers->push_back(hidden);
+        }
     }
     hidden = rms_norm(context, hidden, weights.norm, shape.rms_norm_eps);
     if (hidden == nullptr) {
         return nullptr;
+    }
+    // Every position's normalized state, which port validation compares against
+    // the oracle's prefill probe. The step itself only needs the last.
+    if (out_all_hidden != nullptr) {
+        *out_all_hidden = hidden;
     }
 
     // Only the last position predicts, and its hidden state is also what the code

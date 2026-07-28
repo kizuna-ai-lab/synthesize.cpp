@@ -322,6 +322,11 @@ if(SYNTH_BUILD_PYTHON_TESTS)
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 
+add_executable(synthesize-qwen3-tts-replay-real qwen3_tts_replay_real.cpp)
+target_include_directories(synthesize-qwen3-tts-replay-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(synthesize-qwen3-tts-replay-real PRIVATE synthesize ggml)
+synth_register_integration_target(synthesize-qwen3-tts-replay-real)
+
 # The runners are thin adapters shared by the Python Golden validators and
 # manual diagnostics. They are intentionally not themselves tests.
 add_executable(synthesize-kokoro-stages kokoro_stages_real.cpp)

@@ -655,12 +655,29 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     const size_t talker_nodes    = size_t(hparams.talker.layer_count) * 64 + 512;
     const size_t predictor_nodes = size_t(hparams.code_predictor.layer_count) * 64 + 512;
 
+    // Replay means the loop takes each frame's codes from the oracle instead of
+    // drawing them, so everything downstream of the draw is compared on
+    // identical inputs. It also bounds the loop: the replay ends when its frames
+    // do, with no stop code involved.
+    const bool     replaying   = request.replay_codes != nullptr && request.replay_frames != 0;
+    const uint64_t frame_limit = replaying ? std::min<uint64_t>(request.replay_frames, max_frames) : max_frames;
+    if (replaying && request.replay_codes->size() < size_t(frame_limit) * groups) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    for (uint32_t layer : request.probe_layers) {
+        if (layer >= hparams.talker.layer_count) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+    }
+    output.talker_layers.resize(request.probe_layers.size());
+
     std::vector<int32_t> frame_codes(groups, 0);
     std::vector<float>   logits;
     std::vector<float>   hidden_state;
+    std::vector<float>   probe;
     int64_t              filled = 0;
 
-    for (uint64_t frame = 0; frame <= max_frames; ++frame) {
+    for (uint64_t frame = 0; frame <= frame_limit; ++frame) {
         GraphRun talker(*impl.backend_plan, talker_nodes);
         if (!talker.ok()) {
             return SYNTH_ERR_OOM;
@@ -695,15 +712,39 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         }
 
         set_filled(caches.talker, filled);
-        ggml_tensor * hidden        = nullptr;
-        ggml_tensor * talker_logits = build_talker_step(tctx, talker.graph(), input, positions, mask,
-                                                        impl.weights.talker, talker_shape, caches.talker, &hidden);
+        // The oracle probes the prefill pass alone, because that is the pass a
+        // port reproduces without the sampled history behind it. So the probes
+        // are captured at frame zero over every prompt position, not one row per
+        // frame -- the two have the same shape whenever the frame count happens
+        // to equal the prompt length, which is how a wrong capture survives.
+        const bool                 probing    = !request.probe_layers.empty() && frame == 0;
+        ggml_tensor *              hidden     = nullptr;
+        ggml_tensor *              all_hidden = nullptr;
+        std::vector<ggml_tensor *> layers;
+        ggml_tensor *              talker_logits =
+            build_talker_step(tctx, talker.graph(), input, positions, mask, impl.weights.talker, talker_shape,
+                              caches.talker, &hidden, probing ? &layers : nullptr, probing ? &all_hidden : nullptr);
         if (talker_logits == nullptr || hidden == nullptr) {
             return SYNTH_ERR_INTERNAL;
         }
-        // Both are read back, so the allocator must not reuse either.
+        // Everything read back has to be marked, or the allocator reuses one
+        // tensor's buffer for another; see docs/porting/families/qwen3-tts.md.
         ggml_set_output(hidden);
         ggml_build_forward_expand(talker.graph(), hidden);
+        ggml_tensor * prefill_logits = nullptr;
+        if (probing) {
+            for (uint32_t layer : request.probe_layers) {
+                ggml_set_output(layers[layer]);
+                ggml_build_forward_expand(talker.graph(), layers[layer]);
+            }
+            ggml_set_output(all_hidden);
+            ggml_build_forward_expand(talker.graph(), all_hidden);
+            // The oracle's logits probe covers the whole prefill, so the head is
+            // applied to every position rather than only the one that predicts.
+            prefill_logits = ggml_mul_mat(tctx, impl.weights.talker.codec_head, all_hidden);
+            ggml_set_output(prefill_logits);
+            ggml_build_forward_expand(talker.graph(), prefill_logits);
+        }
         status = talker.run(talker_logits, "qwen3-tts.talker", request.threads);
         if (status != SYNTH_OK) {
             return status;
@@ -711,14 +752,30 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         filled += input->ne[1];
 
         read_floats(talker_logits, logits);
-        frame_codes[0] = int32_t(select_code(logits, sampling, stream));
-        if (talker_frame_ends_utterance(hparams, uint32_t(frame_codes[0]))) {
-            break;
-        }
-        if (frame == max_frames) {
-            return SYNTH_ERR_OUTPUT_LIMIT;
+        if (replaying) {
+            if (frame == frame_limit) {
+                break;
+            }
+            frame_codes[0] = (*request.replay_codes)[size_t(frame) * groups];
+        } else {
+            frame_codes[0] = int32_t(select_code(logits, sampling, stream));
+            if (talker_frame_ends_utterance(hparams, uint32_t(frame_codes[0]))) {
+                break;
+            }
+            if (frame == frame_limit) {
+                return SYNTH_ERR_OUTPUT_LIMIT;
+            }
         }
         read_floats(hidden, hidden_state);
+
+        if (probing) {
+            read_floats(prefill_logits, output.talker_logits);
+            read_floats(all_hidden, output.talker_final);
+            for (size_t index = 0; index < request.probe_layers.size(); ++index) {
+                read_floats(layers[request.probe_layers[index]], probe);
+                output.talker_layers[index] = probe;
+            }
+        }
         ggml_backend_tensor_set(t_hidden, hidden_state.data(), 0, ggml_nbytes(t_hidden));
         set_i32(t_semantic, frame_codes[0]);
 
@@ -767,7 +824,8 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
             predictor_filled += plan.position_count;
 
             read_floats(step_logits, logits);
-            frame_codes[step + 1] = int32_t(select_code(logits, sampling, stream));
+            frame_codes[step + 1] = replaying ? (*request.replay_codes)[size_t(frame) * groups + step + 1] :
+                                                int32_t(select_code(logits, sampling, stream));
         }
 
         ggml_backend_tensor_set(t_acoustic, frame_codes.data() + 1, 0, ggml_nbytes(t_acoustic));

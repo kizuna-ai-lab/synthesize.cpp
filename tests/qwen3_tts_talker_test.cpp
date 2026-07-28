@@ -375,10 +375,17 @@ int check_prompt_layout() {
     SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_prompt(h, request, prompt) == SYNTH_OK);
 
     // Three role positions, then the codec stream of seven -- think, think_bos,
-    // language, think_eos, speaker, codec_pad, codec_bos -- laid against a text
-    // stream of pads that ends in tts_bos, with codec_bos landing on the first
-    // text token instead of on a pad. Ten positions in all.
-    SYNTH_TEST_CHECK(prompt.positions.size() == 10);
+    // language, think_eos, speaker, codec_pad -- laid against a text stream of
+    // pads ending in tts_bos, then every text token against a codec pad, one
+    // tts_eos, and codec_bos closing against a pad. Three role, six codec, three
+    // text, one eos and one close: fourteen.
+    //
+    // This is the reference's non-streaming layout, which is what
+    // generate_custom_voice defaults to: the whole text sits in the prompt. The
+    // streaming layout puts one token in the prompt and feeds the rest a frame
+    // at a time, and the two differ in prefill length and in audio without
+    // either failing.
+    SYNTH_TEST_CHECK(prompt.positions.size() == 14);
     for (size_t index = 0; index < 3; ++index) {
         SYNTH_TEST_CHECK(
             expect_position(prompt.positions[index], Position::Text::Token, request.role_tokens[index], false, 0) == 0);
@@ -390,21 +397,21 @@ int check_prompt_layout() {
     SYNTH_TEST_CHECK(expect_position(prompt.positions[6], Position::Text::TtsPad, 0, true, h.tokens.codec_think_eos) ==
                      0);
     SYNTH_TEST_CHECK(expect_position(prompt.positions[7], Position::Text::TtsPad, 0, true, 400) == 0);
-    // The one tts_bos in the whole prompt sits on the codec pad, one before the end.
+    // The one tts_bos in the whole prompt pairs with codec_pad, not with the
+    // codec_bos that closes the prompt.
     SYNTH_TEST_CHECK(expect_position(prompt.positions[8], Position::Text::TtsBos, 0, true, h.tokens.codec_pad) == 0);
-    SYNTH_TEST_CHECK(expect_position(prompt.positions[9], Position::Text::Token, 20, true, h.tokens.codec_bos) == 0);
+    // Every text token, then the eos, each against a codec pad.
+    SYNTH_TEST_CHECK(expect_position(prompt.positions[9], Position::Text::Token, 20, true, h.tokens.codec_pad) == 0);
+    SYNTH_TEST_CHECK(expect_position(prompt.positions[10], Position::Text::Token, 21, true, h.tokens.codec_pad) == 0);
+    SYNTH_TEST_CHECK(expect_position(prompt.positions[11], Position::Text::Token, 22, true, h.tokens.codec_pad) == 0);
+    SYNTH_TEST_CHECK(expect_position(prompt.positions[12], Position::Text::TtsEos, 0, true, h.tokens.codec_pad) == 0);
+    // codec_bos closes the prompt against a pad rather than against a text
+    // token, which is the difference from the streaming layout.
+    SYNTH_TEST_CHECK(expect_position(prompt.positions[13], Position::Text::TtsPad, 0, true, h.tokens.codec_bos) == 0);
 
-    // The first text token went into the prefill, so the schedule starts at the
-    // second and ends with one tts_eos.
-    SYNTH_TEST_CHECK(prompt.trailing.size() == 3);
-    SYNTH_TEST_CHECK(expect_position(prompt.trailing[0], Position::Text::Token, 21, false, 0) == 0);
-    SYNTH_TEST_CHECK(expect_position(prompt.trailing[1], Position::Text::Token, 22, false, 0) == 0);
-    SYNTH_TEST_CHECK(expect_position(prompt.trailing[2], Position::Text::TtsEos, 0, false, 0) == 0);
-
-    // Steps past the schedule pad forever rather than running off the end.
-    SYNTH_TEST_CHECK(synth::qwen3tts::talker_step_text_token(h, prompt, 0) == 21);
-    SYNTH_TEST_CHECK(synth::qwen3tts::talker_step_text_token(h, prompt, 2) == h.tokens.tts_eos);
-    SYNTH_TEST_CHECK(synth::qwen3tts::talker_step_text_token(h, prompt, 3) == h.tokens.tts_pad);
+    // Nothing is left for the decode loop, so every step contributes tts_pad.
+    SYNTH_TEST_CHECK(prompt.trailing.empty());
+    SYNTH_TEST_CHECK(synth::qwen3tts::talker_step_text_token(h, prompt, 0) == h.tokens.tts_pad);
     SYNTH_TEST_CHECK(synth::qwen3tts::talker_step_text_token(h, prompt, 4000) == h.tokens.tts_pad);
 
     // Asking for auto is a shorter prompt, not the same prompt with a default
@@ -413,7 +420,7 @@ int check_prompt_layout() {
     automatic.has_language                         = false;
     synth::qwen3tts::TalkerPrompt auto_prompt;
     SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_prompt(h, automatic, auto_prompt) == SYNTH_OK);
-    SYNTH_TEST_CHECK(auto_prompt.positions.size() == 9);
+    SYNTH_TEST_CHECK(auto_prompt.positions.size() == 13);
     SYNTH_TEST_CHECK(
         expect_position(auto_prompt.positions[3], Position::Text::TtsPad, 0, true, h.tokens.codec_nothink) == 0);
     SYNTH_TEST_CHECK(
@@ -424,17 +431,18 @@ int check_prompt_layout() {
     anonymous.has_speaker                          = false;
     synth::qwen3tts::TalkerPrompt anonymous_prompt;
     SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_prompt(h, anonymous, anonymous_prompt) == SYNTH_OK);
-    SYNTH_TEST_CHECK(anonymous_prompt.positions.size() == 9);
+    SYNTH_TEST_CHECK(anonymous_prompt.positions.size() == 13);
     SYNTH_TEST_CHECK(
         expect_position(anonymous_prompt.positions[7], Position::Text::TtsBos, 0, true, h.tokens.codec_pad) == 0);
 
-    // A single text token still leaves a schedule, holding only the eos.
+    // A single text token shortens the prompt by two and still leaves no
+    // schedule: the text never reaches the decode loop in this layout.
     synth::qwen3tts::TalkerPromptRequest terse = request;
     terse.text_tokens                          = { 20 };
     synth::qwen3tts::TalkerPrompt terse_prompt;
     SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_prompt(h, terse, terse_prompt) == SYNTH_OK);
-    SYNTH_TEST_CHECK(terse_prompt.trailing.size() == 1);
-    SYNTH_TEST_CHECK(terse_prompt.trailing[0].text == Position::Text::TtsEos);
+    SYNTH_TEST_CHECK(terse_prompt.positions.size() == 12);
+    SYNTH_TEST_CHECK(terse_prompt.trailing.empty());
 
     // Nothing to say is a caller defect, not an empty utterance.
     synth::qwen3tts::TalkerPromptRequest silent = request;
@@ -467,9 +475,12 @@ int check_flatten() {
     SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, prompt, text, codec, offset) == SYNTH_OK);
 
     // Every position carries a text token, the specials resolved to their
-    // text-vocabulary ids, and the codec stream is the trailing seven.
-    const std::vector<int32_t> expected_text  = { 10, 11, 12, 102, 102, 102, 102, 102, 100, 20 };
-    const std::vector<int32_t> expected_codec = { 203, 205, 300, 206, 400, 202, 200 };
+    // text-vocabulary ids, and the codec stream is everything after the role
+    // prefix. With two text tokens: five pads, tts_bos, both text tokens, the
+    // eos, and a closing pad -- against think, think_bos, language, think_eos,
+    // speaker, then codec_pad for the text and the eos, then codec_bos.
+    const std::vector<int32_t> expected_text  = { 10, 11, 12, 102, 102, 102, 102, 102, 100, 20, 21, 101, 102 };
+    const std::vector<int32_t> expected_codec = { 203, 205, 300, 206, 400, 202, 202, 202, 202, 200 };
     SYNTH_TEST_CHECK(text == expected_text);
     SYNTH_TEST_CHECK(codec == expected_codec);
     SYNTH_TEST_CHECK(offset == 3);

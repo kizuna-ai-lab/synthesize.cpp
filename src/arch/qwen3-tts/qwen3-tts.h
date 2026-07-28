@@ -42,6 +42,11 @@ struct SynthesisOutput {
     uint64_t             frame_count = 0;
     std::vector<int32_t> codes;  // [frame_count, code_group_count], level-major
     std::vector<float>   audio;  // frame_count * hop_length samples, one channel
+
+    // Captured only when the request asks for them. Each is frame-major.
+    std::vector<float>              talker_logits;  // [frame_count, codec_vocab_size]
+    std::vector<float>              talker_final;   // [frame_count, hidden_size]
+    std::vector<std::vector<float>> talker_layers;  // one per requested probe layer
 };
 
 struct SynthesisRequest {
@@ -57,6 +62,19 @@ struct SynthesisRequest {
     // The most frames this request may emit. The talker's cache is sized from
     // it, so it bounds memory as well as length; zero takes the family default.
     uint64_t             max_frames  = 0;
+
+    // When set, each frame's codes are taken from here instead of sampled.
+    //
+    // This is the Port Validation Contract's replay seam. The oracle draws from
+    // PyTorch's generator and this port from its own, so parity replays the
+    // codes rather than reproducing them; everything downstream of the draw is
+    // then compared on identical inputs. Laid out [frames, code_group_count].
+    const std::vector<int32_t> * replay_codes  = nullptr;
+    uint64_t                     replay_frames = 0;
+
+    // Talker layers whose output is captured per frame, for comparison against
+    // the oracle's probes. Empty captures nothing and leaves the graph alone.
+    std::vector<uint32_t> probe_layers;
 };
 
 // The talker attends over the whole utterance, so its cache grows with it: at

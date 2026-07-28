@@ -50,14 +50,19 @@ ggml_tensor * build_talker_step_input(ggml_context *        context,
 // of the last position, [codec_vocab_size, 1]. `out_hidden` receives that
 // position's hidden state after the final norm, which is what the code predictor
 // prefills with.
-ggml_tensor * build_talker_step(ggml_context *         context,
-                                ggml_cgraph *          graph,
-                                ggml_tensor *          input,
-                                ggml_tensor *          position_ids,
-                                ggml_tensor *          mask,
-                                const TalkerWeights &  weights,
-                                const AttentionShape & shape,
-                                const TalkerCache &    cache,
-                                ggml_tensor **         out_hidden);
+// `out_layers`, when non-null, receives each layer's output. Port validation
+// compares them against the oracle's per-layer probes; nothing else reads them,
+// and passing null leaves the graph unchanged.
+ggml_tensor * build_talker_step(ggml_context *               context,
+                                ggml_cgraph *                graph,
+                                ggml_tensor *                input,
+                                ggml_tensor *                position_ids,
+                                ggml_tensor *                mask,
+                                const TalkerWeights &        weights,
+                                const AttentionShape &       shape,
+                                const TalkerCache &          cache,
+                                ggml_tensor **               out_hidden,
+                                std::vector<ggml_tensor *> * out_layers     = nullptr,
+                                ggml_tensor **               out_all_hidden = nullptr);
 
 }  // namespace synth::qwen3tts

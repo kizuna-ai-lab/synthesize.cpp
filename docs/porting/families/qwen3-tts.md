@@ -1554,14 +1554,28 @@ GB10's CUDA device reports as **integrated**. The runner takes the first device
 that is not the CPU rather than the first that calls itself a GPU, and anyone
 testing on Spark hardware will need the same.
 
+### It is reachable from the public seam
+
+`synth_model_load` with `SYNTH_BACKEND_CUDA` gets the split: the seam passes the
+selected device, `BackendPlan` makes it primary, and the model creates the codec
+twins because primary is no longer the CPU. Both paths synthesize the same
+utterance through `synth_synthesize` and return the same 28,800 samples.
+
+### When it pays, and when it does not
+
+Synthesis is 1.66 times faster with the split. Loading is about seven seconds
+slower, because 457 MB of codec weights are copied into the accelerator's buffer
+and the CUDA context is created.
+
+For a one-shot 1.2-second utterance that is a net loss -- 17.9 seconds against
+10.9 end to end including load. For a long utterance, or any process that loads
+once and synthesizes repeatedly, it is a clear win. The split is therefore a
+deployment choice rather than a default, which is what the backend request on
+`synth_model_load` already expresses.
+
 ### Not done in this stage
 
-The split is reachable from the family API and from an environment variable on
-the test runner, but **not from the public seam**: `synth_model_load` with
-`SYNTH_BACKEND_CUDA` still loads everything on the CPU, because the model's
-`load` is what chooses the split and the seam passes a device rather than a
-policy. Wiring that is the remaining work, along with the repeated-run cleanup
-the contract asks for.
+The repeated-run cleanup the contract asks for is not written.
 
 ## Open Questions for Intake
 

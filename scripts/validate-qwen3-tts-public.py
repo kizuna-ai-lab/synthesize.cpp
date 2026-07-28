@@ -46,9 +46,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--work", type=pathlib.Path, default=pathlib.Path("build/goldens/qwen3-tts-public"))
     parser.add_argument("--report", type=pathlib.Path, default=None)
     # Short on purpose: this phase checks the seam, not the audio, and every run
-    # is a full synthesis on CPU.
+    # is a full synthesis.
     parser.add_argument("--text", default="Hi.")
     parser.add_argument("--max-frames", type=int, default=24)
+    # The Quantization Profile and Execution Backend this run covers. They are
+    # recorded rather than inferred because the tolerance grid is keyed on them:
+    # a run that does not say which cell it filled cannot fill one.
+    parser.add_argument("--profile", default="BF16")
+    parser.add_argument("--backend", default="cpu", choices=("cpu", "cuda"))
     return parser.parse_args()
 
 
@@ -57,7 +62,8 @@ def synthesize(arguments: argparse.Namespace, name: str, voice: str, language: s
     target = arguments.work / f"{name}.pcm"
     target.parent.mkdir(parents=True, exist_ok=True)
     command = [str(arguments.runner), str(arguments.model), str(target), voice,
-               language if language is not None else "-", seed, str(arguments.max_frames)]
+               language if language is not None else "-", seed, str(arguments.max_frames),
+               arguments.backend]
     finished = subprocess.run(command, input=arguments.text.encode("utf-8"), capture_output=True)
     if finished.returncode != 0:
         print(f"  {name}: runner failed: {finished.stderr.decode('utf-8', 'replace').strip()[:200]}")
@@ -127,6 +133,8 @@ def main() -> int:
             "schema": "synthesize-validation-report-v1",
             "family": "qwen3-tts",
             "phase": "public_request",
+            "profile": arguments.profile,
+            "backend": arguments.backend.upper(),
             "text": arguments.text,
             "max_frames": arguments.max_frames,
             "checks": checks,

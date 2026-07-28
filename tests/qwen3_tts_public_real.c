@@ -26,7 +26,9 @@ static void write_pcm(const char * path, const float * samples, uint64_t count) 
 
 int main(int argc, char ** argv) {
     if (argc < 6) {
-        fprintf(stderr, "usage: %s <model.gguf> <out.pcm> <voice-id> <language-tag|-> <seed|random> [max-frames]\n",
+        fprintf(stderr,
+                "usage: %s <model.gguf> <out.pcm> <voice-id> <language-tag|-> <seed|random> "
+                "[max-frames] [cpu|cuda]\n",
                 argv[0]);
         return 2;
     }
@@ -41,9 +43,21 @@ int main(int argc, char ** argv) {
     const size_t text_size = fread(text, 1, sizeof text - 1, stdin);
     text[text_size]        = '\0';
 
+    /* Selected through the public enum rather than the family's own device
+     * lookup: this phase validates the seam a caller actually has, so which
+     * device the core resolves CUDA to is part of what is under test. */
+    const char * backend_text = argc > 7 ? argv[7] : "cpu";
+
     synth_model_load_params_t load_params;
     synth_model_load_params_init(&load_params, sizeof load_params);
-    load_params.backend = SYNTH_BACKEND_CPU;
+    if (strcmp(backend_text, "cuda") == 0) {
+        load_params.backend = SYNTH_BACKEND_CUDA;
+    } else if (strcmp(backend_text, "cpu") == 0) {
+        load_params.backend = SYNTH_BACKEND_CPU;
+    } else {
+        fprintf(stderr, "unknown backend %s\n", backend_text);
+        return 2;
+    }
 
     synth_model_t * model  = NULL;
     synth_status_t  status = synth_model_load(model_path, &load_params, &model);

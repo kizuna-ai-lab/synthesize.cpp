@@ -1,153 +1,194 @@
 {
   "schema": "synthesize-tolerances-v1",
   "family": "qwen3-tts",
+  "variant": "qwen3-tts-12hz-0-6b-customvoice",
   "suite_version": 1,
+  "status": "thresholds-committed-and-enforced",
   "reference_stage": "source-bf16-oracle-vs-f32-cpu",
-  "note": "Measured 2026-07-28 from the first working reference and implementation across all eighteen Golden cases, then reviewed and committed. Regenerating these from a later run would defeat their purpose: a tolerance is an input to validation, not an output of it.\n\nThe oracle runs bfloat16 on CUDA and the port runs F32 on CPU, so these thresholds cover a dtype and a device difference as well as an implementation one. That is the comparison the contract asks for -- see docs/port-validation.md, 'Choosing the Oracle's dtype and Device' -- and not a weakness in them.\n\nTalker probes gate on cosine similarity, not max-abs. The deep layers carry outlier channels ahead of the final norm: max-abs reaches 17.4 at L27 while cosine holds at 0.99992, and a max-abs threshold would report catastrophic failure on a correct port. This was predicted from the reference port before any measurement existed and the measurements have the same shape. Max-abs is recorded per probe as observed, for review rather than for gating.\n\nThe waveform gates on both. A listener hears the waveform, and a cosine over it would hide a constant offset.\n\nEvery threshold is five times the measured deviation in (1 - cosine). That headroom is wide enough to absorb run-to-run variation and far tighter than any defect this suite has caught: a transposed code stream gave cosine 0.017, and a prompt built one position short gave -0.01.",
-  "stages": {
-    "source-bf16-oracle-vs-f32-cpu": {
-      "phase": "oracle_replay",
-      "description": "The oracle's codes replayed through the port on CPU, compared against its prefill probes and waveform.",
-      "cases": 18,
-      "probes": {
-        "talker.hidden_l0": {
-          "min_cosine": 0.99996,
-          "observed_min_cosine": 0.999992,
-          "observed_max_abs": 0.0837879
+  "case_count": 18,
+  "note": "Measured 2026-07-28 from the first working reference and implementation across all eighteen Golden cases, then reviewed and committed. Regenerating these from a later run would defeat their purpose: a tolerance is an input to validation, not an output of it.\n\nThe oracle runs bfloat16 on CUDA and the port runs F32 on CPU, so these thresholds cover a dtype and a device difference as well as an implementation one. That is the comparison the contract asks for -- see docs/port-validation.md, 'Choosing the Oracle's dtype and Device' -- and not a weakness in them.\n\nTalker probes gate on cosine similarity, not max-abs. The deep layers carry outlier channels ahead of the final norm: max-abs reaches 17.4 at L27 while cosine holds at 0.99992, and a max-abs threshold would report catastrophic failure on a correct port. This was predicted from the reference port before any measurement existed and the measurements have the same shape. Max-abs is recorded per probe as observed, for review rather than for gating.\n\nThe waveform gates on both. A listener hears the waveform, and a cosine over it would hide a constant offset.\n\nEvery threshold is five times the measured deviation in (1 - cosine). That headroom is wide enough to absorb run-to-run variation and far tighter than any defect this suite has caught: a transposed code stream gave cosine 0.017, and a prompt built one position short gave -0.01.\n\nThe grid is keyed on Quantization Profile, Execution Backend and stage, which is what tests/python/test_tolerance_coverage.py checks. BF16 is recorded on CPU only: the source profile was never swept on CUDA, and listing a cell that was not measured is the hole that test exists to close.\n\nThe public stage on CUDA drew a different number of frames than on CPU for the dialect case, 10 against 11. Sampling amplifies the arithmetic difference into a different draw, so requesting SYNTH_BACKEND_CUDA at the public seam does not reproduce the CPU stream. That is worth reading against docs/backends.md's discrete-output rule, which holds the sampled path on the CPU: stage 7 placed only the codec on the accelerator, and the public seam's own backend request is wider than that.",
+  "profiles": {
+    "BF16": {
+      "stages": {
+        "replay": {
+          "phase": "oracle_replay",
+          "description": "The oracle's codes replayed through the port on CPU, compared against its prefill probes and waveform.",
+          "cases": 18,
+          "probes": {
+            "talker.hidden_l0": {
+              "min_cosine": 0.99996,
+              "observed_min_cosine": 0.999992,
+              "observed_max_abs": 0.0837879
+            },
+            "talker.hidden_l7": {
+              "min_cosine": 0.99993,
+              "observed_min_cosine": 0.999986,
+              "observed_max_abs": 4.5256
+            },
+            "talker.hidden_l14": {
+              "min_cosine": 0.999855,
+              "observed_min_cosine": 0.999971,
+              "observed_max_abs": 7.62683
+            },
+            "talker.hidden_l21": {
+              "min_cosine": 0.99971,
+              "observed_min_cosine": 0.999942,
+              "observed_max_abs": 12.0525
+            },
+            "talker.hidden_l27": {
+              "min_cosine": 0.999575,
+              "observed_min_cosine": 0.999915,
+              "observed_max_abs": 17.3939
+            },
+            "talker.final": {
+              "min_cosine": 0.99726,
+              "observed_min_cosine": 0.999452,
+              "observed_max_abs": 3.83554
+            },
+            "talker.logits": {
+              "min_cosine": 0.99761,
+              "observed_min_cosine": 0.999522,
+              "observed_max_abs": 1.44078
+            },
+            "audio.pcm": {
+              "min_cosine": 0.997135,
+              "max_abs": 0.5,
+              "observed_min_cosine": 0.999427,
+              "observed_max_abs": 0.154108
+            }
+          },
+          "backend": "CPU"
         },
-        "talker.hidden_l7": {
-          "min_cosine": 0.99993,
-          "observed_min_cosine": 0.999986,
-          "observed_max_abs": 4.5256
-        },
-        "talker.hidden_l14": {
-          "min_cosine": 0.999855,
-          "observed_min_cosine": 0.999971,
-          "observed_max_abs": 7.62683
-        },
-        "talker.hidden_l21": {
-          "min_cosine": 0.99971,
-          "observed_min_cosine": 0.999942,
-          "observed_max_abs": 12.0525
-        },
-        "talker.hidden_l27": {
-          "min_cosine": 0.999575,
-          "observed_min_cosine": 0.999915,
-          "observed_max_abs": 17.3939
-        },
-        "talker.final": {
-          "min_cosine": 0.99726,
-          "observed_min_cosine": 0.999452,
-          "observed_max_abs": 3.83554
-        },
-        "talker.logits": {
-          "min_cosine": 0.99761,
-          "observed_min_cosine": 0.999522,
-          "observed_max_abs": 1.44078
-        },
-        "audio.pcm": {
-          "min_cosine": 0.997135,
-          "max_abs": 0.5,
-          "observed_min_cosine": 0.999427,
-          "observed_max_abs": 0.154108
+        "public": {
+          "backend": "CPU",
+          "description": "The public C seam driven end to end: seed reporting and repeatability, Voice and language resolution.",
+          "checks": 8,
+          "all_passed": true,
+          "note": "Behavioural rather than numeric. This stage has no probes: it gates on relations between runs -- that one seed reproduces and another does not, that a Voice change moves the audio -- which hold within a backend and cannot be expressed as a threshold against the oracle."
         }
       }
     },
-    "f16-vs-oracle": {
-      "phase": "oracle_replay",
-      "description": "The F16 profile replayed on CPU against the same oracle artifacts as the source profile.",
-      "cases": 18,
-      "note": "F16 halves the talker half and leaves the codec at the reference dtype, so its waveform agreement is identical to the source profile's -- the codec that produced it is the same F32 graph. The talker probes are marginally tighter than the source's because F16 carries ten mantissa bits against bfloat16's seven.\n\nThis profile is the same size as the source, 2168 MB. What it buys is time: ggml's CPU bfloat16 matrix multiply is far slower than its F16 one, and halving weights that were already two bytes wide took a 37-frame case from 43.0 seconds to 9.6.",
-      "probes": {
-        "audio.pcm": {
-          "min_cosine": 0.997137,
-          "observed_min_cosine": 0.999427,
-          "observed_max_abs": 0.154108,
-          "max_abs": 0.5
+    "F16": {
+      "stages": {
+        "replay": {
+          "phase": "oracle_replay",
+          "description": "The F16 profile replayed on CPU against the same oracle artifacts as the source profile.",
+          "cases": 18,
+          "note": "F16 halves the talker half and leaves the codec at the reference dtype, so its waveform agreement is identical to the source profile's -- the codec that produced it is the same F32 graph. The talker probes are marginally tighter than the source's because F16 carries ten mantissa bits against bfloat16's seven.\n\nThis profile is the same size as the source, 2168 MB. What it buys is time: ggml's CPU bfloat16 matrix multiply is far slower than its F16 one, and halving weights that were already two bytes wide took a 37-frame case from 43.0 seconds to 9.6.",
+          "probes": {
+            "audio.pcm": {
+              "min_cosine": 0.997137,
+              "observed_min_cosine": 0.999427,
+              "observed_max_abs": 0.154108,
+              "max_abs": 0.5
+            },
+            "talker.final": {
+              "min_cosine": 0.997149,
+              "observed_min_cosine": 0.99943,
+              "observed_max_abs": 4.215685
+            },
+            "talker.hidden_l0": {
+              "min_cosine": 0.999947,
+              "observed_min_cosine": 0.999989,
+              "observed_max_abs": 0.116451
+            },
+            "talker.hidden_l14": {
+              "min_cosine": 0.999885,
+              "observed_min_cosine": 0.999977,
+              "observed_max_abs": 6.948486
+            },
+            "talker.hidden_l21": {
+              "min_cosine": 0.999756,
+              "observed_min_cosine": 0.999951,
+              "observed_max_abs": 10.949402
+            },
+            "talker.hidden_l27": {
+              "min_cosine": 0.999628,
+              "observed_min_cosine": 0.999926,
+              "observed_max_abs": 16.714966
+            },
+            "talker.hidden_l7": {
+              "min_cosine": 0.999954,
+              "observed_min_cosine": 0.999991,
+              "observed_max_abs": 3.775635
+            },
+            "talker.logits": {
+              "min_cosine": 0.997291,
+              "observed_min_cosine": 0.999458,
+              "observed_max_abs": 1.696855
+            }
+          },
+          "backend": "CPU"
         },
-        "talker.final": {
-          "min_cosine": 0.997149,
-          "observed_min_cosine": 0.99943,
-          "observed_max_abs": 4.215685
-        },
-        "talker.hidden_l0": {
-          "min_cosine": 0.999947,
-          "observed_min_cosine": 0.999989,
-          "observed_max_abs": 0.116451
-        },
-        "talker.hidden_l14": {
-          "min_cosine": 0.999885,
-          "observed_min_cosine": 0.999977,
-          "observed_max_abs": 6.948486
-        },
-        "talker.hidden_l21": {
-          "min_cosine": 0.999756,
-          "observed_min_cosine": 0.999951,
-          "observed_max_abs": 10.949402
-        },
-        "talker.hidden_l27": {
-          "min_cosine": 0.999628,
-          "observed_min_cosine": 0.999926,
-          "observed_max_abs": 16.714966
-        },
-        "talker.hidden_l7": {
-          "min_cosine": 0.999954,
-          "observed_min_cosine": 0.999991,
-          "observed_max_abs": 3.775635
-        },
-        "talker.logits": {
-          "min_cosine": 0.997291,
-          "observed_min_cosine": 0.999458,
-          "observed_max_abs": 1.696855
+        "public": {
+          "backend": "CPU",
+          "description": "The public C seam driven end to end: seed reporting and repeatability, Voice and language resolution.",
+          "checks": 8,
+          "all_passed": true,
+          "note": "Behavioural rather than numeric. This stage has no probes: it gates on relations between runs -- that one seed reproduces and another does not, that a Voice change moves the audio -- which hold within a backend and cannot be expressed as a threshold against the oracle."
         }
-      }
-    },
-    "f16-cuda-codec-vs-oracle": {
-      "phase": "oracle_replay",
-      "description": "The F16 profile with the codec on CUDA and the autoregressive half on CPU, against the same oracle artifacts.",
-      "cases": 18,
-      "note": "Placement is proven by the measurements rather than asserted: every talker probe is identical to the CPU stage's, because the talker did not move and could not -- its output feeds a sampled code, which docs/backends.md holds on the CPU. Only the waveform changed, and only in the sixth decimal of its cosine, which is the codec's tensor-core arithmetic.\n\nThe stage exists because the codec is 41 percent of wall clock under this profile and 35 times faster there: 8.44 seconds to 0.24 on a 37-frame case, taking the whole synthesis from 20.69 to 12.50.",
-      "probes": {
-        "audio.pcm": {
-          "min_cosine": 0.997018,
-          "observed_min_cosine": 0.999404,
-          "observed_max_abs": 0.1602,
-          "max_abs": 0.5
-        },
-        "talker.final": {
-          "min_cosine": 0.997149,
-          "observed_min_cosine": 0.99943,
-          "observed_max_abs": 4.215685
-        },
-        "talker.hidden_l0": {
-          "min_cosine": 0.999947,
-          "observed_min_cosine": 0.999989,
-          "observed_max_abs": 0.116451
-        },
-        "talker.hidden_l14": {
-          "min_cosine": 0.999885,
-          "observed_min_cosine": 0.999977,
-          "observed_max_abs": 6.948486
-        },
-        "talker.hidden_l21": {
-          "min_cosine": 0.999756,
-          "observed_min_cosine": 0.999951,
-          "observed_max_abs": 10.949402
-        },
-        "talker.hidden_l27": {
-          "min_cosine": 0.999628,
-          "observed_min_cosine": 0.999926,
-          "observed_max_abs": 16.714966
-        },
-        "talker.hidden_l7": {
-          "min_cosine": 0.999954,
-          "observed_min_cosine": 0.999991,
-          "observed_max_abs": 3.775635
-        },
-        "talker.logits": {
-          "min_cosine": 0.997291,
-          "observed_min_cosine": 0.999458,
-          "observed_max_abs": 1.696839
+      },
+      "backends": {
+        "CUDA": {
+          "stages": {
+            "replay": {
+              "phase": "oracle_replay",
+              "description": "The F16 profile with the codec on CUDA and the autoregressive half on CPU, against the same oracle artifacts.",
+              "cases": 18,
+              "note": "Placement is proven by the measurements rather than asserted: every talker probe is identical to the CPU stage's, because the talker did not move and could not -- its output feeds a sampled code, which docs/backends.md holds on the CPU. Only the waveform changed, and only in the sixth decimal of its cosine, which is the codec's tensor-core arithmetic.\n\nThe stage exists because the codec is 41 percent of wall clock under this profile and 35 times faster there: 8.44 seconds to 0.24 on a 37-frame case, taking the whole synthesis from 20.69 to 12.50.",
+              "probes": {
+                "audio.pcm": {
+                  "min_cosine": 0.997018,
+                  "observed_min_cosine": 0.999404,
+                  "observed_max_abs": 0.1602,
+                  "max_abs": 0.5
+                },
+                "talker.final": {
+                  "min_cosine": 0.997149,
+                  "observed_min_cosine": 0.99943,
+                  "observed_max_abs": 4.215685
+                },
+                "talker.hidden_l0": {
+                  "min_cosine": 0.999947,
+                  "observed_min_cosine": 0.999989,
+                  "observed_max_abs": 0.116451
+                },
+                "talker.hidden_l14": {
+                  "min_cosine": 0.999885,
+                  "observed_min_cosine": 0.999977,
+                  "observed_max_abs": 6.948486
+                },
+                "talker.hidden_l21": {
+                  "min_cosine": 0.999756,
+                  "observed_min_cosine": 0.999951,
+                  "observed_max_abs": 10.949402
+                },
+                "talker.hidden_l27": {
+                  "min_cosine": 0.999628,
+                  "observed_min_cosine": 0.999926,
+                  "observed_max_abs": 16.714966
+                },
+                "talker.hidden_l7": {
+                  "min_cosine": 0.999954,
+                  "observed_min_cosine": 0.999991,
+                  "observed_max_abs": 3.775635
+                },
+                "talker.logits": {
+                  "min_cosine": 0.997291,
+                  "observed_min_cosine": 0.999458,
+                  "observed_max_abs": 1.696839
+                }
+              },
+              "backend": "CUDA"
+            },
+            "public": {
+              "backend": "CUDA",
+              "description": "The public C seam driven end to end: seed reporting and repeatability, Voice and language resolution.",
+              "checks": 8,
+              "all_passed": true,
+              "note": "Behavioural rather than numeric. This stage has no probes: it gates on relations between runs -- that one seed reproduces and another does not, that a Voice change moves the audio -- which hold within a backend and cannot be expressed as a threshold against the oracle."
+            }
+          }
         }
       }
     }

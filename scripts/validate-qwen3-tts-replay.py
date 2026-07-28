@@ -53,7 +53,12 @@ def parse_args() -> argparse.Namespace:
                         help="fail when a measurement exceeds the committed tolerance")
     parser.add_argument("--tolerances", type=pathlib.Path,
                         default=pathlib.Path("tests/tolerances/qwen3-tts.json"))
-    parser.add_argument("--stage", default="source-bf16-oracle-vs-f32-cpu")
+    # The cell of the tolerance grid this run fills. Three coordinates rather
+    # than one name: the grid is keyed on Quantization Profile, Execution
+    # Backend and stage, so a single string cannot address it.
+    parser.add_argument("--profile", default="BF16")
+    parser.add_argument("--backend", default="CPU")
+    parser.add_argument("--stage", default="replay")
     return parser.parse_args()
 
 
@@ -183,9 +188,15 @@ def main() -> int:
     # rather than inventing one is the point: a threshold the suite writes for
     # itself proves nothing.
     tolerances = json.loads(arguments.tolerances.read_text(encoding="utf-8"))
-    stage = tolerances.get("stages", {}).get(arguments.stage)
+    cell = tolerances.get("profiles", {}).get(arguments.profile, {})
+    # CPU is the profile's own entry; anything else hangs off `backends`, which
+    # is the shape the coverage test walks.
+    if arguments.backend.upper() != "CPU":
+        cell = cell.get("backends", {}).get(arguments.backend.upper(), {})
+    stage = cell.get("stages", {}).get(arguments.stage)
     if not stage:
-        print(f"\ntolerance stage {arguments.stage!r} is not recorded in {arguments.tolerances}")
+        print(f"\ntolerance cell {arguments.profile}/{arguments.backend}/{arguments.stage} "
+              f"is not recorded in {arguments.tolerances}")
         return 1
 
     breaches = []

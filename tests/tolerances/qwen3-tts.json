@@ -57,12 +57,12 @@
       "phase": "oracle_replay",
       "description": "The F16 profile replayed on CPU against the same oracle artifacts as the source profile.",
       "cases": 18,
-      "note": "F16 is not looser than the source profile and on the deep talker layers it is slightly tighter, which follows from where the bits are: F16 carries ten mantissa bits against bfloat16's seven, so halving a bfloat16 talker weight loses nothing, and what this profile does spend is the codec's F32 halving. The gain is correspondingly small -- 2019 MB against 2168.",
+      "note": "F16 halves the talker half and leaves the codec at the reference dtype, so its waveform agreement is identical to the source profile's -- the codec that produced it is the same F32 graph. The talker probes are marginally tighter than the source's because F16 carries ten mantissa bits against bfloat16's seven.\n\nThis profile is the same size as the source, 2168 MB. What it buys is time: ggml's CPU bfloat16 matrix multiply is far slower than its F16 one, and halving weights that were already two bytes wide took a 37-frame case from 43.0 seconds to 9.6.",
       "probes": {
         "audio.pcm": {
-          "min_cosine": 0.997123,
-          "observed_min_cosine": 0.999425,
-          "observed_max_abs": 0.156364,
+          "min_cosine": 0.997137,
+          "observed_min_cosine": 0.999427,
+          "observed_max_abs": 0.154108,
           "max_abs": 0.5
         },
         "talker.final": {

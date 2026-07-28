@@ -1448,31 +1448,39 @@ The catalog carries a **role per tensor** rather than re-deriving one from the
 name. The quantizer classifies by name and the runtime by role; having the
 runtime repeat the name classification is how the two drift apart.
 
-### F16 buys almost nothing here
+### F16 is a speed profile, not a size one
 
-| profile | size | against source |
+It is **the same 2168 MB as the source** and **4.5 times faster**. That is not
+what a halving profile usually buys, and the reason is ggml rather than the
+model: its CPU bfloat16 matrix multiply is far slower than its F16 one, so
+halving weights that were already two bytes wide is nearly free accuracy and a
+large amount of time.
+
+| stage | BF16 source | F16 |
 | --- | --- | --- |
-| BF16 (source) | 2168 MB | -- |
-| F16 | 2019 MB | -7 % |
-| Q8_MIXED | 1139 MB | -47 %, not shipped |
+| talker | 13.66 s | 1.74 s |
+| code predictor | 25.11 s | 3.65 s |
+| codec | 4.20 s | 4.19 s |
+| **wall** | **43.04 s** | **9.64 s** |
 
-The talker is **already two bytes**, so F16's gain is the codec's F32 halving
-minus the norms it widens back to F32. Anyone assuming F16 is the obvious ship
-target for this family should see that number first.
+A 37-frame case is 2.96 seconds of audio, so the real-time factor goes from 14.5
+to **3.3** -- faster than the reference's own measured 9.4 on CPU.
 
-Its accuracy is a wash, and on the deep talker layers slightly *better* than the
-source profile -- which follows from where the bits are: F16 carries ten mantissa
-bits against bfloat16's seven, so halving a bfloat16 talker weight loses nothing.
-
-| probe | source cosine | F16 cosine |
-| --- | --- | --- |
-| talker.hidden_l7 | 0.999986 | 0.999991 |
-| talker.hidden_l21 | 0.999942 | 0.999951 |
-| talker.hidden_l27 | 0.999915 | 0.999926 |
-| talker.logits | 0.999522 | 0.999458 |
-| audio.pcm | 0.999427 | 0.999425 |
+Accuracy is a wash and on the deep talker layers marginally better, which follows
+from where the bits are: F16 carries ten mantissa bits against bfloat16's seven.
+The waveform agreement is *identical* to the source profile's, because the codec
+that produced it is the same F32 graph.
 
 All eighteen cases pass under the committed `f16-vs-oracle` stage.
+
+### The codec is never halved
+
+Halving it goes the wrong way. Its convolutions run through `ggml_im2col` into a
+matrix multiply, and ggml's F16 path there is slower on CPU than its F32 one: a
+uniform F16 profile took the codec from 4.2 seconds to **7.3**, and the whole
+case from 9.6 to 12.8. So the codec half stays at the reference dtype under every
+profile, in the quantizer's policy and the catalog's expectation both. It is 457
+MB of space that costs more time than it returns.
 
 ### Q8_MIXED is refused, with its reason
 

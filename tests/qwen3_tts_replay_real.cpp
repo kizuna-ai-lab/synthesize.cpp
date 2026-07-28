@@ -13,6 +13,7 @@
 
 #include "arch/qwen3-tts/qwen3-tts.h"
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -114,7 +115,9 @@ int main(int argc, char ** argv) {
     }
 
     synth::qwen3tts::SynthesisOutput output;
-    status = model->run_synthesis(request, output);
+    const auto                       started = std::chrono::steady_clock::now();
+    status                                   = model->run_synthesis(request, output);
+    const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     if (status != SYNTH_OK) {
         std::fprintf(stderr, "run_synthesis -> %d\n", int(status));
         return 1;
@@ -131,7 +134,13 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "cannot write under %s\n", out_dir.c_str());
         return 2;
     }
-    std::printf("{\"frames\": %llu, \"samples\": %zu, \"probe_layers\": %zu}\n",
-                (unsigned long long) output.frame_count, output.audio.size(), output.talker_layers.size());
+    const double total = output.talker_seconds + output.predictor_seconds + output.codec_seconds;
+    std::printf(
+        "{\"frames\": %llu, \"samples\": %zu, \"probe_layers\": %zu, "
+        "\"talker_seconds\": %.4f, \"predictor_seconds\": %.4f, \"codec_seconds\": %.4f, "
+        "\"codec_share\": %.4f, \"predictor_setup_seconds\": %.4f, \"wall_seconds\": %.4f}\n",
+        (unsigned long long) output.frame_count, output.audio.size(), output.talker_layers.size(),
+        output.talker_seconds, output.predictor_seconds, output.codec_seconds,
+        total > 0.0 ? output.codec_seconds / total : 0.0, output.predictor_setup_seconds, wall);
     return 0;
 }

@@ -226,10 +226,29 @@ CatalogRole classify_qwen3_talker(const std::vector<std::string_view> & tokens) 
     return CatalogRole::Unknown;
 }
 
+CatalogRole classify_qwen3_codec_shape(const std::vector<std::string_view> & tokens);
+
+// The codec half stays at the reference dtype under every profile, and that is a
+// measurement rather than caution. Halving it made the codec 1.75 times slower on
+// CPU -- 4.2 seconds to 7.3 on a 37-frame case -- because its convolutions run
+// through im2col into a matrix multiply and ggml's F16 path there is slower than
+// its F32 one. The codec is 457 MB of a 2 GB package, so the size it would give
+// back is not worth the time it costs. The talker half is where both the
+// parameters and the win are: halving it took the talker from 13.7 seconds to 1.7
+// and the predictor from 25.1 to 3.7.
 CatalogRole classify_qwen3_codec(const std::vector<std::string_view> & tokens) {
     if (tokens.size() < 3 || tokens[0] != "codec" || tokens[1] != "decoder") {
         return CatalogRole::Unknown;
     }
+    // Recognised below for the catalog's sake, then reported as sensitive so no
+    // profile halves it. Splitting the recognition from the decision keeps an
+    // unknown codec tensor an error rather than something that slips through as
+    // "sensitive by default".
+    const CatalogRole recognised = classify_qwen3_codec_shape(tokens);
+    return recognised == CatalogRole::Unknown ? CatalogRole::Unknown : CatalogRole::Sensitive;
+}
+
+CatalogRole classify_qwen3_codec_shape(const std::vector<std::string_view> & tokens) {
     // The quantizer's tables and its two kernel-one projections stay at the
     // reference dtype. A residual codebook's later levels carry small
     // magnitudes, so a relative error there is a large one against the residual

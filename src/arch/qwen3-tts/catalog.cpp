@@ -138,9 +138,17 @@ class Resolver {
                 // the package holds.
                 return half == Half::Codec ? GGML_TYPE_F32 : GGML_TYPE_BF16;
             case QuantizationProfile::F16:
-                return role == Role::Matrix ? GGML_TYPE_F16 : GGML_TYPE_F32;
             case QuantizationProfile::Q8Mixed:
-                return role == Role::Matrix ? GGML_TYPE_Q8_0 : GGML_TYPE_F32;
+                // The codec half is never halved. Its convolutions run through
+                // im2col into a matrix multiply, and ggml's F16 path there is
+                // slower on CPU than its F32 one -- measured at 1.75 times on a
+                // 37-frame case -- so halving 457 MB costs more time than the
+                // space is worth. See the quantizer's policy, which classifies
+                // the same way.
+                if (half == Half::Codec || role != Role::Matrix) {
+                    return GGML_TYPE_F32;
+                }
+                return hparams_.quantization_profile == QuantizationProfile::F16 ? GGML_TYPE_F16 : GGML_TYPE_Q8_0;
         }
         return GGML_TYPE_F32;
     }

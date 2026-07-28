@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstring>
 #include <fstream>
 #include <new>
@@ -42,6 +43,13 @@ namespace {
 // Headroom in the scheduler's hash set for the weights a graph reads, which
 // enter as leaves rather than nodes.
 constexpr size_t kSchedulerLeafAllowance = 4096;
+
+// A wall clock for the placement measurement. Monotonic, because the question is
+// how long a stage took and not what time it was.
+double now_seconds() {
+    using clock = std::chrono::steady_clock;
+    return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
+}
 
 // A context sized for a graph's headers plus the graph itself.
 class GraphRun {
@@ -74,10 +82,17 @@ class GraphRun {
 
     bool ok() const { return context_ != nullptr && graph_ != nullptr; }
 
+    // How long the scheduler took to be created and to place the graph, as
+    // opposed to computing it. A per-step rebuild pays this every step, and
+    // whether that dominates is the question stage 7 has to answer with a
+    // number rather than an argument.
+    double setup_seconds = 0.0;
+
     synth_status_t run(ggml_tensor * output, const char * stage, int threads) {
         if (!ok() || output == nullptr) {
             return SYNTH_ERR_INTERNAL;
         }
+        const double setup_started = now_seconds();
         ggml_build_forward_expand(graph_, output);
         // A CPU-only scheduler over CPU-resident weights is one split; forcing
         // nodes onto CPU inside a mixed graph is not the same thing and was
@@ -91,6 +106,7 @@ class GraphRun {
         }
         plan_.log_placement_if_enabled(stage, scheduler_, graph_);
         plan_.set_threads(threads);
+        setup_seconds = now_seconds() - setup_started;
         return ggml_backend_sched_graph_compute(scheduler_, graph_) == GGML_STATUS_SUCCESS ? SYNTH_OK :
                                                                                              SYNTH_ERR_BACKEND;
     }
@@ -474,6 +490,13 @@ void set_i32(ggml_tensor * tensor, int32_t value) {
 
 }  // namespace
 
+namespace {
+// Scratch for the codec's own wall clock, which decode_codes measures and
+// run_synthesis reports. Both are const, and this is a measurement rather than
+// state the model carries between calls.
+thread_local double codec_seconds_ = 0.0;
+}  // namespace
+
 synth_status_t Model::decode_codes(const std::vector<int32_t> & codes,
                                    uint64_t                     frame_count,
                                    int                          threads,
@@ -528,11 +551,13 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> & codes,
     if (wav == nullptr) {
         return SYNTH_ERR_INTERNAL;
     }
-    const synth_status_t status = run.run(wav, "qwen3-tts.codec", threads);
+    const double         started = now_seconds();
+    const synth_status_t status  = run.run(wav, "qwen3-tts.codec", threads);
     if (status != SYNTH_OK) {
         return status;
     }
     read_floats(wav, audio);
+    codec_seconds_ = now_seconds() - started;
     return SYNTH_OK;
 }
 
@@ -745,10 +770,12 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
             ggml_set_output(prefill_logits);
             ggml_build_forward_expand(talker.graph(), prefill_logits);
         }
-        status = talker.run(talker_logits, "qwen3-tts.talker", request.threads);
+        const double talker_started = now_seconds();
+        status                      = talker.run(talker_logits, "qwen3-tts.talker", request.threads);
         if (status != SYNTH_OK) {
             return status;
         }
+        output.talker_seconds += now_seconds() - talker_started;
         filled += input->ne[1];
 
         read_floats(talker_logits, logits);
@@ -817,10 +844,13 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
             if (step_logits == nullptr) {
                 return SYNTH_ERR_INTERNAL;
             }
-            status = run.run(step_logits, "qwen3-tts.code-predictor", request.threads);
+            const double step_started = now_seconds();
+            status                    = run.run(step_logits, "qwen3-tts.code-predictor", request.threads);
             if (status != SYNTH_OK) {
                 return status;
             }
+            output.predictor_seconds += now_seconds() - step_started;
+            output.predictor_setup_seconds += run.setup_seconds;
             predictor_filled += plan.position_count;
 
             read_floats(step_logits, logits);
@@ -837,7 +867,9 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         // Stopping on the first frame is an empty utterance, not a failure.
         return SYNTH_OK;
     }
-    return decode_codes(output.codes, output.frame_count, request.threads, output.audio);
+    status               = decode_codes(output.codes, output.frame_count, request.threads, output.audio);
+    output.codec_seconds = codec_seconds_;
+    return status;
 }
 
 }  // namespace synth::qwen3tts

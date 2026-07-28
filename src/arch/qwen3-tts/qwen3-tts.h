@@ -47,6 +47,16 @@ struct SynthesisOutput {
     std::vector<float>              talker_logits;  // [frame_count, codec_vocab_size]
     std::vector<float>              talker_final;   // [frame_count, hidden_size]
     std::vector<std::vector<float>> talker_layers;  // one per requested probe layer
+
+    // Where the wall clock went, so a backend decision is made against a
+    // measurement rather than an assumption. See docs/backends.md, which
+    // requires the cost of the discrete-output rule to be measured per family.
+    double talker_seconds          = 0.0;
+    double predictor_seconds       = 0.0;
+    double codec_seconds           = 0.0;
+    // The share of the predictor's time spent creating a scheduler and placing a
+    // graph rather than computing one.
+    double predictor_setup_seconds = 0.0;
 };
 
 struct SynthesisRequest {

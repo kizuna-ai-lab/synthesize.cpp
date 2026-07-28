@@ -70,8 +70,9 @@ class CodebookReconstructionTests(unittest.TestCase):
     def test_handles_both_naming_conventions(self) -> None:
         """The decoder says embedding_sum, the encoder says embed_sum.
 
-        A rule keyed on one name silently skips the other side's codebooks and
-        the converter reports nothing, which is the defect this guards.
+        The shipped package carries only the decoder half, but the rule matches
+        either spelling so that a package which carries both -- or only the
+        other -- is reconstructed rather than half-emitted.
         """
         tensors = {**decoder_pair(0), **encoder_pair(0)}
         out = convert.reconstruct_codebooks(tensors, convert.Conversion())
@@ -81,10 +82,34 @@ class CodebookReconstructionTests(unittest.TestCase):
             out,
         )
 
-    def test_rejects_a_checkpoint_carrying_only_one_convention(self) -> None:
+    def test_one_convention_alone_is_fine(self) -> None:
+        """The shipped package carries only the decoder half.
+
+        Requiring both spellings to appear would reject it. What must hold is
+        that nothing was left behind, which the next two tests cover.
+        """
+        out = convert.reconstruct_codebooks(dict(decoder_pair(0)), convert.Conversion())
+        self.assertIn("decoder.quantizer.rvq_first.vq.layers.0._codebook.codebook", out)
+
+    def test_rejects_an_accumulator_the_rule_did_not_match(self) -> None:
+        """A renamed accumulator must stop the conversion, not pass through.
+
+        Emitting one as a weight would hand the graph EMA sums where it expects
+        a codebook, and nothing downstream can tell the difference.
+        """
+        tensors = {**decoder_pair(0)}
+        base = "decoder.quantizer.rvq_rest.vq.layers.0._codebook."
+        tensors[base + "embedding_total"] = torch.ones(4, 3)
+        tensors[base + "cluster_usage"] = torch.ones(4)
         with self.assertRaises(convert.ConverterError) as caught:
-            convert.reconstruct_codebooks(dict(decoder_pair(0)), convert.Conversion())
-        self.assertIn("both RVQ naming conventions", str(caught.exception))
+            convert.reconstruct_codebooks(tensors, convert.Conversion())
+        self.assertIn("not reconstructed", str(caught.exception))
+
+    def test_rejects_a_checkpoint_with_no_codebooks_at_all(self) -> None:
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.reconstruct_codebooks({"decoder.pre_conv.conv.weight": torch.ones(2)},
+                                          convert.Conversion())
+        self.assertIn("no RVQ codebook", str(caught.exception))
 
     def test_rejects_an_accumulator_with_no_usage_counts(self) -> None:
         tensors = {**decoder_pair(0), **encoder_pair(0)}
@@ -116,6 +141,46 @@ class CodebookReconstructionTests(unittest.TestCase):
         self.assertEqual(len(conversion.transformed), 2)
         for entry in conversion.transformed:
             self.assertIn("EMA accumulators", entry["reason"])
+
+
+class TensorNameLengthTests(unittest.TestCase):
+    """GGML stores a tensor name in a fixed 64-byte field and truncates past it.
+
+    A truncated name is not findable by the name the catalog asks for, and the
+    package still loads, so nothing reports the problem. Five of this
+    checkpoint's paths overflowed.
+    """
+
+    def test_shortens_the_paths_that_overflow(self) -> None:
+        conversion = convert.Conversion()
+        name = "codec.decoder.pre_transformer.layers.7.post_attention_layernorm.weight"
+        self.assertGreaterEqual(len(name), convert.GGML_MAX_NAME)
+        shortened = convert.shorten_name(name, conversion)
+        self.assertEqual(shortened, "codec.decoder.pre_transformer.layers.7.post_attn_norm.weight")
+        self.assertLess(len(shortened), convert.GGML_MAX_NAME)
+        self.assertEqual(conversion.renamed, [{"output": shortened, "from": name}])
+
+    def test_shortens_every_overflowing_pattern_in_this_checkpoint(self) -> None:
+        for name in (
+            "codec.decoder.pre_transformer.layers.7.post_attention_layernorm.weight",
+            "codec.decoder.pre_transformer.layers.7.self_attn_layer_scale.scale",
+            "codec.decoder.quantizer.rvq_first.vq.layers.0._codebook.codebook",
+            "talker.code_predictor.model.layers.4.post_attention_layernorm.weight",
+        ):
+            shortened = convert.shorten_name(name, convert.Conversion())
+            self.assertLess(len(shortened), convert.GGML_MAX_NAME, name)
+
+    def test_a_name_left_over_the_limit_stops_the_conversion(self) -> None:
+        conversion = convert.Conversion()
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.shorten_name("codec." + "x" * convert.GGML_MAX_NAME, conversion)
+        self.assertIn("GGML truncates", str(caught.exception))
+
+    def test_a_name_already_short_enough_is_untouched(self) -> None:
+        conversion = convert.Conversion()
+        self.assertEqual(convert.shorten_name("talker.model.norm.weight", conversion),
+                         "talker.model.norm.weight")
+        self.assertEqual(conversion.renamed, [], "an unchanged name is not a rename")
 
 
 class SourceDtypeTests(unittest.TestCase):

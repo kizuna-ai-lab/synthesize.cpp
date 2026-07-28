@@ -13,17 +13,26 @@ which is exactly what an earlier oracle run did before
 `docs/port-validation.md` grew its "Choosing the Oracle's dtype and Device"
 section.
 
-Three conversion rules here fail silently rather than loudly if they are
-dropped. Each is asserted, not assumed:
+The speech tokenizer's *encoder* half is deliberately not carried. Synthesis
+runs one way -- codes to audio -- so nothing in this package can reach it, and
+this checkpoint could not use it anyway: `model.safetensors` is 402 tensors, all
+`talker.`, with no speaker encoder at all, and the reference builds voice-clone
+prompts from the Base variant instead. Sixteen of its codebooks and both of its
+quantizer projections are in any case bit-identical to the ones the decoder
+already carries. Dropping it removes 161 tensors and 225 MB that no graph reads.
+
+Two conversion rules here fail silently rather than loudly if they are dropped.
+Each is asserted, not assumed:
 
 1. The RVQ codebooks are not codebooks. The checkpoint stores EMA accumulators
    and the table has to be reconstructed as
    `embedding_sum / clip(cluster_usage, RVQ_EPS)[:, None]`. Skip it and the
-   nearest-neighbour lookup returns noise with no error anywhere.
-2. The two sides name that pair differently. The decoder uses `embedding_sum`
-   and the encoder uses `embed_sum`, both alongside `cluster_usage`. A rule
-   keyed on one silently passes over all sixteen codebooks of the other.
-3. `initialized` is a shape-(1,) flag on encoder codebooks, not a weight.
+   nearest-neighbour lookup returns noise with no error anywhere. The two halves
+   of the tokenizer name that pair differently -- the decoder uses
+   `embedding_sum`, the encoder `embed_sum` -- so the rule matches either and
+   then checks that no accumulator survived it, which holds whichever halves a
+   future package carries.
+2. `initialized` is a shape-(1,) flag on a codebook, not a weight.
 
 Usage:
 
@@ -67,6 +76,25 @@ REPORT_SCHEMA = "synthesize-converter-report-v1"
 
 # The reconstruction epsilon upstream uses when dividing by cluster usage.
 RVQ_EPS = 1e-5
+
+# GGML stores a tensor name in a fixed 64-byte field and truncates silently past
+# it. A truncated name is not findable by the name the catalog asks for, and two
+# names that differ only past the cut become the same tensor. Five of this
+# checkpoint's paths overflowed, so the components that made them long are
+# shortened -- the shortest edit that fixes it, not a renaming scheme.
+GGML_MAX_NAME = 64
+NAME_SHORTENINGS = (
+    (".post_attention_layernorm.", ".post_attn_norm."),
+    # Renamed for symmetry with its sibling below rather than for length; one
+    # long and one short would read as a mistake.
+    (".self_attn_layer_scale.", ".self_attn_scale."),
+    (".mlp_layer_scale.", ".mlp_scale."),
+    # `_codebook` is the module that holds the table, and the table is the only
+    # thing left in it after reconstruction.
+    ("._codebook.codebook", ".codebook"),
+)
+
+
 # Codec frame geometry, asserted against the tokenizer config rather than assumed.
 FRAME_RATE_HZ = 12.5
 SAMPLES_PER_FRAME = 1920
@@ -105,6 +133,22 @@ class Conversion:
     outputs: list[OutputTensor] = field(default_factory=list)
     skipped: list[dict[str, str]] = field(default_factory=list)
     transformed: list[dict[str, str]] = field(default_factory=list)
+    renamed: list[dict[str, str]] = field(default_factory=list)
+
+
+def shorten_name(name: str, conversion: Conversion) -> str:
+    """Bring a name under GGML's fixed-width limit, or refuse to emit it."""
+    shortened = name
+    for long_form, short_form in NAME_SHORTENINGS:
+        shortened = shortened.replace(long_form, short_form)
+    if shortened != name:
+        conversion.renamed.append({"output": shortened, "from": name})
+    if len(shortened) >= GGML_MAX_NAME:
+        raise ConverterError(
+            f"tensor name {shortened!r} is {len(shortened)} characters; GGML truncates at "
+            f"{GGML_MAX_NAME} and the catalog would never find it"
+        )
+    return shortened
 
 
 def parse_args() -> argparse.Namespace:
@@ -147,14 +191,15 @@ def numpy_of(tensor: torch.Tensor) -> tuple[np.ndarray, GGMLQuantizationType]:
 def reconstruct_codebooks(tensors: dict[str, torch.Tensor], conversion: Conversion) -> dict[str, torch.Tensor]:
     """Turn EMA accumulator pairs into the codebooks the graph actually needs.
 
-    Both naming conventions are handled and both are *required* to appear. If a
-    checkpoint ever stops using one of them this raises rather than quietly
-    emitting half the tables, because that is the failure this function exists
-    to prevent.
+    Both naming conventions are matched, and afterwards no accumulator may be
+    left over. Checking the leftovers rather than checking that both spellings
+    appeared is what keeps this honest for a package that carries only one half
+    of the tokenizer: a rule keyed on one spelling would pass over the other
+    half's tables in silence, and this catches that whichever halves are
+    present.
     """
     resolved: dict[str, torch.Tensor] = {}
     consumed: set[str] = set()
-    seen_conventions: set[str] = set()
 
     for name, tensor in tensors.items():
         for sum_field in ("embedding_sum", "embed_sum"):
@@ -179,18 +224,25 @@ def reconstruct_codebooks(tensors: dict[str, torch.Tensor], conversion: Conversi
             target = name[: -len(sum_field)] + "codebook"
             resolved[target] = codebook
             consumed.update({name, usage_name})
-            seen_conventions.add(sum_field)
             conversion.transformed.append({
                 "output": target,
                 "from": f"{name} / clamp({usage_name}, {RVQ_EPS})",
                 "reason": "the checkpoint stores EMA accumulators, not the codebook",
             })
 
-    if seen_conventions != {"embedding_sum", "embed_sum"}:
+    if not resolved:
+        raise ConverterError("no RVQ codebook was reconstructed; the accumulator names moved")
+
+    leftover = sorted(
+        name for name in tensors
+        if name not in consumed
+        and name.rsplit(".", 1)[-1] in {"embedding_sum", "embed_sum", "cluster_usage"}
+    )
+    if leftover:
         raise ConverterError(
-            "expected both RVQ naming conventions in this checkpoint, saw "
-            f"{sorted(seen_conventions)}. A rule keyed on one name silently skips "
-            "the other side's codebooks, which is the defect this check exists for."
+            f"{len(leftover)} EMA accumulator(s) were not reconstructed, starting with "
+            f"{leftover[0]}. Emitting them as weights would give the graph noise instead "
+            "of a codebook, with no error anywhere."
         )
 
     remaining = {k: v for k, v in tensors.items() if k not in consumed}
@@ -198,7 +250,8 @@ def reconstruct_codebooks(tensors: dict[str, torch.Tensor], conversion: Conversi
     return remaining
 
 
-def convert_file(path: Path, prefix: str, conversion: Conversion, reconstruct: bool) -> None:
+def convert_file(path: Path, prefix: str, conversion: Conversion, reconstruct: bool,
+                 drop_prefix: str | None = None) -> None:
     # Imported here rather than at module scope so the pure-python rules above
     # stay importable in environments without safetensors -- the registered
     # python unit suite runs under a different family's locked environment.
@@ -206,6 +259,25 @@ def convert_file(path: Path, prefix: str, conversion: Conversion, reconstruct: b
 
     with safe_open(str(path), framework="pt") as handle:
         tensors = {key: handle.get_tensor(key) for key in handle.keys()}
+
+    if drop_prefix is not None:
+        dropped = sorted(key for key in tensors if key.startswith(drop_prefix))
+        if not dropped:
+            raise ConverterError(
+                f"nothing under {drop_prefix!r} to drop; the checkpoint's layout moved and "
+                "this package would silently start carrying a half it never carried before"
+            )
+        for key in dropped:
+            del tensors[key]
+        conversion.skipped.append({
+            "logical_source_name": f"{prefix}{drop_prefix}*",
+            "count": len(dropped),
+            "reason": (
+                "the tokenizer's encoder half turns audio into codes; synthesis only goes "
+                "the other way, this checkpoint carries no speaker encoder to clone with, "
+                "and its first sixteen codebooks duplicate the decoder's exactly"
+            ),
+        })
 
     if reconstruct:
         tensors = reconstruct_codebooks(tensors, conversion)
@@ -220,7 +292,7 @@ def convert_file(path: Path, prefix: str, conversion: Conversion, reconstruct: b
             continue
         array, dtype = numpy_of(tensor)
         conversion.outputs.append(OutputTensor(
-            name=f"{prefix}{name}", array=array, dtype=dtype,
+            name=shorten_name(f"{prefix}{name}", conversion), array=array, dtype=dtype,
             origin=project_relative(path, Path.cwd()),
         ))
 
@@ -338,6 +410,60 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
     writer.add_uint32("synthesize.qwen3-tts.codec.hop_length", hop)
     writer.add_float32("synthesize.qwen3-tts.codec.frame_rate_hz", FRAME_RATE_HZ)
 
+    # The decoder's own geometry. Every codec tensor's shape is derived from
+    # these at load, so a package whose metadata and tensors disagree is refused
+    # instead of building a graph around whichever one the reader trusted.
+    decoder = codec_config["decoder_config"]
+    rates = [int(rate) for rate in decoder["upsample_rates"]]
+    ratios = [int(ratio) for ratio in decoder["upsampling_ratios"]]
+    total = 1
+    for factor in rates + ratios:
+        if factor <= 0:
+            raise ConverterError(f"codec upsample factor {factor} is not positive")
+        total *= factor
+    if total != hop:
+        raise ConverterError(
+            f"codec upsample factors {rates} x {ratios} multiply to {total}, not the hop {hop}"
+        )
+    # The residual stages halve the channel width each time, so the last one
+    # must land on a whole number of channels.
+    if decoder["decoder_dim"] % (2 ** len(rates)) != 0:
+        raise ConverterError(
+            f"decoder_dim {decoder['decoder_dim']} does not halve {len(rates)} times"
+        )
+    if decoder["codebook_dim"] % 2 != 0:
+        raise ConverterError(f"codebook_dim {decoder['codebook_dim']} is not even")
+    if int(decoder["num_semantic_quantizers"]) >= int(decoder["num_quantizers"]):
+        raise ConverterError("the semantic quantizer count must leave acoustic groups behind it")
+    if int(decoder["num_quantizers"]) != int(talker["num_code_groups"]):
+        raise ConverterError(
+            f"the codec takes {decoder['num_quantizers']} code groups but the talker emits "
+            f"{talker['num_code_groups']}"
+        )
+
+    for key, value in (
+        ("latent_dim", decoder["latent_dim"]),
+        ("dim", decoder["decoder_dim"]),
+        # The quantizer works at half the codebook dimension; the projections on
+        # either side of it are what change width.
+        ("codebook_dim", decoder["codebook_dim"]),
+        ("codebook_size", decoder["codebook_size"]),
+        ("quantizer_count", decoder["num_quantizers"]),
+        ("semantic_quantizer_count", decoder["num_semantic_quantizers"]),
+        ("hidden_size", decoder["hidden_size"]),
+        ("intermediate_size", decoder["intermediate_size"]),
+        ("layer_count", decoder["num_hidden_layers"]),
+        ("attention_head_count", decoder["num_attention_heads"]),
+        ("key_value_head_count", decoder["num_key_value_heads"]),
+        ("head_dim", decoder["head_dim"]),
+        ("sliding_window", decoder["sliding_window"]),
+    ):
+        writer.add_uint32(f"synthesize.qwen3-tts.codec.decoder.{key}", int(value))
+    writer.add_float32("synthesize.qwen3-tts.codec.decoder.rms_norm_eps", float(decoder["rms_norm_eps"]))
+    writer.add_float32("synthesize.qwen3-tts.codec.decoder.rope_theta", float(decoder["rope_theta"]))
+    writer.add_array("synthesize.qwen3-tts.codec.decoder.upsample_rates", rates)
+    writer.add_array("synthesize.qwen3-tts.codec.decoder.upsampling_ratios", ratios)
+
     # Special token ids the graph needs.
     for key in ("tts_bos_token_id", "tts_eos_token_id", "tts_pad_token_id",
                 "im_start_token_id", "im_end_token_id", "assistant_token_id"):
@@ -347,7 +473,17 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
 
     # Preset Voice Catalog: speakers are codec-vocabulary token ids, not
     # embeddings, which is why this variant carries no speaker encoder.
-    speakers = sorted(talker["spk_id"], key=lambda n: talker["spk_id"][n])
+    #
+    # The order is the Voice catalog's, not the checkpoint's token order. The two
+    # arrays describe one catalog and the loader reads them index by index, so
+    # ordering them differently -- alphabetically here, by token id there -- makes
+    # every entry name one speaker and select another.
+    speakers = list(voices["preset_ids"])
+    if set(speakers) != set(talker["spk_id"]):
+        raise ConverterError(
+            f"the manifest lists {sorted(speakers)} but the checkpoint carries "
+            f"{sorted(talker['spk_id'])}"
+        )
     writer.add_array("synthesize.qwen3-tts.speakers.names", speakers)
     writer.add_array("synthesize.qwen3-tts.speakers.token_ids", [int(talker["spk_id"][n]) for n in speakers])
     writer.add_array(
@@ -420,7 +556,7 @@ def main() -> int:
 
     conversion = Conversion()
     convert_file(talker_path, "", conversion, reconstruct=False)
-    convert_file(codec_path, "codec.", conversion, reconstruct=True)
+    convert_file(codec_path, "codec.", conversion, reconstruct=True, drop_prefix="encoder.")
 
     names = [o.name for o in conversion.outputs]
     if len(set(names)) != len(names):
@@ -477,6 +613,7 @@ def main() -> int:
             "computed here rather than stored."
         ),
         "transformed": conversion.transformed,
+        "renamed": conversion.renamed,
         "skipped": conversion.skipped,
         "tensors": [o.report() for o in conversion.outputs],
     }

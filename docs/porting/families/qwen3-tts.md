@@ -2,8 +2,8 @@
 
 Status: Confirmed 2026-07-28. Intake, the oracle and conversion are complete;
 the C++ implementation is under way -- the shared decoder block, the code
-predictor, the tensor catalog and the talker graph are built and tested, the
-text frontend, codec decoder and public seam are not. Port validation is not started. Selection was accepted on
+predictor, the tensor catalog, the talker graph and the codec decoder are built
+and tested; the text frontend and the public seam are not. Port validation is not started. Selection was accepted on
 2026-07-26; the intake packet is
 `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
 
@@ -1095,6 +1095,82 @@ later node. This test reads four tensors including two intermediates, and
 `ggml_acc` was handed the text tower's own buffer, so the prefill readback was
 off by 2.05 while the final logits were correct to 3.9e-07. Marking the outputs
 fixed it. A test that reads only the final tensor never meets this.
+
+## The Codec Decoder as Built
+
+Built 2026-07-28 in `src/arch/qwen3-tts/codec.{h,cpp}`. Codes in, waveform out,
+agreeing with the reference's own `Qwen3TTSTokenizerV2Decoder` to **1.5e-06** on
+the CPU across a 442-node graph.
+
+### It is not the shared block
+
+The codec's transformer looks like a Qwen3 block and is not one:
+
+- **No per-head norms.** Adding them would renormalize vectors the reference
+  leaves alone.
+- **Per-branch layer scales.** Each residual branch is multiplied by a learned
+  per-channel vector, initialised near 0.01, before being added back. Leaving one
+  unbound runs that branch a hundredfold hot.
+- **A sliding window of 72 frames** on top of causality. That is under six
+  seconds at 12.5 Hz, and an utterance routinely exceeds it, so the window is
+  part of the model rather than an optimisation to skip.
+
+Residual quantization sums its levels rather than concatenating them -- each
+level refines the one before it -- and the semantic/acoustic split is the same
+one the talker and the predictor make.
+
+### Layout and operators
+
+The stack is channel-major, `ne = [channels, length]`, matching the rest of the
+family; the reference transposes around its pre-transformer and this does not
+have to, because the transformer already wants `[hidden, positions]`.
+
+Two ggml facts forced the operator choice, both found by running rather than
+reading:
+
+- **`ggml_conv_1d`'s CPU path asserts an F16 kernel** and this family's are F32.
+  Convolutions are built from `ggml_im2col` and a matrix multiply, which is what
+  VITS already does for the same reason.
+- **`nn.GELU()` is the exact erf form; `ggml_gelu` is the tanh approximation.**
+  The difference is 2.4e-4 in a single ConvNeXt block -- small, but two thousand
+  times what the rest of the stack disagrees by, and the real decoder has sixty
+  of them. `ggml_gelu_erf` brings it to 1.8e-07.
+
+Causality is the recurring hazard. Every convolution sees only the present and
+the past, which is left-only padding; ggml pads symmetrically, so each pads wide
+and keeps the prefix. The transposed form is causal by cropping instead, dropping
+the trailing `kernel - stride` samples. Either mistake shifts the waveform in
+time and fails nothing.
+
+### Testing notes worth keeping
+
+**Saturation hides errors.** At the same weight scale as the rest of the stack,
+random weights drove forty percent of the reference waveform into the ±1 clamp,
+where a wrong sample matches a right one. The final convolution is drawn small on
+purpose so nothing saturates.
+
+**The codebooks are EMA accumulators.** The reference divides `embedding_sum` by
+`cluster_usage`; holding the usage at exactly one makes the accumulator the
+table, so the test can fill the table directly. It must not draw the usage from
+the shared weight stream -- doing so shifted every weight after the first
+codebook and produced a waveform wrong by 0.98.
+
+**`%.9g` renders 1.0 as `1`, and `1f` is not a C++ float literal.** This is the
+first reference whose output reaches exactly one, because the clamp puts it
+there. Every dump script now formats through one guard.
+
+**The accelerator tolerance here is looser than elsewhere in the family**, at
+2e-2 against 1e-4 on the CPU, and the test says why: 442 nodes with exponentials
+in them, TF32 matmuls, and a diffuse error -- mean 7e-4 with no outlier, against
+2.3e-07 on the CPU for the same graph. It still catches a wiring fault by a wide
+margin; the one above showed up at 0.98.
+
+### Unused in the decode path
+
+The package binds `quantizer.*.input_proj` for both quantizers -- four tensors,
+about 1 MB -- and nothing reads them. They are the encode direction of the
+projection pair. The catalog resolves them so the package sweep stays absolute;
+dropping them would mean filtering inside a module rather than at a prefix.
 
 ## Open Questions for Intake
 

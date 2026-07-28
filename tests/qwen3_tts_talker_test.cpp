@@ -48,49 +48,38 @@ constexpr float    kRmsNormEps   = 1e-6f;
 constexpr float    kRopeTheta    = 1000000.0f;
 constexpr uint64_t kSeed         = 20260728u;
 
-constexpr int32_t kTextIds[kPositions]  = { 3, 11, 4, 0, 7 };
+constexpr int32_t kTextIds[kPositions]   = { 3, 11, 4, 0, 7 };
 constexpr int32_t kCodecIds[kCodecCount] = { 2, 9, 5 };
 
 // 5 positions x 8 hidden: the text tower alone.
 constexpr float kExpectedTextProjection[] = {
-    -0.321217328f, -0.0568927117f, -0.241882145f, -0.329237521f,
-    -0.203585491f, -0.550951362f, -0.037478745f, -0.00465635024f,
-    -0.241684139f, -0.0340938382f, -0.128059134f, -0.312719822f,
-    -0.184373066f, -0.117215395f, -0.0755563304f, -0.0471986346f,
-    -0.275102645f, 0.0206815228f, -0.138152763f, -0.236012101f,
-    -0.194840252f, -0.344171733f, -0.173974916f, -0.149927258f,
-    0.14595297f, 0.104290701f, -0.251262516f, -0.447087288f,
-    -0.438497752f, -0.260504335f, 0.214015529f, 0.015037423f,
-    -0.265943319f, 0.173397273f, -0.18261075f, -0.233840168f,
-    -0.33851552f, -0.684959054f, -0.138663232f, -0.281280667f,
+    -0.321217328f,   -0.0568927117f, -0.241882145f,  -0.329237521f, -0.203585491f, -0.550951362f, -0.037478745f,
+    -0.00465635024f, -0.241684139f,  -0.0340938382f, -0.128059134f, -0.312719822f, -0.184373066f, -0.117215395f,
+    -0.0755563304f,  -0.0471986346f, -0.275102645f,  0.0206815228f, -0.138152763f, -0.236012101f, -0.194840252f,
+    -0.344171733f,   -0.173974916f,  -0.149927258f,  0.14595297f,   0.104290701f,  -0.251262516f, -0.447087288f,
+    -0.438497752f,   -0.260504335f,  0.214015529f,   0.015037423f,  -0.265943319f, 0.173397273f,  -0.18261075f,
+    -0.233840168f,   -0.33851552f,   -0.684959054f,  -0.138663232f, -0.281280667f,
 };
 
 // The same, with the codec stream summed into its trailing positions.
 constexpr float kExpectedPrefillInput[] = {
-    -0.321217328f, -0.0568927117f, -0.241882145f, -0.329237521f,
-    -0.203585491f, -0.550951362f, -0.037478745f, -0.00465635024f,
-    -0.241684139f, -0.0340938382f, -0.128059134f, -0.312719822f,
-    -0.184373066f, -0.117215395f, -0.0755563304f, -0.0471986346f,
-    -0.0214849412f, -0.141487092f, 0.229130939f, 0.0199397802f,
-    -0.0414662957f, -0.69021821f, -0.662320435f, -0.529608786f,
-    0.151630193f, 0.24861756f, 0.108713716f, -0.903019547f,
-    -0.718533397f, -0.206514448f, 0.287897229f, 0.140239596f,
-    -0.315214008f, 0.64344871f, -0.44977361f, -0.524056435f,
-    -0.595454037f, -1.04675293f, -0.628060758f, 0.0776343644f,
+    -0.321217328f,   -0.0568927117f, -0.241882145f,  -0.329237521f, -0.203585491f, -0.550951362f, -0.037478745f,
+    -0.00465635024f, -0.241684139f,  -0.0340938382f, -0.128059134f, -0.312719822f, -0.184373066f, -0.117215395f,
+    -0.0755563304f,  -0.0471986346f, -0.0214849412f, -0.141487092f, 0.229130939f,  0.0199397802f, -0.0414662957f,
+    -0.69021821f,    -0.662320435f,  -0.529608786f,  0.151630193f,  0.24861756f,   0.108713716f,  -0.903019547f,
+    -0.718533397f,   -0.206514448f,  0.287897229f,   0.140239596f,  -0.315214008f, 0.64344871f,   -0.44977361f,
+    -0.524056435f,   -0.595454037f,  -1.04675293f,   -0.628060758f, 0.0776343644f,
 };
 
 // The last position's hidden state after the final norm.
 constexpr float kExpectedLastHidden[] = {
-    -1.32450056f, -1.0357573f, 0.510571361f, 1.10772491f,
-    -0.213531166f, -0.578867435f, -1.65141177f, -1.01671517f,
+    -1.32450056f, -1.0357573f, 0.510571361f, 1.10772491f, -0.213531166f, -0.578867435f, -1.65141177f, -1.01671517f,
 };
 
 // codec_head over that: 14 logits.
 constexpr float kExpectedLogits[] = {
-    0.0105163399f, -0.335359484f, -1.7436831f, -0.13869749f,
-    0.856686056f, 0.316256732f, 1.40711629f, 0.512437046f,
-    -1.40626621f, 0.820484281f, -1.13014758f, 0.632562459f,
-    -0.51303792f, -0.683827579f,
+    0.0105163399f, -0.335359484f, -1.7436831f,  -0.13869749f, 0.856686056f, 0.316256732f, 1.40711629f,
+    0.512437046f,  -1.40626621f,  0.820484281f, -1.13014758f, 0.632562459f, -0.51303792f, -0.683827579f,
 };
 
 class LcgStream {
@@ -180,7 +169,7 @@ bool build_fixture(ggml_backend_dev_t device, Fixture & fixture) {
     std::vector<ggml_tensor *> ordered;
     std::vector<float>         scales;
     std::vector<float>         offsets;
-    auto add = [&](ggml_tensor * tensor, float scale, float offset) {
+    auto                       add = [&](ggml_tensor * tensor, float scale, float offset) {
         ordered.push_back(tensor);
         scales.push_back(scale);
         offsets.push_back(offset);
@@ -189,24 +178,24 @@ bool build_fixture(ggml_backend_dev_t device, Fixture & fixture) {
 
     // The fill order is the reference script's.
     synth::qwen3tts::TalkerWeights & w = fixture.weights;
-    w.text_embedding = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kTextHidden, kTextVocab), 0.5f, 0.0f);
+    w.text_embedding           = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kTextHidden, kTextVocab), 0.5f, 0.0f);
     w.text_projection_1.weight = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kTextHidden, kTextHidden), 0.5f, 0.0f);
     w.text_projection_1.bias   = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kTextHidden), 0.25f, 0.0f);
     w.text_projection_2.weight = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kTextHidden, kHidden), 0.5f, 0.0f);
     w.text_projection_2.bias   = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.25f, 0.0f);
-    w.codec_embedding = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kCodecVocab), 0.5f, 0.0f);
-    w.codec_head      = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kCodecVocab), 0.5f, 0.0f);
+    w.codec_embedding          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kCodecVocab), 0.5f, 0.0f);
+    w.codec_head               = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kCodecVocab), 0.5f, 0.0f);
 
     w.layers.resize(kLayers);
     for (uint32_t index = 0; index < kLayers; ++index) {
         synth::qwen3tts::DecoderLayerWeights & layer = w.layers[index];
         layer.input_layernorm = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.25f, 1.0f);
-        layer.q_proj    = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kHeads * kHeadDim), 0.5f, 0.0f);
-        layer.k_proj    = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kKvHeads * kHeadDim), 0.5f, 0.0f);
-        layer.v_proj    = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kKvHeads * kHeadDim), 0.5f, 0.0f);
-        layer.o_proj    = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHeads * kHeadDim, kHidden), 0.5f, 0.0f);
-        layer.q_norm    = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHeadDim), 0.25f, 1.0f);
-        layer.k_norm    = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHeadDim), 0.25f, 1.0f);
+        layer.q_proj          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kHeads * kHeadDim), 0.5f, 0.0f);
+        layer.k_proj          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kKvHeads * kHeadDim), 0.5f, 0.0f);
+        layer.v_proj          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kKvHeads * kHeadDim), 0.5f, 0.0f);
+        layer.o_proj          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHeads * kHeadDim, kHidden), 0.5f, 0.0f);
+        layer.q_norm          = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHeadDim), 0.25f, 1.0f);
+        layer.k_norm          = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHeadDim), 0.25f, 1.0f);
         layer.post_attention_layernorm = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.25f, 1.0f);
         layer.gate_proj = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kIntermediate), 0.5f, 0.0f);
         layer.up_proj   = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kIntermediate), 0.5f, 0.0f);
@@ -256,8 +245,10 @@ bool build_fixture(ggml_backend_dev_t device, Fixture & fixture) {
     return true;
 }
 
-bool compute(Fixture & fixture, ggml_cgraph * graph, const std::vector<ggml_tensor *> & outputs,
-             std::vector<std::vector<float>> & values) {
+bool compute(Fixture &                          fixture,
+             ggml_cgraph *                      graph,
+             const std::vector<ggml_tensor *> & outputs,
+             std::vector<std::vector<float>> &  values) {
     for (ggml_tensor * output : outputs) {
         // Intermediates are read back here, and the graph allocator would
         // otherwise be free to reuse their buffers for later nodes.
@@ -303,8 +294,7 @@ bool run_case(ggml_backend_dev_t device, float & max_diff) {
     Context       graph_ctx = make_graph_context();
     ggml_cgraph * graph     = ggml_new_graph_custom(graph_ctx.get(), kNodeBudget, false);
 
-    ggml_tensor * text = synth::qwen3tts::build_text_projection(graph_ctx.get(), fixture.weights,
-                                                                fixture.text_tokens);
+    ggml_tensor * text  = synth::qwen3tts::build_text_projection(graph_ctx.get(), fixture.weights, fixture.text_tokens);
     ggml_tensor * input = synth::qwen3tts::build_talker_prefill_input(
         graph_ctx.get(), fixture.weights, fixture.text_tokens, fixture.codec_tokens, kPositions - kCodecCount);
     if (text == nullptr || input == nullptr || input->ne[0] != int64_t(kHidden) ||
@@ -315,7 +305,7 @@ bool run_case(ggml_backend_dev_t device, float & max_diff) {
     ggml_tensor * hidden = nullptr;
     ggml_tensor * logits =
         synth::qwen3tts::build_talker_step(graph_ctx.get(), graph, input, fixture.positions, fixture.mask,
-                                          fixture.weights, make_shape(), fixture.cache, &hidden);
+                                           fixture.weights, make_shape(), fixture.cache, &hidden);
     if (logits == nullptr || hidden == nullptr || logits->ne[0] != int64_t(kCodecVocab) || logits->ne[1] != 1) {
         return false;
     }
@@ -338,24 +328,27 @@ bool run_case(ggml_backend_dev_t device, float & max_diff) {
 // language without changing anything observable.
 synth::qwen3tts::HParams prompt_hparams() {
     synth::qwen3tts::HParams h;
-    h.talker.code_group_count   = 4;
-    h.tokens.tts_bos            = 100;
-    h.tokens.tts_eos            = 101;
-    h.tokens.tts_pad            = 102;
-    h.tokens.codec_bos          = 200;
-    h.tokens.codec_eos          = 201;
-    h.tokens.codec_pad          = 202;
-    h.tokens.codec_think        = 203;
-    h.tokens.codec_nothink      = 204;
-    h.tokens.codec_think_bos    = 205;
-    h.tokens.codec_think_eos    = 206;
+    h.talker.code_group_count = 4;
+    h.tokens.tts_bos          = 100;
+    h.tokens.tts_eos          = 101;
+    h.tokens.tts_pad          = 102;
+    h.tokens.codec_bos        = 200;
+    h.tokens.codec_eos        = 201;
+    h.tokens.codec_pad        = 202;
+    h.tokens.codec_think      = 203;
+    h.tokens.codec_nothink    = 204;
+    h.tokens.codec_think_bos  = 205;
+    h.tokens.codec_think_eos  = 206;
     return h;
 }
 
 using Position = synth::qwen3tts::TalkerInputPosition;
 
-int expect_position(const Position & got, Position::Text text, uint32_t text_token, bool has_codec,
-                    uint32_t codec_token) {
+int expect_position(const Position & got,
+                    Position::Text   text,
+                    uint32_t         text_token,
+                    bool             has_codec,
+                    uint32_t         codec_token) {
     SYNTH_TEST_CHECK(got.text == text);
     if (text == Position::Text::Token) {
         SYNTH_TEST_CHECK(got.text_token == text_token);
@@ -387,22 +380,19 @@ int check_prompt_layout() {
     // text token instead of on a pad. Ten positions in all.
     SYNTH_TEST_CHECK(prompt.positions.size() == 10);
     for (size_t index = 0; index < 3; ++index) {
-        SYNTH_TEST_CHECK(expect_position(prompt.positions[index], Position::Text::Token,
-                                         request.role_tokens[index], false, 0) == 0);
+        SYNTH_TEST_CHECK(
+            expect_position(prompt.positions[index], Position::Text::Token, request.role_tokens[index], false, 0) == 0);
     }
-    SYNTH_TEST_CHECK(expect_position(prompt.positions[3], Position::Text::TtsPad, 0, true,
-                                     h.tokens.codec_think) == 0);
-    SYNTH_TEST_CHECK(expect_position(prompt.positions[4], Position::Text::TtsPad, 0, true,
-                                     h.tokens.codec_think_bos) == 0);
+    SYNTH_TEST_CHECK(expect_position(prompt.positions[3], Position::Text::TtsPad, 0, true, h.tokens.codec_think) == 0);
+    SYNTH_TEST_CHECK(expect_position(prompt.positions[4], Position::Text::TtsPad, 0, true, h.tokens.codec_think_bos) ==
+                     0);
     SYNTH_TEST_CHECK(expect_position(prompt.positions[5], Position::Text::TtsPad, 0, true, 300) == 0);
-    SYNTH_TEST_CHECK(expect_position(prompt.positions[6], Position::Text::TtsPad, 0, true,
-                                     h.tokens.codec_think_eos) == 0);
+    SYNTH_TEST_CHECK(expect_position(prompt.positions[6], Position::Text::TtsPad, 0, true, h.tokens.codec_think_eos) ==
+                     0);
     SYNTH_TEST_CHECK(expect_position(prompt.positions[7], Position::Text::TtsPad, 0, true, 400) == 0);
     // The one tts_bos in the whole prompt sits on the codec pad, one before the end.
-    SYNTH_TEST_CHECK(expect_position(prompt.positions[8], Position::Text::TtsBos, 0, true,
-                                     h.tokens.codec_pad) == 0);
-    SYNTH_TEST_CHECK(expect_position(prompt.positions[9], Position::Text::Token, 20, true,
-                                     h.tokens.codec_bos) == 0);
+    SYNTH_TEST_CHECK(expect_position(prompt.positions[8], Position::Text::TtsBos, 0, true, h.tokens.codec_pad) == 0);
+    SYNTH_TEST_CHECK(expect_position(prompt.positions[9], Position::Text::Token, 20, true, h.tokens.codec_bos) == 0);
 
     // The first text token went into the prefill, so the schedule starts at the
     // second and ends with one tts_eos.
@@ -424,10 +414,10 @@ int check_prompt_layout() {
     synth::qwen3tts::TalkerPrompt auto_prompt;
     SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_prompt(h, automatic, auto_prompt) == SYNTH_OK);
     SYNTH_TEST_CHECK(auto_prompt.positions.size() == 9);
-    SYNTH_TEST_CHECK(expect_position(auto_prompt.positions[3], Position::Text::TtsPad, 0, true,
-                                     h.tokens.codec_nothink) == 0);
-    SYNTH_TEST_CHECK(expect_position(auto_prompt.positions[5], Position::Text::TtsPad, 0, true,
-                                     h.tokens.codec_think_eos) == 0);
+    SYNTH_TEST_CHECK(
+        expect_position(auto_prompt.positions[3], Position::Text::TtsPad, 0, true, h.tokens.codec_nothink) == 0);
+    SYNTH_TEST_CHECK(
+        expect_position(auto_prompt.positions[5], Position::Text::TtsPad, 0, true, h.tokens.codec_think_eos) == 0);
 
     // No preset Voice: one position fewer again.
     synth::qwen3tts::TalkerPromptRequest anonymous = request;
@@ -435,8 +425,8 @@ int check_prompt_layout() {
     synth::qwen3tts::TalkerPrompt anonymous_prompt;
     SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_prompt(h, anonymous, anonymous_prompt) == SYNTH_OK);
     SYNTH_TEST_CHECK(anonymous_prompt.positions.size() == 9);
-    SYNTH_TEST_CHECK(expect_position(anonymous_prompt.positions[7], Position::Text::TtsBos, 0, true,
-                                     h.tokens.codec_pad) == 0);
+    SYNTH_TEST_CHECK(
+        expect_position(anonymous_prompt.positions[7], Position::Text::TtsBos, 0, true, h.tokens.codec_pad) == 0);
 
     // A single text token still leaves a schedule, holding only the eos.
     synth::qwen3tts::TalkerPromptRequest terse = request;
@@ -478,7 +468,7 @@ int check_flatten() {
 
     // Every position carries a text token, the specials resolved to their
     // text-vocabulary ids, and the codec stream is the trailing seven.
-    const std::vector<int32_t> expected_text = { 10, 11, 12, 102, 102, 102, 102, 102, 100, 20 };
+    const std::vector<int32_t> expected_text  = { 10, 11, 12, 102, 102, 102, 102, 102, 100, 20 };
     const std::vector<int32_t> expected_codec = { 203, 205, 300, 206, 400, 202, 200 };
     SYNTH_TEST_CHECK(text == expected_text);
     SYNTH_TEST_CHECK(codec == expected_codec);
@@ -488,19 +478,16 @@ int check_flatten() {
     // tail, and the graph adds it as one.
     synth::qwen3tts::TalkerPrompt gapped = prompt;
     gapped.positions[5].has_codec        = false;
-    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, gapped, text, codec, offset) ==
-                     SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, gapped, text, codec, offset) == SYNTH_ERR_INVALID_ARG);
 
     // A position with no text side at all is a layout defect: the graph reads one
     // text token per position.
     synth::qwen3tts::TalkerPrompt textless = prompt;
     textless.positions[4].text             = Position::Text::None;
-    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, textless, text, codec, offset) ==
-                     SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, textless, text, codec, offset) == SYNTH_ERR_INVALID_ARG);
 
     synth::qwen3tts::TalkerPrompt empty;
-    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, empty, text, codec, offset) ==
-                     SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, empty, text, codec, offset) == SYNTH_ERR_INVALID_ARG);
     return 0;
 }
 
@@ -545,7 +532,7 @@ int check_rejections() {
     ggml_tensor *                positions = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
     ggml_tensor *                hidden    = nullptr;
     SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_step(ctx, graph, input, positions, nullptr, weights, make_shape(),
-                                                       cache, &hidden) == nullptr);
+                                                        cache, &hidden) == nullptr);
 
     // A step with no head to read logits from.
     synth::qwen3tts::TalkerWeights headless = weights;
@@ -553,8 +540,8 @@ int check_rejections() {
     cache.layers.resize(1);
     cache.layers[0].k = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, kHeadDim, kKvHeads, kPositions);
     cache.layers[0].v = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, kHeadDim, kKvHeads, kPositions);
-    SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_step(ctx, graph, input, positions, nullptr, headless,
-                                                       make_shape(), cache, &hidden) == nullptr);
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_step(ctx, graph, input, positions, nullptr, headless, make_shape(),
+                                                        cache, &hidden) == nullptr);
 
     SYNTH_TEST_CHECK(ggml_graph_n_nodes(graph) == 0);
     return 0;

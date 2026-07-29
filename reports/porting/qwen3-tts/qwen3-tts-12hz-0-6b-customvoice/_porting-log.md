@@ -352,3 +352,29 @@ and `qwen3-longer-chinese` at 21.3, against a previous longest of 9.3. Oracle ru
 at the pinned revision. All twenty pass the committed tolerances with `--check`
 and **no worst-case figure moved** -- both new cases are better than the suite
 worst on every probe. Accumulated error does not grow with length here.
+
+## 2026-07-29 — Retracting the public-CUDA placement claim
+
+Asked to make the public seam place only the codec on CUDA and keep sampling on
+the CPU, the first step was checking that it did not already. It does.
+
+The claim being acted on was mine: that `SYNTH_BACKEND_CUDA` at the public seam
+moved the sampled path onto the accelerator, evidenced by one case drawing ten
+frames on CUDA against eleven on CPU. **That comparison had two variables in it.**
+It used a Release CPU build against the CUDA preset, and the cleanup
+investigation had incidentally shown that the same CPU code gives a different PCM
+digest under `-O3` than under `-O2` -- float contraction changes with optimization
+level, and a changed logit changes a draw.
+
+Re-run with a single binary, `--backend cpu` against `--backend cuda`, five cases
+across English, Chinese and Japanese and three Voices: identical frame counts in
+every one. Only the waveform bytes differ, which is the codec's arithmetic and
+the same signature the BF16-on-CUDA sweep records.
+
+No code change was made because none was needed. The claim is retracted in the
+family doc and in the tolerance file's note, both of which stated it as fact.
+
+The lesson is not about CUDA. A measurement taken across two builds cannot
+attribute a difference to the thing being varied, and this one was carried into a
+committed tolerance file, a family document and a pull request description before
+anyone re-ran it with one variable.

@@ -1613,6 +1613,33 @@ generation config is digested beside `config.json`.
 Verified by listening on the two reported lines, two seeds, both profiles: they
 finish. Recorded for what it is -- one listener, informally.
 
+### A retracted claim: the public CUDA request never moved the sampler
+
+Recorded 2026-07-29, retracted the same day.
+
+This family doc and the tolerance file both carried the claim that requesting
+`SYNTH_BACKEND_CUDA` through the public seam placed the sampled path on the
+accelerator, and that this was in tension with `docs/backends.md`'s
+discrete-output rule. The evidence was that one case drew ten frames on CUDA
+against eleven on CPU.
+
+**That comparison used two different binaries** -- a Release CPU build against the
+CUDA preset -- and optimization level alone changes CPU float contraction enough
+to move a draw. The cleanup investigation found this incidentally while checking
+something else: the same CPU code gives one PCM digest under `-O3` and another
+under `-O2`.
+
+Re-run properly, one binary, `--backend cpu` against `--backend cuda`, five cases
+across English, Chinese and Japanese and three Voices: **frame counts are
+identical in every one.** The sampled code sequence does not change. Only the
+waveform bytes differ, which is the codec's tensor-core arithmetic and the same
+signature the BF16-on-CUDA sweep shows.
+
+So the placement was already what stage 7 measured and what the rule requires --
+the codec moves, the talker and the code predictor do not. No change was needed,
+and one was nearly made on the strength of a comparison that had two variables in
+it.
+
 ### Stage 7's remaining gaps, closed 2026-07-29
 
 Three things the family doc had been recording as owed.

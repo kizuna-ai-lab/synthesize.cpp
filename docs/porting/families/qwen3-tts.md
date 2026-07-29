@@ -1552,6 +1552,42 @@ the guard as a general rule about shape rather than naming the families leaves i
 a row of seven and breaks VITS -- which is what the quantizer's own fixture
 caught when it was written that way.
 
+### Q5_K_MIXED is buildable and is not recommended
+
+Built 2026-07-29. **1035 MiB against 2169, a real-time factor of 0.82, and the
+worst talker logits at cosine 0.9648.** The first two numbers are good and the
+third is why this profile is not proposed for publication.
+
+| profile | size | RTF | talker.logits | talker.final |
+| --- | ---: | ---: | ---: | ---: |
+| F16 | 2168.9 MiB | 1.21 | 0.999458 | 0.999430 |
+| Q8_MIXED | 1359.2 MiB | 0.85 | 0.995731 | 0.995634 |
+| Q5_K_MIXED | 1035.3 MiB | 0.82 | 0.964769 | 0.962882 |
+
+Against Q8 it buys 324 MiB and **essentially no speed** -- 0.82 against 0.85,
+inside run-to-run variation -- for eight times the deviation in the logits. The
+logits are the distribution the draw is made from, and this family has already
+demonstrated what a disturbed draw costs: a perturbation an order of magnitude
+*smaller* than this gap is what the missing repetition penalty amounted to, and
+it truncated sentences.
+
+Where the error is, measured rather than assumed. Every hidden state stays above
+0.9993; `talker.final`, one RMSNorm later, is 0.9629. The deep layers carry
+outlier channels ahead of that norm -- max-abs reaches 28 at L27 -- so normalizing
+amplifies the relative error in every other channel. The amplification of
+(1 - cosine) from L27 to final is 7.7x under F16, 33x under Q8 and 55x under Q5_K.
+
+Holding the output head at the reference dtype was tried and does not help:
+`talker.codec_head.weight` is 6 MiB and sits *after* `talker.final`, which is
+already degraded. Logits moved 0.9648 to 0.9691 and final did not move at all.
+The error is 28 layers of accumulation, not one tensor, so the usual remedy of
+keeping the output head at higher precision has nothing to fix here.
+
+The profile is left in the quantizer because it is correct and cheap to keep --
+one row in the table, one enum, one branch -- and because a future variant with a
+shallower talker may want it. It carries no committed tolerances and no published
+package, which is the accurate way to say "buildable, not validated".
+
 ### The sampler carried its own copy of the checkpoint's decisions
 
 Found 2026-07-29, by listening. Long inputs stopped mid-sentence under every

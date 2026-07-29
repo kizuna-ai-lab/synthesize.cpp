@@ -48,7 +48,8 @@ TargetSpec resolve(const Profile & profile, const char * name) {
 int main() {
     const Profile * f16 = find_profile("F16");
     const Profile * q8  = find_profile("Q8_MIXED");
-    SYNTH_TEST_CHECK(f16 != nullptr && q8 != nullptr);
+    const Profile * q5  = find_profile("Q5_K_MIXED");
+    SYNTH_TEST_CHECK(f16 != nullptr && q8 != nullptr && q5 != nullptr);
 
     // The autoregressive half quantizes, and takes the profile's own type.
     //
@@ -68,6 +69,7 @@ int main() {
              "talker.code_predictor.model.codec_embedding.3.weight",
          }) {
         SYNTH_TEST_CHECK(resolve(*q8, name).type == GGML_TYPE_Q8_0);
+        SYNTH_TEST_CHECK(resolve(*q5, name).type == GGML_TYPE_Q5_K);
         SYNTH_TEST_CHECK(resolve(*f16, name).type == GGML_TYPE_F16);
     }
 
@@ -80,6 +82,7 @@ int main() {
              "talker.code_predictor.model.layers.1.post_attn_norm.weight",
          }) {
         SYNTH_TEST_CHECK(resolve(*q8, name).type == GGML_TYPE_F32);
+        SYNTH_TEST_CHECK(resolve(*q5, name).type == GGML_TYPE_F32);
         SYNTH_TEST_CHECK(resolve(*f16, name).type == GGML_TYPE_F32);
     }
 
@@ -99,7 +102,18 @@ int main() {
          }) {
         SYNTH_TEST_CHECK(resolve(*q8, name).type == GGML_TYPE_F32);
         SYNTH_TEST_CHECK(resolve(*q8, name).layout == TensorLayout::Native);
+        SYNTH_TEST_CHECK(resolve(*q5, name).type == GGML_TYPE_F32);
         SYNTH_TEST_CHECK(resolve(*f16, name).type == GGML_TYPE_F32);
+    }
+
+    // Q5_K needs a row divisible by 256 where Q8_0 needs 32. Everything this
+    // family quantizes clears that -- rows of 1024, 2048 and 3072 -- which is
+    // why the profile exists for it at all and why a family whose matrix weights
+    // are packed convolution kernels cannot take it.
+    SYNTH_TEST_CHECK(ggml_blck_size(GGML_TYPE_Q5_K) == 256);
+    SYNTH_TEST_CHECK(ggml_blck_size(GGML_TYPE_Q8_0) == 32);
+    for (const int64_t row : { int64_t(1024), int64_t(2048), int64_t(3072) }) {
+        SYNTH_TEST_CHECK(row % ggml_blck_size(GGML_TYPE_Q5_K) == 0);
     }
 
     // A name outside the catalog is an error rather than a default. The runtime

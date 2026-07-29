@@ -12,8 +12,15 @@ namespace synth::quantize {
 namespace {
 
 const Profile kProfiles[] = {
-    { "F16",      GGML_TYPE_F16,  TensorLayout::Native,       GGML_TYPE_F16, GGML_TYPE_F32, 1,                      1 },
-    { "Q8_MIXED", GGML_TYPE_Q8_0, TensorLayout::PackedMatrix, GGML_TYPE_F16, GGML_TYPE_F32, GGML_FTYPE_MOSTLY_Q8_0, 1 },
+    { "F16",        GGML_TYPE_F16,  TensorLayout::Native,       GGML_TYPE_F16, GGML_TYPE_F32, 1,                      1 },
+    { "Q8_MIXED",   GGML_TYPE_Q8_0, TensorLayout::PackedMatrix, GGML_TYPE_F16, GGML_TYPE_F32, GGML_FTYPE_MOSTLY_Q8_0, 1 },
+    // Q5_K is a super-block of 256, so it needs a row four times longer than
+    // Q8_0 does. Qwen3-TTS clears that everywhere it quantizes -- its rows are
+    // 1024, 2048 and 3072 -- while a family whose matrix weights are packed
+    // convolution kernels will not, and is refused by the row-size check with
+    // the tensor named rather than by a rule here.
+    { "Q5_K_MIXED", GGML_TYPE_Q5_K, TensorLayout::PackedMatrix, GGML_TYPE_F16, GGML_TYPE_F32, GGML_FTYPE_MOSTLY_Q5_K,
+     1                                                                                                                  },
 };
 
 bool iequals(const char * lhs, const char * rhs) {

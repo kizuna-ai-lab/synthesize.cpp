@@ -14,6 +14,7 @@ enum class QuantizationProfile : uint32_t {
     BF16,
     F16,
     Q8Mixed,
+    Q5KMixed,
 };
 
 // The autoregressive language model that emits one semantic code per frame.

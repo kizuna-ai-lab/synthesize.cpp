@@ -50,6 +50,8 @@ bool read_quantization(const GgufMetadata & meta, HParams & hparams) {
         hparams.quantization_profile = QuantizationProfile::F16;
     } else if (profile == "Q8_MIXED") {
         hparams.quantization_profile = QuantizationProfile::Q8Mixed;
+    } else if (profile == "Q5_K_MIXED") {
+        hparams.quantization_profile = QuantizationProfile::Q5KMixed;
     } else {
         std::fprintf(stderr, "qwen3-tts: unsupported quantization profile %s\n", profile.c_str());
         return false;

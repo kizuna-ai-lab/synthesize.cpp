@@ -34,8 +34,8 @@ int main() {
     // Compounding would make the penalty a function of repetition count, and the
     // reference processor walks the sequence dividing a fresh copy of the logits.
     {
-        std::vector<float>         once   = { 4.0f };
-        std::vector<float>         thrice = { 4.0f };
+        std::vector<float> once   = { 4.0f };
+        std::vector<float> thrice = { 4.0f };
         synth::qwen3tts::apply_repetition_penalty(once, { 0 }, 2.0f);
         synth::qwen3tts::apply_repetition_penalty(thrice, { 0, 0, 0 }, 2.0f);
         SYNTH_TEST_CHECK(once[0] == thrice[0]);

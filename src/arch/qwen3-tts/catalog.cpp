@@ -139,6 +139,7 @@ class Resolver {
                 return half == Half::Codec ? GGML_TYPE_F32 : GGML_TYPE_BF16;
             case QuantizationProfile::F16:
             case QuantizationProfile::Q8Mixed:
+            case QuantizationProfile::Q5KMixed:
                 // The codec half is never halved. Its convolutions run through
                 // im2col into a matrix multiply, and ggml's F16 path there is
                 // slower on CPU than its F32 one -- measured at 1.75 times on a
@@ -148,7 +149,14 @@ class Resolver {
                 if (half == Half::Codec || role != Role::Matrix) {
                     return GGML_TYPE_F32;
                 }
-                return hparams_.quantization_profile == QuantizationProfile::F16 ? GGML_TYPE_F16 : GGML_TYPE_Q8_0;
+                switch (hparams_.quantization_profile) {
+                    case QuantizationProfile::F16:
+                        return GGML_TYPE_F16;
+                    case QuantizationProfile::Q8Mixed:
+                        return GGML_TYPE_Q8_0;
+                    default:
+                        return GGML_TYPE_Q5_K;
+                }
         }
         return GGML_TYPE_F32;
     }
@@ -161,6 +169,8 @@ class Resolver {
                 return "F16";
             case QuantizationProfile::Q8Mixed:
                 return "Q8_MIXED";
+            case QuantizationProfile::Q5KMixed:
+                return "Q5_K_MIXED";
         }
         return "unknown";
     }

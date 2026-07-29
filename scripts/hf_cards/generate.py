@@ -75,6 +75,16 @@ def validate_spec(spec: dict) -> None:
         raise ValueError("license_name must match the Hugging Face lowercase slug format")
     if spec["validation"].get("quality_evaluation") not in {"not_run", "complete"}:
         raise ValueError("quality_evaluation must be not_run or complete")
+    # docs/model-porting.md requires a Model Page and its generated card to report
+    # exactly one of these. The field is separate from quality_evaluation: an
+    # audit is one maintainer listening for obvious regressions, and the automated
+    # grid is a different claim that this project cannot make at all yet.
+    if spec["validation"].get("listening_audit", "not_run") not in {
+        "no_obvious_regression",
+        "regression",
+        "not_run",
+    }:
+        raise ValueError("listening_audit must be no_obvious_regression, regression or not_run")
     if spec["validation"].get("level") not in {"port_validated", "quality_evaluated"}:
         raise ValueError("validation level must be port_validated or quality_evaluated")
 

@@ -279,3 +279,22 @@ while their reported durations said otherwise. A listening page that trims its
 own audio cannot answer the question it asks, and the disclosure sat in a footer.
 
 Recorded for what it is: one listener, informally, six cases.
+
+## 2026-07-29 — Republished, with Q8_MIXED
+
+Uploaded to `jiangzhuo9357/qwen3-tts-12hz-0-6b-customvoice-gguf`: BF16 and F16
+re-cut, Q8_MIXED new, and the regenerated card. Digests verified equal to the
+validated local files.
+
+The re-cut was not optional. The published packages carried no sampling metadata
+and the loader now requires it rather than guessing, so they had stopped loading
+entirely -- the same shape as the stale VITS packages in July, and for the same
+underlying reason: a package published before a contract changed keeps serving
+until someone checks.
+
+The card grew a `listening_audit` field. `quality_evaluation` stays `not_run`,
+which is accurate -- ADR 0017's automated grid has never run and is not scheduled
+-- and the audit is a separate, weaker claim that the generator had no way to
+express. Kokoro's card has the same gap: it was listened to on 2026-07-26 and its
+published card still says nothing about it. Closing that is a separate upload and
+has not been made.

@@ -67,11 +67,13 @@ capabilities:
 
 validation:
   level: port_validated
-  # A Listening Audit, not a quality evaluation: one maintainer, informally,
-  # checking a small set for obvious regressions. Never reported as MOS, CMOS or
-  # a panel, and it does not move the Validation Level.
-  quality_evaluation: no_obvious_regression
-  listening_audit:
+  # Two different things, deliberately separate. `quality_evaluation` is the
+  # automated grid ADR 0017 defers -- no WER, no speaker similarity, no corpus --
+  # and it has not run. `listening_audit` is one maintainer checking a small set
+  # for obvious regressions, which has. Neither moves the Validation Level.
+  quality_evaluation: not_run
+  listening_audit: no_obvious_regression
+  listening_audit_detail:
     profiles: [F16, Q8_MIXED]
     listeners: 1
     method: blind A/B against the pinned PyTorch reference on replayed codes, plus
@@ -134,19 +136,34 @@ usage:
 quants:
   - name: BF16
     filename: qwen3-tts-12hz-0-6b-customvoice-BF16.gguf
-    size: 2168.8 MB
-    size_bytes: 2274116736
-    sha256: aa96f152a113e199ac038eaa5b24a631268a84cdca6b423e9bc29562a66c6dae
+    size: 2274.1 MB
+    size_bytes: 2274117280
+    sha256: 01dfad52dd507c26a14d101c4247d375257aa63b07e62706ec3daa0a33ea515d
     tensor_types: 402 BF16 + 255 F32
     validation:
       cpu_pcm_cosine: 0.999427
       cuda_pcm_cosine: not_measured
   - name: F16
     filename: qwen3-tts-12hz-0-6b-customvoice-F16.gguf
-    size: 2168.9 MB
-    size_bytes: 2274279040
-    sha256: db19d6317d156ad3d7fd18f3bcd31a5ae4fffbc175aeec3f226f1037c07a36f6
+    size: 2274.3 MB
+    size_bytes: 2274279584
+    sha256: f79ada9173fbb00b23d2ac2bc859cde75ce4dc135d2710d0f65f00c150113064
     tensor_types: 266 F16 + 391 F32
     validation:
       cpu_pcm_cosine: 0.999427
       cuda_pcm_cosine: 0.999404
+  - name: Q8_MIXED
+    filename: qwen3-tts-12hz-0-6b-customvoice-Q8_MIXED.gguf
+    size: 1425.2 MB
+    size_bytes: 1425178784
+    sha256: d1f9be7b312b42ff90da5146aa0306824ae2870001e05e250461844c3807ca58
+    tensor_types: 266 Q8_0 + 391 F32
+    note: >-
+      Only the autoregressive half is quantized. The codec's convolutions carry
+      the kernel in their fastest dimension -- rows of 7, 16, 3 and 1 -- which no
+      block size divides, so it stays at F32. That is 80 per cent of the package
+      quantized for a 37 per cent reduction, and synthesis becomes faster than
+      real time on the machine this was measured on.
+    validation:
+      cpu_pcm_cosine: 0.999427
+      cuda_pcm_cosine: not_measured

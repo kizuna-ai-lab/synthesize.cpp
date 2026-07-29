@@ -16,7 +16,8 @@ synthesize_cpp:
   model_family: {{ model_family }}
   validation_level: {{ validation.level }}
   quality_evaluation: {{ validation.quality_evaluation }}
-  sample_rate_hz: {{ capabilities.sample_rate_hz }}
+{% if validation.listening_audit is defined %}  listening_audit: {{ validation.listening_audit }}
+{% endif %}  sample_rate_hz: {{ capabilities.sample_rate_hz }}
   voice_count: {{ capabilities.voice_count }}
   input_kinds:
 {%- for input_kind in capabilities.input_kinds %}
@@ -75,6 +76,17 @@ case. CUDA placement contained zero executable CPU fallback nodes.
 deterministic request path, and CPU/CUDA execution work. They do
 not claim perceptual equivalence, naturalness, intelligibility, or speaker
 similarity.
+{%- endif %}
+{%- if validation.listening_audit | default("not_run") == "no_obvious_regression" %}
+
+**A listening audit found no obvious regression.** One maintainer compared a
+small set against the reference and reported nothing audible. That is release
+evidence, not a measurement: no rated comparison, no panel, no score, and it does
+not change the validation level. It says a defect large enough to hear was not
+found in what was heard.
+{%- elif validation.listening_audit | default("not_run") == "regression" -%}
+**A listening audit found a regression.** See the model page for which cases and
+what was heard.
 {%- endif %}
 
 ## Voices and input

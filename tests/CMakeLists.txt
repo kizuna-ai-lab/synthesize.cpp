@@ -459,6 +459,48 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                 TIMEOUT 600)
         endif()
     endif()
+    # Qwen3-TTS's two validators. Both need the package, which is why they sat
+    # unregistered while the family shipped -- and being unregistered is how the
+    # replay stage stopped being something CI could run at all.
+    #
+    # The replay validator runs with --check, so it is a gate against the
+    # committed tolerances rather than a measurement: without it the file is a
+    # record nothing enforces. The golden sentinel is the oracle payload the
+    # replay needs, which is deliberately not committed.
+    set(_synth_qwen3_tts_golden_sentinel
+        "${CMAKE_SOURCE_DIR}/build/goldens/qwen3-tts/qwen3-minimal/audio/pcm.f32")
+    if(EXISTS "${SYNTH_QWEN3_TTS_TEST_MODEL}")
+        if(EXISTS "${_synth_qwen3_tts_golden_sentinel}")
+            add_test(
+                NAME synthesize-qwen3-tts-replay-golden
+                COMMAND ${SYNTH_UV_EXECUTABLE} run
+                    --project ${CMAKE_SOURCE_DIR}/scripts/envs/qwen3-tts
+                    --locked python ${CMAKE_SOURCE_DIR}/scripts/validate-qwen3-tts-replay.py
+                    --manifest ${CMAKE_SOURCE_DIR}/tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice.manifest.json
+                    --model ${SYNTH_QWEN3_TTS_TEST_MODEL}
+                    --runner $<TARGET_FILE:synthesize-qwen3-tts-replay-real>
+                    --check --profile BF16 --backend CPU --stage replay)
+            set_tests_properties(synthesize-qwen3-tts-replay-golden PROPERTIES
+                LABELS "integration;qwen3-tts;golden"
+                TIMEOUT 7200
+                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+        endif()
+        # The public-request phase needs no oracle payload: it asserts relations
+        # between runs of this port, not agreement with the reference.
+        add_test(
+            NAME synthesize-qwen3-tts-public-request
+            COMMAND ${SYNTH_UV_EXECUTABLE} run
+                --project ${CMAKE_SOURCE_DIR}/scripts/envs/qwen3-tts
+                --locked python ${CMAKE_SOURCE_DIR}/scripts/validate-qwen3-tts-public.py
+                --model ${SYNTH_QWEN3_TTS_TEST_MODEL}
+                --runner $<TARGET_FILE:synthesize-qwen3-tts-public-real>
+                --profile BF16 --backend cpu)
+        set_tests_properties(synthesize-qwen3-tts-public-request PROPERTIES
+            LABELS "integration;qwen3-tts;abi"
+            TIMEOUT 1800
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    endif()
+
     # Kokoro's Golden validators drive one runner selected by stage name; see
     # tests/kokoro_stages_real.cpp for why the family has one adapter and not
     # seven.

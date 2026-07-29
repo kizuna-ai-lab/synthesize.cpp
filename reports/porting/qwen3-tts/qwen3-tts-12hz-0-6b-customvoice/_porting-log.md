@@ -298,3 +298,25 @@ which is accurate -- ADR 0017's automated grid has never run and is not schedule
 express. Kokoro's card has the same gap: it was listened to on 2026-07-26 and its
 published card still says nothing about it. Closing that is a separate upload and
 has not been made.
+
+## 2026-07-29 — Both validators registered with CTest
+
+`synthesize-qwen3-tts-replay-golden` and `synthesize-qwen3-tts-public-request`
+now register under `integration;qwen3-tts` from `SYNTH_QWEN3_TTS_TEST_MODEL`,
+which defaults to the BF16 package because that is this family's source profile.
+
+Both were run: replay golden passes in 1003 seconds over eighteen cases, public
+request in 40. Neither appears under the `unit` label, checked rather than
+assumed.
+
+The replay validator registers with `--check`, which is the point of the slice.
+Until now `tests/tolerances/qwen3-tts.json` was a record nothing enforced -- the
+numbers were measured, committed, and never compared against again except by
+hand. Proved it can fail: with every `min_cosine` raised to 0.9999999 the
+validator exits 1 and names each probe that fell short; with the committed file
+it exits 0. A gate never seen to fail is not known to be a gate.
+
+The two have different prerequisites and that is deliberate. Replay needs the
+uncommitted oracle payload and is not registered without it. The public phase
+needs only the package, because it asserts relations between runs of this port
+rather than agreement with the reference.

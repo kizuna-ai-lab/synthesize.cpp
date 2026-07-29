@@ -118,20 +118,36 @@ struct PresetVoice {
     uint32_t    flags = 0;
 };
 
+// The checkpoint's own decoding defaults, carried in the package rather than
+// written into this port. They decide what the model says: the talker ends an
+// utterance by sampling the codec end token, so the filters in front of that
+// draw are part of the model's contract, and a port that reimplements them from
+// memory drifts silently. This one did -- repetition_penalty was simply absent.
+//
+// The predictor is configured separately upstream and has no penalty of its own.
+struct SamplingDefaults {
+    float    temperature        = 0.0f;
+    uint32_t top_k              = 0;
+    float    top_p              = 0.0f;
+    float    repetition_penalty = 1.0f;
+};
+
 struct HParams {
     std::string         model_variant;
     QuantizationProfile quantization_profile         = QuantizationProfile::BF16;
     uint32_t            quantization_profile_version = 1;
     uint32_t            architecture_version         = 1;
 
-    uint32_t input_flags          = 0;
-    uint32_t capability_flags     = 0;
-    uint32_t output_sample_rate   = 0;
-    uint32_t output_channel_count = 0;
-    uint64_t max_input_tokens     = 0;
-    uint64_t max_output_frames    = 0;
-    float    min_speaking_rate    = 0.0f;
-    float    max_speaking_rate    = 0.0f;
+    uint32_t         input_flags          = 0;
+    uint32_t         capability_flags     = 0;
+    uint32_t         output_sample_rate   = 0;
+    uint32_t         output_channel_count = 0;
+    SamplingDefaults talker_sampling;
+    SamplingDefaults predictor_sampling;
+    uint64_t         max_input_tokens  = 0;
+    uint64_t         max_output_frames = 0;
+    float            min_speaking_rate = 0.0f;
+    float            max_speaking_rate = 0.0f;
 
     TalkerParams        talker;
     CodePredictorParams code_predictor;

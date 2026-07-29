@@ -83,6 +83,26 @@ bool read_capabilities(const GgufMetadata & meta, HParams & hparams) {
         std::fprintf(stderr, "qwen3-tts: package declares a zero input or output limit\n");
         return false;
     }
+    if (!meta.f32("synthesize.qwen3-tts.sampling.temperature", hparams.talker_sampling.temperature) ||
+        !meta.u32("synthesize.qwen3-tts.sampling.top_k", hparams.talker_sampling.top_k) ||
+        !meta.f32("synthesize.qwen3-tts.sampling.top_p", hparams.talker_sampling.top_p) ||
+        !meta.f32("synthesize.qwen3-tts.sampling.repetition_penalty", hparams.talker_sampling.repetition_penalty) ||
+        !meta.f32("synthesize.qwen3-tts.sampling.predictor.temperature", hparams.predictor_sampling.temperature) ||
+        !meta.u32("synthesize.qwen3-tts.sampling.predictor.top_k", hparams.predictor_sampling.top_k) ||
+        !meta.f32("synthesize.qwen3-tts.sampling.predictor.top_p", hparams.predictor_sampling.top_p)) {
+        std::fprintf(stderr, "qwen3-tts: package declares no sampling defaults; re-cut it\n");
+        return false;
+    }
+    // A package that carries these has to carry usable ones. A temperature of
+    // zero would divide, and a penalty below one rewards repetition rather than
+    // discouraging it, which is the opposite of what the field means.
+    for (const SamplingDefaults & sampling : { hparams.talker_sampling, hparams.predictor_sampling }) {
+        if (!(sampling.temperature > 0.0f) || !(sampling.top_p > 0.0f) || sampling.top_p > 1.0f ||
+            !(sampling.repetition_penalty >= 1.0f)) {
+            std::fprintf(stderr, "qwen3-tts: package declares unusable sampling defaults\n");
+            return false;
+        }
+    }
     // Upstream's entry point has no speed parameter, so this family declares a
     // degenerate range. A package claiming otherwise would promise a control the
     // graph cannot honour.

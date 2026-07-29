@@ -69,9 +69,12 @@ struct SynthesisRequest {
     std::string          language;   // "auto" selects the no-think prompt
     uint64_t             seed        = 0;
     bool                 sample      = true;
-    float                temperature = 0.9f;
-    uint32_t             top_k       = 50;
-    float                top_p       = 1.0f;
+    // Zero means "whatever the package ships", which is the normal case. These
+    // are not this port's numbers to choose: the checkpoint carries them, and
+    // keeping a second copy here is how its repetition penalty went missing.
+    float                temperature = 0.0f;
+    uint32_t             top_k       = 0;
+    float                top_p       = 0.0f;
     int                  threads     = 0;
     // The most frames this request may emit. The talker's cache is sized from
     // it, so it bounds memory as well as length; zero takes the family default.

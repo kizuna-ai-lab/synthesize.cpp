@@ -49,6 +49,25 @@ size_t argmax(const std::vector<float> & values) {
 
 }  // namespace
 
+void apply_repetition_penalty(std::vector<float> & logits, const std::vector<int32_t> & history, float penalty) {
+    if (!(penalty > 1.0f) || history.empty()) {
+        return;
+    }
+    // Each distinct code is penalised once however often it was drawn, which is
+    // what the reference processor does: it walks the sequence and divides, and
+    // dividing an already-divided logit again would compound with repetition
+    // count rather than with membership.
+    std::vector<bool> seen(logits.size(), false);
+    for (const int32_t code : history) {
+        if (code < 0 || size_t(code) >= logits.size() || seen[size_t(code)]) {
+            continue;
+        }
+        seen[size_t(code)] = true;
+        float & value      = logits[size_t(code)];
+        value              = value > 0.0f ? value / penalty : value * penalty;
+    }
+}
+
 uint32_t select_code(const std::vector<float> & logits, const SamplingParams & params, NormalRandomStream & stream) {
     if (logits.empty()) {
         return 0;

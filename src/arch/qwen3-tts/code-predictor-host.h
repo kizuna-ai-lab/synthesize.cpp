@@ -33,15 +33,27 @@ constexpr uint32_t kPrefillStep = UINT32_MAX;
 // empty for a group count below two, which would leave nothing to predict.
 std::vector<CodePredictorStep> code_predictor_schedule(uint32_t code_group_count);
 
-// The knobs the package's generation defaults carry for this head. Sampling is
-// on with temperature 0.9 and top-k 50; top-p 1.0 keeps the whole distribution
-// and so is inert unless a request overrides it.
+// The knobs the package's generation defaults carry for this head. They are read
+// from the package rather than defaulted here: what they are is the checkpoint's
+// business, and a port that keeps its own copy drifts from it silently.
 struct SamplingParams {
     bool     enabled     = true;
     float    temperature = 0.9f;
     uint32_t top_k       = 50;
     float    top_p       = 1.0f;
 };
+
+// Divides the logits of codes already drawn, which is what the checkpoint's
+// `repetition_penalty` asks for and what this port did not do.
+//
+// Hugging Face's rule, kept exactly: a positive logit is divided by the penalty
+// and a negative one multiplied, so both move toward zero rather than a negative
+// score being rewarded. A penalty of 1 is the identity.
+//
+// `history` is the codes drawn so far in this utterance. The end token is never
+// among them -- drawing it ends the utterance -- so this only ever suppresses
+// speech, never the model's ability to stop.
+void apply_repetition_penalty(std::vector<float> & logits, const std::vector<int32_t> & history, float penalty);
 
 // Selects one code from a step's logits.
 //

@@ -63,6 +63,16 @@ GgufContext valid_metadata() {
     gguf_set_val_u32(g, "synthesize.capabilities.flags", 2);
     gguf_set_val_u64(g, "synthesize.capabilities.max_input_tokens", 1024);
     gguf_set_val_u64(g, "synthesize.capabilities.max_output_frames", 15728640);
+    // The checkpoint's shipped decoding defaults. They are required rather than
+    // defaulted: this port reimplemented the filter chain and left the
+    // repetition penalty out, which truncated long inputs mid-sentence.
+    gguf_set_val_f32(g, "synthesize.qwen3-tts.sampling.temperature", 0.9f);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.sampling.top_k", 50);
+    gguf_set_val_f32(g, "synthesize.qwen3-tts.sampling.top_p", 1.0f);
+    gguf_set_val_f32(g, "synthesize.qwen3-tts.sampling.repetition_penalty", 1.05f);
+    gguf_set_val_f32(g, "synthesize.qwen3-tts.sampling.predictor.temperature", 0.9f);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.sampling.predictor.top_k", 50);
+    gguf_set_val_f32(g, "synthesize.qwen3-tts.sampling.predictor.top_p", 1.0f);
     gguf_set_val_f32(g, "synthesize.capabilities.min_speaking_rate", 1.0f);
     gguf_set_val_f32(g, "synthesize.capabilities.max_speaking_rate", 1.0f);
     gguf_set_val_u32(g, "synthesize.audio.sample_rate_hz", kSampleRate);

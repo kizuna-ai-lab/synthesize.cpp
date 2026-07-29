@@ -299,6 +299,7 @@ def convert_file(path: Path, prefix: str, conversion: Conversion, reconstruct: b
 
 def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str, Any],
                  tokenizer_config: dict[str, Any], codec_config: dict[str, Any],
+                 generation_config: dict[str, Any],
                  vocab: dict[str, int], merges: list[str], digests: dict[str, str]) -> None:
     talker = config["talker_config"]
     predictor = talker["code_predictor_config"]
@@ -333,10 +334,42 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
     writer.add_string("synthesize.source.checkpoint.sha256", digests["talker"])
     writer.add_string("synthesize.source.codec.sha256", digests["codec"])
     writer.add_string("synthesize.source.config.sha256", digests["config"])
+    writer.add_string("synthesize.source.generation_config.sha256", digests["generation_config"])
     writer.add_string("synthesize.source.checkpoint.license_status", "apache-2.0")
     writer.add_string("synthesize.converter", "scripts/convert-qwen3-tts.py")
 
     writer.add_uint32("synthesize.qwen3-tts.architecture_version", ARCHITECTURE_VERSION)
+
+    # The checkpoint's shipped decoding defaults, carried rather than hardcoded.
+    #
+    # These decide what the model says, not merely how it sounds: the talker ends
+    # an utterance by sampling the codec end token, so the filter chain in front
+    # of that draw is part of the model's contract. Reimplementing it from memory
+    # is how repetition_penalty went missing, which truncated long inputs
+    # mid-sentence for a month without any test noticing.
+    #
+    # The talker and the code predictor are configured separately upstream and
+    # are carried separately here. Only the talker has a repetition penalty.
+    def sampling_float(key: str, minimum: float) -> float:
+        value = float(generation_config[key])
+        if not value > minimum:
+            raise ConverterError(f"generation_config.{key} is {value}, which cannot be sampled with")
+        return value
+
+    if not bool(generation_config["do_sample"]):
+        raise ConverterError("generation_config declares do_sample false; this family samples")
+
+    writer.add_float32("synthesize.qwen3-tts.sampling.temperature", sampling_float("temperature", 0.0))
+    writer.add_uint32("synthesize.qwen3-tts.sampling.top_k", int(generation_config["top_k"]))
+    writer.add_float32("synthesize.qwen3-tts.sampling.top_p", sampling_float("top_p", 0.0))
+    writer.add_float32("synthesize.qwen3-tts.sampling.repetition_penalty",
+                       sampling_float("repetition_penalty", 0.0))
+    writer.add_float32("synthesize.qwen3-tts.sampling.predictor.temperature",
+                       sampling_float("subtalker_temperature", 0.0))
+    writer.add_uint32("synthesize.qwen3-tts.sampling.predictor.top_k",
+                      int(generation_config["subtalker_top_k"]))
+    writer.add_float32("synthesize.qwen3-tts.sampling.predictor.top_p",
+                       sampling_float("subtalker_top_p", 0.0))
 
     package = manifest["package_contract"]
     writer.add_uint32("synthesize.capabilities.input_flags", INPUT_TEXT_UTF8)
@@ -543,6 +576,7 @@ def main() -> int:
     config = load_json(weights / "config.json")
     codec_config = load_json(weights / "speech_tokenizer" / "config.json")
     tokenizer_config = load_json(weights / "tokenizer_config.json")
+    generation_config = load_json(weights / "generation_config.json")
     vocab = load_json(weights / "vocab.json")
     merges = [
         line for line in (weights / "merges.txt").read_text(encoding="utf-8").splitlines()
@@ -553,6 +587,7 @@ def main() -> int:
         "talker": sha256_file(talker_path),
         "codec": sha256_file(codec_path),
         "config": sha256_file(weights / "config.json"),
+        "generation_config": sha256_file(weights / "generation_config.json"),
     }
     expected = source_artifact(manifest, "checkpoint", "model.safetensors")["sha256"]
     if digests["talker"] != expected and digests["codec"] != expected:
@@ -570,7 +605,7 @@ def main() -> int:
     with atomic_output_path(args.output) as staging:
         writer = GGUFWriter(str(staging), ARCH_KEY)
         add_metadata(writer, manifest, config, tokenizer_config, codec_config,
-                     vocab, merges, digests)
+                     generation_config, vocab, merges, digests)
         for output in conversion.outputs:
             writer.add_tensor(output.name, output.array, raw_dtype=output.dtype)
         writer.write_header_to_file()

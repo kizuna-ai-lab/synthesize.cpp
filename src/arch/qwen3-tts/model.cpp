@@ -754,12 +754,31 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         return SYNTH_ERR_INTERNAL;
     }
 
+    // The package's own defaults unless the request names something else. A
+    // temperature of zero means "unset" rather than "greedy": greedy is
+    // request.sample == false, and the reference does not ship a greedy mode.
+    //
+    // The two heads are configured separately upstream, so they are carried and
+    // applied separately here. Only the talker has a repetition penalty.
+    const SamplingDefaults & talker_defaults    = hparams.talker_sampling;
+    const SamplingDefaults & predictor_defaults = hparams.predictor_sampling;
+
     SamplingParams sampling;
     sampling.enabled     = request.sample;
-    sampling.temperature = request.temperature;
-    sampling.top_k       = request.top_k;
-    sampling.top_p       = request.top_p;
-    NormalRandomStream stream(request.seed);
+    sampling.temperature = request.temperature > 0.0f ? request.temperature : talker_defaults.temperature;
+    sampling.top_k       = request.top_k != 0 ? request.top_k : talker_defaults.top_k;
+    sampling.top_p       = request.top_p > 0.0f ? request.top_p : talker_defaults.top_p;
+
+    SamplingParams predictor_sampling;
+    predictor_sampling.enabled     = request.sample;
+    predictor_sampling.temperature = request.temperature > 0.0f ? request.temperature : predictor_defaults.temperature;
+    predictor_sampling.top_k       = request.top_k != 0 ? request.top_k : predictor_defaults.top_k;
+    predictor_sampling.top_p       = request.top_p > 0.0f ? request.top_p : predictor_defaults.top_p;
+
+    const float          repetition_penalty = talker_defaults.repetition_penalty;
+    // Every semantic code drawn so far, which is what the penalty divides.
+    std::vector<int32_t> drawn_semantic;
+    NormalRandomStream   stream(request.seed);
 
     // Sized from the layer count rather than guessed: each block is under fifty
     // nodes and the heads and projections add a fixed tail.
@@ -871,10 +890,12 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
             }
             frame_codes[0] = (*request.replay_codes)[size_t(frame) * groups];
         } else {
+            apply_repetition_penalty(logits, drawn_semantic, repetition_penalty);
             frame_codes[0] = int32_t(select_code(logits, sampling, stream));
             if (talker_frame_ends_utterance(hparams, uint32_t(frame_codes[0]))) {
                 break;
             }
+            drawn_semantic.push_back(frame_codes[0]);
             if (frame == frame_limit) {
                 return SYNTH_ERR_OUTPUT_LIMIT;
             }
@@ -941,7 +962,7 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
 
             read_floats(step_logits, logits);
             frame_codes[step + 1] = replaying ? (*request.replay_codes)[size_t(frame) * groups + step + 1] :
-                                                int32_t(select_code(logits, sampling, stream));
+                                                int32_t(select_code(logits, predictor_sampling, stream));
         }
 
         ggml_backend_tensor_set(t_acoustic, frame_codes.data() + 1, 0, ggml_nbytes(t_acoustic));

@@ -13,7 +13,7 @@
         "replay": {
           "phase": "oracle_replay",
           "description": "The oracle's codes replayed through the port on CPU, compared against its prefill probes and waveform.",
-          "cases": 18,
+          "cases": 20,
           "probes": {
             "talker.hidden_l0": {
               "min_cosine": 0.99996,
@@ -57,7 +57,8 @@
               "observed_max_abs": 0.154108
             }
           },
-          "backend": "CPU"
+          "backend": "CPU",
+          "note": "Extended to twenty cases on 2026-07-29 with two utterances roughly twice the previous longest -- 18.7 and 21.3 seconds against 9.3. Every committed threshold held and not one worst-case figure moved: the new cases are better than the suite worst on every probe (talker.final 0.999776 and 0.999677 against the suite's 0.999452).\n\nSo this port does not degrade with length, which is worth stating because the truncation defect found by ear did appear only past the old maximum. That was the sampler, not accumulation, and these cases exist so the suite reaches the lengths where a defect of that shape lives."
         },
         "public": {
           "backend": "CPU",
@@ -65,6 +66,69 @@
           "checks": 8,
           "all_passed": true,
           "note": "Behavioural rather than numeric. This stage has no probes: it gates on relations between runs -- that one seed reproduces and another does not, that a Voice change moves the audio -- which hold within a backend and cannot be expressed as a threshold against the oracle."
+        }
+      },
+      "backends": {
+        "CUDA": {
+          "stages": {
+            "replay": {
+              "backend": "CUDA",
+              "phase": "oracle_replay",
+              "description": "The source profile with the codec on CUDA and the autoregressive half on CPU.",
+              "cases": 18,
+              "note": "The gap this closes: the accelerator work was done under F16, so the source profile had never been swept on CUDA and the grid claimed CPU only.\n\nEvery talker probe is bit-for-bit equal to this profile's CPU entry, which is the placement proving itself -- the talker feeds a sampled code and stays on the CPU, so only the waveform can move, and it does: 0.999427 to 0.999404.\n\nAgainst F16 on CUDA the waveform is identical to six digits, 0.999404 at a max-abs of 0.1602 under both. The codec is almost entirely F32 in either package, so the profile has little left to change there. That is read off the tensor types, not a tested cause.\n\nEighteen cases: the two longer ones were added the same day and their oracle artifacts postdate this sweep.",
+              "probes": {
+                "audio.pcm": {
+                  "min_cosine": 0.997018,
+                  "observed_min_cosine": 0.999404,
+                  "observed_max_abs": 0.16019974648952484,
+                  "max_abs": 0.5
+                },
+                "talker.final": {
+                  "min_cosine": 0.997261,
+                  "observed_min_cosine": 0.999452,
+                  "observed_max_abs": 3.8355417251586914
+                },
+                "talker.logits": {
+                  "min_cosine": 0.997612,
+                  "observed_min_cosine": 0.999522,
+                  "observed_max_abs": 1.4407763481140137
+                },
+                "talker.hidden_l0": {
+                  "min_cosine": 0.999962,
+                  "observed_min_cosine": 0.999992,
+                  "observed_max_abs": 0.08378791809082031
+                },
+                "talker.hidden_l7": {
+                  "min_cosine": 0.999928,
+                  "observed_min_cosine": 0.999986,
+                  "observed_max_abs": 4.525604248046875
+                },
+                "talker.hidden_l14": {
+                  "min_cosine": 0.999856,
+                  "observed_min_cosine": 0.999971,
+                  "observed_max_abs": 7.6268310546875
+                },
+                "talker.hidden_l21": {
+                  "min_cosine": 0.99971,
+                  "observed_min_cosine": 0.999942,
+                  "observed_max_abs": 12.052490234375
+                },
+                "talker.hidden_l27": {
+                  "min_cosine": 0.999576,
+                  "observed_min_cosine": 0.999915,
+                  "observed_max_abs": 17.3939208984375
+                }
+              }
+            },
+            "public": {
+              "backend": "CUDA",
+              "description": "The public C seam driven end to end under the source profile on CUDA.",
+              "checks": 8,
+              "all_passed": true,
+              "note": "Behavioural rather than numeric; see the BF16 CPU entry."
+            }
+          }
         }
       }
     },

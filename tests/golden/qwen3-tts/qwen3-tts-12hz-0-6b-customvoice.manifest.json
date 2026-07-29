@@ -1,7 +1,7 @@
 {
   "$schema": "../../../docs/schemas/synthesize-golden-manifest-v1.schema.json",
   "schema": "synthesize-golden-manifest-v1",
-  "suite_version": 1,
+  "suite_version": 2,
   "family": "qwen3-tts",
   "variant": "qwen3-tts-12hz-0-6b-customvoice",
   "source": {
@@ -2387,6 +2387,274 @@
           "subtalker_dosample": true,
           "max_new_tokens": 2048,
           "language": "english",
+          "speaker": "aiden",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-longer-english",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "long-sequence",
+        "termination-at-length",
+        "allocation-growth"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "A small speech synthesis library should produce the same finite waveform whenever its model, input, controls, and random seed are unchanged. That is the whole promise, and everything else is detail. It runs on the machine in front of you, with no network call and no account."
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "aiden",
+        "oracle_id": "aiden"
+      },
+      "request": {
+        "seed_u64": "5",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "english",
+          "speaker": "aiden",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "text.embed",
+            "path": "text/embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l0",
+            "path": "talker/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l7",
+            "path": "talker/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l14",
+            "path": "talker/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l21",
+            "path": "talker/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.hidden_l27",
+            "path": "talker/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.final",
+            "path": "talker/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "talker.logits",
+            "path": "talker/logits.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "qwen3-longer-chinese",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "long-sequence",
+        "termination-at-length",
+        "non-latin-script"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "chinese",
+        "text": "其实我真的有发现，我是一个特别善于观察别人情绪的人，很多时候对方还没开口，我大概就已经知道他想说什么了，这种感觉说不上是好还是坏，只是有时候会让我觉得有点累，毕竟不是每一次都愿意去想那么多。"
+      },
+      "voice": {
+        "kind": "preset_voice",
+        "id": "aiden",
+        "oracle_id": "aiden"
+      },
+      "request": {
+        "seed_u64": "6",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "chinese",
           "speaker": "aiden",
           "seeded_by": "request.seed_u64"
         },

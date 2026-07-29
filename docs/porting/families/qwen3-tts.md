@@ -1613,6 +1613,48 @@ generation config is digested beside `config.json`.
 Verified by listening on the two reported lines, two seeds, both profiles: they
 finish. Recorded for what it is -- one listener, informally.
 
+### Stage 7's remaining gaps, closed 2026-07-29
+
+Three things the family doc had been recording as owed.
+
+**The source profile on CUDA.** Swept: eighteen cases, every talker probe
+*bit-for-bit equal* to the CPU entry, which is the placement proving itself
+rather than being asserted -- the talker feeds a sampled code and stays on the
+CPU, so only the waveform can move, and it does, 0.999427 to 0.999404. Against
+F16 on CUDA the waveform is identical to six digits under both profiles; the
+codec is almost entirely F32 either way, which is read off the tensor types
+rather than tested causally.
+
+**Repeated-run and resource cleanup.** `docs/backends.md` gate 6 has always
+required it and **no family had it in code.** Every case of all four manifests
+declares `resource_cleanup` in its `checks` array, and outside the manifests and
+the schema enum that string appears nowhere in the repository: nothing reads a
+case's `checks` at all, and `backend_placement` is equally unenforced. VITS's
+recorded evidence was twenty repeated *processes*, which cannot see an in-process
+leak because exit reclaims everything -- and `docs/testing.md` already says a
+manual run does not substitute for a registered test.
+
+Measured before writing anything: thirty cycles on CPU leave the post-free
+resident set oscillating in an 18 MB band with no trend, the minimum falling at
+cycle 12; on CUDA it rises 7.6 MB over the first two cycles and then plateaus at
+0-156 kB, which is context warm-up rather than a leak, since a leaked codec
+buffer is tens of megabytes and a leaked model 1.4 GB. Three cycles under
+LeakSanitizer are clean, with a deliberately leaking control program used to
+confirm the sanitizer was armed.
+
+`tests/qwen3_tts_public_cleanup_test.cpp` asserts the **floor** of post-free
+resident memory rather than last-minus-first. That distinction is load-bearing: a
+leak raises the floor, arena churn only raises peaks, and a first draft using
+last-minus-first failed on a run whose first cycle happened to land in a trough.
+
+**Twenty Golden cases.** Two utterances roughly twice the previous longest, 18.7
+and 21.3 seconds against 9.3. Every committed threshold held and no worst-case
+figure moved -- the new cases score *better* than the suite worst on every probe.
+The port does not degrade with length. That is worth stating precisely because
+the truncation defect appeared only past the old maximum: it was the sampler, and
+these cases exist so the suite now reaches the lengths where a defect of that
+shape lives.
+
 ### Closing the gap: the filter chain is compared, not the audio
 
 Added 2026-07-29. `tests/qwen3_tts_sampling_test.cpp` feeds this port's filter

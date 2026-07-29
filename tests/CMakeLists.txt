@@ -459,6 +459,33 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                 TIMEOUT 600)
         endif()
     endif()
+    # The repeated-run and resource-cleanup gate docs/backends.md requires of a
+    # claimed backend, which no family had in code: every manifest declares
+    # `resource_cleanup` in its per-case checks and nothing reads the field.
+    # VITS's recorded evidence was twenty repeated *processes*, which cannot see
+    # an in-process leak at all, since exit reclaims everything.
+    #
+    # Cycle count drops under sanitizers because LeakSanitizer decides the same
+    # question at allocation granularity, which is strictly better than a bound
+    # on resident memory, and each sanitized cycle costs about thirty seconds.
+    if(EXISTS "${SYNTH_QWEN3_TTS_TEST_MODEL}")
+        add_executable(synthesize-qwen3-tts-public-cleanup-test qwen3_tts_public_cleanup_test.cpp)
+        target_link_libraries(synthesize-qwen3-tts-public-cleanup-test PRIVATE synthesize)
+        synth_register_integration_target(synthesize-qwen3-tts-public-cleanup-test)
+        if(SYNTH_SANITIZE)
+            set(_synth_qwen3_tts_cleanup_cycles 3)
+        else()
+            set(_synth_qwen3_tts_cleanup_cycles 12)
+        endif()
+        add_test(
+            NAME synthesize-qwen3-tts-public-cleanup
+            COMMAND synthesize-qwen3-tts-public-cleanup-test
+                ${SYNTH_QWEN3_TTS_TEST_MODEL} ${_synth_qwen3_tts_cleanup_cycles})
+        set_tests_properties(synthesize-qwen3-tts-public-cleanup PROPERTIES
+            LABELS "integration;abi;qwen3-tts"
+            TIMEOUT 900)
+    endif()
+
     # Qwen3-TTS's two validators. Both need the package, which is why they sat
     # unregistered while the family shipped -- and being unregistered is how the
     # replay stage stopped being something CI could run at all.

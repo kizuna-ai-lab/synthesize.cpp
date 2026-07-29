@@ -320,3 +320,35 @@ The two have different prerequisites and that is deliberate. Replay needs the
 uncommitted oracle payload and is not registered without it. The public phase
 needs only the package, because it asserts relations between runs of this port
 rather than agreement with the reference.
+
+## 2026-07-29 — Stage 7's owed items, and twenty cases
+
+Three gaps closed in parallel.
+
+**BF16 on CUDA**, which had never been swept because the accelerator work ran
+under F16. Eighteen cases, all ok. Every talker probe is bit-for-bit equal to the
+CPU entry and only `audio.pcm` moved, 0.999427 to 0.999404 -- the placement
+proving itself rather than being asserted. Placement was also checked directly:
+`nvidia-smi` showed the runner holding 606 MiB on the GB10 while it ran.
+
+**Repeated-run and resource cleanup.** The investigation found more than the
+task: `docs/backends.md` gate 6 has never been satisfied in code by any family.
+All four manifests declare `resource_cleanup` per case and nothing reads the
+field; `backend_placement` is the same. VITS's evidence was twenty repeated
+processes, which cannot detect an in-process leak.
+
+No leak found. CPU over thirty cycles: post-free RSS oscillates 47.7-65.5 MB with
+no trend, minimum at cycle 12, cycle 29 below cycle 3, and the 1.4 GB of weights
+returns every cycle. CUDA: +7.6 MB and +5.7 MB on the first two cycles then
+0-156 kB, plateauing, with the last six identical. LeakSanitizer clean over three
+cycles, verified armed against a control that leaks 4096 bytes.
+`tests/qwen3_tts_public_cleanup_test.cpp` is registered under
+`integration;abi;qwen3-tts`, runs CPU and CUDA, and drops to three cycles under
+`SYNTH_SANITIZE` because LeakSanitizer decides the same question at allocation
+granularity. It passes in 63 seconds.
+
+**Twenty Golden cases**, up from eighteen: `qwen3-longer-english` at 18.7 seconds
+and `qwen3-longer-chinese` at 21.3, against a previous longest of 9.3. Oracle run
+at the pinned revision. All twenty pass the committed tolerances with `--check`
+and **no worst-case figure moved** -- both new cases are better than the suite
+worst on every probe. Accumulated error does not grow with length here.

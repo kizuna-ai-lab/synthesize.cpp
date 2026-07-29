@@ -1225,3 +1225,19 @@ family-independent test `synthesize-golden-manifest-contract` validates every
 manifest under `tests/golden/` together with the loader rules from
 `docs/port-validation.md`. The test was confirmed to fail against the previous
 schema.
+
+## 2026-07-29 — The listening pass reaches the card
+
+The 2026-07-26 pass -- one listener, eight of fifteen cases, across F32, F16,
+Q8_MIXED and CUDA -- was recorded here and nowhere a user could see it. The card
+generator had no field for it: the only thing available was `quality_evaluation`,
+whose vocabulary is `not_run` or `complete` and whose meaning is ADR 0017's
+automated grid. Reporting the audit through that field would have claimed a
+measurement this project cannot make.
+
+`listening_audit` is now its own field with its own three values, and this
+variant's spec declares `no_obvious_regression` with the pass's actual scope.
+`quality_evaluation` stays `not_run`, which remains accurate.
+
+The published card at `jiangzhuo9357/kokoro-v1-0-gguf` is unchanged and still
+reports nothing. Updating it is a separate outward act.

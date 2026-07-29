@@ -1239,5 +1239,8 @@ measurement this project cannot make.
 variant's spec declares `no_obvious_regression` with the pass's actual scope.
 `quality_evaluation` stays `not_run`, which remains accurate.
 
-The published card at `jiangzhuo9357/kokoro-v1-0-gguf` is unchanged and still
-reports nothing. Updating it is a separate outward act.
+Published to `jiangzhuo9357/kokoro-v1-0-gguf` the same day, README only --
+commit `2e8139b6`. The three packages are untouched and their digests were
+checked against the card before the upload, so the card still describes the files
+beside it. Verified after: the published card is byte-identical to what the
+generator produces.

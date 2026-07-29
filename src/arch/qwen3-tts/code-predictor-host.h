@@ -55,6 +55,43 @@ struct SamplingParams {
 // speech, never the model's ability to stop.
 void apply_repetition_penalty(std::vector<float> & logits, const std::vector<int32_t> & history, float penalty);
 
+// The distribution a draw is made from, once the filters have run.
+//
+// Split out of select_code so it can be compared against the reference's own
+// logits processors on identical inputs. That comparison is the only way the
+// suite can see this stage at all: the Port Validation Contract replays the
+// oracle's codes, so eighteen Golden cases never execute a draw, and the missing
+// repetition penalty lived here unnoticed until a listener heard a sentence stop
+// early.
+//
+// `order` is the survivors ranked by score, `weights` their unnormalised mass
+// indexed by code, `survivors` how many of `order` top-p kept, and `retained`
+// the mass across those. A code outside the first `survivors` entries of `order`
+// cannot be drawn.
+struct SamplingDistribution {
+    std::vector<size_t> order;
+    std::vector<double> weights;
+    size_t              survivors = 0;
+    double              retained  = 0.0;
+
+    // The probability this distribution gives a code, which is what the draw
+    // actually uses and what a comparison against another implementation should
+    // be made on -- scores differ in how they spell a rejected entry.
+    double probability(size_t code) const {
+        if (!(retained > 0.0) || code >= weights.size()) {
+            return 0.0;
+        }
+        for (size_t rank = 0; rank < survivors && rank < order.size(); ++rank) {
+            if (order[rank] == code) {
+                return weights[code] / retained;
+            }
+        }
+        return 0.0;
+    }
+};
+
+SamplingDistribution sampling_distribution(const std::vector<float> & logits, const SamplingParams & params);
+
 // Selects one code from a step's logits.
 //
 // This is a host seam because it is where a distribution becomes a discrete

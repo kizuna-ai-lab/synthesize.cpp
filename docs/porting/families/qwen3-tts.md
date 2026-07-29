@@ -1613,6 +1613,37 @@ generation config is digested beside `config.json`.
 Verified by listening on the two reported lines, two seeds, both profiles: they
 finish. Recorded for what it is -- one listener, informally.
 
+### Closing the gap: the filter chain is compared, not the audio
+
+Added 2026-07-29. `tests/qwen3_tts_sampling_test.cpp` feeds this port's filter
+chain and Hugging Face's own logits processors **the same logits** and compares
+the distributions they produce. `scripts/dump_reference_qwen3_tts_sampling.py`
+captures the reference side, reading the parameters out of the checkpoint's
+`generation_config.json` rather than repeating them -- a fixture built from
+hardcoded numbers would reproduce this port's mistake instead of catching it.
+
+**Verified by breaking it.** With the penalty forced back to 1.0 the test fails;
+restored, it passes. A regression test that has never been seen to fail is a
+guess.
+
+Two designs were tried first and rejected, which is worth recording because both
+look reasonable:
+
+- **Duration proportional to text.** Correct behaviour varies by seed enough to
+  overlap the truncated behaviour -- at 256 characters the fixed port produced
+  16.0 to 22.2 seconds across three seeds -- so a threshold would either miss the
+  defect or fire on healthy runs. It also would not have caught this one: the
+  longest Golden case is 140 characters, and at that length the broken port
+  emitted 117 frames against the oracle's 116.
+- **Transcribing the output and comparing it to the input.** This decides the
+  question outright, and it is the WER tooling ADR 0017 defers. Adding it here
+  would be a large new dependency taken against a standing decision.
+
+What the chosen check does *not* cover: it compares the filters, not the draw,
+and not the prompt. A defect in how the prompt is laid out at length would still
+reach a listener before it reached the suite. The Golden manifest's longest case
+is still 140 characters, and extending it needs oracle runs.
+
 ### Why eighteen Golden cases could not see it
 
 The Port Validation Contract's replay seam feeds the oracle's codes so that

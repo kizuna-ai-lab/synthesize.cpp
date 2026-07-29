@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Emit the reference values for tests/qwen3_tts_sampling_test.cpp.
+
+Runs Hugging Face's own logits processors -- the ones ``generate`` builds from a
+generation config -- over synthetic logits, and prints the scores they produce.
+
+Why this shape rather than a validator over Golden cases. The defect this guards
+against was a *filter chain* that had drifted from the checkpoint's: this port
+implemented temperature, top-k and top-p and omitted ``repetition_penalty``,
+which the checkpoint ships at 1.05. Long inputs then stopped mid-sentence,
+because the talker ends an utterance by drawing the codec end token and
+everything in front of that draw decides when it does.
+
+Nothing in the Golden suite could see it. The Port Validation Contract's replay
+seam feeds the oracle's codes so that comparison is deterministic, which makes
+the sampler the one stage eighteen cases never execute.
+
+A duration check over sampled output was considered and rejected: correct
+behaviour varies by seed enough to overlap the truncated behaviour, so the
+threshold would either miss the defect or fire on healthy runs. The filter chain,
+by contrast, is a pure function of logits and history. Feeding both
+implementations the *same* logits removes sampling from the comparison entirely
+and leaves only the thing that was wrong.
+
+Run from ``scripts/envs/qwen3-tts``:
+
+    uv run python ../../dump_reference_qwen3_tts_sampling.py
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import pathlib
+import sys
+
+import torch
+
+VOCAB = 24
+STEPS = 3
+
+LCG_MULTIPLIER = 6364136223846793005
+LCG_INCREMENT = 1442695040888963407
+LCG_MASK = (1 << 64) - 1
+
+
+class LcgStream:
+    """The same generator the other dump scripts use, so a fixture is
+    reproducible from the seed alone rather than from a stored payload."""
+
+    def __init__(self, seed: int) -> None:
+        self.state = seed & LCG_MASK
+
+    def next(self) -> float:
+        self.state = (self.state * LCG_MULTIPLIER + LCG_INCREMENT) & LCG_MASK
+        return float(self.state >> 40) / 8388608.0 - 1.0
+
+    def fill(self, count: int, scale: float) -> torch.Tensor:
+        return torch.tensor([self.next() * scale for _ in range(count)], dtype=torch.float32)
+
+
+def shipped_defaults(weights_dir: pathlib.Path) -> dict:
+    """The checkpoint's own generation config, not a copy of it.
+
+    Reading it here is the point: a fixture built from hardcoded numbers would
+    reproduce this port's mistake rather than catch it.
+    """
+    config = json.loads((weights_dir / "generation_config.json").read_text(encoding="utf-8"))
+    for key in ("temperature", "top_k", "top_p", "repetition_penalty"):
+        if key not in config:
+            raise SystemExit(f"generation_config.json has no {key}")
+    return config
+
+
+def reference_scores(logits: torch.Tensor, history: list[int], config: dict) -> torch.Tensor:
+    """Hugging Face's processors, in the order ``generate`` applies them.
+
+    Penalty first as a LogitsProcessor, then the warpers: temperature, top-k,
+    top-p. The order is taken from the library rather than asserted here.
+    """
+    from transformers.generation.logits_process import (
+        LogitsProcessorList,
+        RepetitionPenaltyLogitsProcessor,
+        TemperatureLogitsWarper,
+        TopKLogitsWarper,
+        TopPLogitsWarper,
+    )
+
+    processors = LogitsProcessorList()
+    if float(config["repetition_penalty"]) != 1.0:
+        processors.append(RepetitionPenaltyLogitsProcessor(penalty=float(config["repetition_penalty"])))
+    processors.append(TemperatureLogitsWarper(float(config["temperature"])))
+    processors.append(TopKLogitsWarper(int(config["top_k"])))
+    processors.append(TopPLogitsWarper(float(config["top_p"])))
+
+    input_ids = torch.tensor([history], dtype=torch.long) if history else torch.zeros((1, 0), dtype=torch.long)
+    return processors(input_ids, logits.clone().unsqueeze(0)).squeeze(0)
+
+
+def literal(value: float) -> str:
+    """A C++ float literal. %.9g renders 1.0 as "1", and "1f" does not compile."""
+    if value == float("-inf"):
+        return "-std::numeric_limits<float>::infinity()"
+    text = f"{value:.9g}"
+    if not any(mark in text for mark in (".", "e", "n", "i")):
+        text += ".0"
+    return text + "f"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--weights-dir", type=pathlib.Path,
+                        default=pathlib.Path("models/qwen3-tts-12hz-0-6b-customvoice"))
+    parser.add_argument("--seed", type=int, default=20260729)
+    arguments = parser.parse_args()
+
+    config = shipped_defaults(arguments.weights_dir)
+    stream = LcgStream(arguments.seed)
+
+    # Histories chosen to exercise the penalty: nothing drawn yet, one code
+    # drawn, and a code drawn repeatedly beside two others. The last one is what
+    # distinguishes "penalise once" from "penalise per occurrence".
+    histories = [[], [3], [3, 3, 3, 7, 11]]
+    print(f"// Generated by scripts/dump_reference_qwen3_tts_sampling.py --seed {arguments.seed}")
+    print(f"// Checkpoint generation config: temperature {config['temperature']}, "
+          f"top_k {config['top_k']}, top_p {config['top_p']}, "
+          f"repetition_penalty {config['repetition_penalty']}.")
+    print(f"constexpr uint32_t kVocab = {VOCAB};")
+    print(f"constexpr uint32_t kSteps = {STEPS};")
+    print(f"constexpr float    kTemperature = {literal(float(config['temperature']))};")
+    print(f"constexpr uint32_t kTopK = {int(config['top_k'])};")
+    print(f"constexpr float    kTopP = {literal(float(config['top_p']))};")
+    print(f"constexpr float    kRepetitionPenalty = {literal(float(config['repetition_penalty']))};")
+    print()
+
+    print("// Raw logits, step-major.")
+    print("constexpr float kLogits[] = {")
+    raw = []
+    for _ in range(STEPS):
+        raw.append(stream.fill(VOCAB, 4.0))
+    for row in raw:
+        values = row.tolist()
+        for start in range(0, len(values), 4):
+            print("    " + ", ".join(literal(v) for v in values[start:start + 4]) + ",")
+    print("};")
+    print()
+
+    print("// Each step's history, as a flat run with its length.")
+    print("constexpr int32_t kHistoryLengths[] = { " + ", ".join(str(len(h)) for h in histories) + " };")
+    flat = [code for history in histories for code in history]
+    print("constexpr int32_t kHistory[] = { " + ", ".join(str(c) for c in flat) + " };")
+    print()
+
+    print("// What the reference's processors produce from the same logits.")
+    print("constexpr float kExpectedScores[] = {")
+    for logits, history in zip(raw, histories):
+        values = reference_scores(logits, history, config).tolist()
+        for start in range(0, len(values), 4):
+            print("    " + ", ".join(literal(v) for v in values[start:start + 4]) + ",")
+    print("};")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

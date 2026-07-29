@@ -68,12 +68,18 @@ void apply_repetition_penalty(std::vector<float> & logits, const std::vector<int
     }
 }
 
-uint32_t select_code(const std::vector<float> & logits, const SamplingParams & params, NormalRandomStream & stream) {
+SamplingDistribution sampling_distribution(const std::vector<float> & logits, const SamplingParams & params) {
+    SamplingDistribution result;
     if (logits.empty()) {
-        return 0;
+        return result;
     }
     if (!params.enabled || !(params.temperature > 0.0f)) {
-        return uint32_t(argmax(logits));
+        result.order = { size_t(argmax(logits)) };
+        result.weights.assign(logits.size(), 0.0);
+        result.weights[result.order[0]] = 1.0;
+        result.retained                 = 1.0;
+        result.survivors                = 1;
+        return result;
     }
 
     std::vector<float> scores(logits.size());
@@ -109,7 +115,12 @@ uint32_t select_code(const std::vector<float> & logits, const SamplingParams & p
         total += weights[index];
     }
     if (!(total > 0.0)) {
-        return uint32_t(order[0]);
+        result.order = order;
+        result.weights.assign(scores.size(), 0.0);
+        result.weights[order[0]] = 1.0;
+        result.retained          = 1.0;
+        result.survivors         = 1;
+        return result;
     }
 
     const double threshold  = double(std::clamp(params.top_p, 0.0f, 1.0f));
@@ -128,19 +139,35 @@ uint32_t select_code(const std::vector<float> & logits, const SamplingParams & p
         retained += weights[order[rank]];
     }
     if (!(retained > 0.0)) {
-        return uint32_t(order[0]);
+        result.order = order;
+        result.weights.assign(scores.size(), 0.0);
+        result.weights[order[0]] = 1.0;
+        result.retained          = 1.0;
+        result.survivors         = 1;
+        return result;
     }
+    result.order     = std::move(order);
+    result.weights   = std::move(weights);
+    result.retained  = retained;
+    result.survivors = survivors;
+    return result;
+}
 
-    const double draw        = double(stream.next_uniform()) * retained;
+uint32_t select_code(const std::vector<float> & logits, const SamplingParams & params, NormalRandomStream & stream) {
+    const SamplingDistribution distribution = sampling_distribution(logits, params);
+    if (distribution.order.empty() || !(distribution.retained > 0.0)) {
+        return 0;
+    }
+    const double draw        = double(stream.next_uniform()) * distribution.retained;
     double       accumulated = 0.0;
-    for (size_t rank = 0; rank < survivors; ++rank) {
-        accumulated += weights[order[rank]];
+    for (size_t rank = 0; rank < distribution.survivors; ++rank) {
+        accumulated += distribution.weights[distribution.order[rank]];
         if (draw < accumulated) {
-            return uint32_t(order[rank]);
+            return uint32_t(distribution.order[rank]);
         }
     }
     // Only reachable when the draw lands on the far edge of the last interval.
-    return uint32_t(order[survivors - 1]);
+    return uint32_t(distribution.order[distribution.survivors - 1]);
 }
 
 }  // namespace synth::qwen3tts

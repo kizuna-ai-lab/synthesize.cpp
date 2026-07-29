@@ -1552,6 +1552,49 @@ the guard as a general rule about shape rather than naming the families leaves i
 a row of seven and breaks VITS -- which is what the quantizer's own fixture
 caught when it was written that way.
 
+### The sampler carried its own copy of the checkpoint's decisions
+
+Found 2026-07-29, by listening. Long inputs stopped mid-sentence under every
+profile -- English at 198 characters and Chinese at 58 both lost their tail, at a
+point that moved with the seed.
+
+The talker ends an utterance by drawing the codec end token, so everything in
+front of that draw decides when it stops. This port reimplemented the filter
+chain -- temperature, then top-k, then top-p -- and omitted `repetition_penalty`,
+which the checkpoint ships at 1.05 and which the oracle samples with. The three
+values it did implement were hardcoded at 0.9 / 50 / 1.0 and matched
+`generation_config.json` exactly, which is why nothing looked wrong.
+
+**The defect is the second copy, not the missing field.** A port that keeps its
+own version of the checkpoint's decisions drifts from them silently, and the only
+signal is a listener noticing a sentence end early. The converter now reads
+`generation_config.json` and writes all seven values into the package -- the
+talker's four and the code predictor's three, which upstream configures
+separately and which ships no penalty. The loader requires them, so a package cut
+before this refuses to load rather than sampling with something else, and the
+generation config is digested beside `config.json`.
+
+Verified by listening on the two reported lines, two seeds, both profiles: they
+finish. Recorded for what it is -- one listener, informally.
+
+### Why eighteen Golden cases could not see it
+
+The Port Validation Contract's replay seam feeds the oracle's codes so that
+comparison is deterministic. That is the right design and it has a consequence
+worth naming: **`select_code` is the one stage the Golden suite never executes.**
+Every probe in `tests/tolerances/qwen3-tts.json` was within tolerance before and
+after this fix, to the digit, because none of them samples.
+
+Stage 5's public-request phase does sample. It asserted relations between runs --
+the same seed reproduces, a different seed differs, a different Voice moves the
+audio -- and never that the speech was complete. The longest Golden case is 140
+characters.
+
+So the suite validated everything except what the model says. There is a unit
+test for the penalty's arithmetic now, which is not the same thing: what is still
+missing is a check that a long input terminates on the end token with a duration
+proportional to its text, and that needs designing rather than asserting.
+
 ## Stage 7: Execution Backends
 
 ### What can move, and what cannot

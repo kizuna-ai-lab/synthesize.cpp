@@ -227,3 +227,27 @@ process caught it.
 The published README still reports `quality_evaluation: not_run`, which was
 accurate when written. Updating it is a separate outward act and has not been
 made.
+
+## 2026-07-29 — Truncation found by ear, fixed, and confirmed by ear
+
+The project owner listened to the Q8_MIXED comparison and reported that long
+inputs stopped mid-sentence -- on both profiles, at points that moved with the
+seed. That ruled out quantization immediately and pointed at the sampler.
+
+The cause: the checkpoint ships `repetition_penalty: 1.05` in
+`generation_config.json` and this port never implemented it, while hardcoding the
+other three values at figures that happened to match. The converter now carries
+all seven decoding values into the package and the loader requires them.
+
+Confirmed by listening after the fix: the two reported lines, two seeds, both
+profiles, all reaching their final words. One listener, informally.
+
+Two things this leaves on the record. The defect was found by a person listening,
+not by the suite -- the replay seam that makes validation deterministic also makes
+`select_code` the one stage eighteen Golden cases never run. And every committed
+tolerance was within range before and after the fix, to the digit, which is
+exactly what a suite that does not sample would report.
+
+The published packages predate this and no longer load: they carry no sampling
+metadata, and the loader refuses rather than guessing. Re-uploading is a separate
+outward act and has not been made.

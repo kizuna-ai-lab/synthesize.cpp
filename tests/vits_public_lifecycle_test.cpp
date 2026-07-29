@@ -155,6 +155,22 @@ int main(int argc, char ** argv) {
     synth_context_t * second = nullptr;
     SYNTH_TEST_CHECK(synth_context_create(model, &first) == SYNTH_OK && first != nullptr);
     SYNTH_TEST_CHECK(synth_context_create(model, &second) == SYNTH_OK && second != nullptr && second != first);
+
+    // Thread control. A fresh context reports a positive automatic count, an
+    // explicit count round-trips, zero restores the automatic one, and a
+    // negative count is refused without disturbing what was set.
+    int32_t automatic = 0;
+    SYNTH_TEST_CHECK(synth_context_get_threads(first, &automatic) == SYNTH_OK && automatic >= 1);
+    SYNTH_TEST_CHECK(synth_context_set_threads(first, 3) == SYNTH_OK);
+    int32_t observed = 0;
+    SYNTH_TEST_CHECK(synth_context_get_threads(first, &observed) == SYNTH_OK && observed == 3);
+    SYNTH_TEST_CHECK(synth_context_set_threads(first, -1) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(synth_context_get_threads(first, &observed) == SYNTH_OK && observed == 3);
+    SYNTH_TEST_CHECK(synth_context_set_threads(first, 0) == SYNTH_OK);
+    SYNTH_TEST_CHECK(synth_context_get_threads(first, &observed) == SYNTH_OK && observed == automatic);
+    // Contexts are independent: setting one must not move the other.
+    SYNTH_TEST_CHECK(synth_context_get_threads(second, &observed) == SYNTH_OK && observed == automatic);
+
     synth_context_free(second);
     synth_context_free(first);
     synth_model_free(model);

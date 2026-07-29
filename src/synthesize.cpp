@@ -571,7 +571,7 @@ synth_status_t synth_context_create(const synth_model_t * model, synth_context_t
     try {
         auto context     = std::make_unique<synth_context>();
         context->model   = model;
-        context->threads = synth::available_cpu_parallelism();
+        context->threads = synth::default_synthesis_threads();
         context->active.clear();
         *out_context = context.release();
         return SYNTH_OK;
@@ -584,6 +584,28 @@ synth_status_t synth_context_create(const synth_model_t * model, synth_context_t
 
 void synth_context_free(synth_context_t * context) {
     delete context;
+}
+
+synth_status_t synth_context_set_threads(synth_context_t * context, int32_t threads) {
+    if (context == nullptr || threads < 0) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    // Taking the lease refuses the call while a synthesis is running on this
+    // context, rather than letting the count change under a graph mid-flight.
+    ContextLease lease(context);
+    if (!lease.acquired()) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    context->threads = threads == 0 ? synth::default_synthesis_threads() : threads;
+    return SYNTH_OK;
+}
+
+synth_status_t synth_context_get_threads(const synth_context_t * context, int32_t * out_threads) {
+    if (context == nullptr || out_threads == nullptr) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    *out_threads = context->threads;
+    return SYNTH_OK;
 }
 
 void synth_model_capabilities_init(synth_model_capabilities_t * capabilities, uint64_t struct_size) {

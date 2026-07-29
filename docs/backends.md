@@ -1,6 +1,6 @@
 # Execution Backend Policy
 
-Status: Confirmed, last updated on 2026-07-27.
+Status: Confirmed, last updated on 2026-07-29.
 
 ## Shared Inference Graph
 
@@ -216,6 +216,33 @@ The combined evidence is recorded in
 `reports/validate/vits/vits-ljspeech-cuda-13.3-linux.json`.
 
 The General Model Capability query also reports Native Streaming Synthesis only when the loaded Model Package and selected Execution Backend combination has passed the separate streaming validation gates. Chunked Audio Delivery remains available independently and does not set that capability.
+
+## CPU Thread Count Is Below The CPU Count
+
+A Synthesis Context defaults to **half the CPUs it may use**, not all of them,
+and an embedder may override that through `synth_context_set_threads`.
+
+Asking for exactly the CPU count is not a small pessimization. GGML's barrier
+spins rather than yielding, and synthesis is batch-one autoregressive decoding
+that crosses that barrier on the order of a hundred times per output frame -- for
+Qwen3-TTS, 28 talker layers plus fifteen code-predictor steps of five layers.
+Once the workers occupy every CPU, any thread the scheduler moves aside stalls
+all the others. Measured on a twenty-CPU machine over one sentence, real-time
+factor against thread count:
+
+| threads | 1 | 2 | 4 | 8 | 10 | 12 | 14 | 16 | 18 | 19 | 20 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| RTF | 3.31 | 2.17 | 1.50 | 1.25 | 1.18 | 1.13 | 1.17 | 1.36 | 1.99 | 3.91 | 10.2 |
+
+The degradation begins well before the cliff, so leaving one CPU free is not
+enough headroom. Half lands within five percent of the best count measured here
+and cannot reach the cliff on any machine size.
+
+This is a default, not a policy: the best count depends on the machine, and an
+embedder that knows its deployment should say so rather than inherit a guess.
+`available_cpu_parallelism()` continues to mean "CPUs this process may run on",
+honouring the affinity mask and cgroup quota; the thread default is derived from
+it rather than equal to it.
 
 ## Backend Module Loading
 

@@ -17,4 +17,26 @@ namespace synth {
 // Returns at least 1.
 int available_cpu_parallelism();
 
+// How many threads a new Synthesis Context asks for, which is deliberately fewer
+// than the CPUs it may use.
+//
+// Asking for exactly the CPU count is catastrophic here, and not by a little.
+// GGML's barrier spins rather than yielding, so once the workers fill every CPU
+// any thread the scheduler moves aside stalls all the others -- and synthesis is
+// batch-one autoregressive decoding, which crosses that barrier roughly a
+// hundred times per output frame. Measured on a twenty-CPU machine, one
+// sentence, real-time factor against thread count:
+//
+//     4 -> 1.50    10 -> 1.18    14 -> 1.17    18 -> 1.99
+//     8 -> 1.25    12 -> 1.13    16 -> 1.36    20 -> 10.2
+//
+// The degradation starts well before the cliff, so the headroom has to be more
+// than one CPU. Half is the conservative reading of that curve and lands within
+// five percent of the best count measured; an embedder who knows its machine can
+// say otherwise through synth_context_set_threads.
+//
+// Returns at least 1, and never more than available_cpu_parallelism() - 1 unless
+// there is only one CPU to begin with.
+int default_synthesis_threads();
+
 }  // namespace synth

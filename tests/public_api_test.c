@@ -77,6 +77,12 @@ int main(void) {
     synth_context_t * context = (synth_context_t *) (uintptr_t) 1;
     CHECK(synth_context_create(NULL, &context) == SYNTH_ERR_INVALID_ARG && context == NULL);
     CHECK(synth_context_create(NULL, NULL) == SYNTH_ERR_INVALID_ARG);
+    /* Thread control refuses a null context, a null out pointer, and a negative
+     * count. A caller with no context still gets an answer rather than a crash. */
+    int32_t threads = -7;
+    CHECK(synth_context_set_threads(NULL, 4) == SYNTH_ERR_INVALID_ARG);
+    CHECK(synth_context_get_threads(NULL, &threads) == SYNTH_ERR_INVALID_ARG);
+    CHECK(threads == -7);
     CHECK(synth_model_get_capabilities(NULL, &capabilities) == SYNTH_ERR_INVALID_ARG);
     CHECK(synth_model_get_preset_voice_count(NULL, NULL) == SYNTH_ERR_INVALID_ARG);
     CHECK(synth_model_get_language_count(NULL, NULL) == SYNTH_ERR_INVALID_ARG);

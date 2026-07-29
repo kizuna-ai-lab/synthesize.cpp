@@ -358,6 +358,22 @@ SYNTH_API void SYNTH_CALL           synth_model_free(synth_model_t * model);
 SYNTH_API synth_status_t SYNTH_CALL synth_context_create(const synth_model_t * model, synth_context_t ** out_context);
 SYNTH_API void SYNTH_CALL           synth_context_free(synth_context_t * context);
 
+/* How many CPU threads this Synthesis Context may use.
+ *
+ * A new context picks a count itself, and the embedder cannot always live with
+ * that choice: autoregressive synthesis runs many tiny graphs, each ending at a
+ * thread barrier, so the best count is well below the core count on some
+ * machines and depends on the machine rather than on this library. Measured on a
+ * twenty-core heterogeneous ARM part, the difference between the default and the
+ * best count was a factor of six.
+ *
+ * `threads` of 0 restores the automatic choice. Negative values, a null context,
+ * or a call made while a synthesis is running on this context are refused.
+ * Returns SYNTH_ERR_INVALID_ARG in each of those cases.
+ */
+SYNTH_API synth_status_t SYNTH_CALL synth_context_set_threads(synth_context_t * context, int32_t threads);
+SYNTH_API synth_status_t SYNTH_CALL synth_context_get_threads(const synth_context_t * context, int32_t * out_threads);
+
 SYNTH_API void SYNTH_CALL           synth_model_capabilities_init(synth_model_capabilities_t * capabilities,
                                                                   uint64_t                     struct_size);
 SYNTH_API synth_status_t SYNTH_CALL synth_model_get_capabilities(const synth_model_t *        model,

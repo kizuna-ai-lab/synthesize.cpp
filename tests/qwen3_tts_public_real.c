@@ -37,7 +37,7 @@ int main(int argc, char ** argv) {
     if (argc < 6) {
         fprintf(stderr,
                 "usage: %s <model.gguf> <out.pcm> <voice-id> <language-tag|-> <seed|random> "
-                "[max-frames] [cpu|cuda]\n",
+                "[max-frames] [cpu|cuda] [threads]\n",
                 argv[0]);
         return 2;
     }
@@ -85,6 +85,20 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    /* 0 keeps whatever the context chose for itself, which is what an embedder
+     * that never calls the setter gets. */
+    if (argc > 8) {
+        status = synth_context_set_threads(context, (int32_t) strtol(argv[8], NULL, 10));
+        if (status != SYNTH_OK) {
+            fprintf(stderr, "set_threads -> %d\n", (int) status);
+            synth_context_free(context);
+            synth_model_free(model);
+            return 1;
+        }
+    }
+    int32_t threads_used = 0;
+    synth_context_get_threads(context, &threads_used);
+
     synth_request_t request;
     synth_request_init(&request, sizeof request);
     request.input_kind    = SYNTH_INPUT_TEXT_UTF8;
@@ -117,11 +131,12 @@ int main(int argc, char ** argv) {
     write_pcm(out_path, audio->samples, audio->frame_count);
     printf(
         "{\"status\": %d, \"frames\": %llu, \"sample_rate\": %u, \"actual_seed\": \"%llu\", "
-        "\"load_seconds\": %.4f, \"synthesis_seconds\": %.4f, "
+        "\"load_seconds\": %.4f, \"synthesis_seconds\": %.4f, \"threads\": %d, "
         "\"resolved_voice\": \"%.*s\", \"resolved_language\": \"%.*s\"}\n",
         (int) status, (unsigned long long) audio->frame_count, audio->sample_rate,
-        (unsigned long long) result.actual_seed, load_seconds, synthesis_seconds, (int) result.resolved_voice_id_size,
-        result.resolved_voice_id == NULL ? "" : result.resolved_voice_id, (int) result.resolved_language_tag_size,
+        (unsigned long long) result.actual_seed, load_seconds, synthesis_seconds, (int) threads_used,
+        (int) result.resolved_voice_id_size, result.resolved_voice_id == NULL ? "" : result.resolved_voice_id,
+        (int) result.resolved_language_tag_size,
         result.resolved_language_tag == NULL ? "" : result.resolved_language_tag);
 
     synth_audio_buffer_free(audio);

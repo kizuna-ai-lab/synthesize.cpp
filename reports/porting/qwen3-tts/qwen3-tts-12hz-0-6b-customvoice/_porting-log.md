@@ -251,3 +251,31 @@ exactly what a suite that does not sample would report.
 The published packages predate this and no longer load: they carry no sampling
 metadata, and the loader refuses rather than guessing. Re-uploading is a separate
 outward act and has not been made.
+
+## 2026-07-29 — Q8_MIXED listening audit: no obvious regression
+
+The project owner listened to six natively-sampled pairs against F16 -- English
+medium and long, Chinese, Japanese, a second Voice, and a dialect speaker -- and
+reported no problem.
+
+Native sampling rather than A/B, and that is structural: on the replay path the
+Q8 and F16 waveforms are byte-identical, verified by comparing the files. Replay
+supplies the oracle's codes and the codec that renders them is F32 in both
+packages, so nothing downstream of the draw can differ. What quantization moves
+is upstream of it -- the talker's logits fall from cosine 0.9994 to 0.9956 -- and
+only a run that draws its own codes can show what that costs.
+
+One observation the listener cleared: Q8 came out shorter than F16 in five of the
+six pairs, by 8 to 13 percent, with the sixth 2 percent longer. Six clips at one
+seed each is thin evidence for a systematic claim, and the pass says it is not
+audible. Worth revisiting if a larger set ever runs.
+
+**This pass had to be run three times, and both invalidations were caught by the
+listener rather than by anything automated.** The first used a sampler missing
+the checkpoint's repetition penalty -- the defect that truncated long inputs. The
+second was correct at synthesis and wrong at presentation: the page embedded
+audio capped at ten seconds, so the two long cases were cut off in the player
+while their reported durations said otherwise. A listening page that trims its
+own audio cannot answer the question it asks, and the disclosure sat in a footer.
+
+Recorded for what it is: one listener, informally, six cases.

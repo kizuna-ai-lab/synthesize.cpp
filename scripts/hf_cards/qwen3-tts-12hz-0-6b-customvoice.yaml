@@ -67,10 +67,26 @@ capabilities:
 
 validation:
   level: port_validated
-  quality_evaluation: not_run
-  date: 2026-07-28
+  # A Listening Audit, not a quality evaluation: one maintainer, informally,
+  # checking a small set for obvious regressions. Never reported as MOS, CMOS or
+  # a panel, and it does not move the Validation Level.
+  quality_evaluation: no_obvious_regression
+  listening_audit:
+    profiles: [F16, Q8_MIXED]
+    listeners: 1
+    method: blind A/B against the pinned PyTorch reference on replayed codes, plus
+      natively-sampled clips on CPU and CUDA where replay cannot reach
+    dates: [2026-07-28, 2026-07-29]
+    note: >-
+      The F16 pass on 2026-07-28 covered eight of the eighteen Golden cases. The
+      Q8_MIXED pass on 2026-07-29 covered six natively-sampled pairs and had to be
+      run three times: the first used a sampler missing the checkpoint's
+      repetition penalty, and the second embedded audio capped at ten seconds,
+      which cut the long cases off. Both were found by the listener, not by the
+      suite.
+  date: 2026-07-29
   reference: the pinned upstream PyTorch implementation at bfloat16 on CUDA
-  implementation_revision: workspace-snapshot-2026-07-28
+  implementation_revision: workspace-snapshot-2026-07-29
   cases_per_stage: 18
   stages: 3
   columns:

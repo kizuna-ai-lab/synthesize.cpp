@@ -128,18 +128,6 @@ bool quantize_file(const std::string & input_path,
     } else if (architecture == "kokoro") {
         resolve_target_spec = resolve_kokoro_target_spec;
     } else if (architecture == "qwen3-tts") {
-        // Q8_MIXED packs a matrix weight into one row. Kokoro unpacks the
-        // two-dimensional ones again below, but this family's convolution
-        // kernels genuinely need the packing to reach a whole number of Q8_0
-        // blocks -- a kernel of three against 512 channels is a row of three --
-        // and its graph builders read kernels as [kernel, in, out] through
-        // im2col. Supporting it is a runtime change, not a policy one, so the
-        // profile is refused rather than written as a package nothing loads.
-        if (std::string(profile->name) == "Q8_MIXED") {
-            return fail(error_out,
-                        "qwen3-tts has no Q8_MIXED profile yet: its codec reads convolution kernels as "
-                        "[kernel, in, out] and packing them is a runtime change");
-        }
         resolve_target_spec = resolve_qwen3_tts_target_spec;
     } else {
         return fail(error_out, "unsupported input GGUF general.architecture: " + architecture);
@@ -183,11 +171,20 @@ bool quantize_file(const std::string & input_path,
         // falls back to the halved type rather than failing the run. The
         // predicate is shared with the runtime so both agree which ones those
         // are; see src/arch/kokoro/quantization.h.
-        // Kokoro's matrix weights include two-dimensional projections, which
-        // are already the matrix the multiply wants; packing one would flatten
-        // it into a single meaningless row. VITS only ever marks convolution
-        // kernels, so this does not change what it produces.
-        if (architecture == "kokoro" && target.layout == TensorLayout::PackedMatrix && ggml_n_dims(tensor) < 3) {
+        // A two-dimensional weight is already the matrix the multiply wants, and
+        // packing one would flatten it into a single meaningless row: a
+        // [1024, 3072] projection would become one row of 3145728. Packing
+        // exists for convolution kernels, whose fastest dimension is the kernel
+        // and therefore too short to hold a block. Kokoro's projections and the
+        // whole of Qwen3-TTS's quantizable half are the former.
+        //
+        // Naming the families is deliberate. `ggml_n_dims` collapses trailing
+        // unit dimensions, so VITS's `decoder.post.weight` at [7, 32, 1] reports
+        // as two-dimensional and would be read as a matrix -- leaving a row of
+        // seven, which no block divides. The test fixture catches exactly that,
+        // and it is why this cannot be written as a general rule about shape.
+        const bool matrix_family = architecture == "kokoro" || architecture == "qwen3-tts";
+        if (matrix_family && target.layout == TensorLayout::PackedMatrix && ggml_n_dims(tensor) < 3) {
             target.layout = TensorLayout::Native;
         }
         if (architecture == "kokoro" && ggml_is_quantized(target.type) &&

@@ -1504,18 +1504,53 @@ case from 9.6 to 12.8. So the codec half stays at the reference dtype under ever
 profile, in the quantizer's policy and the catalog's expectation both. It is 457
 MB of space that costs more time than it returns.
 
-### Q8_MIXED is refused, with its reason
+### Q8_MIXED, and the refusal that was wrong
 
-It is the profile worth having -- 47 % -- and it needs a runtime change rather
-than a policy one. Packing is what gets a convolution kernel to a whole number of
-Q8_0 blocks: a kernel of three against 512 channels is a row of three, which no
-block size divides. This family's codec reads kernels as `[kernel, in, out]`
-through `ggml_im2col`, so a packed kernel is not something its graph builders can
-consume.
+Built 2026-07-29. **1359 MiB against 2169, and a real-time factor of 0.85 against
+F16's 1.24** on the same 9.6 second case: smaller *and* faster than real time.
 
-The package was produced, the catalog was confirmed to reject it for exactly that
-reason, and the tool now refuses the profile rather than writing a package
-nothing loads.
+This profile was refused for a month on a reason that did not survive being
+checked. The refusal said packing a convolution kernel was a runtime change this
+family had not made -- true in itself, and irrelevant, because
+`classify_qwen3_codec` reports every codec tensor as sensitive under every
+profile. No convolution kernel ever reaches a quantized type, so none is ever
+packed. The belief was never tested, and nothing failed while it was wrong.
+
+What actually blocked it was one gate in the quantizer. A two-dimensional weight
+must not be packed -- a `[1024, 3072]` projection would become one row of
+3145728 -- and the guard that says so was written for Kokoro and gated on its
+name. This family's entire quantizable half is two-dimensional, so without that
+guard every talker matrix was packed into nonsense.
+
+The split, measured from the package:
+
+| half | tensors | size | rows divisible by 32 |
+| --- | ---: | ---: | ---: |
+| talker | 316 | 1457.6 MiB | all |
+| code predictor | 86 | 270.0 MiB | all |
+| codec | 255 | 436.0 MiB | 212.0 MiB |
+
+The autoregressive half is 80 % of the package and quantizes without argument:
+rows of 1024, 2048 and 3072. The codec's convolutions carry the kernel in the
+fastest dimension -- rows of 7, 16, 3 and 1 -- and stay at F32, which is the same
+decision F16 makes and for the same measured reason.
+
+Accuracy over the eighteen Golden cases: the waveform is unchanged at cosine
+0.999427, because replay supplies the codes and the codec that renders them did
+not move. The talker did: its final hidden state and logits fall from 0.9994 to
+**0.9956**, about eight times the deviation.
+
+**That number deserves more weight than the unchanged waveform.** Replay cannot
+show what a logits difference of that size does to a *draw*, because it does not
+draw. In normal operation this profile will sometimes select different codes,
+exactly as a different backend does. Whether that is audible is a listening
+question this profile has not been asked yet.
+
+One trap worth keeping. `ggml_n_dims` collapses trailing unit dimensions, so
+VITS's `decoder.post.weight` at `[7, 32, 1]` reports as two-dimensional. Writing
+the guard as a general rule about shape rather than naming the families leaves it
+a row of seven and breaks VITS -- which is what the quantizer's own fixture
+caught when it was written that way.
 
 ## Stage 7: Execution Backends
 
@@ -1619,7 +1654,7 @@ What the card declares and why:
 - **English only.** The checkpoint carries codec language tokens for nine more
   languages and two of its speakers pin a Chinese dialect; those paths load and
   run, but none has its own validation cases, so none is advertised.
-- **Two profiles, not three.** Q8_MIXED is not shipped, for the reason above.
+- **Three profiles.** Q8_MIXED shipped 2026-07-29; see above.
 - **The encoder half is absent**, and the card says so rather than leaving a
   reader to wonder why a speech tokenizer package cannot tokenize speech.
 

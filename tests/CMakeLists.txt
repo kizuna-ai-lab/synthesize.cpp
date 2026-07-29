@@ -223,6 +223,19 @@ synth_add_unit_test(synthesize-text-frontend-test text_frontend_test.cpp)
 synth_add_unit_test(synthesize-synthesis-request-test synthesis_request_test.cpp)
 synth_add_unit_test(synthesize-audio-delivery-test audio_delivery_test.cpp)
 synth_add_unit_test(synthesize-vits-runner-voice-test vits_runner_voice_test.cpp)
+add_executable(synthesize-qwen3-tts-quantization-policy-test
+    qwen3_tts_quantization_policy_test.cpp
+    ${CMAKE_SOURCE_DIR}/tools/synthesize-quantize/policy.cpp)
+target_include_directories(synthesize-qwen3-tts-quantization-policy-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/tools/synthesize-quantize
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(synthesize-qwen3-tts-quantization-policy-test PRIVATE synthesize ggml)
+add_test(NAME synthesize-qwen3-tts-quantization-policy-test
+    COMMAND synthesize-qwen3-tts-quantization-policy-test)
+synth_register_unit_target(synthesize-qwen3-tts-quantization-policy-test)
+set_tests_properties(synthesize-qwen3-tts-quantization-policy-test PROPERTIES
+    LABELS "unit;tools;quantization;qwen3-tts")
 add_executable(synthesize-quantize-policy-test
     synthesize_quantize_policy_test.cpp
     ${CMAKE_SOURCE_DIR}/tools/synthesize-quantize/policy.cpp)

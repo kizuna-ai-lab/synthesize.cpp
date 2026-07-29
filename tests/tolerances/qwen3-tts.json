@@ -191,6 +191,67 @@
           }
         }
       }
+    },
+    "Q8_MIXED": {
+      "stages": {
+        "replay": {
+          "backend": "CPU",
+          "phase": "oracle_replay",
+          "description": "The Q8_MIXED profile replayed on CPU against the same oracle artifacts.",
+          "cases": 18,
+          "note": "Only the autoregressive half is quantized. The codec stays F32, so the waveform agreement is identical to the other profiles' to six digits -- the graph that produced it did not change. What moved is the talker: its final hidden state and logits drop from a cosine of 0.9994 to 0.9956, about eight times the deviation.\n\nThat matters more than the unchanged waveform suggests. Replay supplies the codes, so this stage cannot show what a logits difference of that size does to a draw. In normal operation it will select different codes sometimes, exactly as a different backend does. The package is 1359 MiB against 2169, and synthesis of a 9.6 second case ran at a real-time factor of 0.85 against F16's 1.24.",
+          "probes": {
+            "audio.pcm": {
+              "min_cosine": 0.997137,
+              "observed_min_cosine": 0.9994273262648479,
+              "observed_max_abs": 0.15410801768302917,
+              "max_abs": 0.5
+            },
+            "talker.logits": {
+              "min_cosine": 0.978656,
+              "observed_min_cosine": 0.9957312405192976,
+              "observed_max_abs": 5.121084213256836
+            },
+            "talker.final": {
+              "min_cosine": 0.978171,
+              "observed_min_cosine": 0.9956342165921162,
+              "observed_max_abs": 9.188941955566406
+            },
+            "talker.hidden_l0": {
+              "min_cosine": 0.999832,
+              "observed_min_cosine": 0.9999664993499682,
+              "observed_max_abs": 0.11112785339355469
+            },
+            "talker.hidden_l7": {
+              "min_cosine": 0.999913,
+              "observed_min_cosine": 0.9999825584057066,
+              "observed_max_abs": 5.0584716796875
+            },
+            "talker.hidden_l14": {
+              "min_cosine": 0.999841,
+              "observed_min_cosine": 0.9999682184709864,
+              "observed_max_abs": 9.135986328125
+            },
+            "talker.hidden_l21": {
+              "min_cosine": 0.999695,
+              "observed_min_cosine": 0.9999390816708345,
+              "observed_max_abs": 11.2989501953125
+            },
+            "talker.hidden_l27": {
+              "min_cosine": 0.999336,
+              "observed_min_cosine": 0.9998672401997357,
+              "observed_max_abs": 19.0970458984375
+            }
+          }
+        },
+        "public": {
+          "backend": "CPU",
+          "description": "The public C seam driven end to end under the Q8_MIXED profile.",
+          "checks": 8,
+          "all_passed": true,
+          "note": "Behavioural rather than numeric; see the BF16 entry."
+        }
+      }
     }
   }
 }

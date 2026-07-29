@@ -61,6 +61,26 @@ struct SynthesisOutput {
     // The share of the predictor's time spent creating a scheduler and placing a
     // graph rather than computing one.
     double predictor_setup_seconds = 0.0;
+
+    // Where each stage's nodes actually ran, summed over the whole synthesis.
+    //
+    // This is the evidence behind the Golden Manifest's `backend_placement`
+    // check, which every case in every family has declared since the schema was
+    // written and which nothing has ever read. Counting nodes is the only way to
+    // tell a graph that ran on an accelerator from one that was placed there and
+    // fell back: a device that reports as present proves nothing about a node.
+    //
+    // The rule this exists to enforce is docs/backends.md's: a sampled code is a
+    // discrete output, so the talker and the code predictor must stay on the CPU
+    // however the request asks for a backend, and only the codec may move.
+    struct StagePlacement {
+        uint64_t nodes             = 0;
+        uint64_t accelerator_nodes = 0;
+    };
+
+    StagePlacement talker_placement;
+    StagePlacement predictor_placement;
+    StagePlacement codec_placement;
 };
 
 struct SynthesisRequest {

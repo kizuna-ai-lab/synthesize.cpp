@@ -217,6 +217,41 @@ The combined evidence is recorded in
 
 The General Model Capability query also reports Native Streaming Synthesis only when the loaded Model Package and selected Execution Backend combination has passed the separate streaming validation gates. Chunked Audio Delivery remains available independently and does not set that capability.
 
+## Placement And Cleanup Are Checked, Not Declared
+
+Gate 6 above -- "Pass repeated-run and resource-cleanup checks" -- and the
+placement half of gate 5 were, until 2026-07-29, satisfied by nothing. Every
+Golden Manifest in this repository declares `backend_placement` and
+`resource_cleanup` on every case, and outside the manifests and the schema enum
+those strings appeared nowhere: no validator, runner or test read a case's
+`checks` array at all. The evidence on record for VITS was twenty repeated
+*processes*, which cannot observe an in-process leak because exit reclaims
+everything.
+
+**Placement is now counted, not asserted.** `BackendPlacement` gained
+`off_cpu_node_count`, which classifies by device type independently of which
+backend is primary -- the older counters classify against the primary, so a node
+running on the primary accelerator was never reached by the type test and
+`accelerator_node_count` stayed zero exactly when the work had moved. The family
+reports per-stage counts and the replay validator decides the declared check
+against them: on a CPU run every node of every stage must be on the CPU, and with
+`--accelerate` the codec's must all have left it while the talker's and the code
+predictor's must not have moved at all. That last clause is the discrete-output
+rule made checkable rather than trusted.
+
+A backend that is present is not a backend that ran. A graph placed on an
+accelerator and silently fell back looks identical from outside the process,
+which is why the check counts nodes rather than asking whether a device exists.
+
+**Cleanup is measured across cycles.** `tests/public_cleanup_test.cpp` drives
+whole load/context/synthesize/free cycles on every backend the build claims, for
+all three families, and asserts two things one run cannot: that every cycle after
+the first returns an identical frame count and PCM digest at a fixed seed, and
+that the *floor* of post-free resident memory does not rise. The floor rather
+than the difference between first and last: a leak raises the floor, arena churn
+only raises peaks, and a draft written the other way failed on a run whose first
+cycle happened to land in a trough.
+
 ## CPU Thread Count Is Below The CPU Count
 
 A Synthesis Context defaults to **half the CPUs it may use**, not all of them,

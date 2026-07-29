@@ -19,6 +19,16 @@ struct BackendPlacement {
     uint64_t other_node_count        = 0;
     uint64_t unassigned_node_count   = 0;
     uint64_t split_count             = 0;
+    // Nodes whose backend is not a CPU device, counted by device type and
+    // independently of which backend is primary.
+    //
+    // The four counters above classify against the primary, so a node on the
+    // primary is never reached by the type test: when the primary is the
+    // accelerator its nodes land in primary_node_count and accelerator_node_count
+    // stays zero. That is the right shape for asking "did anything fall back",
+    // and the wrong shape for asking "did this run off the CPU", which is what
+    // docs/backends.md's discrete-output rule needs to be able to check.
+    uint64_t off_cpu_node_count      = 0;
 };
 
 // Owns every initialized backend participating in one loaded model. The

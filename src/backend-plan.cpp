@@ -192,6 +192,9 @@ BackendPlacement BackendPlan::inspect_placement(ggml_backend_sched_t scheduler, 
             ++placement.unassigned_node_count;
             continue;
         }
+        if (ggml_backend_dev_type(ggml_backend_get_device(backend)) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+            ++placement.off_cpu_node_count;
+        }
         if (backend == primary_) {
             ++placement.primary_node_count;
             continue;

@@ -88,6 +88,12 @@ class GraphRun {
     // number rather than an argument.
     double setup_seconds = 0.0;
 
+    // Where this graph's nodes were actually placed. Read from the scheduler
+    // after allocation, which is the only moment the answer exists: before it
+    // there is no assignment, and after compute the scheduler has been freed.
+    uint64_t placed_nodes      = 0;
+    uint64_t accelerator_nodes = 0;
+
     // `on_primary` places the graph on the primary backend rather than the CPU.
     // Only the codec ever asks for it: everything else feeds a sampled code.
     synth_status_t run(ggml_tensor * output, const char * stage, int threads, bool on_primary = false) {
@@ -107,6 +113,9 @@ class GraphRun {
         if (!ggml_backend_sched_alloc_graph(scheduler_, graph_)) {
             return SYNTH_ERR_OOM;
         }
+        const BackendPlacement placement = plan_.inspect_placement(scheduler_, graph_);
+        placed_nodes                     = placement.node_count - placement.view_node_count;
+        accelerator_nodes                = placement.off_cpu_node_count;
         plan_.log_placement_if_enabled(stage, scheduler_, graph_);
         plan_.set_threads(threads);
         setup_seconds = now_seconds() - setup_started;
@@ -579,7 +588,12 @@ namespace {
 // Scratch for the codec's own wall clock, which decode_codes measures and
 // run_synthesis reports. Both are const, and this is a measurement rather than
 // state the model carries between calls.
-thread_local double codec_seconds_ = 0.0;
+thread_local double   codec_seconds_           = 0.0;
+// Carried out of decode_codes the same way its timing is: the codec runs from a
+// free function that the replay seam calls on its own, so there is no output
+// object in scope to write into.
+thread_local uint64_t codec_placed_nodes_      = 0;
+thread_local uint64_t codec_accelerator_nodes_ = 0;
 }  // namespace
 
 synth_status_t Model::decode_codes(const std::vector<int32_t> & codes,
@@ -643,7 +657,9 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> & codes,
         return status;
     }
     read_floats(wav, audio);
-    codec_seconds_ = now_seconds() - started;
+    codec_seconds_           = now_seconds() - started;
+    codec_placed_nodes_      = run.placed_nodes;
+    codec_accelerator_nodes_ = run.accelerator_nodes;
     return SYNTH_OK;
 }
 
@@ -877,6 +893,8 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         }
         const double talker_started = now_seconds();
         status                      = talker.run(talker_logits, "qwen3-tts.talker", request.threads);
+        output.talker_placement.nodes += talker.placed_nodes;
+        output.talker_placement.accelerator_nodes += talker.accelerator_nodes;
         if (status != SYNTH_OK) {
             return status;
         }
@@ -958,6 +976,8 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
             }
             output.predictor_seconds += now_seconds() - step_started;
             output.predictor_setup_seconds += run.setup_seconds;
+            output.predictor_placement.nodes += run.placed_nodes;
+            output.predictor_placement.accelerator_nodes += run.accelerator_nodes;
             predictor_filled += plan.position_count;
 
             read_floats(step_logits, logits);
@@ -974,8 +994,10 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         // Stopping on the first frame is an empty utterance, not a failure.
         return SYNTH_OK;
     }
-    status               = decode_codes(output.codes, output.frame_count, request.threads, output.audio);
-    output.codec_seconds = codec_seconds_;
+    status                       = decode_codes(output.codes, output.frame_count, request.threads, output.audio);
+    output.codec_seconds         = codec_seconds_;
+    output.codec_placement.nodes = codec_placed_nodes_;
+    output.codec_placement.accelerator_nodes = codec_accelerator_nodes_;
     return status;
 }
 

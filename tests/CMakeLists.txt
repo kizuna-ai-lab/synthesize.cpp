@@ -461,30 +461,54 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     endif()
     # The repeated-run and resource-cleanup gate docs/backends.md requires of a
     # claimed backend, which no family had in code: every manifest declares
-    # `resource_cleanup` in its per-case checks and nothing reads the field.
-    # VITS's recorded evidence was twenty repeated *processes*, which cannot see
-    # an in-process leak at all, since exit reclaims everything.
+    # `resource_cleanup` on every case and nothing read the field. VITS's
+    # recorded evidence was twenty repeated *processes*, which cannot see an
+    # in-process leak at all, since exit reclaims everything.
+    #
+    # One test for all three families. What differs between them is only the
+    # input a request carries -- token ids through a symbol-map frontend, UTF-8
+    # text through a byte-pair one -- so that arrives as an argument.
     #
     # Cycle count drops under sanitizers because LeakSanitizer decides the same
     # question at allocation granularity, which is strictly better than a bound
     # on resident memory, and each sanitized cycle costs about thirty seconds.
-    if(EXISTS "${SYNTH_QWEN3_TTS_TEST_MODEL}")
-        add_executable(synthesize-qwen3-tts-public-cleanup-test qwen3_tts_public_cleanup_test.cpp)
-        target_link_libraries(synthesize-qwen3-tts-public-cleanup-test PRIVATE synthesize)
-        synth_register_integration_target(synthesize-qwen3-tts-public-cleanup-test)
-        if(SYNTH_SANITIZE)
-            set(_synth_qwen3_tts_cleanup_cycles 3)
-        else()
-            set(_synth_qwen3_tts_cleanup_cycles 12)
-        endif()
-        add_test(
-            NAME synthesize-qwen3-tts-public-cleanup
-            COMMAND synthesize-qwen3-tts-public-cleanup-test
-                ${SYNTH_QWEN3_TTS_TEST_MODEL} ${_synth_qwen3_tts_cleanup_cycles})
-        set_tests_properties(synthesize-qwen3-tts-public-cleanup PROPERTIES
-            LABELS "integration;abi;qwen3-tts"
-            TIMEOUT 900)
+    add_executable(synthesize-public-cleanup-test public_cleanup_test.cpp)
+    target_link_libraries(synthesize-public-cleanup-test PRIVATE synthesize)
+    synth_register_integration_target(synthesize-public-cleanup-test)
+    if(SYNTH_SANITIZE)
+        set(_synth_cleanup_cycles 3)
+    else()
+        set(_synth_cleanup_cycles 12)
     endif()
+
+    function(synth_add_cleanup_test family model frames input)
+        if(NOT EXISTS "${model}")
+            return()
+        endif()
+        add_test(NAME synthesize-${family}-public-cleanup
+            COMMAND synthesize-public-cleanup-test
+                ${model} ${_synth_cleanup_cycles} ${frames} ${input} ${ARGN})
+        set_tests_properties(synthesize-${family}-public-cleanup PROPERTIES
+            LABELS "integration;abi;${family}"
+            TIMEOUT 900)
+    endfunction()
+
+    # `max_output_frames` does not mean the same thing to each family: VITS and
+    # Kokoro compare it against the PCM frame count, Qwen3-TTS against its own
+    # codec frames. So these numbers are not comparable and none is a default.
+    # VITS reads its tokens from the Golden payload rather than a literal: its
+    # frontend is a symbol map, and an arbitrary id sequence makes the duration
+    # predictor ask for more frames than any limit allows. Kokoro's come from the
+    # sequence its own lifecycle test already synthesizes.
+    set(_synth_vits_cleanup_tokens
+        "${CMAKE_SOURCE_DIR}/build/goldens/vits/vits-ljspeech/ljs-minimal/input/token_ids.i32")
+    if(EXISTS "${_synth_vits_cleanup_tokens}")
+        synth_add_cleanup_test(vits "${SYNTH_VITS_TEST_MODEL}" 131072
+            "tokensfile:${_synth_vits_cleanup_tokens}")
+    endif()
+    synth_add_cleanup_test(kokoro "${SYNTH_KOKORO_TEST_MODEL}" 131072
+        "tokens:32,0,81,83,16,61,53,156,25,16,83,44,156,138,64,16,81,83,16,58" "af_heart")
+    synth_add_cleanup_test(qwen3-tts "${SYNTH_QWEN3_TTS_TEST_MODEL}" 24 "text:Hi." "aiden" "en")
 
     # Qwen3-TTS's two validators. Both need the package, which is why they sat
     # unregistered while the family shipped -- and being unregistered is how the

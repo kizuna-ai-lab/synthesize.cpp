@@ -158,9 +158,16 @@ int main(int argc, char ** argv) {
     std::printf(
         "{\"frames\": %llu, \"samples\": %zu, \"probe_layers\": %zu, "
         "\"talker_seconds\": %.4f, \"predictor_seconds\": %.4f, \"codec_seconds\": %.4f, "
+        "\"placement\": {\"talker\": [%llu, %llu], \"predictor\": [%llu, %llu], \"codec\": [%llu, %llu]}, "
         "\"codec_share\": %.4f, \"predictor_setup_seconds\": %.4f, \"wall_seconds\": %.4f}\n",
         (unsigned long long) output.frame_count, output.audio.size(), output.talker_layers.size(),
         output.talker_seconds, output.predictor_seconds, output.codec_seconds,
-        total > 0.0 ? output.codec_seconds / total : 0.0, output.predictor_setup_seconds, wall);
+        (unsigned long long) output.talker_placement.nodes,
+        (unsigned long long) output.talker_placement.accelerator_nodes,
+        (unsigned long long) output.predictor_placement.nodes,
+        (unsigned long long) output.predictor_placement.accelerator_nodes,
+        (unsigned long long) output.codec_placement.nodes,
+        (unsigned long long) output.codec_placement.accelerator_nodes, total > 0.0 ? output.codec_seconds / total : 0.0,
+        output.predictor_setup_seconds, wall);
     return 0;
 }

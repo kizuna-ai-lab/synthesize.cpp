@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -59,6 +60,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile", default="BF16")
     parser.add_argument("--backend", default="CPU")
     parser.add_argument("--stage", default="replay")
+    # Places the codec on the primary backend, which is what stage 7 measured.
+    # It also changes what `backend_placement` must see: on a CPU run every node
+    # of every stage has to be on the CPU, and with this set the codec's must all
+    # have left it.
+    parser.add_argument("--accelerate", action="store_true",
+                        help="run the codec on the primary backend and require it to land there")
     return parser.parse_args()
 
 
@@ -96,6 +103,65 @@ def compare(expected: np.ndarray, actual: np.ndarray) -> dict:
     }
 
 
+# The Golden Manifest's per-case `checks` array, finally read.
+#
+# Every case of every family has declared all eight values since the schema was
+# written, and nothing anywhere consumed the field: `backend_placement` and
+# `resource_cleanup` named obligations no code enforced, and the other six were
+# satisfied by validators that decide what to run from their own stage rather
+# than from the manifest. A declaration nothing reads is not a contract.
+#
+# Only the checks this validator is in a position to decide are dispatched here.
+# `resource_cleanup` belongs to a process that loads and frees repeatedly, which
+# is a C++ test rather than a replay comparison, so it is reported as delegated
+# instead of silently passing.
+PLACEMENT_CHECKS = {"backend_placement"}
+DELEGATED_CHECKS = {"resource_cleanup"}
+
+
+def evaluate_case_checks(case: dict, observed: dict, arguments: argparse.Namespace) -> dict:
+    """Decide the declared checks this stage owns, and say which it does not."""
+    declared = list(case.get("checks", []))
+    verdicts: dict[str, str] = {}
+
+    for name in declared:
+        if name in DELEGATED_CHECKS:
+            verdicts[name] = "delegated"
+        elif name not in PLACEMENT_CHECKS:
+            # tensor_parity, structural_exactness, waveform_regression,
+            # finite_pcm, request_repeatability and result_metadata are decided
+            # by the probe comparison and the phases around it, not here.
+            verdicts[name] = "covered-by-probes"
+
+    if "backend_placement" not in declared:
+        return verdicts
+
+    placement = observed.get("placement")
+    if not placement:
+        verdicts["backend_placement"] = "unobserved: the runner reported no placement"
+        return verdicts
+
+    failures = []
+    # The rule from docs/backends.md: a sampled code is a discrete output, so the
+    # stages feeding it stay on the CPU however the request asks for a backend.
+    for stage in ("talker", "predictor"):
+        nodes, off_cpu = placement[stage]
+        if off_cpu != 0:
+            failures.append(f"{stage} placed {off_cpu} of {nodes} nodes off the CPU")
+    codec_nodes, codec_off_cpu = placement["codec"]
+    if arguments.accelerate:
+        # Claiming a backend means proving the work reached it, not that a device
+        # was present: a graph placed on an accelerator and silently fell back
+        # looks identical from outside.
+        if codec_off_cpu != codec_nodes:
+            failures.append(f"codec placed {codec_off_cpu} of {codec_nodes} nodes off the CPU, expected all")
+    elif codec_off_cpu != 0:
+        failures.append(f"codec placed {codec_off_cpu} of {codec_nodes} nodes off the CPU on a CPU run")
+
+    verdicts["backend_placement"] = "ok" if not failures else "; ".join(failures)
+    return verdicts
+
+
 def run_case(arguments: argparse.Namespace, case: dict, oracle_root: pathlib.Path) -> dict | None:
     case_id = case["id"]
     oracle = oracle_root / case_id
@@ -110,9 +176,19 @@ def run_case(arguments: argparse.Namespace, case: dict, oracle_root: pathlib.Pat
         case["voice"]["id"], "auto" if language == "auto" else LANGUAGE_TAGS[language],
         *[str(layer) for layer in PROBE_LAYERS],
     ]
-    finished = subprocess.run(command, capture_output=True, text=True)
+    environment = dict(os.environ)
+    if arguments.accelerate:
+        environment["SYNTH_QWEN3_TTS_ACCELERATE"] = "1"
+    finished = subprocess.run(command, capture_output=True, text=True, env=environment)
     if finished.returncode != 0:
         return {"case": case_id, "status": "runner-failed", "stderr": finished.stderr.strip()[:400]}
+
+    # The runner's own report, which carries where each stage's nodes ran.
+    observed = {}
+    for line in reversed(finished.stdout.strip().splitlines()):
+        if line.startswith("{"):
+            observed = json.loads(line)
+            break
 
     measurements = {"audio.pcm": compare(read_f32(oracle / "audio" / "pcm.f32"), read_f32(work / "pcm.f32"))}
     measurements["talker.logits"] = compare(read_f32(oracle / "talker" / "logits.f32"),
@@ -124,7 +200,8 @@ def run_case(arguments: argparse.Namespace, case: dict, oracle_root: pathlib.Pat
         if probe.exists():
             measurements[f"talker.hidden_l{layer}"] = compare(read_f32(probe),
                                                               read_f32(work / f"talker_l{layer}.f32"))
-    return {"case": case_id, "status": "ok", "probes": measurements}
+    return {"case": case_id, "status": "ok", "probes": measurements,
+            "checks": evaluate_case_checks(case, observed, arguments)}
 
 
 def main() -> int:
@@ -148,6 +225,9 @@ def main() -> int:
         final = outcome["probes"]["talker.final"]
         print(f"  {case['id']}: audio max_abs {audio.get('max_abs', float('nan')):.4g}"
               f"  talker.final cosine {final.get('cosine', float('nan')):.6f}")
+        placement_verdict = outcome["checks"].get("backend_placement")
+        if placement_verdict not in (None, "ok"):
+            print(f"    backend_placement: {placement_verdict}")
 
     # The worst case across the suite is what a tolerance has to cover.
     worst: dict[str, dict] = {}
@@ -163,6 +243,21 @@ def main() -> int:
     for probe in sorted(worst):
         entry = worst[probe]
         print(f"  {probe:24s} max_abs {entry['max_abs']:.6g}  min_cosine {entry['min_cosine']:.6f}")
+
+    placement_failures = [
+        (outcome["case"], outcome["checks"]["backend_placement"])
+        for outcome in results
+        if outcome.get("status") == "ok"
+        and outcome.get("checks", {}).get("backend_placement") not in (None, "ok")
+    ]
+    if placement_failures:
+        print(f"\n{len(placement_failures)} case(s) failed the declared backend_placement check:")
+        for case_id, verdict in placement_failures:
+            print(f"  {case_id}: {verdict}")
+        return 1
+    if any(outcome.get("checks", {}).get("backend_placement") == "ok" for outcome in results):
+        decided = sum(1 for o in results if o.get("checks", {}).get("backend_placement") == "ok")
+        print(f"\nbackend_placement: {decided} case(s) placed as declared")
 
     if arguments.report is not None:
         arguments.report.parent.mkdir(parents=True, exist_ok=True)

@@ -1,4 +1,9 @@
-// Qwen3-TTS repeated-run and resource-cleanup check, through the public seam.
+// The repeated-run and resource-cleanup check, through the public seam.
+//
+// Family-independent on purpose. Every Golden Manifest in this repository
+// declares `resource_cleanup` on every case and nothing has ever read the field,
+// so the gap this closes is not one family's -- what differs between families is
+// only the input a request carries, which arrives on the command line.
 //
 // docs/backends.md gate 6 asks a claimed Execution Backend to "Pass repeated-run
 // and resource-cleanup checks", and docs/port-validation.md phase 5 says every
@@ -37,6 +42,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -51,12 +57,23 @@ constexpr int      kDefaultCycles = 12;
 constexpr int      kWarmupCycles  = 2;
 constexpr int      kWindowCycles  = 5;
 constexpr uint64_t kMaxFrames     = 24;
-constexpr uint64_t kSeed         = 1;
-// The manifest's minimal case, which is the shortest real synthesis the family
-// has.
-constexpr const char * kText     = "Hi.";
-constexpr const char * kVoice    = "aiden";
-constexpr const char * kLanguage = "en";
+constexpr uint64_t kSeed          = 1;
+
+// What a request carries, which is the only family-specific thing here. VITS and
+// Kokoro take token ids through a symbol-map frontend; Qwen3-TTS takes UTF-8
+// text through a byte-pair one. A Voice and a language are optional because a
+// fixed-default package refuses a Voice it does not have.
+struct RequestSpec {
+    // A frame means something different in each family -- a hop of 256 samples
+    // in VITS, a duration step of 600 in Kokoro, a codec frame of 1920 here --
+    // so a limit that is generous for one refuses the others outright.
+    uint64_t             max_frames = 0;
+    bool                 tokens     = false;
+    std::string          text;
+    std::vector<int32_t> token_ids;
+    std::string          voice;
+    std::string          language;
+};
 
 // Allowed rise of the post-free resident-set floor between the two windows.
 // Measured drift with the floor statistic is 4 KB on CPU and 364 KB on CUDA over
@@ -103,16 +120,19 @@ uint64_t digest(const float * samples, uint64_t count) {
 }
 
 // One full public cycle. Everything it opens, it closes.
-bool run_cycle(const char *              model_path,
-               synth_backend_request_t   backend,
-               uint64_t &                out_frames,
-               uint64_t &                out_digest) {
+bool run_cycle(const char *            model_path,
+               const RequestSpec &     spec,
+               synth_backend_request_t backend,
+               uint64_t &              out_frames,
+               uint64_t &              out_digest) {
     synth_model_load_params_t load_params;
     synth_model_load_params_init(&load_params, sizeof(load_params));
     load_params.backend = backend;
 
-    synth_model_t * model = nullptr;
-    if (synth_model_load(model_path, &load_params, &model) != SYNTH_OK || model == nullptr) {
+    synth_model_t *      model  = nullptr;
+    const synth_status_t loaded = synth_model_load(model_path, &load_params, &model);
+    if (loaded != SYNTH_OK || model == nullptr) {
+        std::fprintf(stderr, "cleanup: load -> %d\n", (int) loaded);
         return false;
     }
 
@@ -124,20 +144,32 @@ bool run_cycle(const char *              model_path,
 
     synth_request_t request;
     synth_request_init(&request, sizeof(request));
-    request.input_kind        = SYNTH_INPUT_TEXT_UTF8;
-    request.input_data        = kText;
-    request.input_count       = std::strlen(kText);
-    request.voice_id          = kVoice;
-    request.voice_id_size     = std::strlen(kVoice);
-    request.language_tag      = kLanguage;
-    request.language_tag_size = std::strlen(kLanguage);
+    if (spec.tokens) {
+        request.input_kind  = SYNTH_INPUT_TOKEN_IDS;
+        request.input_data  = spec.token_ids.data();
+        request.input_count = spec.token_ids.size();
+    } else {
+        request.input_kind  = SYNTH_INPUT_TEXT_UTF8;
+        request.input_data  = spec.text.c_str();
+        request.input_count = spec.text.size();
+    }
+    if (!spec.voice.empty()) {
+        request.voice_id      = spec.voice.c_str();
+        request.voice_id_size = spec.voice.size();
+    }
+    if (!spec.language.empty()) {
+        request.language_tag      = spec.language.c_str();
+        request.language_tag_size = spec.language.size();
+    }
     request.seed              = kSeed;
-    request.max_output_frames = kMaxFrames;
+    request.max_output_frames = spec.max_frames;
 
     synth_audio_buffer_t * audio = nullptr;
     synth_result_t         result;
     synth_result_init(&result, sizeof(result));
-    if (synth_synthesize_to_buffer(context, &request, &audio, &result) != SYNTH_OK || audio == nullptr) {
+    const synth_status_t synthesized = synth_synthesize_to_buffer(context, &request, &audio, &result);
+    if (synthesized != SYNTH_OK || audio == nullptr) {
+        std::fprintf(stderr, "cleanup: synthesize -> %d\n", (int) synthesized);
         synth_context_free(context);
         synth_model_free(model);
         return false;
@@ -165,7 +197,11 @@ long floor_kb(const std::vector<long> & resident, int begin, int end) {
     return lowest;
 }
 
-int run_backend(const char * model_path, synth_backend_request_t backend, const char * label, int cycles) {
+int run_backend(const char *            model_path,
+                const RequestSpec &     spec,
+                synth_backend_request_t backend,
+                const char *            label,
+                int                     cycles) {
     uint64_t          first_frames = 0;
     uint64_t          first_digest = 0;
     std::vector<long> resident;
@@ -173,7 +209,7 @@ int run_backend(const char * model_path, synth_backend_request_t backend, const 
     for (int cycle = 0; cycle < cycles; ++cycle) {
         uint64_t frames = 0;
         uint64_t hash   = 0;
-        SYNTH_TEST_CHECK(run_cycle(model_path, backend, frames, hash));
+        SYNTH_TEST_CHECK(run_cycle(model_path, spec, backend, frames, hash));
         SYNTH_TEST_CHECK(frames > 0);
         if (cycle == 0) {
             first_frames = frames;
@@ -193,8 +229,8 @@ int run_backend(const char * model_path, synth_backend_request_t backend, const 
         const long early = floor_kb(resident, kWarmupCycles, kWarmupCycles + kWindowCycles);
         const long late  = floor_kb(resident, cycles - kWindowCycles, cycles);
         if (early > 0 && late > 0) {
-            std::fprintf(stderr, "%s: post-free resident floor %ld -> %ld KB over %d cycles (%+ld KB)\n", label,
-                         early, late, cycles, late - early);
+            std::fprintf(stderr, "%s: post-free resident floor %ld -> %ld KB over %d cycles (%+ld KB)\n", label, early,
+                         late, cycles, late - early);
             SYNTH_TEST_CHECK(late - early <= kAllowedGrowthKb);
         }
     }
@@ -203,18 +239,67 @@ int run_backend(const char * model_path, synth_backend_request_t backend, const 
 
 }  // namespace
 
+// usage: <model.gguf> <cycles> <max-frames> <input> [voice] [language]
+//   <input> is "text:Hi." or "tokens:1,2,3" -- which one a family takes is a
+//   property of its frontend, not of this check.
 int main(int argc, char ** argv) {
-    SYNTH_TEST_CHECK(argc == 2 || argc == 3);
-    const int cycles = argc == 3 ? static_cast<int>(std::strtol(argv[2], nullptr, 10)) : kDefaultCycles;
+    SYNTH_TEST_CHECK(argc >= 5 && argc <= 7);
+    const int cycles = static_cast<int>(std::strtol(argv[2], nullptr, 10));
     SYNTH_TEST_CHECK(cycles >= 2);
 
+    RequestSpec spec;
+    spec.max_frames = std::strtoull(argv[3], nullptr, 10);
+    SYNTH_TEST_CHECK(spec.max_frames > 0);
+    const std::string input(argv[4]);
+    if (input.rfind("tokens:", 0) == 0) {
+        spec.tokens = true;
+        for (size_t at = 7; at <= input.size();) {
+            const size_t comma = input.find(',', at);
+            const size_t end   = comma == std::string::npos ? input.size() : comma;
+            if (end > at) {
+                spec.token_ids.push_back(
+                    static_cast<int32_t>(std::strtol(input.substr(at, end - at).c_str(), nullptr, 10)));
+            }
+            if (comma == std::string::npos) {
+                break;
+            }
+            at = comma + 1;
+        }
+        SYNTH_TEST_CHECK(!spec.token_ids.empty());
+    } else if (input.rfind("tokensfile:", 0) == 0) {
+        // VITS's tokens come from a Golden payload rather than a literal: its
+        // frontend is a symbol map, and an arbitrary id sequence makes the
+        // duration predictor ask for more frames than any limit allows.
+        spec.tokens      = true;
+        std::FILE * file = std::fopen(input.substr(11).c_str(), "rb");
+        SYNTH_TEST_CHECK(file != nullptr);
+        int32_t token = 0;
+        while (std::fread(&token, sizeof(token), 1, file) == 1) {
+            spec.token_ids.push_back(token);
+        }
+        std::fclose(file);
+        SYNTH_TEST_CHECK(!spec.token_ids.empty());
+    } else if (input.rfind("text:", 0) == 0) {
+        spec.text = input.substr(5);
+        SYNTH_TEST_CHECK(!spec.text.empty());
+    } else {
+        std::fprintf(stderr, "input must begin with text: or tokens:\n");
+        return 1;
+    }
+    if (argc >= 6) {
+        spec.voice = argv[5];
+    }
+    if (argc >= 7) {
+        spec.language = argv[6];
+    }
+
     // CPU is the baseline every package claims.
-    SYNTH_TEST_CHECK(run_backend(argv[1], SYNTH_BACKEND_CPU, "cpu", cycles) == 0);
+    SYNTH_TEST_CHECK(run_backend(argv[1], spec, SYNTH_BACKEND_CPU, "cpu", cycles) == 0);
 
     // Every further backend the build claims runs the same cycles. A backend
     // that is absent from this build is not being claimed by it.
     if (synth_backend_available(SYNTH_BACKEND_CUDA) == SYNTH_TRUE) {
-        SYNTH_TEST_CHECK(run_backend(argv[1], SYNTH_BACKEND_CUDA, "cuda", cycles) == 0);
+        SYNTH_TEST_CHECK(run_backend(argv[1], spec, SYNTH_BACKEND_CUDA, "cuda", cycles) == 0);
     }
     return 0;
 }

@@ -203,3 +203,27 @@ validated evidence at a later stage.
 - Whether the codec encoder half — 225 tensors — ships in the Model Package at
   all. Stage 1 selects preset speakers by token id and needs only the decoder
   side.
+
+## 2026-07-29 — Listening audit: no obvious regression
+
+The project owner listened to the comparison page and reported no problem. The
+page offered eight replayed cases blind against the PyTorch reference --
+switching sides keeps the playhead, so the same instant is heard twice -- plus
+five natively-sampled clips on CPU and CUDA, which is the path replay does not
+cover.
+
+Recorded for exactly what it is: **one listener, informally, no rated
+comparison, no panel, no score.** Under `docs/model-porting.md` this is a
+Listening Audit reporting `no_obvious_regression`, and it does not move the
+Validation Level. The package stays `port_validated`.
+
+What it establishes is the thing a cosine cannot: that agreement measured at
+0.999427 is not hiding an audible disagreement. That is worth having before
+shipping, and this port shipped before asking for it -- the packages were
+published and the pull request opened while this step was still outstanding. It
+happened because the owner asked why it had been skipped, not because the
+process caught it.
+
+The published README still reports `quality_evaluation: not_run`, which was
+accurate when written. Updating it is a separate outward act and has not been
+made.

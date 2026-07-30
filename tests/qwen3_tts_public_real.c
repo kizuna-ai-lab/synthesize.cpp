@@ -115,7 +115,9 @@ int main(int argc, char ** argv) {
         request.language_tag_size = strlen(language);
     }
     request.seed              = strcmp(seed_text, "random") == 0 ? SYNTH_SEED_RANDOM : strtoull(seed_text, NULL, 10);
-    request.max_output_frames = argc > 6 ? strtoull(argv[6], NULL, 10) : 512;
+    /* PCM frames. The old default of 512 meant codec frames, which is what the
+     * public field was wrongly compared against; 512 PCM frames is 21 ms. */
+    request.max_output_frames = argc > 6 ? strtoull(argv[6], NULL, 10) : 983040;
 
     synth_audio_buffer_t * audio = NULL;
     synth_result_t         result;

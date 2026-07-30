@@ -508,7 +508,7 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     endif()
     synth_add_cleanup_test(kokoro "${SYNTH_KOKORO_TEST_MODEL}" 131072
         "tokens:32,0,81,83,16,61,53,156,25,16,83,44,156,138,64,16,81,83,16,58" "af_heart")
-    synth_add_cleanup_test(qwen3-tts "${SYNTH_QWEN3_TTS_TEST_MODEL}" 24 "text:Hi." "aiden" "en")
+    synth_add_cleanup_test(qwen3-tts "${SYNTH_QWEN3_TTS_TEST_MODEL}" 46080 "text:Hi." "aiden" "en")
 
     # What a limit stop reports back. Registered because it needs the package:
     # docs/c-interface.md makes an output limit one of four cases that must fill

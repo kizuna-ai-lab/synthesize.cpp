@@ -48,7 +48,10 @@ def parse_args() -> argparse.Namespace:
     # Short on purpose: this phase checks the seam, not the audio, and every run
     # is a full synthesis.
     parser.add_argument("--text", default="Hi.")
-    parser.add_argument("--max-frames", type=int, default=24)
+    # PCM frames, which is what the public field counts. This used to be 24 and
+    # meant 24 codec frames; the field was being compared in the wrong units, and
+    # 24 PCM frames is one millisecond. 24 codec frames of 1920 samples is this.
+    parser.add_argument("--max-frames", type=int, default=46080)
     # The Quantization Profile and Execution Backend this run covers. They are
     # recorded rather than inferred because the tolerance grid is keyed on them:
     # a run that does not say which cell it filled cannot fill one.

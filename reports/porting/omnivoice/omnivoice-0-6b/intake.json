@@ -511,7 +511,9 @@
     "vocab_size_agreement": "llm_config.vocab_size is 151676, equal to 151643 + 33; the converter writes this count and the loader checks it rather than rederiving it at load time",
     "pre_tokenizer_regex": "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
     "pre_tokenizer_identity_with_qwen3_tts": {
-      "verified": true,
+      "verified": "against-committed-transcription",
+      "stronger_check_pending": true,
+      "stronger_check": "diff the two tokenizer.json files directly; owed when the qwen3-tts weights are next materialized locally (Task 8)",
       "how": "the seven alternatives, in order, are character-for-character the pattern documented in src/arch/qwen3-tts/bpe.cpp lines 108-117. Compared against the committed C++ implementation's own transcription rather than against the qwen3-tts tokenizer.json, which is not present locally",
       "byte_level": "ByteLevel with add_prefix_space false, use_regex false; model type BPE, byte_fallback false"
     },

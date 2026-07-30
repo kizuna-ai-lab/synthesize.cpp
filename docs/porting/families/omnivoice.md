@@ -232,9 +232,11 @@ case proves it necessary.
 ## Text Frontend
 
 OmniVoice uses the same Qwen2 byte-level BPE as qwen3-tts, over the same GGUF
-vocabulary layout, with the same pre-tokenizer regex — verified as identical
-text in the two `tokenizer.json` files rather than assumed from the shared
-lineage. The Text Frontend Provider id therefore stays `synthesize.qwen_bpe`,
+vocabulary layout, with the same pre-tokenizer regex — verified at intake
+against the transcription committed in `src/arch/qwen3-tts/bpe.cpp` rather than
+assumed from the shared lineage. Re-verification against both `tokenizer.json`
+files is owed when the qwen3-tts weights are next materialized; Task 8 records
+the same debt. The Text Frontend Provider id therefore stays `synthesize.qwen_bpe`,
 and the implementation is hoisted out of `src/arch/qwen3-tts/` into a shared
 internal module with its unit tests intact, rather than copied. No BOS token is
 added.
@@ -498,9 +500,12 @@ Three intake findings change what the converter must do:
 151,643 base entries plus 33 added tokens is 151,676, equal to
 `llm_config.vocab_size`; 151,387 merges. The pre-tokenizer regex is
 character-for-character the pattern already implemented in
-`src/arch/qwen3-tts/bpe.cpp`. The seven TTS markers occupy 151669–151675 in the
-documented order, all `special: true`, and `tokenizer_config.json` lists exactly
-those seven under `extra_special_tokens`. No BOS on either side.
+`src/arch/qwen3-tts/bpe.cpp` — the comparison the Text Frontend section above
+describes, and the weaker of the two available: the qwen3-tts weights are not
+present on this host, so the two `tokenizer.json` files were never diffed
+directly. The seven TTS markers occupy 151669–151675 in the documented order,
+all `special: true`, and `tokenizer_config.json` lists exactly those seven under
+`extra_special_tokens`. No BOS on either side.
 
 ### Upstream ships no pinnable reference audio
 

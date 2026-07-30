@@ -305,7 +305,7 @@ sha256 `adc1bb51…`) is Mozilla Common Voice, CC0. It loses on both other count
 comparison path. Task 5 owns the final manifest choice and should not have to
 rediscover the trade.
 
-### The pre-tokenizer is identical to qwen3-tts's, verified rather than inherited
+### The pre-tokenizer matches qwen3-tts's, by the weaker of the two comparisons
 
 The seven alternatives in `tokenizer.json`'s pre-tokenizer regex are
 character-for-character the pattern documented in `src/arch/qwen3-tts/bpe.cpp`

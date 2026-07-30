@@ -19,6 +19,7 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <queue>
 #include <unordered_map>
 
 namespace synth::qwen3tts {
@@ -396,22 +397,104 @@ class BpeFrontend : public TextFrontend {
     // Greedy by rank: repeatedly merge the best-ranked adjacent pair until none
     // is mergeable. Taking pairs left to right instead would produce a different
     // and equally plausible tokenization.
+    //
+    // A rank-ordered queue over a linked list of symbols, rather than rescanning
+    // every pair after every merge. The rescan was quadratic in the symbols of one
+    // piece, and a piece is unbounded: four of the pre-tokenizer's seven branches
+    // will return an arbitrarily long run -- punctuation, letters, newlines and
+    // spaces -- so a single legal request could pin a thread. Measured on the real
+    // vocabulary, 32 KB of full stops took 27 seconds and 64 KB took 107, growing
+    // as n^2.004, while tokenizing to 520 tokens against a declared limit of 1024.
+    // The limit could not save it: `docs/c-interface.md` makes text length a
+    // post-conversion check, so the work happens before anything can refuse it.
+    //
+    // Three properties of the old loop are load-bearing and preserved exactly:
+    // globally lowest rank first; **on equal rank the leftmost pair wins**, which
+    // the old code got from a strict `<` keeping the first minimum of a
+    // left-to-right scan; and a merge never crosses a piece boundary, so every
+    // symbol stays a contiguous run and can be carried as an offset and a length.
     void merge(std::vector<std::string> & symbols) const {
-        while (symbols.size() > 1) {
-            int32_t best_rank  = std::numeric_limits<int32_t>::max();
-            size_t  best_index = symbols.size();
-            for (size_t index = 0; index + 1 < symbols.size(); ++index) {
-                const auto found = ranks_.find(symbols[index] + " " + symbols[index + 1]);
-                if (found != ranks_.end() && found->second < best_rank) {
-                    best_rank  = found->second;
-                    best_index = index;
-                }
-            }
-            if (best_index == symbols.size()) {
+        if (symbols.size() < 2) {
+            return;
+        }
+
+        // Symbols as a doubly linked list over one buffer. `length == 0` marks a
+        // symbol absorbed by its left neighbour.
+        struct Symbol {
+            size_t  offset   = 0;
+            size_t  length   = 0;
+            int64_t previous = -1;
+            int64_t next     = -1;
+        };
+
+        std::string         buffer;
+        std::vector<Symbol> nodes(symbols.size());
+        for (size_t index = 0; index < symbols.size(); ++index) {
+            nodes[index].offset   = buffer.size();
+            nodes[index].length   = symbols[index].size();
+            nodes[index].previous = index == 0 ? -1 : int64_t(index) - 1;
+            nodes[index].next     = index + 1 == symbols.size() ? -1 : int64_t(index) + 1;
+            buffer += symbols[index];
+        }
+
+        struct Candidate {
+            int32_t rank   = 0;
+            int64_t left   = 0;
+            size_t  merged = 0;  // the combined length when queued, for staleness
+        };
+
+        // Lowest rank first, then leftmost. std::priority_queue is a max-heap, so
+        // the comparator is reversed.
+        const auto worse = [](const Candidate & a, const Candidate & b) {
+            return a.rank != b.rank ? a.rank > b.rank : a.left > b.left;
+        };
+        std::priority_queue<Candidate, std::vector<Candidate>, decltype(worse)> queue(worse);
+
+        const auto offer = [&](int64_t left) {
+            if (left < 0) {
                 return;
             }
-            symbols[best_index] += symbols[best_index + 1];
-            symbols.erase(symbols.begin() + static_cast<long>(best_index) + 1);
+            const int64_t right = nodes[size_t(left)].next;
+            if (right < 0) {
+                return;
+            }
+            const Symbol & l = nodes[size_t(left)];
+            const Symbol & r = nodes[size_t(right)];
+            const auto found = ranks_.find(buffer.substr(l.offset, l.length) + " " + buffer.substr(r.offset, r.length));
+            if (found != ranks_.end()) {
+                queue.push({ found->second, left, l.length + r.length });
+            }
+        };
+        for (size_t index = 0; index + 1 < nodes.size(); ++index) {
+            offer(int64_t(index));
+        }
+
+        while (!queue.empty()) {
+            const Candidate best = queue.top();
+            queue.pop();
+            Symbol & left = nodes[size_t(best.left)];
+            if (left.length == 0 || left.next < 0) {
+                continue;  // the left symbol was absorbed
+            }
+            Symbol & right = nodes[size_t(left.next)];
+            if (left.length + right.length != best.merged) {
+                continue;  // either side changed since this pair was queued
+            }
+            // Contiguity is why this works without touching the buffer: the two
+            // runs are adjacent in it, so the merged symbol is their union.
+            left.length += right.length;
+            right.length = 0;
+            left.next    = right.next;
+            if (right.next >= 0) {
+                nodes[size_t(right.next)].previous = best.left;
+            }
+            offer(best.left);
+            offer(left.previous);
+        }
+
+        symbols.clear();
+        for (int64_t at = 0; at >= 0; at = nodes[size_t(at)].next) {
+            symbols.push_back(buffer.substr(nodes[size_t(at)].offset, nodes[size_t(at)].length));
         }
     }
 

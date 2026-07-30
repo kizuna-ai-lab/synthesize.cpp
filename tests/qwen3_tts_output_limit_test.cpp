@@ -54,7 +54,7 @@ int main(int argc, char ** argv) {
     synth_context_t * context = nullptr;
     SYNTH_TEST_CHECK(synth_context_create(model, &context) == SYNTH_OK && context != nullptr);
 
-    const char * text = "Hi.";
+    const char * text  = "Hi.";
     auto         build = [&](uint64_t limit) {
         synth_request_t request;
         synth_request_init(&request, sizeof(request));
@@ -72,8 +72,8 @@ int main(int argc, char ** argv) {
 
     // One PCM frame is far below one codec frame of 1920, so this cannot be met.
     {
-        Sink                 sink_state;
-        synth_audio_sink_t   sink;
+        Sink               sink_state;
+        synth_audio_sink_t sink;
         synth_audio_sink_init(&sink, sizeof(sink));
         sink.write     = count_chunks;
         sink.user_data = &sink_state;

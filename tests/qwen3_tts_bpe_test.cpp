@@ -493,9 +493,87 @@ int check_assistant_turn() {
 
 }  // namespace
 
+// The merge order, and that a long run terminates in reasonable time.
+//
+// The rescan this replaced was quadratic in the symbols of one piece, and four of
+// the pre-tokenizer's branches return an unbounded piece: measured on the real
+// vocabulary, 32 KB of full stops took 27 seconds and 64 KB took 107, while
+// tokenizing to 520 tokens against a declared limit of 1024. Text length is a
+// post-conversion check, so nothing could refuse the request first.
+//
+// Two properties of the old loop were implicit and are easy to lose in a rewrite.
+// Equivalence on the real vocabulary was established separately, by comparing
+// synthesized audio across eight inputs before and after; what a synthetic
+// vocabulary can pin is the ordering rule itself.
+int check_merge_order() {
+    synth::qwen3tts::BpeFrontendConfig config;
+    config.provider_id      = "synthesize.qwen_bpe";
+    config.contract_version = 1;
+    // "xx" doubles: x -> xx -> xxxx, which is the shape that makes a long run of
+    // one character merge at all.
+    config.vocab            = {
+        "x", "xx", "xxxx", "xxxxxxxx", "a", "b", "c", "ab", "bc", "abc", "\n", "<|im_start|>", "<|im_end|>"
+    };
+    // Ranked most preferred first. "a b" and "b c" share no rank; "ab c" is last.
+    config.merges         = { "x x", "xx xx", "xxxx xxxx", "a b", "b c", "ab c" };
+    config.special_tokens = {
+        { "<|im_start|>", 11 },
+        { "<|im_end|>",   12 }
+    };
+    config.prefix = "";
+    config.suffix = "";
+
+    std::unique_ptr<synth::TextFrontend> frontend;
+    SYNTH_TEST_CHECK(synth::qwen3tts::make_bpe_frontend(config, frontend) == SYNTH_OK);
+
+    // Lowest rank first, not left to right: "a b" outranks "b c", so "abc" comes
+    // from merging "ab" and then "c" rather than "a" and "bc".
+    {
+        std::vector<int32_t> ids;
+        SYNTH_TEST_CHECK(frontend->prepare(SYNTH_INPUT_TEXT_UTF8, "abc", 3, 0, ids) == SYNTH_OK);
+        SYNTH_TEST_CHECK(ids.size() == 1 && ids[0] == 9);  // "abc"
+    }
+
+    const std::string run16(16, 'x');
+    const std::string run11(11, 'x');
+    const std::string run65536(65536, 'x');
+
+    // A run of sixteen collapses through the doubling merges to two symbols of
+    // eight, because no merge names sixteen. This is the case the old loop paid
+    // fifteen full rescans for.
+    {
+        std::vector<int32_t> ids;
+        SYNTH_TEST_CHECK(frontend->prepare(SYNTH_INPUT_TEXT_UTF8, run16.data(), run16.size(), 0, ids) == SYNTH_OK);
+        SYNTH_TEST_CHECK(ids.size() == 2 && ids[0] == 3 && ids[1] == 3);  // "xxxxxxxx" twice
+    }
+
+    // An odd length leaves the remainder as smaller symbols rather than dropping
+    // it: eleven is eight, two and one.
+    {
+        std::vector<int32_t> ids;
+        SYNTH_TEST_CHECK(frontend->prepare(SYNTH_INPUT_TEXT_UTF8, run11.data(), run11.size(), 0, ids) == SYNTH_OK);
+        SYNTH_TEST_CHECK(ids.size() == 3 && ids[0] == 3 && ids[1] == 1 && ids[2] == 0);
+    }
+
+    // The load-bearing case: a long unbounded piece must finish. At 64 KB the old
+    // loop took about a hundred seconds; anything in that region fails the test's
+    // own timeout rather than passing slowly.
+    {
+        std::vector<int32_t> ids;
+        SYNTH_TEST_CHECK(frontend->prepare(SYNTH_INPUT_TEXT_UTF8, run65536.data(), run65536.size(), 0, ids) ==
+                         SYNTH_OK);
+        SYNTH_TEST_CHECK(ids.size() == 65536 / 8);
+        for (const int32_t id : ids) {
+            SYNTH_TEST_CHECK(id == 3);
+        }
+    }
+    return 0;
+}
+
 int main() {
     SYNTH_TEST_CHECK(check_pretokenize() == 0);
     SYNTH_TEST_CHECK(check_frontend() == 0);
+    SYNTH_TEST_CHECK(check_merge_order() == 0);
     SYNTH_TEST_CHECK(check_configuration_rejections() == 0);
     SYNTH_TEST_CHECK(check_turn_wrapping() == 0);
     SYNTH_TEST_CHECK(check_assistant_turn() == 0);

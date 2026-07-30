@@ -261,6 +261,27 @@ int run_rejections() {
         expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.hop_length", 1024); },
                         "hop and frame rate must agree with the sample rate") == 0);
 
+    // A zero head count on the code predictor divided by zero on load rather
+    // than being refused: the guard covered the shapes and not the heads, while
+    // the talker's covered both.
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_u32(g, "synthesize.qwen3-tts.code_predictor.key_value_head_count", 0);
+                         },
+                         "a zero key/value head count is refused rather than divided by") == 0);
+
+    // Special token ids have to index the vocabulary they are used against.
+    // Thirteen of them were read with no range check at all, so a package naming
+    // an id past the end loaded and failed later at an embedding row.
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.token.codec_eos_token_id", 4096); },
+            "a codec token id beyond the codec vocabulary is refused") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.token.im_start_token_id", 999999); },
+            "a prompt token id beyond the text vocabulary is refused") == 0);
+
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.codec.sample_rate", 16000); },
                         "codec rate must match the declared output rate") == 0);

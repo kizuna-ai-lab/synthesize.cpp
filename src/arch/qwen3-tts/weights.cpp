@@ -304,6 +304,51 @@ bool read_codec(const GgufMetadata & meta, HParams & hparams) {
     return read_codec_decoder(meta, hparams);
 }
 
+// Every special token id has to index the vocabulary it is used against.
+//
+// read_voices already refuses a speaker token outside the codec vocabulary; none
+// of these thirteen got the same treatment, so a package naming an id past the
+// end of either vocabulary loaded cleanly and surfaced as an out-of-range
+// embedding row during synthesis -- a wrong answer or a crash, in a place that
+// says nothing about the cause.
+//
+// Which vocabulary each belongs to is read off the package rather than assumed:
+// the seven codec ids sit at 2148-2157 against a codec vocabulary of 3072, and
+// the six prompt ids at 77091-151673 against a text vocabulary of 151936.
+bool check_token_ranges(const HParams & hparams) {
+    const SpecialTokens & t = hparams.tokens;
+
+    struct Bound {
+        const char * name;
+        uint32_t     value;
+        uint32_t     limit;
+    };
+
+    const Bound bounds[] = {
+        { "codec_bos_id",       t.codec_bos,       hparams.talker.codec_vocab_size },
+        { "codec_eos_token_id", t.codec_eos,       hparams.talker.codec_vocab_size },
+        { "codec_pad_id",       t.codec_pad,       hparams.talker.codec_vocab_size },
+        { "codec_think_id",     t.codec_think,     hparams.talker.codec_vocab_size },
+        { "codec_nothink_id",   t.codec_nothink,   hparams.talker.codec_vocab_size },
+        { "codec_think_bos_id", t.codec_think_bos, hparams.talker.codec_vocab_size },
+        { "codec_think_eos_id", t.codec_think_eos, hparams.talker.codec_vocab_size },
+        { "tts_bos_token_id",   t.tts_bos,         hparams.talker.text_vocab_size  },
+        { "tts_eos_token_id",   t.tts_eos,         hparams.talker.text_vocab_size  },
+        { "tts_pad_token_id",   t.tts_pad,         hparams.talker.text_vocab_size  },
+        { "im_start_token_id",  t.im_start,        hparams.talker.text_vocab_size  },
+        { "im_end_token_id",    t.im_end,          hparams.talker.text_vocab_size  },
+        { "assistant_token_id", t.assistant,       hparams.talker.text_vocab_size  },
+    };
+    for (const Bound & bound : bounds) {
+        if (bound.limit == 0 || bound.value >= bound.limit) {
+            std::fprintf(stderr, "qwen3-tts: %s is %u, outside a vocabulary of %u\n", bound.name, bound.value,
+                         bound.limit);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool read_tokens(const GgufMetadata & meta, HParams & hparams) {
     SpecialTokens & t = hparams.tokens;
     return meta.u32("synthesize.qwen3-tts.token.tts_bos_token_id", t.tts_bos) &&
@@ -318,7 +363,7 @@ bool read_tokens(const GgufMetadata & meta, HParams & hparams) {
            meta.u32("synthesize.qwen3-tts.token.codec_think_id", t.codec_think) &&
            meta.u32("synthesize.qwen3-tts.token.codec_nothink_id", t.codec_nothink) &&
            meta.u32("synthesize.qwen3-tts.token.codec_think_bos_id", t.codec_think_bos) &&
-           meta.u32("synthesize.qwen3-tts.token.codec_think_eos_id", t.codec_think_eos);
+           meta.u32("synthesize.qwen3-tts.token.codec_think_eos_id", t.codec_think_eos) && check_token_ranges(hparams);
 }
 
 bool read_voices(const GgufMetadata & meta, HParams & hparams) {

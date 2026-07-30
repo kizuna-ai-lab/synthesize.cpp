@@ -1,0 +1,649 @@
+{
+  "schema": "synthesize-port-intake-v1",
+  "recorded_on": "2026-07-30",
+  "family": "omnivoice",
+  "variant": "omnivoice-0-6b",
+  "status": "intake_complete_oracle_smoke_passed",
+  "publication_status": "not_started",
+  "source": {
+    "repository": "https://github.com/k2-fsa/OmniVoice",
+    "revision": "468e927ba3716cd8dd86421148dfb3046e9f9d7b",
+    "package_version": "0.2.1",
+    "install": "pinned by git revision in scripts/envs/omnivoice/pyproject.toml",
+    "license_file": {
+      "path": "LICENSE",
+      "size_bytes": 11342,
+      "sha256": "c843a20ede4d1e7595c2736b88fc62cb7483a8c082eb7092a3772248849c59e2",
+      "spdx": "Apache-2.0",
+      "evidence": "fetched from raw.githubusercontent.com at the pinned revision; first line is the Apache License Version 2.0 heading"
+    },
+    "upstream_architecture_papers": [
+      "OmniVoice: https://arxiv.org/abs/2604.00688"
+    ],
+    "upstream_examples": {
+      "no_audio_asset_at_any_pinned_upstream_revision": {
+        "source_repository_at_pin": "no .wav/.flac/.mp3/.ogg/.m4a file exists anywhere in the tree at 468e927b",
+        "hugging_face_space": "https://huggingface.co/spaces/k2-fsa/OmniVoice at revision 64deef91cf1f7bfdfc97ff07502b4cd47a0e361e ships 50 files, all code -- no audio asset",
+        "consequence": "the brief's two revision-pinnable options both come up empty; the clone reference below is pinned by content digest instead of by revision"
+      },
+      "upstream_example_cases": [
+        {
+          "id": "readme-auto-voice",
+          "mode": "auto_voice",
+          "readme_line": 231,
+          "call": "model.generate(text=\"This is a sentence without any voice prompt.\")",
+          "text": "This is a sentence without any voice prompt.",
+          "note": "the README's Auto Voice example; no Voice Profile, ref_rms is None"
+        },
+        {
+          "id": "readme-voice-clone",
+          "mode": "reference_audio",
+          "readme_line": 158,
+          "call": "model.generate(text=\"Hello, this is a test of zero-shot voice cloning.\", ref_audio=\"ref.wav\", ref_text=\"Transcription of the reference audio.\")",
+          "text": "Hello, this is a test of zero-shot voice cloning.",
+          "note": "the README's first usage example. Its ref_audio/ref_text are placeholders -- upstream ships no ref.wav -- so a golden clone case must supply the artifact below"
+        },
+        {
+          "id": "readme-voice-design",
+          "mode": "description_text",
+          "readme_line": 215,
+          "call": "model.generate(text=\"Hello, this is a test of zero-shot voice design.\", instruct=\"female, low pitch, british accent\")",
+          "text": "Hello, this is a test of zero-shot voice design.",
+          "instruct": "female, low pitch, british accent"
+        }
+      ],
+      "clone_reference_artifact": {
+        "id": "seedtts-ref-en-1",
+        "url": "https://zhu-han.github.io/omnivoice/audios/seedtts/prompt/seedtts_ref_en_1.wav",
+        "provenance": "the upstream authors' own demo page, linked from the README badge row (https://zhu-han.github.io/omnivoice)",
+        "bytes": 675496,
+        "sha256": "57f25abc75c2e7cc4d3c9a6e45f54160034bc714b2ba952407dae7f91d6d31f3",
+        "format": "RIFF WAVE, PCM_16, mono, 24000 Hz",
+        "frames": 337726,
+        "duration_seconds": 14.0719,
+        "ref_text": "Some call me nature. Others call me Mother Nature. I've been here for over four point and five billion years, twenty-two thousand five hundred times longer than you.",
+        "paired_target_text": "I don't really care what you call me. I've been a silent spectator, watching species evolve, empires rise and fall. But always remember, I am mighty and enduring. Respect me and I'll nurture you; ignore me and you shall face the consequences.",
+        "revision_pinned": false,
+        "content_pinned_by_sha256": true,
+        "why_this_one": "it is at the model's native 24 kHz as uncompressed PCM, so no resampler and no audio codec enters the comparison, and the demo page supplies its transcript -- which a clone case needs and which upstream supplies nowhere else",
+        "caveats": [
+          "14.07 s exceeds upstream's own 3-10 s reference recommendation, though it is under the 20 s trim_long_audio threshold",
+          "GitHub Pages serves no revision-addressable URL, and zhu-han/omnivoice exposes no gh-pages branch, so this is pinned by digest only: if the bytes change, the manifest fails loudly rather than silently substituting",
+          "the clip originates from the SeedTTS evaluation set; its own licence is not stated by upstream. The artifact stays git-ignored like every other model input"
+        ],
+        "cc0_alternative_without_transcript": {
+          "url": "https://zhu-han.github.io/omnivoice/audios/minimax/prompt/common_voice_en_42357710.mp3",
+          "bytes": 74731,
+          "sha256": "adc1bb51a4ed8861e2ca591433d1e33de9444a274a8a74bf35890087ae08276d",
+          "format": "MPEG layer III, mono, 32000 Hz, 48 kbps",
+          "note": "Mozilla Common Voice (CC0), the cleanest licence available, but the demo page gives no transcript for it and an MP3 puts a decoder in the comparison path. Recorded so Task 5 can weigh the trade rather than rediscover it"
+        }
+      }
+    }
+  },
+  "weights": {
+    "repository": "https://huggingface.co/k2-fsa/OmniVoice",
+    "revision": "c5fdb5ccb189668d56333f77ba2629f4cd7535f4",
+    "local_ignored_path": "models/omnivoice-0-6b",
+    "file_count": 13,
+    "total_bytes": 3267470260,
+    "files": [
+      {
+        "path": ".gitattributes",
+        "bytes": 1570,
+        "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930"
+      },
+      {
+        "path": "README.md",
+        "bytes": 9424,
+        "sha256": "b5d645a1874baa96a460a0e3a7d5a262811d682d04ce235878a16d5fed287fd3"
+      },
+      {
+        "path": "audio_tokenizer/.gitattributes",
+        "bytes": 1519,
+        "sha256": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361"
+      },
+      {
+        "path": "audio_tokenizer/LICENSE",
+        "bytes": 9171,
+        "sha256": "ac933dc084d119bd20401956b90d11ae87c248b2da62622cd580d82cdf2fa049"
+      },
+      {
+        "path": "audio_tokenizer/README.md",
+        "bytes": 5174,
+        "sha256": "0336368f8274a5ed09f54cee8d56a851ecee96026d9f391a6735762c16608a60"
+      },
+      {
+        "path": "audio_tokenizer/config.json",
+        "bytes": 2531,
+        "sha256": "eefb20806f7104e77c9a5277c9df0f9bb8826b08eb1d4e8ab2b9829b6ef9fac1"
+      },
+      {
+        "path": "audio_tokenizer/model.safetensors",
+        "bytes": 805665628,
+        "sha256": "fe7c5e8785e0a05833e1bfc3e002ec7f55af21e306b2e7154a448c1f54ccfb0d"
+      },
+      {
+        "path": "audio_tokenizer/preprocessor_config.json",
+        "bytes": 206,
+        "sha256": "ae61eea88558608ee2fa86d2aec9fce8d99a5ff75d09cb7651ccce21ae1d9084"
+      },
+      {
+        "path": "chat_template.jinja",
+        "bytes": 4168,
+        "sha256": "a55ee1b1660128b7098723e0abcd92caa0788061051c62d51cbe87d9cf1974d8"
+      },
+      {
+        "path": "config.json",
+        "bytes": 2238,
+        "sha256": "5e359117e13b420c5e0c925d4aba650d624767131f1d1746928f8b850d5dc372"
+      },
+      {
+        "path": "model.safetensors",
+        "bytes": 2450344112,
+        "sha256": "730839316de585f4c8298ec0e1712efc10fb19c6fa4e36eb741cb8d51ebcf6aa"
+      },
+      {
+        "path": "tokenizer.json",
+        "bytes": 11423986,
+        "sha256": "408f669b7e2b045fdf54201d815bd364e6667dbd845115da81239c40bc6dcfd1"
+      },
+      {
+        "path": "tokenizer_config.json",
+        "bytes": 533,
+        "sha256": "49f78845596a82bf15c83673794bdf9f76f812b11f60ab6a2239d9be65b00676"
+      }
+    ],
+    "note": "the 13 files above are the repository's whole content at the pinned revision, taken from the downloader's own tree manifest. The hf CLI additionally writes a .cache/huggingface/ bookkeeping directory under the local path; it is not repository content and is not listed. Every LFS digest recorded in the tree manifest was re-verified against a local sha256 of the downloaded bytes."
+  },
+  "architecture": {
+    "llm": {
+      "num_hidden_layers": 28,
+      "hidden_size": 1024,
+      "num_attention_heads": 16,
+      "num_key_value_heads": 8,
+      "head_dim": 128,
+      "intermediate_size": 3072,
+      "rms_norm_eps": 1e-06,
+      "rope_theta": 1000000,
+      "rope_type": "default",
+      "vocab_size": 151676,
+      "tie_word_embeddings": true,
+      "hidden_act": "silu",
+      "attention_bias": false,
+      "layer_types": "all 28 entries are full_attention",
+      "consequence": "bidirectional attention over the whole canvas; there is no causal mask and no KV cache anywhere in this family",
+      "tie_word_embeddings_evidence": "the checkpoint carries llm.embed_tokens.weight [151676, 1024] and no lm_head tensor at all",
+      "per_layer_tensor_set": [
+        "input_layernorm.weight [1024]",
+        "post_attention_layernorm.weight [1024]",
+        "self_attn.q_proj.weight [2048, 1024]",
+        "self_attn.k_proj.weight [1024, 1024]",
+        "self_attn.v_proj.weight [1024, 1024]",
+        "self_attn.o_proj.weight [1024, 2048]",
+        "self_attn.q_norm.weight [128]",
+        "self_attn.k_norm.weight [128]",
+        "mlp.gate_proj.weight [3072, 1024]",
+        "mlp.up_proj.weight [3072, 1024]",
+        "mlp.down_proj.weight [1024, 3072]"
+      ],
+      "per_layer_tensor_count": 11
+    },
+    "audio_io": {
+      "audio_vocab_size": 1025,
+      "audio_mask_id": 1024,
+      "num_audio_codebook": 8,
+      "audio_embeddings_weight": [
+        8200,
+        1024
+      ],
+      "audio_heads_weight": [
+        8200,
+        1024
+      ],
+      "shared_table_note": "8200 = 8 codebooks x 1025 entries; both the embedding table and the output head are one shared table read at a per-codebook offset",
+      "codebook_layer_offsets": {
+        "shape": [
+          8
+        ],
+        "dtype": "I64",
+        "values": [
+          0,
+          1025,
+          2050,
+          3075,
+          4100,
+          5125,
+          6150,
+          7175
+        ],
+        "derivable": true,
+        "rule": "arange(8) * 1025",
+        "verified": "torch.equal against arange(8, dtype=int64) * 1025 returned True",
+        "consequence": "a buffer, not a weight; the converter derives it rather than carrying it, and it is the checkpoint's only non-F32 tensor"
+      },
+      "audio_codebook_weights": {
+        "value": [
+          8,
+          8,
+          6,
+          6,
+          4,
+          4,
+          2,
+          2
+        ],
+        "role": "training-loss weighting only; plays no part in synthesis",
+        "warning": "a reference port documents this as the sampler's per-codebook penalty. That is wrong -- the sampler's penalty is layer_index * 5.0 -- and this project must not repeat the claim"
+      }
+    },
+    "codec": {
+      "identity": "Higgs Audio V2 tokenizer",
+      "sample_rate": 24000,
+      "hop_length": 960,
+      "frame_rate_hz": 25,
+      "semantic_sample_rate": 16000,
+      "downsample_factor": 320,
+      "codebook_dim": 64,
+      "codebook_size": 1024,
+      "kernel_size": 3,
+      "unit_kernel_size": 3,
+      "target_bandwidths": [
+        0.5,
+        1,
+        1.5,
+        2
+      ],
+      "semantic_model": {
+        "model_type": "hubert",
+        "hidden_size": 768,
+        "num_hidden_layers": 12,
+        "num_attention_heads": 12,
+        "intermediate_size": 3072,
+        "num_feat_extract_layers": 7,
+        "conv_dim": [
+          512,
+          512,
+          512,
+          512,
+          512,
+          512,
+          512
+        ],
+        "conv_kernel": [
+          10,
+          3,
+          3,
+          3,
+          3,
+          2,
+          2
+        ],
+        "conv_stride": [
+          5,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "conv_bias": false,
+        "feat_extract_norm": "group",
+        "layer_norm_eps": 1e-05,
+        "num_conv_pos_embeddings": 128,
+        "num_conv_pos_embedding_groups": 16
+      },
+      "acoustic_model": {
+        "model_type": "dac",
+        "hidden_size": 256,
+        "encoder_hidden_size": 64,
+        "decoder_hidden_size": 1024,
+        "hop_length": 960,
+        "downsampling_ratios": [
+          8,
+          5,
+          4,
+          2,
+          3
+        ],
+        "upsampling_ratios": [
+          8,
+          5,
+          4,
+          2,
+          3
+        ]
+      },
+      "config_disagrees_with_weights": {
+        "n_codebooks": {
+          "acoustic_model_config": 9,
+          "measured": 8,
+          "evidence": "quantizer.quantizers.0 through .7 exist and .8 does not"
+        },
+        "codebook_dim": {
+          "acoustic_model_config": 8,
+          "top_level_config": 64,
+          "measured": 64,
+          "evidence": "every quantizer.quantizers.N.codebook.embed is [1024, 64]"
+        },
+        "sampling_rate": {
+          "acoustic_model_config": 16000,
+          "top_level_config": 24000,
+          "measured": "24000 is the output rate; 16000 is the semantic branch's rate",
+          "evidence": "semantic_sample_rate: 16000 at top level, and 24000 samples / 25 Hz frame rate = hop 960"
+        },
+        "consequence": "size the codebooks and the codebook count from the tensors, not from audio_tokenizer/config.json -- the same failure mode qwen3-tts hit"
+      },
+      "rvq_codebooks_are_live_tables_not_ema_accumulators": {
+        "decode_rule": "F.embedding(embed_ind, self.embed) -- the table is used directly",
+        "evidence": "HiggsAudioV2TokenizerEuclideanCodebook.decode in transformers/models/higgs_audio_v2_tokenizer/modeling_higgs_audio_v2_tokenizer.py at the locked transformers 5.14.1",
+        "weight_tensor_per_quantizer": "codebook.embed [1024, 64]",
+        "training_only_buffers_per_quantizer": [
+          "codebook.embed_avg [1024, 64]",
+          "codebook.cluster_size [1024]",
+          "codebook.inited [1]"
+        ],
+        "consequence": "unlike qwen3-tts, no reconstruction is needed. 24 tensors (3 per quantizer x 8) are training state the converter drops; carrying embed_avg as if it were a weight would double the quantizer's size for nothing"
+      }
+    },
+    "tensor_inventory": {
+      "file": "reports/porting/omnivoice/omnivoice-0-6b/tensor-inventory.json",
+      "model.safetensors": {
+        "tensors": 313,
+        "parameters": 612577288,
+        "prefixes": {
+          "llm.": 310,
+          "audio_embeddings": 1,
+          "audio_heads": 1,
+          "(unprefixed)": 1
+        }
+      },
+      "audio_tokenizer/model.safetensors": {
+        "tensors": 527,
+        "parameters": 201400553,
+        "prefixes": {
+          "semantic_model.": 210,
+          "acoustic_decoder.": 110,
+          "acoustic_encoder.": 110,
+          "quantizer.": 64,
+          "decoder_semantic.": 14,
+          "encoder_semantic.": 13,
+          "fc": 2,
+          "fc1": 2,
+          "fc2": 2
+        }
+      },
+      "gguf_name_length_pressure": {
+        "rule_applied": "len(name) + len('codec.') >= 58",
+        "count": 195,
+        "longest": {
+          "name": "semantic_model.encoder.pos_conv_embed.conv.parametrizations.weight.original0",
+          "length_with_prefix": 82
+        },
+        "ggml_max_name": 64,
+        "dominant_source": "semantic_model.encoder.layers.N.* (HuBERT) and semantic_model.encoder.pos_conv_embed.conv.parametrizations.weight.original0/1",
+        "consequence": "Task 7 must define NAME_SHORTENINGS; 195 of the codec's 527 names would otherwise sit within 6 characters of GGML_MAX_NAME and the longest overruns it by 18"
+      }
+    },
+    "trust_remote_code_required": false,
+    "trust_remote_code_evidence": [
+      "the weights repository contains no .py file at all at the pinned revision",
+      "neither config.json nor audio_tokenizer/config.json declares an auto_map key",
+      "the string trust_remote_code appears nowhere in the pinned omnivoice package source",
+      "the model is loaded by OmniVoice.from_pretrained from the pinned pip package, not by transformers AutoModel with remote code; the OmniVoice class is package code covered by the Apache-2.0 grant",
+      "the codec is a first-class transformers architecture (transformers/models/higgs_audio_v2_tokenizer/), not Hub-hosted code"
+    ],
+    "trust_remote_code_consequence": "docs/scope.md's rule against executable code in a Model Package is not engaged",
+    "checkpoint_dtypes": {
+      "model.safetensors": {
+        "F32": 312,
+        "I64": 1
+      },
+      "audio_tokenizer/model.safetensors": {
+        "F32": 527
+      },
+      "declared": "config.json and audio_tokenizer/config.json both declare dtype float32",
+      "consequence": "F32 throughout apart from the single derivable I64 offsets buffer. The oracle's dtype rule and the least-approximating-device rule agree here instead of pulling apart, which is the opposite of the qwen3-tts BF16 situation"
+    }
+  },
+  "stochastic_behavior": {
+    "is_stochastic": true,
+    "sources": [
+      "position Gumbel noise, governed by position_temperature (package default 5.0)",
+      "class Gumbel noise, governed by class_temperature (package default 0.0)"
+    ],
+    "measured": {
+      "greedy_both_temperatures_zero_identical_pcm": true,
+      "greedy_frames": 48000,
+      "greedy_max_abs_diff": 0.0,
+      "greedy_sha256_run1": "2710bbd2cffb9f4f7bce3ea3164ffd0908c6e6c496debd3fb9292a8337a6fbb1",
+      "greedy_sha256_run2": "2710bbd2cffb9f4f7bce3ea3164ffd0908c6e6c496debd3fb9292a8337a6fbb1",
+      "greedy_cross_process": "two separate python processes, byte-identical by cmp(1)",
+      "sampled_unseeded_frames": [
+        48000,
+        48000
+      ],
+      "sampled_unseeded_max_abs_diff": 0.8486242890357971,
+      "sampled_unseeded_rms": [
+        0.08665959372798922,
+        0.07988459711398413
+      ],
+      "sampled_vs_greedy_max_abs_diff": 0.7562828660011292
+    },
+    "frame_count_is_not_a_stochastic_signal": {
+      "observation": "all four runs produced exactly 48000 samples -- 50 codec frames",
+      "reason": "the canvas length is fixed by the deterministic RuleDurationEstimator before the first forward, so sampling changes content but never length",
+      "contrast": "qwen3-tts sampled runs differed in length (51840 vs 76800 frames) because its length is an autoregressive stop decision. A test that compares only durations would report this family as deterministic when it is not"
+    },
+    "seeding": {
+      "upstream_seed_parameter": null,
+      "mechanism": "Gumbel noise is drawn from the global torch RNG",
+      "consequence": "there is no upstream stream to reproduce. The package sets the stochastic capability; any public seeding is this port's own stream, validated by the project's own seed contract (same seed -> byte-identical PCM, different seeds -> artifact_differs). Exact-token goldens run greedy, where no RNG call is made at all"
+    }
+  },
+  "license_audit": {
+    "audited_at_pinned_revision": true,
+    "audit_source": "the downloaded snapshot at c5fdb5cc and the source LICENSE at 468e927b -- not the live site, and not any port's README",
+    "grants": 3,
+    "source_code": {
+      "spdx": "Apache-2.0",
+      "evidence": "LICENSE at the pinned source revision 468e927b, 11342 bytes, sha256 c843a20e..., first line 'Apache License / Version 2.0, January 2004'",
+      "covers": "the GitHub source at k2-fsa/OmniVoice and nothing else",
+      "status": "confirmed"
+    },
+    "checkpoint_weights": {
+      "spdx": "CC-BY-NC (no version stated by upstream)",
+      "verbatim": "Our code is released under the Apache 2.0 License. The pre-trained model is licensed under the CC-BY-NC due to constraints from its training data (e.g., Emilia).",
+      "evidence": "the '## License' section of the downloaded README.md at the pinned revision, line 783",
+      "frontmatter_license_key": null,
+      "frontmatter_evidence": "the YAML frontmatter spans lines 1-658 and carries exactly five keys -- base_model, language, pipeline_tag, tags, library_name. There is no license: key, so the only licence statement anywhere on the card is the prose above",
+      "version_note": "upstream names no CC-BY-NC version. The model card must say so rather than inventing one",
+      "status": "confirmed"
+    },
+    "codec_weights": {
+      "spdx": "LicenseRef-Boson-Higgs-Audio-2-Community",
+      "verbatim_first_lines": "BOSON HIGGS AUDIO 2 COMMUNITY LICENSE AGREEMENT\n\nBoson Higgs Audio 2 Version Release Date: June 20, 2025\n\nThis License Agreement (the “Agreement”) is entered into by and between Licensee (as defined below) and Boson AI USA, Inc. (“Boson”) and is based upon the Meta Llama 3 Community License Agreement as of April 18, 2024 (the “Meta License Agreement”), which can be found at https://llama.meta.com/llama3/license/.",
+      "path": "audio_tokenizer/LICENSE",
+      "size_bytes": 9171,
+      "sha256": "ac933dc084d119bd20401956b90d11ae87c248b2da62622cd580d82cdf2fa049",
+      "obligations": [
+        "redistribution must carry the agreement text",
+        "attribution and naming obligations",
+        "commercial use capped at 100k monthly active users",
+        "outputs may not be used to train other models",
+        "the Meta Llama 3 Community License Agreement's terms are incorporated by reference"
+      ],
+      "sub_card_says_nothing": "audio_tokenizer/README.md is an unedited Hugging Face auto-generated template whose License field reads '[More Information Needed]'. The bundled LICENSE file is therefore the sole grant for the codec weights, which is exactly why it must be shipped as a declared Sidecar Resource rather than summarised",
+      "status": "confirmed"
+    },
+    "disclaimer": {
+      "verbatim": "Users are strictly prohibited from using this model for unauthorized voice cloning, voice impersonation, fraud, scams, or any other illegal or unethical activities. All users shall ensure full compliance with applicable local laws, regulations, and ethical standards. The developers assume no liability for any misuse of this model and advocate for responsible AI development and use, encouraging the community to uphold safety and ethical principles in AI research and applications.",
+      "evidence": "the '## Disclaimer' section of the downloaded README.md at the pinned revision, line 787",
+      "obligation": "the rendered model card must reproduce this at ship time"
+    },
+    "restriction_scan": {
+      "pattern": "non-commercial|noncommercial|cc-by|cc by|restrict|licen[cs]e, case-insensitive, over the downloaded card",
+      "hits": 2,
+      "detail": "the '## License' heading and the CC-BY-NC sentence itself; nothing else on the card restricts use. The second restriction is not on the card at all -- it is the Boson agreement bundled beside the codec weights, which a card-only scan would miss entirely",
+      "training_data_note": "upstream names Emilia as a constraining corpus and gives the CC-BY-NC term as the consequence. Unlike qwen3-tts and Kokoro, there is no permissive grant to rely on here"
+    },
+    "downstream_ports_are_not_a_source": "all four community GGML ports read at design time misstate or omit these terms, and one Hugging Face GGUF repository labels the weights apache-2.0, which is false. No weight file, converted artifact, or GGUF produced by this project may ever be labelled apache-2.0",
+    "project_policy": {
+      "local_conversion_and_validation": "allowed",
+      "project_hugging_face_upload": "requires explicit per-act confirmation",
+      "publication_category": "Restricted Model Package (ADR 0018)",
+      "package_carries": "all three grants verbatim, plus the disclaimer"
+    }
+  },
+  "frontend_requirements": {
+    "upstream_tokenizer": "Qwen2 byte-level BPE",
+    "vocab_files": [
+      "tokenizer.json",
+      "tokenizer_config.json"
+    ],
+    "single_file_note": "unlike qwen3-tts, this repository ships no vocab.json and no merges.txt -- tokenizer.json is the whole tokenizer, holding vocabulary, merges and added tokens together",
+    "tokenizer_class": "Qwen2Tokenizer",
+    "base_vocab": 151643,
+    "added_tokens": 33,
+    "total_vocab": 151676,
+    "merges": 151387,
+    "vocab_size_agreement": "llm_config.vocab_size is 151676, equal to 151643 + 33; the converter writes this count and the loader checks it rather than rederiving it at load time",
+    "pre_tokenizer_regex": "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
+    "pre_tokenizer_identity_with_qwen3_tts": {
+      "verified": true,
+      "how": "the seven alternatives, in order, are character-for-character the pattern documented in src/arch/qwen3-tts/bpe.cpp lines 108-117. Compared against the committed C++ implementation's own transcription rather than against the qwen3-tts tokenizer.json, which is not present locally",
+      "byte_level": "ByteLevel with add_prefix_space false, use_regex false; model type BPE, byte_fallback false"
+    },
+    "runtime_provider": "synthesize.qwen_bpe -- the same Text Frontend Provider id as qwen3-tts; the implementation is hoisted into a shared internal module rather than copied (Task 8)",
+    "bos": "none -- bos_token is null in tokenizer_config.json and bos_token_id is null in config.json",
+    "eos_token": "<|im_end|> (151645)",
+    "pad_token": "<|endoftext|> (151643)",
+    "tts_markers": {
+      "151669": "<|denoise|>",
+      "151670": "<|lang_start|>",
+      "151671": "<|lang_end|>",
+      "151672": "<|instruct_start|>",
+      "151673": "<|instruct_end|>",
+      "151674": "<|text_start|>",
+      "151675": "<|text_end|>"
+    },
+    "tts_markers_evidence": "all seven are added_tokens with special=true in tokenizer.json, and tokenizer_config.json lists exactly these seven under extra_special_tokens"
+  },
+  "reference_environment": {
+    "host": {
+      "os": "Linux 6.17.0-1026-nvidia",
+      "architecture": "aarch64",
+      "cpu": "Cortex-X925 / Cortex-A725, 20 cores",
+      "machine": "DGX Spark (NVIDIA GB10)",
+      "gpu_used": false
+    },
+    "manager": "uv 0.11.28",
+    "python": "3.12.13",
+    "torch": "2.13.0+cu130",
+    "torchaudio": "2.11.0+cu130",
+    "transformers": "5.14.1",
+    "accelerate": "1.14.0",
+    "numpy": "1.26.4",
+    "huggingface_hub": "1.25.1",
+    "soundfile": "0.13.1",
+    "gguf": "0.19.0",
+    "pydub": "0.25.1",
+    "librosa": "0.11.0",
+    "omnivoice": "0.2.1",
+    "dtype": "float32",
+    "device": "cpu",
+    "torch_threads": 20,
+    "dtype_rationale": "the checkpoint is F32 throughout, so there is no upcast to get wrong; docs/port-validation.md's dtype-follows-the-checkpoint rule and its least-approximating-reproducible-device rule select the same configuration",
+    "pyproject": {
+      "path": "scripts/envs/omnivoice/pyproject.toml",
+      "sha256": "35179aa4bfd8267486cd789baf308e201315c4647746f5cc1454f4d52958b9f8"
+    },
+    "lockfile": {
+      "path": "scripts/envs/omnivoice/uv.lock",
+      "sha256": "b8eff2b97e95157572f804d71a643e625a00de8a059dcdbe6236bfb46c90c9d8"
+    },
+    "expected_import_warning": "pydub emits 'Couldn't find ffmpeg or avconv' at import. Harmless here: pydub is reached only through the post-processing path that every oracle case disables"
+  },
+  "oracle_smoke": {
+    "entry_point": "OmniVoice.generate",
+    "model_path": "models/omnivoice-0-6b",
+    "text": "OmniVoice speaks with one voice.",
+    "language": "en",
+    "mode": "auto_voice (no Voice Profile)",
+    "decoding": {
+      "position_temperature": 0.0,
+      "class_temperature": 0.0,
+      "postprocess_output": false,
+      "pad_duration": 0.0,
+      "fade_duration": 0.0
+    },
+    "sample_rate": 24000,
+    "frames": 48000,
+    "codec_frames": 50,
+    "duration_seconds": 2.0,
+    "wall_seconds": [
+      22.621,
+      23.164
+    ],
+    "load_seconds": [
+      0.849,
+      0.803
+    ],
+    "real_time_factor": [
+      11.31,
+      11.58
+    ],
+    "finite": true,
+    "peak": 0.5,
+    "rms": 0.03857519955724174,
+    "reproducible_across_processes": true,
+    "byte_identity_evidence": "cmp(1) reports the two runs' raw f32 dumps identical; sha256 2710bbd2cffb9f4f7bce3ea3164ffd0908c6e6c496debd3fb9292a8337a6fbb1 for both; max_abs_diff exactly 0.0",
+    "no_rng_call": "with both temperatures at zero the decode loop takes neither Gumbel branch, so the identity is a property of the arithmetic rather than of a seeded generator -- which is why it holds across processes and not merely within one",
+    "real_time_factor_note": "CPU F32 on a 20-core aarch64 host with the GPU unused. Upstream's README claims RTF as low as 0.025 on GPU; the two figures measure different things and neither predicts this project's GGML CPU speed",
+    "sampled_control": {
+      "decoding": "package defaults (position_temperature 5.0, class_temperature 0.0), unseeded",
+      "wall_seconds": [
+        22.588,
+        22.259
+      ],
+      "frames": [
+        48000,
+        48000
+      ],
+      "differ": true,
+      "max_abs_diff": 0.8486242890357971,
+      "evidence": "cmp(1) reports the two sampled dumps differing at byte 1"
+    },
+    "residual_output_scaling": {
+      "finding": "peak-normalise-to-0.5 remains active with all three post-processing switches off",
+      "measured": "the greedy run's peak is exactly 0.5, and the sampled runs' peaks are also exactly 0.5 despite different content",
+      "source": "OmniVoice._post_process_audio; only the remove_silence call is gated on postprocess_output, and fade_and_pad_audio is a no-op at pad_duration=0 and fade_duration=0, but the volume branch between them is gated on nothing",
+      "branches": {
+        "ref_rms is not None and ref_rms < 0.1": "generated_audio = generated_audio * ref_rms / 0.1",
+        "ref_rms is None": "peak = abs(audio).max(); if peak > 1e-6: audio = audio / peak * 0.5",
+        "ref_rms is not None and ref_rms >= 0.1": "no scaling at all -- the elif chain falls through"
+      },
+      "when_each_applies": "ref_rms is None for auto-voice and voice-design (ref_rms_list = [None] * batch_size when no voice_clone_prompt); in clone mode it is the reference audio's RMS carried on the VoiceClonePrompt",
+      "paired_forward_operation": "at reference-encode time the package boosts a quiet reference with 'if 0 < ref_rms < 0.1: ref_wav = ref_wav * 0.1 / ref_rms', so the output branch is its exact inverse",
+      "gate_asymmetry": "the forward gate is 0 < ref_rms < 0.1 while the inverse gate is ref_rms < 0.1. A digitally silent reference (ref_rms == 0.0) is therefore not boosted on input but is multiplied by zero on output. An edge case the port must reproduce or deliberately reject",
+      "consequence": "this scaling is part of the family's contract, not product polish. Plan 2's port must mirror all three branches, and a port that only reproduced the codec would be quietly wrong by a per-utterance gain factor"
+    }
+  },
+  "audio_delivery_claim": {
+    "stage_1": "complete_audio",
+    "reason": "the model paints a whole fixed-length canvas at once, so there is no partial result that would be honest to hand back. Neither Chunked Audio Delivery nor Native Streaming Synthesis is claimed in v1",
+    "long_form": "upstream's path beyond the validated ceiling is text chunking with cross-fade stitching (cross_fade_chunks in the decode path), which is upstream-side product behaviour and out of scope for v1",
+    "max_output_frames": 750,
+    "max_output_frames_meaning": "30 seconds at 25 Hz -- a statement about what this port validates, not about what the model can do"
+  },
+  "open_decisions": [
+    "Generator on CUDA. The codec moves first, following the qwen3-tts codec-on-CUDA precedent. Placing the generator on CUDA is claimed only if placement evidence proves the committed token grids bit-identical to CPU. One reference port measured CUDA-F32 token-exact and Metal-F32 at 83%, which is encouraging and not evidence. Stage 7 decides.",
+    "Quantized profiles against the argmax cascade. A reference port measured token agreement collapsing from 100% to roughly 7% with F16 generator weights: a flipped argmax is committed, fed back into both CFG branches, and conditions every later step. Whether any profile below F32 survives the exact-token gates is an open measurement. Stage 6 decides, and a failing profile is simply not shipped.",
+    "The Gumbel replay seam. Implemented only if a sampled-path parity case proves it necessary; the project's own seed contract covers the public sampled path otherwise.",
+    "Residual output scaling. Measured at intake: with postprocess_output=False, pad_duration=0 and fade_duration=0, remove_silence and fade_and_pad are inert but the volume branch is not -- auto-voice and voice-design outputs are peak-normalised to exactly 0.5, and clone outputs with a reference RMS below 0.1 are scaled by ref_rms/0.1. What has NOT been decided is where this lives in the port: inside the family's synthesis path (faithful to the oracle, but a hidden gain the public interface never mentions) or hoisted into a documented, disableable normalisation control. Plan 2 decides, and the golden tolerances depend on the answer because the oracle dumps carry the scaling.",
+    "Voice-design instruct passthrough. v1 does not reimplement upstream's _resolve_instruct normalisation. Oracle cases pin already-normalised instruct strings, so the port passes Description Text through unchanged and the normalisation stays an upstream concern until something forces it inward.",
+    "The clone reference artifact is pinned by content digest rather than by revision, because upstream ships no audio asset at any revision-addressable location -- not in the source repository at 468e927b, not in the Hugging Face Space, and the authors' demo page has no pinnable revision. Task 5 owns the final manifest choice between the 24 kHz PCM SeedTTS clip (has a transcript, no decoder in the path, unclear licence) and the Common Voice MP3 (CC0, but no transcript and an MP3 decoder in the path).",
+    "Whether the codec encoder half ships in the Model Package at all. Plans 1 and 2 need only the decoder side; the HuBERT semantic branch, the acoustic encoder and RVQ encode are Plan 3 work for reference-audio cloning. The split is roughly semantic_model (210) plus acoustic_encoder (110) plus encoder_semantic (13) against acoustic_decoder (110) plus decoder_semantic (14) plus quantizer (64)."
+  ]
+}

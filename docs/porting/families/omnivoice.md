@@ -1,6 +1,7 @@
 # OmniVoice Family Selection and Port Plan
 
-Status: Confirmed 2026-07-30. Intake in progress; stages 2+ not started.
+Status: Confirmed 2026-07-30. Intake complete and oracle smoke passed; stages 2+
+not started.
 
 ## Decision
 
@@ -62,10 +63,19 @@ simply false. Nothing downstream is inherited.
 
 The oracle is the pinned `k2-fsa/OmniVoice` Python package, installed by git
 revision in `scripts/envs/omnivoice/pyproject.toml`, driving the pinned Hugging
-Face weights of the same name. Both revisions, the checkpoint file list, its
-byte counts, and per-file SHA-256 digests are pinned at intake and recorded in
-`reports/porting/omnivoice/omnivoice-0-6b/intake.json`; this document does not
-restate them.
+Face weights of the same name.
+
+| Pin | Value |
+| --- | --- |
+| Source revision | `468e927ba3716cd8dd86421148dfb3046e9f9d7b` (package 0.2.1) |
+| Weights revision | `c5fdb5ccb189668d56333f77ba2629f4cd7535f4` |
+| Checkpoint files | 13, totalling 3,267,470,260 bytes |
+| Generator | `model.safetensors`, 2,450,344,112 bytes, 313 tensors |
+| Codec | `audio_tokenizer/model.safetensors`, 805,665,628 bytes, 527 tensors |
+
+The per-file SHA-256 digests, the full file list, and the tensor inventory are
+recorded in `reports/porting/omnivoice/omnivoice-0-6b/intake.json` and
+`tensor-inventory.json` beside it; this document does not restate them.
 
 The oracle runs **F32 on CPU**. The checkpoint is F32 throughout, so
 `docs/port-validation.md`'s two rules — dtype follows the checkpoint, and the
@@ -95,8 +105,17 @@ port mirrors it.
 Native output is 24 kHz mono F32 at a 25 Hz frame rate, so one codec frame is
 exactly 960 samples. The model consumes raw text through a Qwen2 byte-level BPE
 tokenizer that ships as a single `tokenizer.json` in the weights repository.
+
 `trust_remote_code` is not required, so `docs/scope.md`'s rule against
-executable code in a Model Package is not engaged.
+executable code in a Model Package is not engaged. Verified at intake rather
+than assumed, five ways: the weights repository contains no `.py` file at all at
+the pinned revision; neither `config.json` nor `audio_tokenizer/config.json`
+declares an `auto_map` key; the string `trust_remote_code` appears nowhere in
+the pinned package source; the model is loaded by `OmniVoice.from_pretrained`
+from the pinned pip package — Apache-2.0 package code — rather than by
+`transformers.AutoModel` with Hub-hosted code; and the codec is a first-class
+transformers architecture (`transformers/models/higgs_audio_v2_tokenizer/`),
+not remote code either.
 
 ## Architecture
 
@@ -324,6 +343,35 @@ stitching, and that is out of scope for v1. Output post-processing — silence
 removal, fades, padding — is upstream product behavior and is not part of this
 package's contract, which is why every oracle case disables it.
 
+### One scaling survives the switches, and it is part of the contract
+
+Intake measured what remains active inside `_post_process_audio` under the
+contract's `postprocess_output=False, pad_duration=0.0, fade_duration=0.0`.
+`remove_silence` is skipped, and `fade_and_pad_audio` is reached but inert — at
+zero durations both its sample counts are zero and every branch inside is
+skipped. **The volume branch between them is gated on nothing.**
+
+| Condition | Effect | Applies to |
+| --- | --- | --- |
+| `ref_rms is not None and ref_rms < 0.1` | `audio * ref_rms / 0.1` | clone with a quiet reference |
+| `ref_rms is None` | peak-normalise to exactly 0.5 (when peak > 1e-6) | auto-voice and voice design |
+| `ref_rms is not None and ref_rms >= 0.1` | nothing; the chain falls through | clone with a loud reference |
+
+Measured, not only read: every intake smoke run — greedy and sampled alike —
+reports a peak of exactly 0.5. The clone branch is the exact inverse of a
+forward operation applied when the reference is encoded,
+`if 0 < ref_rms < 0.1: ref_wav = ref_wav * 0.1 / ref_rms`. The two gates are
+not symmetric: a digitally silent reference (`ref_rms == 0.0`) is not boosted on
+input but is multiplied by zero on output, which the port reproduces or
+deliberately rejects rather than discovers later.
+
+Plan 2's port mirrors all three branches. A port that reproduced the codec
+perfectly and omitted this would be wrong by a per-utterance gain factor on
+every request, and the golden tolerances could not catch it because the oracle
+dumps carry the scaling too. Where the scaling *lives* — inside the family's
+synthesis path, or hoisted into a documented normalisation control the public
+interface names — is left open for Plan 2.
+
 ## Quantization Profile Shape
 
 F32 is the reference package, and this family has a measured reason to expect
@@ -382,6 +430,89 @@ shared internal module and qwen3-tts points at it. The Qwen3 block builder is
 bidirectional, cache-free, full-canvas and CFG-paired. That is
 duplicate-with-adaptation, revisited only if a third Qwen-family port appears.
 
+## Intake Measurements
+
+Measured on 2026-07-30 against the pins in the Reference Contract above; the
+evidence and the commands are in
+`reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`.
+
+### Greedy determinism holds across processes
+
+Two separate Python processes, both temperatures zero, CPU F32, text
+`"OmniVoice speaks with one voice."` in `en`, auto-voice: 48,000 samples each —
+2.000 s at 24 kHz, 50 codec frames — **byte-identical** under `cmp(1)`, sha256
+`2710bbd2…` for both, `max_abs_diff` exactly 0.0. Wall 22.6 s and 23.2 s, so a
+CPU real-time factor of 11.3 to 11.6 on the 20-core aarch64 GB10 host with the
+GPU unused. Upstream's README claims RTF as low as 0.025 on GPU; the two
+figures measure different things and neither predicts this project's GGML speed.
+
+The identity is stronger than qwen3-tts's, which came from switching sampling
+off inside a seeded process. Here both temperatures at zero mean the decode loop
+takes neither Gumbel branch, so it makes no RNG call at all — which is why the
+result survives a process boundary.
+
+Unseeded sampling at the package defaults differs at the first byte,
+`max_abs_diff` 0.849, setting the stochastic capability. But **a duration
+comparison would call this family deterministic when it is not**: all four runs
+produced exactly 48,000 samples, because the canvas length is fixed by the
+`RuleDurationEstimator` before the first forward. qwen3-tts's sampled runs
+differed in length only because its length is an autoregressive stop decision.
+Determinism checks for this family compare content.
+
+### The checkpoint is F32, with one exception that is not a weight
+
+| File | Tensors | Parameters | F32 | I64 |
+| --- | --- | --- | --- | --- |
+| `model.safetensors` | 313 | 612,577,288 | 312 | 1 |
+| `audio_tokenizer/model.safetensors` | 527 | 201,400,553 | 527 | 0 |
+
+Generator prefixes: `llm.` 310 (28 layers × 11, plus `embed_tokens` and `norm`),
+`audio_embeddings` 1, `audio_heads` 1, and one unprefixed tensor. Codec
+prefixes: `semantic_model.` 210, `acoustic_encoder.` 110, `acoustic_decoder.`
+110, `quantizer.` 64, `decoder_semantic.` 14, `encoder_semantic.` 13, and six
+`fc`/`fc1`/`fc2` tensors.
+
+The single I64 tensor is `codebook_layer_offsets`, shape `[8]`, values
+`[0, 1025, 2050, 3075, 4100, 5125, 6150, 7175]` — verified equal to
+`arange(8) * 1025` by `torch.equal`. It is a derivable buffer and the converter
+derives it. There is no `lm_head` tensor, which is `tie_word_embeddings: true`
+visible in the file rather than only in the configuration.
+
+Three intake findings change what the converter must do:
+
+- **The RVQ codebooks are live tables, not EMA accumulators.** Higgs Audio V2
+  decodes with `F.embedding(embed_ind, self.embed)`, so unlike qwen3-tts no
+  reconstruction is needed; `embed_avg`, `cluster_size` and `inited` are
+  training state, 24 tensors the converter drops.
+- **`audio_tokenizer/config.json` disagrees with its weights three times** —
+  `n_codebooks` 9 against 8 shipped, `acoustic_model_config.codebook_dim` 8
+  against the measured 64, and a `sampling_rate` of 16000 that belongs to the
+  semantic branch. Size from the tensors.
+- **195 of the 527 codec names reach 58 characters** once a `codec.` prefix is
+  added, against a `GGML_MAX_NAME` of 64, and the longest —
+  `codec.semantic_model.encoder.pos_conv_embed.conv.parametrizations.weight.original1`
+  — overruns it by 18. The generator side is clear at 45 characters.
+
+### The text frontend matches qwen3-tts, and the vocabulary counts agree
+
+151,643 base entries plus 33 added tokens is 151,676, equal to
+`llm_config.vocab_size`; 151,387 merges. The pre-tokenizer regex is
+character-for-character the pattern already implemented in
+`src/arch/qwen3-tts/bpe.cpp`. The seven TTS markers occupy 151669–151675 in the
+documented order, all `special: true`, and `tokenizer_config.json` lists exactly
+those seven under `extra_special_tokens`. No BOS on either side.
+
+### Upstream ships no pinnable reference audio
+
+Neither the source repository at the pinned revision, nor the Hugging Face
+Space, nor a revision of the authors' demo page offers a reference-audio
+artifact addressable at a pinned revision; the README's own clone example passes
+a `ref.wav` placeholder that upstream never ships. Clone cases therefore pin
+their reference **by content digest** — which fails loudly on a byte change
+rather than silently substituting. The candidates and the trade between them are
+recorded in `intake.json` under `source.upstream_examples`; Task 5 owns the
+manifest choice.
+
 ## Prior Art and Attribution
 
 Four existing implementations were read at design time. None of their code is
@@ -415,6 +546,14 @@ Stage 6 decides, and a failing profile is simply not shipped.
 **The Gumbel replay seam.** Implemented only if a sampled-path parity case
 proves it necessary; the seed contract covers the public sampled path
 otherwise.
+
+**Where the residual output scaling lives.** Intake settled *what* it is — the
+ungated volume branch documented under Delivery and Limits — but not where the
+port puts it. Inside the family's synthesis path is faithful to the oracle and
+hides a per-utterance gain the public interface never mentions; hoisting it into
+a documented, disableable normalisation control is honest and diverges from the
+oracle unless the control defaults on. The golden tolerances depend on the
+answer, because the oracle dumps carry the scaling. Plan 2 decides.
 
 **Voice-design instruct passthrough.** v1 does not reimplement upstream's
 `_resolve_instruct` normalization. Oracle cases pin already-normalized instruct

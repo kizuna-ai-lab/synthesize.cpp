@@ -146,7 +146,7 @@ the first family to exercise the Reference Audio and Description Text sources.
 
 ### The prompt layout
 
-```
+```text
 [<|denoise|>?] <|lang_start|>{code-or-None}<|lang_end|> <|instruct_start|>{instruct-or-None}<|instruct_end|> <|text_start|>{ref_text + " " + text}<|text_end|> [ref audio tokens] [T × mask(1024)]
 ```
 
@@ -174,7 +174,7 @@ The per-step commit budget is a schedule computed once from the canvas size.
 Timesteps are `num_step + 1` points linearly spaced on `[0, 1]` and then
 shifted by
 
-```
+```text
 t' = t_shift·t / (1 + (t_shift − 1)·t)
 ```
 
@@ -186,7 +186,7 @@ always fully committed after `num_step` steps regardless of rounding.
 
 Within a step the two logit sets are combined in log-softmax space:
 
-```
+```text
 log_softmax(log p_c + s·(log p_c − log p_u))
 ```
 
@@ -317,7 +317,7 @@ upstream Apache-2.0 *code*, adopting them records the upstream notice in
 
 The estimate itself is a proportion, verbatim in effect from the same file:
 
-```
+```python
 speed_factor = total_weight(ref_text) / ref_duration
 estimated    = total_weight(target_text) / speed_factor
 if estimated < low_threshold:               # low_threshold = 50

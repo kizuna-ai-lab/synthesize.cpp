@@ -511,6 +511,21 @@ int run_language_and_profile_rejections() {
                                               "zzzz1b0a7d4e6538aa10cc93bf7712d4e08a5c63b91d47fe2085730c6ad1e4b8");
                          },
                          "a compatibility id with non-hex characters") == 0);
+    // The converter always emits a lowercase hexdigest; refuse-don't-repair
+    // means an otherwise-valid id with one uppercased hex letter is rejected
+    // rather than normalized.
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             std::string mutated = kCompatibilityId;
+                             for (char & character : mutated) {
+                                 if (character >= 'a' && character <= 'f') {
+                                     character = static_cast<char>(character - 'a' + 'A');
+                                     break;
+                                 }
+                             }
+                             gguf_set_val_str(g, "synthesize.profile.compatibility_id", mutated.c_str());
+                         },
+                         "compatibility id must be lowercase hex") == 0);
 
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.reference.target_sample_rate", 0); },

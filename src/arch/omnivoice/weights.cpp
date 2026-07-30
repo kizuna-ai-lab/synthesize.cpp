@@ -424,6 +424,9 @@ bool read_languages(const GgufMetadata & meta, HParams & hparams) {
     return true;
 }
 
+// Whether `value` is 32 bytes of lowercase hex. The converter always emits a
+// lowercase hexdigest and Plan 3 will byte-compare against it, so an uppercase
+// value is refused rather than repaired.
 bool is_sha256_hex(const std::string & value) {
     if (value.size() != kCompatibilityIdChars) {
         return false;
@@ -431,8 +434,7 @@ bool is_sha256_hex(const std::string & value) {
     for (const char character : value) {
         const bool digit = character >= '0' && character <= '9';
         const bool lower = character >= 'a' && character <= 'f';
-        const bool upper = character >= 'A' && character <= 'F';
-        if (!digit && !lower && !upper) {
+        if (!digit && !lower) {
             return false;
         }
     }
@@ -461,7 +463,7 @@ bool read_profile_contract(const GgufMetadata & meta, HParams & hparams) {
         return false;
     }
     if (!is_sha256_hex(profile.compatibility_id_hex)) {
-        std::fprintf(stderr, "omnivoice: profile compatibility id %s is not 32 bytes of hex\n",
+        std::fprintf(stderr, "omnivoice: profile compatibility id %s is not 32 bytes of lowercase hex\n",
                      profile.compatibility_id_hex.c_str());
         return false;
     }

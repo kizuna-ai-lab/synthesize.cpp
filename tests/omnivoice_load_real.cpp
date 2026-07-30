@@ -165,9 +165,9 @@ int check_public_seam(const char * model_path) {
     bool           wrote_audio = false;
 
     synth_diagnostic_sink_t diagnostics;
-    diagnostics.struct_size = sizeof(diagnostics);
-    diagnostics.emit        = record_diagnostic;
-    diagnostics.user_data   = &diagnostic;
+    synth_diagnostic_sink_init(&diagnostics, sizeof(diagnostics));
+    diagnostics.emit      = record_diagnostic;
+    diagnostics.user_data = &diagnostic;
 
     synth_request_t request;
     synth_request_init(&request, sizeof(request));

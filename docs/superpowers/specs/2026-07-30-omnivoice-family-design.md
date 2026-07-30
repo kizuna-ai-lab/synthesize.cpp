@@ -123,6 +123,11 @@ sentence in the Input forms bullet above, the "language table" item in §5's
 slice 3. The family contract records the same decision in
 `docs/porting/families/omnivoice.md`.
 
+**Amended 2026-07-31:** v1 declares text input only — the token-sequence
+bypass line above is superseded; this family's prompt is assembled from text
+by the family itself, so a raw token-sequence input has no v1 consumer;
+revisiting it is a later-cycle decision.
+
 ## 4. Package and Conversion
 
 - **One primary GGUF**, `general.architecture = "omnivoice"`, holding LM and

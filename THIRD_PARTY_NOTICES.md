@@ -56,7 +56,7 @@ specific language governing permissions and limitations under the License.
 
 The License, as shipped with the pinned package:
 
-```
+```text
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/

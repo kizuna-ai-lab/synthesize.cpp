@@ -325,13 +325,13 @@ def main(argv: list[str] | None = None) -> int:
     special_tokens = {
         "markers": [
             {"token": token, "id": int(identifier)}
-            for token, identifier in zip(MARKER_TOKENS, marker_ids)
+            for token, identifier in zip(MARKER_TOKENS, marker_ids, strict=True)
         ],
         "eos": {"token": tokenizer.eos_token, "id": int(tokenizer.eos_token_id)},
         "pad": {"token": tokenizer.pad_token, "id": int(tokenizer.pad_token_id)},
         "bos": None,
         "vocab_base": int(tokenizer.vocab_size),
-        "vocab_total": int(len(tokenizer)),
+        "vocab_total": len(tokenizer),
     }
 
     # --- Pre-tokenizer splits ------------------------------------------

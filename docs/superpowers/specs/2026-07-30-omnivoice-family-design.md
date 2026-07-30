@@ -110,6 +110,19 @@ the project's card must not inherit any downstream claim.
 - **Delivery:** complete audio only (`deliver_complete_audio`). No Chunked
   Audio Delivery and no Native Streaming Synthesis claims in v1.
 
+**Amended 2026-07-30:** the 646-entry language-name↔token map is **not**
+ported. Fact-finding after this record was written established that the public
+interface speaks BCP-47 tags, the prompt consumes an ISO language code as plain
+text, and for every language in the validated catalog (`en`, `zh`, `ja`) the
+tag and the code are the same string — so the request's tag is written into the
+prompt directly and the table has no consumer. Porting a 646-entry mapping to
+serve three validated languages would carry an untested table as if it were a
+contract. This amendment supersedes the "ported as a generated data table"
+sentence in the Input forms bullet above, the "language table" item in §5's
+`frontend-host.{h,cpp}` contents, and the "language table" item in §8's
+slice 3. The family contract records the same decision in
+`docs/porting/families/omnivoice.md`.
+
 ## 4. Package and Conversion
 
 - **One primary GGUF**, `general.architecture = "omnivoice"`, holding LM and

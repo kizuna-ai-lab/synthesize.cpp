@@ -220,6 +220,10 @@ and the implementation is hoisted out of `src/arch/qwen3-tts/` into a shared
 internal module with its unit tests intact, rather than copied. No BOS token is
 added.
 
+The text vocabulary is 151,676 entries — 151,643 base plus 33 added tokens —
+and that count is the contract the converter writes and the loader checks, not
+a number rederived from the tokenizer file at load time.
+
 Seven OmniVoice-specific markers occupy ids 151669–151675: `<|denoise|>`, the
 `<|lang_start|>`/`<|lang_end|>` pair, the `<|instruct_start|>`/`<|instruct_end|>`
 pair, and the `<|text_start|>`/`<|text_end|>` pair. Thirteen bracketed
@@ -235,7 +239,11 @@ speaks BCP-47 tags, the prompt consumes an ISO language code as plain text, and
 for every language in the validated catalog the tag and the code are the same
 string, so the request's tag is written into the prompt directly. Porting a
 646-entry table to serve three validated languages would be carrying an
-untested mapping as if it were a contract.
+untested mapping as if it were a contract. This reverses the design record,
+which specified the table as a generated data table in three places; the
+reversal is recorded there as the "Amended 2026-07-30" note under §3 of
+`docs/superpowers/specs/2026-07-30-omnivoice-family-design.md`, and this
+contract is the operative statement.
 
 ## Duration and the Canvas Length
 
@@ -296,8 +304,11 @@ requests — upstream substitutes the anchor pair `("Nice to meet you.", 25
 tokens)`, and that anchor is part of this family's contract, not an
 implementation detail. `speaking_rate` **divides** the estimate, and the result
 is `max(1, int(est))`, a truncation toward zero that the port must match
-exactly rather than rounding. Explicit target duration is not exposed in v1:
-the request's frame limit remains a cap, not a target.
+exactly rather than rounding. The package declares a validated
+`speaking_rate_range` of `[0.5, 2.0]`; that range is a validation claim backed
+by golden cases at both ends, not a clamp inherited from upstream. Explicit
+target duration is not exposed in v1: the request's frame limit remains a cap,
+not a target.
 
 ## Delivery and Limits
 

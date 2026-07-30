@@ -485,6 +485,115 @@ class GenerationDefaultsTests(unittest.TestCase):
         self.assertIn("guidance_scale", str(caught.exception))
 
 
+class PinnedInputTests(unittest.TestCase):
+    """Every local file the conversion reads or republishes is pinned.
+
+    The codec's LICENSE is the one that matters most here: it is republished
+    beside the artifact and its digest is recorded in the report as
+    authoritative, so a locally edited grant would be carried into the package
+    and vouched for. Hashing the copy against its own source proves nothing.
+    """
+
+    LICENSE_SUFFIX = "/audio_tokenizer/LICENSE"
+
+    def manifest_with(self, artifacts: list[dict[str, str]]) -> dict[str, object]:
+        return {"source": {"artifacts": artifacts}}
+
+    def license_input(self, path: Path) -> object:
+        return convert.PinnedInput("codec_license", path, "license", self.LICENSE_SUFFIX)
+
+    def test_the_codec_license_is_one_of_the_pinned_inputs(self) -> None:
+        entries = {entry.label: entry for entry in convert.pinned_inputs(Path("weights"))}
+        self.assertIn("codec_license", entries)
+        entry = entries["codec_license"]
+        self.assertEqual(entry.path, Path("weights") / "audio_tokenizer" / "LICENSE")
+        self.assertEqual(entry.role, "license")
+        self.assertEqual(entry.locator_suffix, self.LICENSE_SUFFIX)
+
+    def test_the_committed_manifest_pins_the_audited_license_digest(self) -> None:
+        """The pin the intake audited, resolved the way the converter resolves it.
+
+        The manifest carries two `license` artifacts; the suffix must select the
+        codec's rather than the source repository's Apache grant.
+        """
+        manifest = json.loads(
+            (REPO_ROOT / "tests" / "golden" / "omnivoice" / "omnivoice-0-6b.manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            convert.pinned_digest(manifest, "license", self.LICENSE_SUFFIX),
+            "ac933dc084d119bd20401956b90d11ae87c248b2da62622cd580d82cdf2fa049",
+        )
+
+    def test_a_license_that_does_not_match_its_pin_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "LICENSE"
+            path.write_bytes(b"a locally edited grant\n")
+            manifest = self.manifest_with([{
+                "role": "license",
+                "locator": "https://example.invalid/resolve/rev/audio_tokenizer/LICENSE",
+                "sha256": "ac933dc084d119bd20401956b90d11ae87c248b2da62622cd580d82cdf2fa049",
+            }])
+            with self.assertRaises(convert.ConverterError) as caught:
+                convert.verify_pinned_inputs(manifest, [self.license_input(path)])
+            message = str(caught.exception)
+            self.assertIn(str(path), message, "the error must name the offending file")
+            self.assertIn(hashlib.sha256(path.read_bytes()).hexdigest(), message)
+
+    def test_a_manifest_with_no_license_artifact_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "LICENSE"
+            path.write_bytes(b"some grant\n")
+            manifest = self.manifest_with([{
+                "role": "checkpoint",
+                "locator": "https://example.invalid/resolve/rev/model.safetensors",
+                "sha256": "0" * 64,
+            }])
+            with self.assertRaises(convert.ConverterError) as caught:
+                convert.verify_pinned_inputs(manifest, [self.license_input(path)])
+            self.assertIn("license", str(caught.exception))
+
+    def test_two_matching_license_artifacts_are_refused(self) -> None:
+        """An ambiguous pin must not be resolved by picking the first one."""
+        duplicate = {
+            "role": "license",
+            "locator": "https://example.invalid/resolve/rev/audio_tokenizer/LICENSE",
+            "sha256": "0" * 64,
+        }
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.pinned_digest(self.manifest_with([duplicate, dict(duplicate)]),
+                                  "license", self.LICENSE_SUFFIX)
+        self.assertIn("exactly one", str(caught.exception))
+
+    def test_a_missing_pinned_input_is_refused_before_anything_is_read(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "LICENSE"
+            manifest = self.manifest_with([{
+                "role": "license",
+                "locator": "https://example.invalid/resolve/rev/audio_tokenizer/LICENSE",
+                "sha256": "0" * 64,
+            }])
+            with self.assertRaises(convert.ConverterError) as caught:
+                convert.verify_pinned_inputs(manifest, [self.license_input(path)])
+            self.assertIn(str(path), str(caught.exception))
+
+    def test_a_matching_input_returns_its_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "LICENSE"
+            payload = b"the audited grant\n"
+            path.write_bytes(payload)
+            digest = hashlib.sha256(payload).hexdigest()
+            manifest = self.manifest_with([{
+                "role": "license",
+                "locator": "https://example.invalid/resolve/rev/audio_tokenizer/LICENSE",
+                "sha256": digest,
+            }])
+            self.assertEqual(
+                convert.verify_pinned_inputs(manifest, [self.license_input(path)]),
+                {"codec_license": digest},
+            )
+
+
 class LicenseCarriageTests(unittest.TestCase):
     """The codec's grant must never separate from the converted artifact.
 
@@ -502,15 +611,28 @@ class LicenseCarriageTests(unittest.TestCase):
             (weights / "LICENSE").write_bytes(payload)
             output = root / "out" / "model.gguf"
             output.parent.mkdir(parents=True)
+            digest = hashlib.sha256(payload).hexdigest()
 
-            records = convert.carry_licenses(root / "weights", output, Path.cwd())
+            records = convert.carry_licenses(root / "weights", output, Path.cwd(), digest)
 
             copied = output.parent / convert.CODEC_LICENSE_NAME
             self.assertEqual(copied.read_bytes(), payload)
-            digest = hashlib.sha256(payload).hexdigest()
             self.assertIn(digest, [r.get("sha256") for r in records])
             statements = " ".join(r.get("statement", "") for r in records)
             self.assertIn("CC-BY-NC", statements)
+
+    def test_the_copy_is_checked_against_the_pin_not_against_itself(self) -> None:
+        """Re-hashing the source after the copy compares a file with itself."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            weights = root / "weights" / "audio_tokenizer"
+            weights.mkdir(parents=True)
+            (weights / "LICENSE").write_bytes(b"a locally edited grant\n")
+            output = root / "out" / "model.gguf"
+            output.parent.mkdir(parents=True)
+            with self.assertRaises(convert.ConverterError) as caught:
+                convert.carry_licenses(root / "weights", output, Path.cwd(), "0" * 64)
+            self.assertIn(convert.CODEC_LICENSE_NAME, str(caught.exception))
 
     def test_a_missing_codec_license_stops_the_conversion(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -519,7 +641,7 @@ class LicenseCarriageTests(unittest.TestCase):
             output = root / "out" / "model.gguf"
             output.parent.mkdir(parents=True)
             with self.assertRaises(convert.ConverterError) as caught:
-                convert.carry_licenses(root / "weights", output, Path.cwd())
+                convert.carry_licenses(root / "weights", output, Path.cwd(), "0" * 64)
             self.assertIn("LICENSE", str(caught.exception))
 
 

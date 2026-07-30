@@ -263,6 +263,68 @@ def pinned_digest(manifest: dict[str, Any], role: str, locator_suffix: str,
     return matches[0]["sha256"]
 
 
+@dataclass(frozen=True)
+class PinnedInput:
+    """A file the manifest pins by digest, and where its pin lives."""
+
+    label: str
+    path: Path
+    role: str
+    locator_suffix: str
+    excluding: str | None = None
+
+
+def pinned_inputs(weights_dir: Path) -> tuple[PinnedInput, ...]:
+    """Every local file the conversion reads or republishes.
+
+    The codec's LICENSE belongs here and not merely in the copy step. It is
+    republished beside the artifact and its digest is recorded in the report as
+    authoritative, so a locally edited grant would be carried into the package
+    and vouched for. Hashing the copy against its own source is a tautology
+    after `shutil.copyfile`; the manifest is the only outside witness.
+    """
+    return (
+        PinnedInput("generator", weights_dir / "model.safetensors",
+                    "checkpoint", "/model.safetensors", "/audio_tokenizer/"),
+        PinnedInput("codec", weights_dir / "audio_tokenizer" / "model.safetensors",
+                    "checkpoint", "/audio_tokenizer/model.safetensors"),
+        PinnedInput("config", weights_dir / "config.json",
+                    "config", "/config.json", "/audio_tokenizer/"),
+        PinnedInput("codec_config", weights_dir / "audio_tokenizer" / "config.json",
+                    "config", "/audio_tokenizer/config.json"),
+        PinnedInput("tokenizer", weights_dir / "tokenizer.json",
+                    "frontend-resource", "/tokenizer.json"),
+        PinnedInput("codec_license", weights_dir / "audio_tokenizer" / "LICENSE",
+                    "license", "/audio_tokenizer/LICENSE"),
+    )
+
+
+def verify_pinned_inputs(manifest: dict[str, Any],
+                         inputs: Iterable[PinnedInput]) -> dict[str, str]:
+    """Hash every input against its manifest pin before anything is read.
+
+    Runs first, so a missing or altered input costs nothing rather than being
+    discovered after a 3.2 GB file has been written.
+    """
+    digests: dict[str, str] = {}
+    for entry in inputs:
+        if not entry.path.is_file():
+            raise ConverterError(
+                f"{entry.path} is missing; the manifest pins it and the conversion cannot "
+                "proceed without it"
+            )
+        digest = sha256_file(entry.path)
+        expected = pinned_digest(manifest, entry.role, entry.locator_suffix,
+                                 excluding=entry.excluding)
+        if digest != expected:
+            raise ConverterError(
+                f"{entry.path}: the local file hashes to {digest} but the manifest pins "
+                f"{expected}; converting it would produce a package nothing validated"
+            )
+        digests[entry.label] = digest
+    return digests
+
+
 def numpy_of(tensor: torch.Tensor) -> tuple[np.ndarray, GGMLQuantizationType]:
     """Carry the stored dtype through unchanged.
 
@@ -568,7 +630,8 @@ def read_generation_defaults(module_name: str = "omnivoice") -> dict[str, Any]:
     return defaults
 
 
-def carry_licenses(weights_dir: Path, output: Path, project_root: Path) -> list[dict[str, Any]]:
+def carry_licenses(weights_dir: Path, output: Path, project_root: Path,
+                   pinned_license_sha256: str) -> list[dict[str, Any]]:
     """Copy the codec's grant beside the converted artifact and pin its hash.
 
     `audio_tokenizer/README.md` is an unedited template whose License field
@@ -577,6 +640,10 @@ def carry_licenses(weights_dir: Path, output: Path, project_root: Path) -> list[
     its text. The declarative Sidecar Resource descriptors are assembled at the
     ship stage; what this guarantees is that the text never separates from the
     artifact and its hash is pinned from the first cut.
+
+    The copy is checked against the digest the manifest pins, not against its
+    own source: re-hashing the source after `shutil.copyfile` compares a file
+    with itself and would vouch for a locally edited grant.
     """
     source = weights_dir / "audio_tokenizer" / "LICENSE"
     if not source.is_file():
@@ -588,8 +655,11 @@ def carry_licenses(weights_dir: Path, output: Path, project_root: Path) -> list[
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
     digest = sha256_file(destination)
-    if digest != sha256_file(source):
-        raise ConverterError("the copied codec licence does not match its source byte for byte")
+    if digest != pinned_license_sha256:
+        raise ConverterError(
+            f"{destination} hashes to {digest} but the manifest pins "
+            f"{pinned_license_sha256}; the grant that would ship is not the audited one"
+        )
 
     return [
         {
@@ -878,32 +948,14 @@ def main() -> int:
     weights = args.weights_dir
     generator_path = weights / "model.safetensors"
     codec_path = weights / "audio_tokenizer" / "model.safetensors"
+
+    # Every pinned input -- weights, both configs, the tokenizer and the codec's
+    # LICENSE -- is verified before a single tensor is read.
+    digests = verify_pinned_inputs(manifest, pinned_inputs(weights))
+
     config = load_json(weights / "config.json")
     codec_config = load_json(weights / "audio_tokenizer" / "config.json")
     tokenizer_json = load_json(weights / "tokenizer.json")
-
-    digests = {
-        "generator": sha256_file(generator_path),
-        "codec": sha256_file(codec_path),
-        "config": sha256_file(weights / "config.json"),
-        "codec_config": sha256_file(weights / "audio_tokenizer" / "config.json"),
-        "tokenizer": sha256_file(weights / "tokenizer.json"),
-    }
-    pinned = {
-        "generator": pinned_digest(manifest, "checkpoint", "/model.safetensors",
-                                   excluding="/audio_tokenizer/"),
-        "codec": pinned_digest(manifest, "checkpoint", "/audio_tokenizer/model.safetensors"),
-        "config": pinned_digest(manifest, "config", "/config.json",
-                                excluding="/audio_tokenizer/"),
-        "codec_config": pinned_digest(manifest, "config", "/audio_tokenizer/config.json"),
-        "tokenizer": pinned_digest(manifest, "frontend-resource", "/tokenizer.json"),
-    }
-    for key, expected in pinned.items():
-        if digests[key] != expected:
-            raise ConverterError(
-                f"{key}: the local file hashes to {digests[key]} but the manifest pins "
-                f"{expected}; converting it would produce a package nothing validated"
-            )
 
     gen_defaults = read_generation_defaults()
 
@@ -935,7 +987,7 @@ def main() -> int:
         writer.close()
 
     verify_gguf(args.output, conversion.outputs)
-    licenses = carry_licenses(weights, args.output, project_root)
+    licenses = carry_licenses(weights, args.output, project_root, digests["codec_license"])
 
     by_dtype: dict[str, int] = {}
     for output in conversion.outputs:
@@ -962,6 +1014,7 @@ def main() -> int:
             "config_sha256": digests["config"],
             "codec_config_sha256": digests["codec_config"],
             "tokenizer_sha256": digests["tokenizer"],
+            "codec_license_sha256": digests["codec_license"],
         },
         "output": {
             "path": project_relative(args.output, project_root),

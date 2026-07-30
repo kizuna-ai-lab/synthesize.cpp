@@ -234,8 +234,7 @@ int run_valid_package() {
 
     SYNTH_TEST_CHECK(hparams.generation.num_step == 32 && hparams.generation.guidance_scale == 2.0f);
     SYNTH_TEST_CHECK(hparams.generation.t_shift == 0.1f && hparams.generation.layer_penalty_factor == 5.0f);
-    SYNTH_TEST_CHECK(hparams.generation.position_temperature == 5.0f &&
-                     hparams.generation.class_temperature == 0.0f);
+    SYNTH_TEST_CHECK(hparams.generation.position_temperature == 5.0f && hparams.generation.class_temperature == 0.0f);
 
     SYNTH_TEST_CHECK(hparams.profile.schema == "omnivoice-clone-prompt" && hparams.profile.schema_version == 1);
     SYNTH_TEST_CHECK(hparams.profile.compatibility_id_hex == kCompatibilityId);
@@ -251,12 +250,10 @@ int run_valid_package() {
 }
 
 int run_identity_rejections() {
-    SYNTH_TEST_CHECK(
-        expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "general.architecture", "qwen3-tts"); },
-                        "another family's package is not this family's") == 0);
-    SYNTH_TEST_CHECK(
-        expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "synthesize.model_family", "kokoro"); },
-                        "the family tag must agree with the architecture") == 0);
+    SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "general.architecture", "qwen3-tts"); },
+                                     "another family's package is not this family's") == 0);
+    SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "synthesize.model_family", "kokoro"); },
+                                     "the family tag must agree with the architecture") == 0);
     SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "synthesize.model_variant", ""); },
                                      "a package names its variant") == 0);
     SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.format_version", 2); },
@@ -296,14 +293,17 @@ int run_capability_rejections() {
     // The neutral rate has to be inside the range, or the default request would
     // be out of bounds against the package's own declaration.
     SYNTH_TEST_CHECK(
-        expect_rejected([](gguf_context * g) { gguf_set_val_f32(g, "synthesize.capabilities.min_speaking_rate", 1.5f); },
-                        "a minimum above the neutral rate") == 0);
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_f32(g, "synthesize.capabilities.min_speaking_rate", 1.5f); },
+            "a minimum above the neutral rate") == 0);
     SYNTH_TEST_CHECK(
-        expect_rejected([](gguf_context * g) { gguf_set_val_f32(g, "synthesize.capabilities.max_speaking_rate", 0.5f); },
-                        "a maximum below the neutral rate") == 0);
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_f32(g, "synthesize.capabilities.max_speaking_rate", 0.5f); },
+            "a maximum below the neutral rate") == 0);
     SYNTH_TEST_CHECK(
-        expect_rejected([](gguf_context * g) { gguf_set_val_f32(g, "synthesize.capabilities.min_speaking_rate", 0.0f); },
-                        "the speaking rate divides the duration estimate, so zero is not a rate") == 0);
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_f32(g, "synthesize.capabilities.min_speaking_rate", 0.0f); },
+            "the speaking rate divides the duration estimate, so zero is not a rate") == 0);
 
     // The flags are the promise the public interface reports; a range the
     // capability does not claim would be a control no caller may reach.
@@ -343,10 +343,11 @@ int run_generation_rejections() {
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_f32(g, "synthesize.omnivoice.generation.t_shift", 0.0f); },
                         "t_shift divides the schedule") == 0);
-    SYNTH_TEST_CHECK(
-        expect_rejected(
-            [](gguf_context * g) { gguf_set_val_f32(g, "synthesize.omnivoice.generation.position_temperature", -1.0f); },
-            "a negative temperature scales the Gumbel noise backwards") == 0);
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_f32(g, "synthesize.omnivoice.generation.position_temperature", -1.0f);
+                         },
+                         "a negative temperature scales the Gumbel noise backwards") == 0);
     SYNTH_TEST_CHECK(
         expect_rejected(
             [](gguf_context * g) { gguf_set_val_f32(g, "synthesize.omnivoice.generation.class_temperature", -1.0f); },
@@ -383,8 +384,9 @@ int run_generator_rejections() {
     // The whole canvas is attended in both directions at every step. A causal
     // package would be silently building a different model.
     SYNTH_TEST_CHECK(
-        expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "synthesize.omnivoice.generator.attention", "causal"); },
-                        "this family's generator is bidirectional") == 0);
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_str(g, "synthesize.omnivoice.generator.attention", "causal"); },
+            "this family's generator is bidirectional") == 0);
     return 0;
 }
 
@@ -404,9 +406,8 @@ int run_canvas_and_codec_rejections() {
                          },
                          "the upsampling ratios must multiply to exactly one frame of samples") == 0);
     SYNTH_TEST_CHECK(
-        expect_rejected(
-            [](gguf_context * g) { set_i32_array(g, "synthesize.omnivoice.codec.upsampling_ratios", {}); },
-            "an empty ratio stack upsamples nothing") == 0);
+        expect_rejected([](gguf_context * g) { set_i32_array(g, "synthesize.omnivoice.codec.upsampling_ratios", {}); },
+                        "an empty ratio stack upsamples nothing") == 0);
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.omnivoice.codec.hop_length", 1024); },
                         "hop and frame rate must agree with the sample rate") == 0);
@@ -479,24 +480,23 @@ int run_language_and_profile_rejections() {
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { set_string_array(g, "synthesize.omnivoice.languages.tags", {}); },
                         "a package serves at least one language") == 0);
-    SYNTH_TEST_CHECK(expect_rejected(
-                         [](gguf_context * g) {
-                             set_string_array(g, "synthesize.omnivoice.languages.tags", { "en", "", "ja" });
-                         },
-                         "an empty tag names no language") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { set_string_array(g, "synthesize.omnivoice.languages.tags", { "en", "", "ja" }); },
+            "an empty tag names no language") == 0);
     // The tag is also the literal text the prompt's language slot carries, so a
     // duplicate would publish the same capability twice.
-    SYNTH_TEST_CHECK(expect_rejected(
-                         [](gguf_context * g) {
-                             set_string_array(g, "synthesize.omnivoice.languages.tags", { "en", "zh", "en" });
-                         },
-                         "a duplicated language tag") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { set_string_array(g, "synthesize.omnivoice.languages.tags", { "en", "zh", "en" }); },
+            "a duplicated language tag") == 0);
 
     SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "synthesize.profile.schema", ""); },
                                      "a profile contract names its schema") == 0);
     SYNTH_TEST_CHECK(
-        expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "synthesize.profile.schema", "kokoro-style-vector"); },
-                        "a Serialized Profile schema this family cannot parse") == 0);
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_str(g, "synthesize.profile.schema", "kokoro-style-vector"); },
+            "a Serialized Profile schema this family cannot parse") == 0);
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.profile.schema_version", 2); },
                         "an unknown profile schema version") == 0);
@@ -521,11 +521,10 @@ int run_language_and_profile_rejections() {
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u64(g, "synthesize.reference.min_frames_per_clip", 0); },
                         "a clip of no frames carries no voice") == 0);
-    SYNTH_TEST_CHECK(expect_rejected(
-                         [](gguf_context * g) {
-                             gguf_set_val_u64(g, "synthesize.reference.min_frames_per_clip", 960000);
-                         },
-                         "the minimum clip length must fit inside the maximum") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_u64(g, "synthesize.reference.min_frames_per_clip", 960000); },
+            "the minimum clip length must fit inside the maximum") == 0);
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u64(g, "synthesize.reference.max_total_frames", 0); },
                         "a total budget of no frames admits no clip") == 0);
@@ -540,8 +539,9 @@ int run_frontend_rejections() {
         expect_rejected([](gguf_context * g) { gguf_set_val_bool(g, "synthesize.frontend.present", false); },
                         "a raw-text family needs a frontend") == 0);
     SYNTH_TEST_CHECK(
-        expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "synthesize.frontend.provider", "synthesize.espeak"); },
-                        "this family tokenizes with the byte-level BPE frontend") == 0);
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_str(g, "synthesize.frontend.provider", "synthesize.espeak"); },
+            "this family tokenizes with the byte-level BPE frontend") == 0);
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.frontend.contract_version", 2); },
                         "an unknown frontend contract version") == 0);

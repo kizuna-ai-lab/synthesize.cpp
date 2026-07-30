@@ -1,5 +1,4 @@
 #include "arch/omnivoice/catalog.h"
-
 #include "gguf-metadata.h"
 #include "gguf.h"
 
@@ -10,11 +9,11 @@ namespace synth::omnivoice {
 
 namespace {
 
-constexpr uint32_t kFormatVersion             = 1;
-constexpr uint32_t kArchitectureVersion       = 1;
+constexpr uint32_t kFormatVersion              = 1;
+constexpr uint32_t kArchitectureVersion        = 1;
 constexpr uint32_t kQuantizationProfileVersion = 1;
-constexpr uint32_t kProfileSchemaVersion      = 1;
-constexpr uint32_t kFrontendContractVersion   = 1;
+constexpr uint32_t kProfileSchemaVersion       = 1;
+constexpr uint32_t kFrontendContractVersion    = 1;
 
 // A Profile Compatibility ID is a sha256 over the family compatibility
 // manifest, so it is exactly 32 bytes written as hex.
@@ -228,8 +227,8 @@ bool read_generator(const GgufMetadata & meta, HParams & hparams) {
 bool read_audio_canvas(const GgufMetadata & meta, HParams & hparams) {
     AudioCanvasParams & audio  = hparams.audio;
     const std::string   prefix = "synthesize.omnivoice.audio.";
-    if (!meta.u32(prefix + "num_codebooks", audio.num_codebooks) || !meta.u32(prefix + "vocab_size", audio.vocab_size) ||
-        !meta.u32(prefix + "mask_id", audio.mask_id)) {
+    if (!meta.u32(prefix + "num_codebooks", audio.num_codebooks) ||
+        !meta.u32(prefix + "vocab_size", audio.vocab_size) || !meta.u32(prefix + "mask_id", audio.mask_id)) {
         return false;
     }
     if (audio.num_codebooks == 0 || audio.vocab_size == 0) {
@@ -517,7 +516,7 @@ synth_status_t read_hparams(const gguf_context * gguf, HParams & hparams) {
     }
     hparams                 = HParams{};
     const GgufMetadata meta = metadata(gguf);
-    const bool         ok   = read_identity(meta, hparams) && read_quantization(meta, hparams) &&
+    const bool ok = read_identity(meta, hparams) && read_quantization(meta, hparams) &&
                     read_capabilities(meta, hparams) && read_voice(meta) && read_generation(meta, hparams) &&
                     read_generator(meta, hparams) && read_audio_canvas(meta, hparams) && read_codec(meta, hparams) &&
                     read_semantic(meta, hparams) && read_tokens(meta, hparams) && read_languages(meta, hparams) &&

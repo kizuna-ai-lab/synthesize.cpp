@@ -147,6 +147,34 @@ class GoldenManifestSchemaTest(unittest.TestCase):
                             voice["id"], catalog, f"{case['id']} selects an uncatalogued voice"
                         )
 
+    def test_reference_audio_cases_name_a_pinned_source_artifact(self):
+        """A clone case's reference must be one of the manifest's pinned artifacts.
+
+        `input.reference.artifact` is a locator rather than a path, and a
+        locator that matches nothing in `source.artifacts` is a reference whose
+        bytes are not pinned by anything -- the case would silently compare
+        against whatever the URL served that day. This is the same guard
+        `test_preset_voice_cases_name_catalog_entries` provides for Voices: the
+        case may only select from what the manifest declares.
+        """
+        for path, manifest in self.manifests:
+            with self.subTest(manifest=path.name):
+                pinned = {
+                    artifact["locator"]
+                    for artifact in manifest["source"]["artifacts"]
+                    if artifact["role"] == "reference-audio"
+                }
+                for case in manifest["cases"]:
+                    reference = case["input"].get("reference")
+                    if reference is None:
+                        continue
+                    self.assertIn(
+                        reference["artifact"],
+                        pinned,
+                        f"{case['id']} references audio that no reference-audio "
+                        f"source artifact pins",
+                    )
+
     def test_case_language_tags_are_declared(self):
         for path, manifest in self.manifests:
             with self.subTest(manifest=path.name):

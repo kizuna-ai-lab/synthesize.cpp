@@ -258,9 +258,13 @@ whatever language surrounds it.
 Upstream's 646-entry language-name map is **not** ported. The public interface
 speaks BCP-47 tags, the prompt consumes an ISO language code as plain text, and
 for every language in the validated catalog the tag and the code are the same
-string, so the request's tag is written into the prompt directly. Porting a
-646-entry table to serve three validated languages would be carrying an
-untested mapping as if it were a contract. This reverses the design record,
+string, so the request's tag is written into the prompt directly. The tag `auto`
+is the one that is not written through: `auto` and an omitted language are
+synonyms, both selecting the language-agnostic path whose `<|lang_start|>` slot
+carries the literal string `None`, which is why the Golden suite exercises the
+`auto` tag and the omitted language as two cases over one oracle parameter.
+Porting a 646-entry table to serve three validated languages would be carrying
+an untested mapping as if it were a contract. This reverses the design record,
 which specified the table as a generated data table in three places; the
 reversal is recorded there as the "Amended 2026-07-30" note under §3 of
 `docs/superpowers/specs/2026-07-30-omnivoice-family-design.md`, and this

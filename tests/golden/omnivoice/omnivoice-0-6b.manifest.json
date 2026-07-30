@@ -615,7 +615,7 @@
       ],
       "input": {
         "kind": "text_utf8",
-        "language_tag": null,
+        "language_tag": "auto",
         "text": "This request names no language."
       },
       "voice": {
@@ -1632,7 +1632,7 @@
       "input": {
         "kind": "text_utf8",
         "language_tag": "en",
-        "text": "Voice design shapes who is speaking."
+        "text": "OmniVoice speaks with one voice."
       },
       "voice": {
         "kind": "description_text",
@@ -1888,7 +1888,7 @@
       "input": {
         "kind": "text_utf8",
         "language_tag": "en",
-        "text": "A cloned voice reads this sentence.",
+        "text": "OmniVoice speaks with one voice.",
         "reference": {
           "artifact": "https://zhu-han.github.io/omnivoice/audios/seedtts/prompt/seedtts_ref_en_1.wav",
           "transcript": "Some call me nature. Others call me Mother Nature. I've been here for over four point and five billion years, twenty-two thousand five hundred times longer than you.",

@@ -13,6 +13,7 @@ enum class ModelFamily {
     Vits,
     Kokoro,
     Qwen3Tts,
+    Omnivoice,
 };
 
 // One language a package declares a request may ask for, named the way the

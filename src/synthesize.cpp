@@ -1,6 +1,7 @@
 #include "synthesize.h"
 
 #include "arch/kokoro/kokoro.h"
+#include "arch/omnivoice/omnivoice.h"
 #include "arch/qwen3-tts/qwen3-tts.h"
 #include "arch/vits/vits.h"
 #include "audio-delivery.h"
@@ -28,13 +29,14 @@
 // core runtime reads. Only one implementation pointer is ever set, and `info`
 // says which.
 struct synth_model {
-    synth::ModelInfo                        info;
-    std::unique_ptr<synth::vits::Model>     vits;
-    std::unique_ptr<synth::kokoro::Model>   kokoro;
-    std::unique_ptr<synth::qwen3tts::Model> qwen3_tts;
+    synth::ModelInfo                         info;
+    std::unique_ptr<synth::vits::Model>      vits;
+    std::unique_ptr<synth::kokoro::Model>    kokoro;
+    std::unique_ptr<synth::qwen3tts::Model>  qwen3_tts;
+    std::unique_ptr<synth::omnivoice::Model> omnivoice;
     // What only the VITS synthesis path reads; Kokoro's equivalents live behind
     // its own seeded entry point.
-    synth::vits::ModelInfo                  vits_extras;
+    synth::vits::ModelInfo                   vits_extras;
 };
 
 struct synth_context {
@@ -249,6 +251,10 @@ synth_status_t read_model_family(const char * model_path, synth::ModelFamily & f
         family = synth::ModelFamily::Qwen3Tts;
         return SYNTH_OK;
     }
+    if (architecture == "omnivoice") {
+        family = synth::ModelFamily::Omnivoice;
+        return SYNTH_OK;
+    }
     return SYNTH_ERR_UNSUPPORTED_ARCH;
 }
 
@@ -325,6 +331,32 @@ synth::ModelInfo shared_info(const synth::qwen3tts::ModelInfo &         info,
     shared.output_channel_count = info.output_channel_count;
     // The ids the core range-checks come from the text frontend, so this is
     // the text tower's vocabulary rather than the codec's.
+    shared.vocab_size           = text_vocab_size;
+    shared.samples_per_frame    = samples_per_frame;
+    shared.max_input_tokens     = info.max_input_tokens;
+    shared.max_output_frames    = info.max_output_frames;
+    shared.min_speaking_rate    = info.min_speaking_rate;
+    shared.max_speaking_rate    = info.max_speaking_rate;
+    return shared;
+}
+
+synth::ModelInfo shared_info(const synth::omnivoice::ModelInfo &        info,
+                             std::shared_ptr<const synth::TextFrontend> frontend,
+                             uint32_t                                   samples_per_frame,
+                             uint32_t                                   text_vocab_size) {
+    synth::ModelInfo shared;
+    shared.family              = synth::ModelFamily::Omnivoice;
+    shared.has_package_default = info.has_package_default;
+    // The Preset Voice Catalog is empty by design: identity arrives through
+    // Voice Profiles, and the unnamed package default is auto-voice.
+    for (const std::string & tag : info.language_tags) {
+        shared.languages.push_back({ tag, SYNTH_LANGUAGE_REGIONAL_FALLBACK });
+    }
+    shared.text_frontend        = std::move(frontend);
+    shared.input_flags          = info.input_flags;
+    shared.capability_flags     = info.capability_flags;
+    shared.output_sample_rate   = info.output_sample_rate;
+    shared.output_channel_count = info.output_channel_count;
     shared.vocab_size           = text_vocab_size;
     shared.samples_per_frame    = samples_per_frame;
     shared.max_input_tokens     = info.max_input_tokens;
@@ -460,6 +492,7 @@ synth_status_t synth_model_get_device(const synth_model_t * model, synth_backend
     }
     try {
         ggml_backend_dev_t device = model->qwen3_tts != nullptr ? model->qwen3_tts->primary_device() :
+                                    model->omnivoice != nullptr ? model->omnivoice->primary_device() :
                                     model->kokoro != nullptr    ? model->kokoro->primary_device() :
                                     model->vits != nullptr      ? model->vits->primary_device() :
                                                                   nullptr;
@@ -539,6 +572,17 @@ synth_status_t synth_model_load(const char *                      model_path,
                     model->info =
                         shared_info(info, model->qwen3_tts->text_frontend(), model->qwen3_tts->samples_per_frame(),
                                     model->qwen3_tts->text_vocab_size());
+                }
+            }
+        } else if (family == synth::ModelFamily::Omnivoice) {
+            status = synth::omnivoice::Model::load(model_path, selected_device, include_accelerators, model->omnivoice);
+            if (status == SYNTH_OK) {
+                synth::omnivoice::ModelInfo info;
+                status = model->omnivoice->get_info(info);
+                if (status == SYNTH_OK) {
+                    model->info =
+                        shared_info(info, model->omnivoice->text_frontend(), model->omnivoice->samples_per_frame(),
+                                    model->omnivoice->text_vocab_size());
                 }
             }
         } else if (family == synth::ModelFamily::Kokoro) {
@@ -788,6 +832,15 @@ synth_status_t synth_synthesize(synth_context_t *          context,
     if (cancellation_requested(prepared)) {
         (void) synth::deliver_complete_audio(nullptr, 0, delivery_info, sink, out_result);
         return SYNTH_ERR_CANCELLED;
+    }
+
+    if (context->model->info.family == synth::ModelFamily::Omnivoice) {
+        // Plan 2 lands the diffusion loop; a loadable-but-unsynthesizable
+        // family must fail loudly rather than fall through to another
+        // family's branch.
+        emit_diagnostic(prepared.diagnostics, SYNTH_ERR_INTERNAL, "synthesis.not_implemented",
+                        "omnivoice synthesis is not implemented yet");
+        return SYNTH_ERR_INTERNAL;
     }
 
     if (context->model->info.family == synth::ModelFamily::Qwen3Tts) {

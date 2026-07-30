@@ -128,6 +128,10 @@ set(SYNTH_KOKORO_TEST_MODEL "${CMAKE_SOURCE_DIR}/models/kokoro-v1-0/kokoro-v1-0-
 set(SYNTH_QWEN3_TTS_TEST_MODEL
     "${CMAKE_SOURCE_DIR}/models/qwen3-tts-12hz-0-6b-customvoice/qwen3-tts-12hz-0-6b-customvoice-BF16.gguf"
     CACHE FILEPATH "Local Qwen3-TTS BF16 GGUF used by integration tests")
+# F32 is this family's source profile: the checkpoint stores F32 in both the
+# generator and the codec halves, so it is the package a port is checked against.
+set(SYNTH_OMNIVOICE_TEST_MODEL "${CMAKE_SOURCE_DIR}/models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf"
+    CACHE FILEPATH "Local OmniVoice F32 GGUF used by integration tests")
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/SynthesizeReleaseCudaPolicy.cmake)
 synth_validate_release_cuda_targets()

@@ -419,3 +419,73 @@ contradict.
 `ac933dc084d119bd20401956b90d11ae87c248b2da62622cd580d82cdf2fa049` — the digest
 the intake pinned. The report's `licenses` list carries all three grants, with
 the CC-BY-NC sentence quoted verbatim from the model card.
+
+## 2026-07-30 — C++ foundation (stage 4, slice 1): the package loads
+
+The last task of Plan 1 closed the loop from converter to loaded model. Before
+it, every C++ test in this family ran against a package the test itself built,
+which can only prove the rules agree with each other. `synthesize-omnivoice-load-real`
+runs them against the checkpoint.
+
+**Emitted against expected: 798 = 798.** The load-real test opens the package,
+reads its hyper-parameters and compares `gguf_get_n_tensors` with
+`expected_tensor_count(hparams)` before loading anything; both are 798, the
+count the stage-3 conversion emitted. The catalog then resolves every one of
+them and sweeps the package for a name it never asked for. **The sweep passed
+unchanged** — the catalog's shape derivations and the converter's rename rules
+agreed on the real weights at the first attempt, so nothing here was fixed by
+relaxing a check.
+
+**Unit tests registered** under the `unit;omnivoice` label, four of them:
+`synthesize-omnivoice-metadata-test`, `-catalog-test`, `-frontend-test`, and this
+slice's `-model-errors-test` (empty path → `SYNTH_ERR_INVALID_ARG`, missing file
+→ `SYNTH_ERR_FILE_NOT_FOUND`, a non-GGUF file and an empty GGUF container →
+`SYNTH_ERR_GGUF`, with the handle left null after each). The whole gate is green:
+72/72 in `build`, 72/72 in `build-sanitize`.
+
+**Sanitizer clean on the real package too.** `synthesize-omnivoice-load-real`
+was also built and run in the ASan/UBSan configuration — 52 s, no report — so the
+3.2 GB weight buffer is allocated, streamed and freed without a leak or an
+undefined operation, not merely without a crash.
+
+### What the smoke asserts, and why the public half is there
+
+The family half reads the package's own numbers back: variant `omnivoice-0-6b`,
+F32 profile, 24 kHz mono, 960 samples per frame, a text vocabulary of 151,676,
+tags `en`/`zh`/`ja`, and a frontend built from the package's vocabulary and
+merges rather than from anything compiled in.
+
+The public half then loads the same file through `synth_model_load` and checks
+what the C interface publishes: the three languages carry
+`SYNTH_LANGUAGE_REGIONAL_FALLBACK` and **none carries** `SYNTH_LANGUAGE_DEFAULT`,
+because a request naming no language gets the language-agnostic prompt — the
+literal `None` slot — rather than falling back to one. The Preset Voice Catalog
+is empty and `has_package_default` is true: identity arrives through Voice
+Profiles and the package default is the unnamed auto-voice.
+
+Finally it calls `synth_synthesize` and requires `SYNTH_ERR_INTERNAL` with the
+diagnostic id `synthesis.not_implemented`. That assertion is not ceremony around
+a stub. Removing the stub branch and re-running the smoke **segfaults**: the
+request falls through to the VITS branch and dereferences a null model pointer.
+A family that can be loaded but not synthesized has to refuse loudly, and this
+is the test that says so. Plan 2's first task replaces the branch and the
+assertion together.
+
+### One gap the plan did not name: `synth_model_get_device`
+
+The task's family header carried no `primary_device()`, on the reasoning that
+Plan 1 runs no graph. But `synth_model_get_device` is a documented query —
+docs/c-interface.md: "returns the Loaded Model's actual primary device" — and it
+selects by walking the handle's family pointers. Without the accessor an
+omnivoice model answered it with `SYNTH_ERR_BACKEND`: a successfully loaded model
+that could not say where it lived. The accessor was added and the arm wired,
+matching all three earlier families, and the smoke now asserts the reported kind
+is `cpu`.
+
+### Seams touched
+
+`ModelFamily::Omnivoice` in `src/model-info.h`, the handle member and the
+`"omnivoice"` architecture branch in `src/synthesize.cpp`, a fourth `shared_info`
+overload, the load branch, and the synthesis stub. `include/synthesize.h` is
+untouched: this family added no public ABI surface, which is the point of the
+seam being where it is.

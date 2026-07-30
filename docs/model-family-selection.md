@@ -1,6 +1,6 @@
 # Model Family Selection
 
-Status: Confirmed on 2026-07-26.
+Status: Confirmed on 2026-07-30.
 
 Model families are selected architecture-first. Language breadth is a capability of individual model variants and is not an admission requirement for a family implementation.
 
@@ -109,6 +109,13 @@ before conversion work begins.
 License facts for this candidate were established from its upstream model card.
 A downstream community port describes these weights as Apache-2.0, which is
 incorrect; port documentation is not a license source.
+
+Resolved 2026-07-30: OmniVoice is the fourth Model Family. The question is
+settled by ADR 0018 — the family ships as a Restricted Model Package, carrying
+the upstream CC-BY-NC statement for the LM weights and the Boson Higgs Audio 2
+Community License for the bundled codec weights (a third license the original
+deferral note did not record; it lives at `audio_tokenizer/LICENSE` inside the
+weights repository). The porting record is `docs/porting/families/omnivoice.md`.
 
 ## Reference Validation Variants
 

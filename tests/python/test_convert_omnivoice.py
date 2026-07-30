@@ -1,0 +1,658 @@
+"""Focused tests for the OmniVoice converter's silent-failure rules.
+
+Every rule tested here fails *quietly* if it is wrong: the converter still
+writes a file, the file still loads, and the audio is wrong, absent, or
+subtly detuned. They are the reason this test file exists rather than a smoke
+run.
+
+The checkpoint's own numbers are read from the committed intake inventory
+(`reports/porting/omnivoice/omnivoice-0-6b/tensor-inventory.json`) rather than
+restated here, so a checkpoint whose layout moves fails these tests instead of
+passing them against a stale transcription.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+
+import torch
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS = REPO_ROOT / "scripts"
+INVENTORY_PATH = (
+    REPO_ROOT / "reports" / "porting" / "omnivoice" / "omnivoice-0-6b" / "tensor-inventory.json"
+)
+sys.path.insert(0, str(SCRIPTS))
+
+_spec = importlib.util.spec_from_file_location(
+    "convert_omnivoice", SCRIPTS / "convert-omnivoice.py"
+)
+convert = importlib.util.module_from_spec(_spec)
+# Registered before execution because @dataclass resolves its own module through
+# sys.modules; without this the decorator raises while the file is still loading.
+sys.modules["convert_omnivoice"] = convert
+_spec.loader.exec_module(convert)
+
+
+def inventory() -> dict[str, dict[str, dict]]:
+    return json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
+
+
+def codebook(index: int, entries: int = 4, dim: int = 3) -> dict[str, torch.Tensor]:
+    """One RVQ quantizer as the checkpoint stores it: a live table plus training state."""
+    base = f"quantizer.quantizers.{index}.codebook."
+    return {
+        base + "embed": torch.arange(entries * dim, dtype=torch.float32).reshape(entries, dim),
+        base + "embed_avg": torch.ones(entries, dim, dtype=torch.float32),
+        base + "cluster_size": torch.full((entries,), 7.0),
+        base + "inited": torch.ones(1, dtype=torch.float32),
+    }
+
+
+def weight_norm_pair(
+    base: str = "semantic_model.encoder.pos_conv_embed.conv",
+    channels: int = 8,
+    groups: int = 2,
+    kernel: int = 4,
+) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+    """A real torch weight-norm parametrization and the weight it stands for."""
+    torch.manual_seed(20260730)
+    module = torch.nn.utils.parametrizations.weight_norm(
+        torch.nn.Conv1d(channels, channels, kernel, groups=groups), name="weight", dim=2
+    )
+    tensors = {
+        f"{base}.parametrizations.weight.original0":
+            module.parametrizations.weight.original0.detach().clone(),
+        f"{base}.parametrizations.weight.original1":
+            module.parametrizations.weight.original1.detach().clone(),
+        f"{base}.bias": module.bias.detach().clone(),
+    }
+    return tensors, module.weight.detach().clone()
+
+
+class SkipRuleTests(unittest.TestCase):
+    """What the package must NOT carry, and why each omission is not silent."""
+
+    def test_drops_fc1_and_decoder_semantic(self) -> None:
+        """Both feed the training-only semantic reconstruction loss.
+
+        `HiggsAudioV2TokenizerModel.encode` and `.decode` reach neither, so
+        carrying them would add weight to the package that no graph can read.
+        """
+        tensors = {
+            "fc1.weight": torch.ones(2, 2),
+            "fc1.bias": torch.ones(2),
+            "decoder_semantic.conv1.weight": torch.ones(2, 2, 3),
+            "fc2.weight": torch.ones(2, 2),
+            "encoder_semantic.conv.weight": torch.ones(2, 2, 3),
+        }
+        conversion = convert.Conversion()
+        kept = convert.drop_by_prefix(tensors, convert.DROP_PREFIXES, conversion, "codec.")
+
+        self.assertEqual(sorted(kept), ["encoder_semantic.conv.weight", "fc2.weight"])
+        self.assertEqual(len(conversion.skipped), len(convert.DROP_PREFIXES))
+        for entry in conversion.skipped:
+            self.assertTrue(entry["reason"], "every skip must carry a reason")
+            self.assertTrue(entry["logical_source_name"].startswith("codec."))
+
+    def test_missing_drop_targets_is_an_error(self) -> None:
+        """A layout move must stop the conversion, not quietly widen the package."""
+        tensors = {"fc2.weight": torch.ones(2, 2)}
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.drop_by_prefix(tensors, ("fc1.",), convert.Conversion(), "codec.")
+        self.assertIn("fc1.", str(caught.exception))
+
+    def test_codebook_layer_offsets_buffer_is_skipped_not_emitted(self) -> None:
+        """The generator's only non-F32 tensor is a derivable index buffer."""
+        offsets = torch.arange(convert.NUM_CODEBOOKS, dtype=torch.int64) * convert.AUDIO_VOCAB
+        tensors = {
+            "codebook_layer_offsets": offsets,
+            "audio_heads.weight": torch.ones(2, 2),
+        }
+        conversion = convert.Conversion()
+        kept = convert.drop_derivable_offsets(tensors, conversion)
+
+        self.assertEqual(sorted(kept), ["audio_heads.weight"])
+        self.assertEqual(len(conversion.skipped), 1)
+        self.assertIn("derivable", conversion.skipped[0]["reason"])
+        self.assertIn("I64", conversion.skipped[0]["reason"])
+
+    def test_offsets_that_are_not_derivable_stop_the_conversion(self) -> None:
+        """Dropping a buffer whose values moved would delete real information."""
+        tensors = {
+            "codebook_layer_offsets": torch.zeros(convert.NUM_CODEBOOKS, dtype=torch.int64),
+        }
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.drop_derivable_offsets(tensors, convert.Conversion())
+        self.assertIn("codebook_layer_offsets", str(caught.exception))
+
+    def test_ema_buffers_are_skipped_when_embed_exists(self) -> None:
+        """Unlike qwen3-tts, the RVQ table is live; the accumulators are dead weight.
+
+        `HiggsAudioV2TokenizerEuclideanCodebook.decode` is
+        `F.embedding(embed_ind, self.embed)` -- the table is read directly. The
+        three sibling buffers are k-means training state; carrying `embed_avg`
+        as if it were a weight would double the quantizer for nothing.
+        """
+        tensors = {**codebook(0), **codebook(1), "fc.weight": torch.ones(2, 2)}
+        conversion = convert.Conversion()
+        kept = convert.skip_codebook_training_buffers(tensors, conversion, "codec.")
+
+        self.assertEqual(
+            sorted(kept),
+            [
+                "fc.weight",
+                "quantizer.quantizers.0.codebook.embed",
+                "quantizer.quantizers.1.codebook.embed",
+            ],
+        )
+        self.assertTrue(torch.equal(
+            kept["quantizer.quantizers.0.codebook.embed"],
+            codebook(0)["quantizer.quantizers.0.codebook.embed"],
+        ))
+        # Three buffers per quantizer, each with its own recorded reason.
+        self.assertEqual(len(conversion.skipped), 6)
+        for entry in conversion.skipped:
+            self.assertTrue(entry["reason"])
+
+    def test_a_codebook_without_a_live_table_is_an_error(self) -> None:
+        """Accumulators with no table means this checkpoint needs reconstruction.
+
+        Emitting nothing for that quantizer loses it silently; the graph would
+        then read whatever tensor the catalog resolved to next.
+        """
+        tensors = dict(codebook(0))
+        del tensors["quantizer.quantizers.0.codebook.embed"]
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.skip_codebook_training_buffers(tensors, convert.Conversion(), "codec.")
+        self.assertIn("embed", str(caught.exception))
+
+    def test_a_checkpoint_with_no_codebook_at_all_is_an_error(self) -> None:
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.skip_codebook_training_buffers(
+                {"fc.weight": torch.ones(2, 2)}, convert.Conversion(), "codec."
+            )
+        self.assertIn("no RVQ codebook", str(caught.exception))
+
+
+class WeightNormFoldTests(unittest.TestCase):
+    """HuBERT's positional convolution is stored as a weight-norm parametrization.
+
+    Emitting `original0`/`original1` verbatim gives the graph a magnitude and a
+    direction where it expects a kernel. Nothing downstream can tell.
+    """
+
+    def test_folds_g_v_into_a_plain_weight(self) -> None:
+        tensors, expected = weight_norm_pair()
+        conversion = convert.Conversion()
+        folded = convert.fold_weight_norm(tensors, conversion, "codec.")
+
+        target = "semantic_model.encoder.pos_conv_embed.conv.weight"
+        self.assertEqual(sorted(folded), [
+            "semantic_model.encoder.pos_conv_embed.conv.bias", target,
+        ])
+        self.assertEqual(folded[target].shape, expected.shape)
+        self.assertEqual(len(conversion.transformed), 1)
+        self.assertEqual(conversion.transformed[0]["output"], target)
+        self.assertIn("weight norm", conversion.transformed[0]["reason"])
+
+    def test_fold_matches_torch_weight_norm(self) -> None:
+        """Bit-identical, not merely close.
+
+        The oracle recomputes this weight on every forward through the same
+        operator. A fold that only agreed to a few ulps would move the argmax
+        cascade this family commits at every step.
+        """
+        for channels, groups, kernel in ((8, 2, 4), (16, 4, 3), (6, 1, 5)):
+            with self.subTest(channels=channels, groups=groups, kernel=kernel):
+                tensors, expected = weight_norm_pair(
+                    channels=channels, groups=groups, kernel=kernel
+                )
+                folded = convert.fold_weight_norm(tensors, convert.Conversion(), "codec.")
+                actual = folded["semantic_model.encoder.pos_conv_embed.conv.weight"]
+                self.assertTrue(torch.equal(actual, expected))
+
+    def test_orphan_g_without_v_is_an_error(self) -> None:
+        tensors, _ = weight_norm_pair()
+        del tensors["semantic_model.encoder.pos_conv_embed.conv.parametrizations.weight.original1"]
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.fold_weight_norm(tensors, convert.Conversion(), "codec.")
+        self.assertIn("original1", str(caught.exception))
+
+    def test_orphan_v_without_g_is_an_error(self) -> None:
+        tensors, _ = weight_norm_pair()
+        del tensors["semantic_model.encoder.pos_conv_embed.conv.parametrizations.weight.original0"]
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.fold_weight_norm(tensors, convert.Conversion(), "codec.")
+        self.assertIn("original0", str(caught.exception))
+
+    def test_an_ambiguous_magnitude_shape_is_an_error(self) -> None:
+        """The norm dimension is recovered from g's one non-singleton axis."""
+        tensors, _ = weight_norm_pair()
+        base = "semantic_model.encoder.pos_conv_embed.conv.parametrizations.weight."
+        tensors[base + "original0"] = torch.ones(8, 1, 4)
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.fold_weight_norm(tensors, convert.Conversion(), "codec.")
+        self.assertIn("dimension", str(caught.exception))
+
+    def test_a_checkpoint_with_no_parametrization_is_an_error(self) -> None:
+        """This family's codec always carries one; none means the layout moved."""
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.fold_weight_norm(
+                {"semantic_model.encoder.pos_conv_embed.conv.bias": torch.ones(4)},
+                convert.Conversion(),
+                "codec.",
+            )
+        self.assertIn("weight norm", str(caught.exception))
+
+
+class NameLengthTests(unittest.TestCase):
+    """GGML stores a tensor name in a fixed 64-byte field and truncates past it.
+
+    A truncated name is not findable by the name the catalog asks for, and two
+    names that differ only past the cut become one tensor. 195 of this codec's
+    527 names sit within six characters of the limit and the longest overruns
+    it by eighteen.
+    """
+
+    def emitted_names(self) -> list[str]:
+        """Every name the converter will hand to `shorten_name`."""
+        data = inventory()
+        names = list(data["generator"])
+        names.remove("codebook_layer_offsets")
+        for name in data["codec"]:
+            if convert.PARAMETRIZATION_INFIX in name:
+                if name.endswith(".original1"):
+                    continue
+                name = convert.folded_weight_name(name)
+            names.append("codec." + name)
+        return names
+
+    def test_every_inventory_name_fits_after_prefixing(self) -> None:
+        for name in self.emitted_names():
+            shortened = convert.shorten_name(name, convert.Conversion())
+            self.assertLess(len(shortened), convert.GGML_MAX_NAME, name)
+
+    def test_shortened_names_stay_distinct(self) -> None:
+        shortened = [convert.shorten_name(n, convert.Conversion()) for n in self.emitted_names()]
+        self.assertEqual(len(set(shortened)), len(shortened), "a shortening merged two tensors")
+
+    def test_every_shortening_rule_fires_on_a_real_name(self) -> None:
+        names = self.emitted_names()
+        for long_form, _ in convert.NAME_SHORTENINGS:
+            with self.subTest(rule=long_form):
+                self.assertTrue(
+                    [n for n in names if long_form in n],
+                    f"{long_form!r} matches nothing in this checkpoint; a rename nobody needs",
+                )
+
+    def test_every_shortening_rule_is_load_bearing(self) -> None:
+        """A rule that fixes no overflow is a gratuitous rename of the catalog."""
+        names = self.emitted_names()
+        for index, (long_form, _) in enumerate(convert.NAME_SHORTENINGS):
+            with self.subTest(rule=long_form):
+                without = [r for i, r in enumerate(convert.NAME_SHORTENINGS) if i != index]
+                overflowing = []
+                for name in names:
+                    reduced = name
+                    for old, new in without:
+                        reduced = reduced.replace(old, new)
+                    if len(reduced) >= convert.GGML_MAX_NAME:
+                        overflowing.append(reduced)
+                self.assertTrue(
+                    overflowing,
+                    f"{long_form!r} fixes no overflow; drop it rather than rename the catalog",
+                )
+
+    def test_overflowing_name_without_a_rule_stops_conversion(self) -> None:
+        conversion = convert.Conversion()
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.shorten_name("codec." + "x" * convert.GGML_MAX_NAME, conversion)
+        self.assertIn("GGML truncates", str(caught.exception))
+
+    def test_a_name_already_short_enough_is_untouched(self) -> None:
+        conversion = convert.Conversion()
+        self.assertEqual(convert.shorten_name("llm.norm.weight", conversion), "llm.norm.weight")
+        self.assertEqual(conversion.renamed, [], "an unchanged name is not a rename")
+
+    def test_a_rename_is_recorded(self) -> None:
+        conversion = convert.Conversion()
+        name = "codec.semantic_model.encoder.layers.11.feed_forward.intermediate_dense.weight"
+        shortened = convert.shorten_name(name, conversion)
+        self.assertEqual(conversion.renamed, [{"output": shortened, "from": name}])
+
+
+class DtypeTests(unittest.TestCase):
+    """This checkpoint is F32 throughout; anything else is a layout change."""
+
+    def test_f32_stays_f32(self) -> None:
+        array, dtype = convert.numpy_of(torch.ones(4, dtype=torch.float32))
+        self.assertEqual(dtype.name, "F32")
+        self.assertEqual(array.dtype.itemsize, 4)
+
+    def test_i64_and_other_dtypes_are_rejected(self) -> None:
+        for dtype in (torch.int64, torch.bfloat16, torch.float16, torch.int32):
+            with self.subTest(dtype=dtype):
+                with self.assertRaises(convert.ConverterError):
+                    convert.numpy_of(torch.ones(4, dtype=dtype))
+
+    def test_the_inventory_carries_exactly_one_non_f32_tensor(self) -> None:
+        """The single I64 buffer is the one the converter derives instead."""
+        data = inventory()
+        non_f32 = {
+            name: entry["dtype"]
+            for name, entry in {**data["generator"], **data["codec"]}.items()
+            if entry["dtype"] != "F32"
+        }
+        self.assertEqual(non_f32, {"codebook_layer_offsets": "I64"})
+
+
+class CodecGeometryTests(unittest.TestCase):
+    """`audio_tokenizer/config.json` disagrees with its own weights three ways.
+
+    The tensors win. A converter that sized the codebooks from the config would
+    write n_codebooks 9 and codebook_dim 8 into a package holding eight
+    [1024, 64] tables, and the loader would build a graph around the metadata.
+    """
+
+    def test_geometry_is_measured_from_the_tables(self) -> None:
+        tensors = {}
+        for index in range(3):
+            tensors[f"quantizer.quantizers.{index}.codebook.embed"] = torch.zeros(1024, 64)
+        geometry = convert.measure_codec_geometry(tensors)
+        self.assertEqual(geometry.quantizer_count, 3)
+        self.assertEqual(geometry.codebook_size, 1024)
+        self.assertEqual(geometry.codebook_dim, 64)
+
+    def test_the_real_inventory_measures_eight_by_1024_by_64(self) -> None:
+        shapes = {
+            name: entry["shape"]
+            for name, entry in inventory()["codec"].items()
+            if name.endswith(".codebook.embed")
+        }
+        self.assertEqual(len(shapes), 8)
+        self.assertEqual(sorted({tuple(s) for s in shapes.values()}), [(1024, 64)])
+
+    def test_tables_of_different_shapes_are_refused(self) -> None:
+        tensors = {
+            "quantizer.quantizers.0.codebook.embed": torch.zeros(1024, 64),
+            "quantizer.quantizers.1.codebook.embed": torch.zeros(512, 64),
+        }
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.measure_codec_geometry(tensors)
+        self.assertIn("shape", str(caught.exception))
+
+    def test_a_gap_in_the_quantizer_indices_is_refused(self) -> None:
+        tensors = {
+            "quantizer.quantizers.0.codebook.embed": torch.zeros(1024, 64),
+            "quantizer.quantizers.2.codebook.embed": torch.zeros(1024, 64),
+        }
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.measure_codec_geometry(tensors)
+        self.assertIn("contiguous", str(caught.exception))
+
+    def test_config_disagreements_are_recorded_rather_than_trusted(self) -> None:
+        codec_config = {
+            "codebook_dim": 64,
+            "codebook_size": 1024,
+            "sample_rate": 24000,
+            "acoustic_model_config": {
+                "n_codebooks": 9, "codebook_dim": 8, "sampling_rate": 16000,
+            },
+        }
+        geometry = convert.CodecGeometry(quantizer_count=8, codebook_size=1024, codebook_dim=64)
+        found = convert.config_disagreements(codec_config, geometry)
+
+        fields = sorted(entry["field"] for entry in found)
+        self.assertEqual(fields, [
+            "acoustic_model_config.codebook_dim",
+            "acoustic_model_config.n_codebooks",
+            "acoustic_model_config.sampling_rate",
+        ])
+        for entry in found:
+            self.assertIn("resolution", entry)
+
+    def test_a_config_that_agrees_reports_nothing(self) -> None:
+        codec_config = {
+            "codebook_dim": 64,
+            "codebook_size": 1024,
+            "sample_rate": 24000,
+            "acoustic_model_config": {
+                "n_codebooks": 8, "codebook_dim": 64, "sampling_rate": 24000,
+            },
+        }
+        geometry = convert.CodecGeometry(quantizer_count=8, codebook_size=1024, codebook_dim=64)
+        self.assertEqual(convert.config_disagreements(codec_config, geometry), [])
+
+
+class GenerationDefaultsTests(unittest.TestCase):
+    """The decoding defaults come from the pinned package, never a second copy.
+
+    `num_step`, `guidance_scale` and `t_shift` decide what the model says, not
+    merely how it sounds: they are the mask-predict schedule. A restated table
+    drifts from the package the oracle ran.
+    """
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("omnivoice"),
+        "the omnivoice package is only present in scripts/envs/omnivoice",
+    )
+    def test_defaults_are_read_from_the_upstream_dataclass(self) -> None:
+        defaults = convert.read_generation_defaults()
+        for key in ("num_step", "guidance_scale", "t_shift", "layer_penalty_factor",
+                    "position_temperature", "class_temperature"):
+            self.assertIn(key, defaults)
+
+        from omnivoice import OmniVoiceGenerationConfig  # noqa: PLC0415
+        upstream = OmniVoiceGenerationConfig()
+        for key, value in defaults.items():
+            self.assertEqual(value, getattr(upstream, key))
+
+    def test_an_absent_package_is_an_error_not_a_fallback_table(self) -> None:
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.read_generation_defaults(module_name="omnivoice_not_installed_anywhere")
+        self.assertIn("omnivoice", str(caught.exception))
+
+    def test_zero_num_step_is_refused(self) -> None:
+        defaults = {
+            "num_step": 0, "guidance_scale": 2.0, "t_shift": 0.1,
+            "layer_penalty_factor": 5.0, "position_temperature": 5.0,
+            "class_temperature": 0.0,
+        }
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.validate_generation_defaults(defaults)
+        self.assertIn("num_step", str(caught.exception))
+
+    def test_a_missing_default_is_refused(self) -> None:
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.validate_generation_defaults({"num_step": 32})
+        self.assertIn("guidance_scale", str(caught.exception))
+
+    def test_a_non_finite_schedule_value_is_refused(self) -> None:
+        defaults = {
+            "num_step": 32, "guidance_scale": float("nan"), "t_shift": 0.1,
+            "layer_penalty_factor": 5.0, "position_temperature": 5.0,
+            "class_temperature": 0.0,
+        }
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.validate_generation_defaults(defaults)
+        self.assertIn("guidance_scale", str(caught.exception))
+
+
+class PinnedInputTests(unittest.TestCase):
+    """Every local file the conversion reads or republishes is pinned.
+
+    The codec's LICENSE is the one that matters most here: it is republished
+    beside the artifact and its digest is recorded in the report as
+    authoritative, so a locally edited grant would be carried into the package
+    and vouched for. Hashing the copy against its own source proves nothing.
+    """
+
+    LICENSE_SUFFIX = "/audio_tokenizer/LICENSE"
+
+    def manifest_with(self, artifacts: list[dict[str, str]]) -> dict[str, object]:
+        return {"source": {"artifacts": artifacts}}
+
+    def license_input(self, path: Path) -> object:
+        return convert.PinnedInput("codec_license", path, "license", self.LICENSE_SUFFIX)
+
+    def test_the_codec_license_is_one_of_the_pinned_inputs(self) -> None:
+        entries = {entry.label: entry for entry in convert.pinned_inputs(Path("weights"))}
+        self.assertIn("codec_license", entries)
+        entry = entries["codec_license"]
+        self.assertEqual(entry.path, Path("weights") / "audio_tokenizer" / "LICENSE")
+        self.assertEqual(entry.role, "license")
+        self.assertEqual(entry.locator_suffix, self.LICENSE_SUFFIX)
+
+    def test_the_committed_manifest_pins_the_audited_license_digest(self) -> None:
+        """The pin the intake audited, resolved the way the converter resolves it.
+
+        The manifest carries two `license` artifacts; the suffix must select the
+        codec's rather than the source repository's Apache grant.
+        """
+        manifest = json.loads(
+            (REPO_ROOT / "tests" / "golden" / "omnivoice" / "omnivoice-0-6b.manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            convert.pinned_digest(manifest, "license", self.LICENSE_SUFFIX),
+            "ac933dc084d119bd20401956b90d11ae87c248b2da62622cd580d82cdf2fa049",
+        )
+
+    def test_a_license_that_does_not_match_its_pin_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "LICENSE"
+            path.write_bytes(b"a locally edited grant\n")
+            manifest = self.manifest_with([{
+                "role": "license",
+                "locator": "https://example.invalid/resolve/rev/audio_tokenizer/LICENSE",
+                "sha256": "ac933dc084d119bd20401956b90d11ae87c248b2da62622cd580d82cdf2fa049",
+            }])
+            with self.assertRaises(convert.ConverterError) as caught:
+                convert.verify_pinned_inputs(manifest, [self.license_input(path)])
+            message = str(caught.exception)
+            self.assertIn(str(path), message, "the error must name the offending file")
+            self.assertIn(hashlib.sha256(path.read_bytes()).hexdigest(), message)
+
+    def test_a_manifest_with_no_license_artifact_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "LICENSE"
+            path.write_bytes(b"some grant\n")
+            manifest = self.manifest_with([{
+                "role": "checkpoint",
+                "locator": "https://example.invalid/resolve/rev/model.safetensors",
+                "sha256": "0" * 64,
+            }])
+            with self.assertRaises(convert.ConverterError) as caught:
+                convert.verify_pinned_inputs(manifest, [self.license_input(path)])
+            self.assertIn("license", str(caught.exception))
+
+    def test_two_matching_license_artifacts_are_refused(self) -> None:
+        """An ambiguous pin must not be resolved by picking the first one."""
+        duplicate = {
+            "role": "license",
+            "locator": "https://example.invalid/resolve/rev/audio_tokenizer/LICENSE",
+            "sha256": "0" * 64,
+        }
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.pinned_digest(self.manifest_with([duplicate, dict(duplicate)]),
+                                  "license", self.LICENSE_SUFFIX)
+        self.assertIn("exactly one", str(caught.exception))
+
+    def test_a_missing_pinned_input_is_refused_before_anything_is_read(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "LICENSE"
+            manifest = self.manifest_with([{
+                "role": "license",
+                "locator": "https://example.invalid/resolve/rev/audio_tokenizer/LICENSE",
+                "sha256": "0" * 64,
+            }])
+            with self.assertRaises(convert.ConverterError) as caught:
+                convert.verify_pinned_inputs(manifest, [self.license_input(path)])
+            self.assertIn(str(path), str(caught.exception))
+
+    def test_a_matching_input_returns_its_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "LICENSE"
+            payload = b"the audited grant\n"
+            path.write_bytes(payload)
+            digest = hashlib.sha256(payload).hexdigest()
+            manifest = self.manifest_with([{
+                "role": "license",
+                "locator": "https://example.invalid/resolve/rev/audio_tokenizer/LICENSE",
+                "sha256": digest,
+            }])
+            self.assertEqual(
+                convert.verify_pinned_inputs(manifest, [self.license_input(path)]),
+                {"codec_license": digest},
+            )
+
+
+class LicenseCarriageTests(unittest.TestCase):
+    """The codec's grant must never separate from the converted artifact.
+
+    `audio_tokenizer/LICENSE` is the sole grant for the Higgs Audio 2 codec
+    weights -- its own model card says "[More Information Needed]" -- and the
+    agreement requires redistribution to carry its text.
+    """
+
+    def test_copies_the_codec_license_byte_identically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            weights = root / "weights" / "audio_tokenizer"
+            weights.mkdir(parents=True)
+            payload = b"BOSON HIGGS AUDIO 2 COMMUNITY LICENSE AGREEMENT\n\xc2\xa0text\n"
+            (weights / "LICENSE").write_bytes(payload)
+            output = root / "out" / "model.gguf"
+            output.parent.mkdir(parents=True)
+            digest = hashlib.sha256(payload).hexdigest()
+
+            records = convert.carry_licenses(root / "weights", output, Path.cwd(), digest)
+
+            copied = output.parent / convert.CODEC_LICENSE_NAME
+            self.assertEqual(copied.read_bytes(), payload)
+            self.assertIn(digest, [r.get("sha256") for r in records])
+            statements = " ".join(r.get("statement", "") for r in records)
+            self.assertIn("CC-BY-NC", statements)
+
+    def test_the_copy_is_checked_against_the_pin_not_against_itself(self) -> None:
+        """Re-hashing the source after the copy compares a file with itself."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            weights = root / "weights" / "audio_tokenizer"
+            weights.mkdir(parents=True)
+            (weights / "LICENSE").write_bytes(b"a locally edited grant\n")
+            output = root / "out" / "model.gguf"
+            output.parent.mkdir(parents=True)
+            with self.assertRaises(convert.ConverterError) as caught:
+                convert.carry_licenses(root / "weights", output, Path.cwd(), "0" * 64)
+            self.assertIn(convert.CODEC_LICENSE_NAME, str(caught.exception))
+
+    def test_a_missing_codec_license_stops_the_conversion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "weights" / "audio_tokenizer").mkdir(parents=True)
+            output = root / "out" / "model.gguf"
+            output.parent.mkdir(parents=True)
+            with self.assertRaises(convert.ConverterError) as caught:
+                convert.carry_licenses(root / "weights", output, Path.cwd(), "0" * 64)
+            self.assertIn("LICENSE", str(caught.exception))
+
+
+class ReportShapeTests(unittest.TestCase):
+    def test_tensor_report_states_ggml_shape_not_source_shape(self) -> None:
+        array, dtype = convert.numpy_of(torch.zeros(2, 3, dtype=torch.float32))
+        entry = convert.OutputTensor("x", array, dtype, "src").report()
+        self.assertEqual(entry["ggml_shape"], [3, 2])
+        self.assertEqual(entry["elements"], 6)
+        self.assertIn("sha256", entry)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -56,6 +56,10 @@ _Avoid_: Arbitrary model directory, executable bundle
 A Model Package that has at least passed the Port Validation Suite and whose exact bytes, provenance, license, and Validation Level are released through a project-owned model repository.
 _Avoid_: Raw checkpoint, unvalidated conversion, Native Provider
 
+**Restricted Model Package**:
+A Model Package that has passed the Port Validation Suite and is released through a project-owned model repository with restrictive upstream weight terms carried in full (e.g. CC-BY-NC). It is not a Published Model Package and never carries the embeddable-in-other-programs promise. Decision: ADR 0018.
+_Avoid_: Published Model Package
+
 **Loaded Model**:
 An immutable, shareable runtime instance of a Model Package on one Execution Backend.
 _Avoid_: Model Package, Synthesis Context

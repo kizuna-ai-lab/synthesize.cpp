@@ -1,6 +1,6 @@
 # Testing Policy
 
-Status: Confirmed, last updated on 2026-07-29.
+Status: Confirmed, last updated on 2026-07-30.
 
 Testing is a per-slice completion gate. A new converter rule, graph stage,
 runtime control, backend path, or public Interface is not complete merely because
@@ -102,6 +102,24 @@ oracle payload under `build/goldens/qwen3-tts/` and is not registered without it
 between runs of this port -- a seed reproduces, a different seed does not, a Voice
 change moves the audio -- rather than agreement with the reference, so it has no
 Golden sentinel.
+
+OmniVoice registers one integration test from `SYNTH_OMNIVOICE_TEST_MODEL`,
+which defaults to `models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf`. Unlike
+Qwen3-TTS, this family's source checkpoint stores F32 in both the generator
+and the codec halves, so F32 is the profile a port is checked against rather
+than a widened dtype.
+
+```bash
+cmake -S . -B build \
+  -DSYNTH_BUILD_TESTS=ON \
+  -DSYNTH_BUILD_INTEGRATION_TESTS=ON \
+  -DSYNTH_OMNIVOICE_TEST_MODEL="$PWD/models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf"
+cmake --build build --target synthesize-check-integration
+```
+
+`synthesize-omnivoice-load-real` needs only the package: it opens it through
+the family loader and then through the public seam, and is registered under
+`integration`, `omnivoice`, and `abi`.
 
 Run the DGX Spark CUDA 13.3 Update 1 gate in a separate build tree. CUDA F32
 matrix multiplies compute at TF32 precision and there is no build option to

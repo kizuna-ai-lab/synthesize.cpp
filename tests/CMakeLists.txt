@@ -169,6 +169,9 @@ synth_add_unit_test(synthesize-qwen3-tts-codec-ops-test qwen3_tts_codec_ops_test
 synth_add_unit_test(synthesize-qwen3-tts-codec-test qwen3_tts_codec_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-code-predictor-test qwen3_tts_code_predictor_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-sampling-test qwen3_tts_sampling_test.cpp)
+synth_add_unit_test(synthesize-omnivoice-metadata-test omnivoice_metadata_test.cpp)
+synth_add_unit_test(synthesize-omnivoice-catalog-test omnivoice_catalog_test.cpp)
+synth_add_unit_test(synthesize-omnivoice-frontend-test omnivoice_frontend_test.cpp)
 synth_add_unit_test(synthesize-kokoro-lstm-test kokoro_lstm_test.cpp)
 synth_add_unit_test(synthesize-kokoro-catalog-test kokoro_catalog_test.cpp)
 synth_add_unit_test(synthesize-kokoro-plbert-test kokoro_plbert_test.cpp)
@@ -285,6 +288,19 @@ target_link_libraries(synthesize-vits-model-errors-test PRIVATE synthesize ggml)
 add_test(NAME synthesize-vits-model-errors-test
     COMMAND synthesize-vits-model-errors-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
 synth_register_unit_target(synthesize-vits-model-errors-test)
+add_executable(synthesize-omnivoice-model-errors-test omnivoice_model_errors_test.cpp)
+target_include_directories(synthesize-omnivoice-model-errors-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(synthesize-omnivoice-model-errors-test PRIVATE synthesize ggml)
+add_test(NAME synthesize-omnivoice-model-errors-test
+    COMMAND synthesize-omnivoice-model-errors-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
+synth_register_unit_target(synthesize-omnivoice-model-errors-test)
+set_tests_properties(
+    synthesize-omnivoice-metadata-test
+    synthesize-omnivoice-catalog-test
+    synthesize-omnivoice-frontend-test
+    synthesize-omnivoice-model-errors-test
+    PROPERTIES LABELS "unit;omnivoice")
 set_tests_properties(
     synthesize-vits-text-encoder-host-test
     synthesize-vits-metadata-test
@@ -522,6 +538,24 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             COMMAND synthesize-qwen3-tts-output-limit-test ${SYNTH_QWEN3_TTS_TEST_MODEL})
         set_tests_properties(synthesize-qwen3-tts-output-limit PROPERTIES
             LABELS "integration;abi;qwen3-tts"
+            TIMEOUT 600)
+    endif()
+
+    # The foundation slice's closing check: the real OmniVoice package through
+    # the family loader and then through the public seam. It needs the package
+    # because that is the whole point — every earlier omnivoice test runs
+    # against a synthetic one, which can only prove the rules agree with
+    # themselves.
+    if(EXISTS "${SYNTH_OMNIVOICE_TEST_MODEL}")
+        add_executable(synthesize-omnivoice-load-real omnivoice_load_real.cpp)
+        target_include_directories(synthesize-omnivoice-load-real PRIVATE
+            ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+        target_link_libraries(synthesize-omnivoice-load-real PRIVATE synthesize ggml)
+        synth_register_integration_target(synthesize-omnivoice-load-real)
+        add_test(NAME synthesize-omnivoice-load-real
+            COMMAND synthesize-omnivoice-load-real ${SYNTH_OMNIVOICE_TEST_MODEL})
+        set_tests_properties(synthesize-omnivoice-load-real PROPERTIES
+            LABELS "integration;omnivoice;abi"
             TIMEOUT 600)
     endif()
 

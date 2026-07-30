@@ -37,8 +37,9 @@ from `omnivoice/models/omnivoice.py`. Both files are part of the OmniVoice
 source package at revision
 `468e927ba3716cd8dd86421148dfb3046e9f9d7b` (version 0.2.1), which this project
 pins in `scripts/envs/omnivoice/pyproject.toml`. Only the code is covered here:
-the OmniVoice weights carry a separate, non-Apache licence recorded in
-`docs/porting/families/omnivoice.md`.
+the OmniVoice weights carry two separate, non-Apache licences — CC-BY-NC for
+the language model and the Boson Higgs Audio 2 Community License for the
+codec — recorded in `docs/porting/families/omnivoice.md`.
 
 Copyright 2026 Xiaomi Corp. (authors: Han Zhu)
 

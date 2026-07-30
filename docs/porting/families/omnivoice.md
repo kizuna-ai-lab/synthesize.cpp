@@ -1,7 +1,9 @@
 # OmniVoice Family Selection and Port Plan
 
-Status: Confirmed 2026-07-30. Intake complete and oracle smoke passed; stages 2+
-not started.
+Status: Confirmed 2026-07-30. Intake, oracle materialization (20/20 cases
+dumped locally), source-dtype conversion (798-tensor F32 GGUF produced
+locally), and the stage-4 load slice (real-package smoke passing) are done;
+synthesis graphs and port validation have not started.
 
 ## Decision
 

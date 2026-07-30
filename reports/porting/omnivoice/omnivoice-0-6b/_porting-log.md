@@ -446,7 +446,10 @@ slice's `-model-errors-test` (empty path → `SYNTH_ERR_INVALID_ARG`, missing fi
 **Sanitizer clean on the real package too.** `synthesize-omnivoice-load-real`
 was also built and run in the ASan/UBSan configuration — 52 s, no report — so the
 3.2 GB weight buffer is allocated, streamed and freed without a leak or an
-undefined operation, not merely without a crash.
+undefined operation, not merely without a crash. `build-sanitize` was
+reconfigured for this run with `-DSYNTH_BUILD_INTEGRATION_TESTS=ON` against the
+locally converted GGUF; the standing sanitize configuration keeps integration
+tests off.
 
 ### What the smoke asserts, and why the public half is there
 

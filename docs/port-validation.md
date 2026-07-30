@@ -1,6 +1,6 @@
 # Port Validation Contract
 
-Status: Confirmed, last updated on 2026-07-28.
+Status: Confirmed, last updated on 2026-07-30.
 
 ## Purpose and Boundary
 
@@ -90,11 +90,36 @@ The rule, in order:
    the intake record. The schema has always permitted `bfloat16`/`float16` and
    `cuda`/`metal`/`vulkan`; only this document's prose said CPU.
 
-What does *not* change: the C++ side's correctness path is still established on
-CPU, and stage 5 still compares like with like. Comparing a port's F32 output
-against a BF16 reference, or the reverse, makes every tolerance absorb a dtype
-difference and can make structural exactness unreachable -- a port would then
-"fail" for being more accurate than the thing it is measured against.
+**What does *not* change:** the C++ side's correctness path is still established
+on CPU, and the oracle and the source GGUF must still agree on the dtype they
+*store*. That is rule 1, and it is what "like with like" means here.
+
+**What the arithmetic may differ in, and under what conditions.** ggml computes a
+stored BF16 weight through F32 and rejects BF16 in elementwise operators, so for a
+BF16-checkpoint family a port computing F32 against a reference at BF16 is the
+only reachable comparison. Until 2026-07-30 this paragraph forbade exactly that,
+which made it a rule no BF16 family could follow: rule 1 pins the oracle to the
+checkpoint's dtype, phase 2 puts the replay on CPU, and those two together force
+the comparison the sentence prohibited. It is permitted, on three conditions:
+
+1. the comparison is named in the tolerance file's `reference_stage`, so no reader
+   has to infer it;
+2. probes whose deep layers carry outlier channels gate on cosine, not max-abs;
+3. structural exactness is pinned by construction -- the replay seam supplies the
+   oracle's codes -- and never by a tolerance.
+
+The third condition is what the old wording was really reaching for. It feared a
+port "failing" for being more accurate than its reference, and that cannot happen
+while frame counts and shapes come from the replayed codes rather than from a
+threshold.
+
+An unequal-arithmetic comparison does make each threshold cover a dtype difference
+as well as an implementation one. That is a reason to **measure the two components
+separately and record the split**, not a reason to forbid the comparison. The
+split is measurable without the port: the talker probes are captured on the
+prefill, which consumes the whole prompt and draws nothing, so the same oracle run
+at two dtypes can be compared directly. **No family has done this yet** -- it is
+owed by qwen3-tts, whose thresholds currently state the combined figure.
 
 One consequence to expect rather than discover. A lower-precision reference has a
 heavier tail: under BF16, seed 0 on the two-character input "Hi." produced 121

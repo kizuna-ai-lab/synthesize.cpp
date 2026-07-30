@@ -1380,7 +1380,11 @@ Before these, layer 0 sat at a cosine of **-0.01**.
 
 All eighteen Golden cases pass. The oracle runs bfloat16 on CUDA and the port
 runs F32 on CPU, so these cover a dtype and a device difference as well as an
-implementation one -- which is the comparison the contract asks for.
+implementation one. That comparison is permitted rather than merely tolerated --
+see `docs/port-validation.md`, which was revised on 2026-07-30 after its earlier
+wording turned out to forbid the only comparison a BF16-checkpoint family can
+make -- and it comes with a condition this family has not met yet: the dtype and
+implementation components of each threshold are not separated.
 
 | probe | worst cosine | worst max-abs | gate |
 | --- | --- | --- | --- |

@@ -132,6 +132,34 @@ int main() {
     request.language_tag_size = 2;
     SYNTH_TEST_CHECK(synth::prepare_synthesis_request(many, &request, prepared) == SYNTH_ERR_UNSUPPORTED_LANGUAGE);
 
+    // The resolved language is the capability that answered, not a constant. This
+    // was hardcoded "en" for every request, so a model that accepted zh reported
+    // English back -- docs/languages.md requires the resolved language and any
+    // fallback to be reported to the caller.
+    request.language_tag      = "zh";
+    request.language_tag_size = 2;
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(many, &request, prepared) == SYNTH_OK);
+    SYNTH_TEST_CHECK(prepared.resolved_language_size == 2);
+    SYNTH_TEST_CHECK(std::strncmp(prepared.resolved_language_tag, "zh", 2) == 0);
+    // A regional request reports the tag it fell back to, which is the fallback
+    // being reported rather than hidden.
+    request.language_tag      = "en-GB";
+    request.language_tag_size = 5;
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(many, &request, prepared) == SYNTH_OK);
+    SYNTH_TEST_CHECK(prepared.resolved_language_size == 2);
+    SYNTH_TEST_CHECK(std::strncmp(prepared.resolved_language_tag, "en", 2) == 0);
+    // No tag: the package's declared default, and nothing when it declares none.
+    request.language_tag      = nullptr;
+    request.language_tag_size = 0;
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(info, &request, prepared) == SYNTH_OK);
+    SYNTH_TEST_CHECK(prepared.resolved_language_size == 2);
+    SYNTH_TEST_CHECK(std::strncmp(prepared.resolved_language_tag, "en", 2) == 0);
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(many, &request, prepared) == SYNTH_OK);
+    SYNTH_TEST_CHECK(prepared.resolved_language_size == 0 && prepared.resolved_language_tag == nullptr);
+    // Restore an explicit, undeclared tag for the case below.
+    request.language_tag      = "ko";
+    request.language_tag_size = 2;
+
     // A model declaring nothing accepts no explicit tag, but naming no language
     // at all still works: that path never consults the list.
     synth::ModelInfo silent = model_info();

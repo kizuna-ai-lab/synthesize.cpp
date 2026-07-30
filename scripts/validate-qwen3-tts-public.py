@@ -118,14 +118,24 @@ def main() -> int:
     record("the resolved Voice is reported", second_voice["resolved_voice"] == "vivian",
            f"reported {second_voice['resolved_voice']!r}")
 
-    # A dialect speaker pins its own language regardless of the request, which is
-    # what the reference does and is invisible in the audio alone.
+    # A dialect speaker pins its own language regardless of the request. That
+    # override happens inside the family, and the seam reports the language the
+    # *request* matched -- so it is not observable here, and this phase does not
+    # claim to check it. What it can check is that such a speaker synthesizes at
+    # all and produces something distinct from a non-dialect one.
     dialect = synthesize(arguments, "voice-dialect", "eric", "en", "7")
     plain   = synthesize(arguments, "voice-plain", "aiden", "en", "7")
     if dialect is None or plain is None:
         return 1
-    record("a dialect speaker still synthesizes", dialect["frames"] > 0,
+    record("a dialect speaker synthesizes", dialect["frames"] > 0,
            f"{dialect['frames']} frames, language reported {dialect['resolved_language']!r}")
+    record("a dialect speaker differs from a plain one", dialect["digest"] != plain["digest"],
+           f"eric {dialect['digest'][:16]} vs aiden {plain['digest'][:16]}")
+    # The resolved language is the request's, reported back rather than assumed.
+    # Before the language capability was read from the model this was hardcoded
+    # "en" for every request, so a Chinese synthesis reported English.
+    record("the resolved language is reported", dialect["resolved_language"] == "en",
+           f"requested en, reported {dialect['resolved_language']!r}")
 
     if arguments.report is not None:
         arguments.report.parent.mkdir(parents=True, exist_ok=True)

@@ -92,24 +92,40 @@ bool valid_bcp47_shape(const char * value, size_t size) {
 // Matching is exact first, then on the primary subtag for entries that accept a
 // region -- which is what keeps "en-GB" and "en-029" working for a model that
 // declares plain "en".
-bool declared_language(const ModelInfo & info, const char * value, size_t size) {
+// Returns the capability that answered, so the caller can be told which one did.
+// docs/languages.md requires the resolved language to be reported, and a request
+// for `zh` that reports `en` misdescribes what was synthesized.
+const LanguageCapability * declared_language(const ModelInfo & info, const char * value, size_t size) {
     for (const LanguageCapability & entry : info.languages) {
         if (equals_ascii_case(value, size, entry.tag.c_str())) {
-            return true;
+            return &entry;
         }
     }
     const char * separator = static_cast<const char *>(std::memchr(value, '-', size));
     if (separator == nullptr) {
-        return false;
+        return nullptr;
     }
     const size_t primary = static_cast<size_t>(separator - value);
     for (const LanguageCapability & entry : info.languages) {
         if ((entry.flags & SYNTH_LANGUAGE_REGIONAL_FALLBACK) != 0 &&
             equals_ascii_case(value, primary, entry.tag.c_str())) {
-            return true;
+            return &entry;
         }
     }
-    return false;
+    return nullptr;
+}
+
+// What a request that names no language resolves to: the capability the package
+// marks default, and nothing if it marks none. Qwen3-TTS marks none -- an absent
+// tag gives the reference's no-think prompt, which carries no language token at
+// all -- so reporting a tag there would invent one.
+const LanguageCapability * default_language(const ModelInfo & info) {
+    for (const LanguageCapability & entry : info.languages) {
+        if ((entry.flags & SYNTH_LANGUAGE_DEFAULT) != 0) {
+            return &entry;
+        }
+    }
+    return nullptr;
 }
 
 }  // namespace
@@ -155,12 +171,14 @@ synth_status_t prepare_synthesis_request(const ModelInfo &          info,
     if ((language_tag == nullptr) != (language_size == 0)) {
         return SYNTH_ERR_INVALID_ARG;
     }
+    const LanguageCapability * resolved_language = nullptr;
     if (language_tag != nullptr) {
         if (language_size > std::numeric_limits<size_t>::max() ||
             !valid_bcp47_shape(language_tag, static_cast<size_t>(language_size))) {
             return SYNTH_ERR_INVALID_ARG;
         }
-        if (!declared_language(info, language_tag, static_cast<size_t>(language_size))) {
+        resolved_language = declared_language(info, language_tag, static_cast<size_t>(language_size));
+        if (resolved_language == nullptr) {
             return SYNTH_ERR_UNSUPPORTED_LANGUAGE;
         }
     }
@@ -233,10 +251,16 @@ synth_status_t prepare_synthesis_request(const ModelInfo &          info,
         read_field(request, offsetof(synth_request_t, should_cancel), static_cast<synth_cancel_callback_t>(nullptr));
     output.cancel_user_data =
         read_field(request, offsetof(synth_request_t, cancel_user_data), static_cast<void *>(nullptr));
-    output.diagnostics            = read_field(request, offsetof(synth_request_t, diagnostics),
-                                               static_cast<const synth_diagnostic_sink_t *>(nullptr));
-    output.resolved_language_tag  = "en";
-    output.resolved_language_size = 2;
+    output.diagnostics = read_field(request, offsetof(synth_request_t, diagnostics),
+                                    static_cast<const synth_diagnostic_sink_t *>(nullptr));
+    // The tag that answered, so a multilingual synthesis is not reported as
+    // English. An absent request tag falls to the package's declared default,
+    // and to nothing when it declares none.
+    if (resolved_language == nullptr) {
+        resolved_language = default_language(info);
+    }
+    output.resolved_language_tag  = resolved_language == nullptr ? nullptr : resolved_language->tag.c_str();
+    output.resolved_language_size = resolved_language == nullptr ? 0 : resolved_language->tag.size();
     output.speaker_index          = speaker_index;
     if (speaker_index != UINT32_MAX) {
         const std::string & resolved = info.preset_voice_ids[speaker_index];

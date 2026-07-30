@@ -24,13 +24,17 @@ static double now_seconds(void) {
     return (double) moment.tv_sec + (double) moment.tv_nsec * 1e-9;
 }
 
-static void write_pcm(const char * path, const float * samples, uint64_t count) {
+/* Returns false on any failure. Swallowing it printed the success JSON over a
+ * missing or truncated file, and the validator then compared against that
+ * instead of seeing an error. */
+static int write_pcm(const char * path, const float * samples, uint64_t count) {
     FILE * file = fopen(path, "wb");
     if (file == NULL) {
-        return;
+        return 0;
     }
-    fwrite(samples, sizeof(float), (size_t) count, file);
-    fclose(file);
+    const size_t written = fwrite(samples, sizeof(float), (size_t) count, file);
+    const int    flushed = fclose(file) == 0;
+    return written == (size_t) count && flushed;
 }
 
 int main(int argc, char ** argv) {
@@ -128,7 +132,13 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    write_pcm(out_path, audio->samples, audio->frame_count);
+    if (!write_pcm(out_path, audio->samples, audio->frame_count)) {
+        fprintf(stderr, "cannot write %s\n", out_path);
+        synth_audio_buffer_free(audio);
+        synth_context_free(context);
+        synth_model_free(model);
+        return 1;
+    }
     printf(
         "{\"status\": %d, \"frames\": %llu, \"sample_rate\": %u, \"actual_seed\": \"%llu\", "
         "\"load_seconds\": %.4f, \"synthesis_seconds\": %.4f, \"threads\": %d, "

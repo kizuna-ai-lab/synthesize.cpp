@@ -123,6 +123,11 @@ set(SYNTH_VITS_VCTK_TEST_MODEL "${CMAKE_SOURCE_DIR}/models/vits-vctk/vits-vctk-F
     CACHE FILEPATH "Local multi-speaker VITS VCTK F32 GGUF used by integration tests")
 set(SYNTH_KOKORO_TEST_MODEL "${CMAKE_SOURCE_DIR}/models/kokoro-v1-0/kokoro-v1-0-F32.gguf"
     CACHE FILEPATH "Local Kokoro F32 GGUF used by integration tests")
+# The source profile, because this family's is BF16 rather than F32: the talker
+# checkpoint stores bfloat16 and widening it would describe a different model.
+set(SYNTH_QWEN3_TTS_TEST_MODEL
+    "${CMAKE_SOURCE_DIR}/models/qwen3-tts-12hz-0-6b-customvoice/qwen3-tts-12hz-0-6b-customvoice-BF16.gguf"
+    CACHE FILEPATH "Local Qwen3-TTS BF16 GGUF used by integration tests")
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/SynthesizeReleaseCudaPolicy.cmake)
 synth_validate_release_cuda_targets()

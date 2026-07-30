@@ -1,6 +1,6 @@
 # Execution Backend Policy
 
-Status: Confirmed, last updated on 2026-07-27.
+Status: Confirmed, last updated on 2026-07-29.
 
 ## Shared Inference Graph
 
@@ -216,6 +216,68 @@ The combined evidence is recorded in
 `reports/validate/vits/vits-ljspeech-cuda-13.3-linux.json`.
 
 The General Model Capability query also reports Native Streaming Synthesis only when the loaded Model Package and selected Execution Backend combination has passed the separate streaming validation gates. Chunked Audio Delivery remains available independently and does not set that capability.
+
+## Placement And Cleanup Are Checked, Not Declared
+
+Gate 6 above -- "Pass repeated-run and resource-cleanup checks" -- and the
+placement half of gate 5 were, until 2026-07-29, satisfied by nothing. Every
+Golden Manifest in this repository declares `backend_placement` and
+`resource_cleanup` on every case, and outside the manifests and the schema enum
+those strings appeared nowhere: no validator, runner or test read a case's
+`checks` array at all. The evidence on record for VITS was twenty repeated
+*processes*, which cannot observe an in-process leak because exit reclaims
+everything.
+
+**Placement is now counted, not asserted.** `BackendPlacement` gained
+`off_cpu_node_count`, which classifies by device type independently of which
+backend is primary -- the older counters classify against the primary, so a node
+running on the primary accelerator was never reached by the type test and
+`accelerator_node_count` stayed zero exactly when the work had moved. The family
+reports per-stage counts and the replay validator decides the declared check
+against them: on a CPU run every node of every stage must be on the CPU, and with
+`--accelerate` the codec's must all have left it while the talker's and the code
+predictor's must not have moved at all. That last clause is the discrete-output
+rule made checkable rather than trusted.
+
+A backend that is present is not a backend that ran. A graph placed on an
+accelerator and silently fell back looks identical from outside the process,
+which is why the check counts nodes rather than asking whether a device exists.
+
+**Cleanup is measured across cycles.** `tests/public_cleanup_test.cpp` drives
+whole load/context/synthesize/free cycles on every backend the build claims, for
+all three families, and asserts two things one run cannot: that every cycle after
+the first returns an identical frame count and PCM digest at a fixed seed, and
+that the *floor* of post-free resident memory does not rise. The floor rather
+than the difference between first and last: a leak raises the floor, arena churn
+only raises peaks, and a draft written the other way failed on a run whose first
+cycle happened to land in a trough.
+
+## CPU Thread Count Is Below The CPU Count
+
+A Synthesis Context defaults to **half the CPUs it may use**, not all of them,
+and an embedder may override that through `synth_context_set_threads`.
+
+Asking for exactly the CPU count is not a small pessimization. GGML's barrier
+spins rather than yielding, and synthesis is batch-one autoregressive decoding
+that crosses that barrier on the order of a hundred times per output frame -- for
+Qwen3-TTS, 28 talker layers plus fifteen code-predictor steps of five layers.
+Once the workers occupy every CPU, any thread the scheduler moves aside stalls
+all the others. Measured on a twenty-CPU machine over one sentence, real-time
+factor against thread count:
+
+| threads | 1 | 2 | 4 | 8 | 10 | 12 | 14 | 16 | 18 | 19 | 20 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| RTF | 3.31 | 2.17 | 1.50 | 1.25 | 1.18 | 1.13 | 1.17 | 1.36 | 1.99 | 3.91 | 10.2 |
+
+The degradation begins well before the cliff, so leaving one CPU free is not
+enough headroom. Half lands within five percent of the best count measured here
+and cannot reach the cliff on any machine size.
+
+This is a default, not a policy: the best count depends on the machine, and an
+embedder that knows its deployment should say so rather than inherit a guess.
+`available_cpu_parallelism()` continues to mean "CPUs this process may run on",
+honouring the affinity mask and cgroup quota; the thread default is derived from
+it rather than equal to it.
 
 ## Backend Module Loading
 

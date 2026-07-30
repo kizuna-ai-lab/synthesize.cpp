@@ -160,6 +160,15 @@ if(SYNTH_BUILD_SHARED AND UNIX AND NOT APPLE)
 endif()
 
 synth_add_unit_test(synthesize-kokoro-metadata-test kokoro_metadata_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-metadata-test qwen3_tts_metadata_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-bpe-test qwen3_tts_bpe_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-catalog-test qwen3_tts_catalog_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-decoder-layer-test qwen3_tts_decoder_layer_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-talker-test qwen3_tts_talker_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-codec-ops-test qwen3_tts_codec_ops_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-codec-test qwen3_tts_codec_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-code-predictor-test qwen3_tts_code_predictor_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-sampling-test qwen3_tts_sampling_test.cpp)
 synth_add_unit_test(synthesize-kokoro-lstm-test kokoro_lstm_test.cpp)
 synth_add_unit_test(synthesize-kokoro-catalog-test kokoro_catalog_test.cpp)
 synth_add_unit_test(synthesize-kokoro-plbert-test kokoro_plbert_test.cpp)
@@ -215,6 +224,19 @@ synth_add_unit_test(synthesize-text-frontend-test text_frontend_test.cpp)
 synth_add_unit_test(synthesize-synthesis-request-test synthesis_request_test.cpp)
 synth_add_unit_test(synthesize-audio-delivery-test audio_delivery_test.cpp)
 synth_add_unit_test(synthesize-vits-runner-voice-test vits_runner_voice_test.cpp)
+add_executable(synthesize-qwen3-tts-quantization-policy-test
+    qwen3_tts_quantization_policy_test.cpp
+    ${CMAKE_SOURCE_DIR}/tools/synthesize-quantize/policy.cpp)
+target_include_directories(synthesize-qwen3-tts-quantization-policy-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/tools/synthesize-quantize
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(synthesize-qwen3-tts-quantization-policy-test PRIVATE synthesize ggml)
+add_test(NAME synthesize-qwen3-tts-quantization-policy-test
+    COMMAND synthesize-qwen3-tts-quantization-policy-test)
+synth_register_unit_target(synthesize-qwen3-tts-quantization-policy-test)
+set_tests_properties(synthesize-qwen3-tts-quantization-policy-test PROPERTIES
+    LABELS "unit;tools;quantization;qwen3-tts")
 add_executable(synthesize-quantize-policy-test
     synthesize_quantize_policy_test.cpp
     ${CMAKE_SOURCE_DIR}/tools/synthesize-quantize/policy.cpp)
@@ -313,6 +335,15 @@ if(SYNTH_BUILD_PYTHON_TESTS)
         TIMEOUT 180
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
+
+add_executable(synthesize-qwen3-tts-public-real qwen3_tts_public_real.c)
+target_link_libraries(synthesize-qwen3-tts-public-real PRIVATE synthesize)
+synth_register_integration_target(synthesize-qwen3-tts-public-real)
+
+add_executable(synthesize-qwen3-tts-replay-real qwen3_tts_replay_real.cpp)
+target_include_directories(synthesize-qwen3-tts-replay-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(synthesize-qwen3-tts-replay-real PRIVATE synthesize ggml)
+synth_register_integration_target(synthesize-qwen3-tts-replay-real)
 
 # The runners are thin adapters shared by the Python Golden validators and
 # manual diagnostics. They are intentionally not themselves tests.
@@ -428,6 +459,114 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                 TIMEOUT 600)
         endif()
     endif()
+    # The repeated-run and resource-cleanup gate docs/backends.md requires of a
+    # claimed backend, which no family had in code: every manifest declares
+    # `resource_cleanup` on every case and nothing read the field. VITS's
+    # recorded evidence was twenty repeated *processes*, which cannot see an
+    # in-process leak at all, since exit reclaims everything.
+    #
+    # One test for all three families. What differs between them is only the
+    # input a request carries -- token ids through a symbol-map frontend, UTF-8
+    # text through a byte-pair one -- so that arrives as an argument.
+    #
+    # Cycle count drops under sanitizers because LeakSanitizer decides the same
+    # question at allocation granularity, which is strictly better than a bound
+    # on resident memory, and each sanitized cycle costs about thirty seconds.
+    add_executable(synthesize-public-cleanup-test public_cleanup_test.cpp)
+    target_link_libraries(synthesize-public-cleanup-test PRIVATE synthesize)
+    synth_register_integration_target(synthesize-public-cleanup-test)
+    if(SYNTH_SANITIZE)
+        set(_synth_cleanup_cycles 3)
+    else()
+        set(_synth_cleanup_cycles 12)
+    endif()
+
+    function(synth_add_cleanup_test family model frames input)
+        if(NOT EXISTS "${model}")
+            return()
+        endif()
+        add_test(NAME synthesize-${family}-public-cleanup
+            COMMAND synthesize-public-cleanup-test
+                ${model} ${_synth_cleanup_cycles} ${frames} ${input} ${ARGN})
+        set_tests_properties(synthesize-${family}-public-cleanup PROPERTIES
+            LABELS "integration;abi;${family}"
+            TIMEOUT 900)
+    endfunction()
+
+    # `max_output_frames` does not mean the same thing to each family: VITS and
+    # Kokoro compare it against the PCM frame count, Qwen3-TTS against its own
+    # codec frames. So these numbers are not comparable and none is a default.
+    # VITS reads its tokens from the Golden payload rather than a literal: its
+    # frontend is a symbol map, and an arbitrary id sequence makes the duration
+    # predictor ask for more frames than any limit allows. Kokoro's come from the
+    # sequence its own lifecycle test already synthesizes.
+    set(_synth_vits_cleanup_tokens
+        "${CMAKE_SOURCE_DIR}/build/goldens/vits/vits-ljspeech/ljs-minimal/input/token_ids.i32")
+    if(EXISTS "${_synth_vits_cleanup_tokens}")
+        synth_add_cleanup_test(vits "${SYNTH_VITS_TEST_MODEL}" 131072
+            "tokensfile:${_synth_vits_cleanup_tokens}")
+    endif()
+    synth_add_cleanup_test(kokoro "${SYNTH_KOKORO_TEST_MODEL}" 131072
+        "tokens:32,0,81,83,16,61,53,156,25,16,83,44,156,138,64,16,81,83,16,58" "af_heart")
+    synth_add_cleanup_test(qwen3-tts "${SYNTH_QWEN3_TTS_TEST_MODEL}" 46080 "text:Hi." "aiden" "en")
+
+    # What a limit stop reports back. Registered because it needs the package:
+    # docs/c-interface.md makes an output limit one of four cases that must fill
+    # the result, and this family reported it as a graph failure with every
+    # resolved field zeroed.
+    if(EXISTS "${SYNTH_QWEN3_TTS_TEST_MODEL}")
+        add_executable(synthesize-qwen3-tts-output-limit-test qwen3_tts_output_limit_test.cpp)
+        target_link_libraries(synthesize-qwen3-tts-output-limit-test PRIVATE synthesize)
+        synth_register_integration_target(synthesize-qwen3-tts-output-limit-test)
+        add_test(NAME synthesize-qwen3-tts-output-limit
+            COMMAND synthesize-qwen3-tts-output-limit-test ${SYNTH_QWEN3_TTS_TEST_MODEL})
+        set_tests_properties(synthesize-qwen3-tts-output-limit PROPERTIES
+            LABELS "integration;abi;qwen3-tts"
+            TIMEOUT 600)
+    endif()
+
+    # Qwen3-TTS's two validators. Both need the package, which is why they sat
+    # unregistered while the family shipped -- and being unregistered is how the
+    # replay stage stopped being something CI could run at all.
+    #
+    # The replay validator runs with --check, so it is a gate against the
+    # committed tolerances rather than a measurement: without it the file is a
+    # record nothing enforces. The golden sentinel is the oracle payload the
+    # replay needs, which is deliberately not committed.
+    set(_synth_qwen3_tts_golden_sentinel
+        "${CMAKE_SOURCE_DIR}/build/goldens/qwen3-tts/qwen3-minimal/audio/pcm.f32")
+    if(EXISTS "${SYNTH_QWEN3_TTS_TEST_MODEL}")
+        if(EXISTS "${_synth_qwen3_tts_golden_sentinel}")
+            add_test(
+                NAME synthesize-qwen3-tts-replay-golden
+                COMMAND ${SYNTH_UV_EXECUTABLE} run
+                    --project ${CMAKE_SOURCE_DIR}/scripts/envs/qwen3-tts
+                    --locked python ${CMAKE_SOURCE_DIR}/scripts/validate-qwen3-tts-replay.py
+                    --manifest ${CMAKE_SOURCE_DIR}/tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice.manifest.json
+                    --model ${SYNTH_QWEN3_TTS_TEST_MODEL}
+                    --runner $<TARGET_FILE:synthesize-qwen3-tts-replay-real>
+                    --check --profile BF16 --backend CPU --stage replay)
+            set_tests_properties(synthesize-qwen3-tts-replay-golden PROPERTIES
+                LABELS "integration;qwen3-tts;golden"
+                TIMEOUT 7200
+                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+        endif()
+        # The public-request phase needs no oracle payload: it asserts relations
+        # between runs of this port, not agreement with the reference.
+        add_test(
+            NAME synthesize-qwen3-tts-public-request
+            COMMAND ${SYNTH_UV_EXECUTABLE} run
+                --project ${CMAKE_SOURCE_DIR}/scripts/envs/qwen3-tts
+                --locked python ${CMAKE_SOURCE_DIR}/scripts/validate-qwen3-tts-public.py
+                --model ${SYNTH_QWEN3_TTS_TEST_MODEL}
+                --runner $<TARGET_FILE:synthesize-qwen3-tts-public-real>
+                --profile BF16 --backend cpu)
+        set_tests_properties(synthesize-qwen3-tts-public-request PROPERTIES
+            LABELS "integration;qwen3-tts;abi"
+            TIMEOUT 1800
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    endif()
+
     # Kokoro's Golden validators drive one runner selected by stage name; see
     # tests/kokoro_stages_real.cpp for why the family has one adapter and not
     # seven.

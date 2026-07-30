@@ -28,6 +28,21 @@ int main() {
     // would mean the probe itself is reading something volatile.
     SYNTH_TEST_CHECK(synth::available_cpu_parallelism() == available);
 
+    // The default a context takes is deliberately below the CPU count. Asking
+    // for exactly the CPU count measured ten times slower than asking for half,
+    // because GGML's barrier spins: once the workers fill every CPU, a thread
+    // the scheduler moves aside stalls all the others.
+    const int threads = synth::default_synthesis_threads();
+    SYNTH_TEST_CHECK(threads >= 1);
+    SYNTH_TEST_CHECK(threads <= available);
+    if (available > 2) {
+        SYNTH_TEST_CHECK(threads < available);
+        SYNTH_TEST_CHECK(threads == available / 2);
+    } else {
+        SYNTH_TEST_CHECK(threads == 1);
+    }
+    SYNTH_TEST_CHECK(synth::default_synthesis_threads() == threads);
+
 #ifdef __linux__
     // The load-bearing property: narrowing the affinity mask must narrow the
     // answer. hardware_concurrency does not do this, which is exactly the bug

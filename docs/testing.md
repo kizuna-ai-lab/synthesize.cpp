@@ -1,6 +1,6 @@
 # Testing Policy
 
-Status: Confirmed, last updated on 2026-07-27.
+Status: Confirmed, last updated on 2026-07-29.
 
 Testing is a per-slice completion gate. A new converter rule, graph stage,
 runtime control, backend path, or public Interface is not complete merely because
@@ -79,6 +79,29 @@ cmake --build build --target synthesize-check-integration
 When the VCTK model or materialized VCTK Golden sentinel is absent, its optional
 eight-test integration group is not registered; the required LJSpeech integration
 gate remains unchanged.
+
+Qwen3-TTS registers two integration tests from `SYNTH_QWEN3_TTS_TEST_MODEL`,
+which defaults to the family's **BF16** package rather than an F32 one: its
+talker checkpoint stores bfloat16, and widening it would describe a different
+model.
+
+```bash
+cmake -S . -B build \
+  -DSYNTH_BUILD_TESTS=ON \
+  -DSYNTH_BUILD_INTEGRATION_TESTS=ON \
+  -DSYNTH_QWEN3_TTS_TEST_MODEL="$PWD/models/qwen3-tts-12hz-0-6b-customvoice/qwen3-tts-12hz-0-6b-customvoice-BF16.gguf"
+cmake --build build --target synthesize-check-integration
+```
+
+`synthesize-qwen3-tts-replay-golden` runs the replay validator with `--check`, so
+it is a gate against the committed tolerances rather than a measurement -- without
+it `tests/tolerances/qwen3-tts.json` is a record nothing enforces. It needs the
+oracle payload under `build/goldens/qwen3-tts/` and is not registered without it.
+
+`synthesize-qwen3-tts-public-request` needs only the package. It asserts relations
+between runs of this port -- a seed reproduces, a different seed does not, a Voice
+change moves the audio -- rather than agreement with the reference, so it has no
+Golden sentinel.
 
 Run the DGX Spark CUDA 13.3 Update 1 gate in a separate build tree. CUDA F32
 matrix multiplies compute at TF32 precision and there is no build option to

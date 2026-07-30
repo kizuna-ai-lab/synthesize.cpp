@@ -10,6 +10,16 @@ add_library(synthesize
     synthesis-request.cpp
     text-frontend.cpp
     voice-profile.cpp
+    arch/qwen3-tts/bpe.cpp
+    arch/qwen3-tts/catalog.cpp
+    arch/qwen3-tts/codec.cpp
+    arch/qwen3-tts/code-predictor.cpp
+    arch/qwen3-tts/code-predictor-host.cpp
+    arch/qwen3-tts/model.cpp
+    arch/qwen3-tts/operations.cpp
+    arch/qwen3-tts/talker.cpp
+    arch/qwen3-tts/talker-host.cpp
+    arch/qwen3-tts/weights.cpp
     arch/kokoro/catalog.cpp
     arch/kokoro/decoder.cpp
     arch/kokoro/decoder-host.cpp

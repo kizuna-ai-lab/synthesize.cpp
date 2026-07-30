@@ -1,5 +1,5 @@
 # Downloaded model inputs and generated validation payloads.
-/models/
+/models
 /build/
 /build-*/
 /dist/
@@ -12,7 +12,10 @@ CMakeUserPresets.json
 
 # Reproducible generated porting reports; committed intake records live under
 # reports/porting/.
-/reports/convert/
-/reports/reference/
-/reports/validate/
-/reports/bench/
+# No trailing slash: with one these match only directories, and a symlink is not
+# a directory. Two of them were committed as symlinks holding an absolute
+# workstation path, which a fresh clone resolves to nothing.
+/reports/convert
+/reports/reference
+/reports/validate
+/reports/bench

@@ -1,6 +1,6 @@
 # Port Validation Contract
 
-Status: Confirmed on 2026-07-22.
+Status: Confirmed, last updated on 2026-07-30.
 
 ## Purpose and Boundary
 
@@ -59,6 +59,75 @@ Floating-point probes and PCM use the stage-specific tolerance file. NaN, infini
 missing probes, unexpected fallback, and undeclared CPU placement are always hard
 failures regardless of numerical tolerance.
 
+## Choosing the Oracle's dtype and Device
+
+The oracle runs at the dtype the checkpoint stores, on the least-approximating
+device that reproduces run to run. Until 2026-07-28 this section did not exist
+and the phase list simply said "on CPU", which was never a decision -- it was
+generalised from the only two families then ported.
+
+`vits` ships 460 F32 tensors and `kokoro` 548, so for both of them CPU F32 *was*
+the reference dtype and the question never arose. `qwen3-tts` is the first family
+where it does: its talker checkpoint is 402 BF16 tensors. Running that oracle at
+float32 upcasts every talker weight and produces a reference for a model that
+does not exist, which is what the first qwen3-tts oracle dump did before this
+rule was written down.
+
+The rule, in order:
+
+1. **dtype follows the checkpoint.** Stage 3's artifact is the
+   "source/reference-dtype GGUF", so the oracle and that GGUF must agree. A
+   family may be mixed: qwen3-tts is BF16 for the talker and F32 for the codec.
+2. **Device follows reproducibility, then the model's own target.** A golden
+   dump that cannot be regenerated is a weak artifact, so verify it: run one case
+   twice under the same seed and require identical bytes. CPU is preferred when
+   it satisfies (1) because it pins no hardware. Where the checkpoint's dtype is
+   one the model targets on an accelerator, using that accelerator is correct
+   rather than a compromise -- qwen3-tts's oracle is CUDA BF16, which regenerates
+   byte-identically and runs at about real time where CPU F32 ran at 9.4 times
+   slower.
+3. **Record what was chosen and why**, in the manifest's `reference` block and
+   the intake record. The schema has always permitted `bfloat16`/`float16` and
+   `cuda`/`metal`/`vulkan`; only this document's prose said CPU.
+
+**What does *not* change:** the C++ side's correctness path is still established
+on CPU, and the oracle and the source GGUF must still agree on the dtype they
+*store*. That is rule 1, and it is what "like with like" means here.
+
+**What the arithmetic may differ in, and under what conditions.** ggml computes a
+stored BF16 weight through F32 and rejects BF16 in elementwise operators, so for a
+BF16-checkpoint family a port computing F32 against a reference at BF16 is the
+only reachable comparison. Until 2026-07-30 this paragraph forbade exactly that,
+which made it a rule no BF16 family could follow: rule 1 pins the oracle to the
+checkpoint's dtype, phase 2 puts the replay on CPU, and those two together force
+the comparison the sentence prohibited. It is permitted, on three conditions:
+
+1. the comparison is named in the tolerance file's `reference_stage`, so no reader
+   has to infer it;
+2. probes whose deep layers carry outlier channels gate on cosine, not max-abs;
+3. structural exactness is pinned by construction -- the replay seam supplies the
+   oracle's codes -- and never by a tolerance.
+
+The third condition is what the old wording was really reaching for. It feared a
+port "failing" for being more accurate than its reference, and that cannot happen
+while frame counts and shapes come from the replayed codes rather than from a
+threshold.
+
+An unequal-arithmetic comparison does make each threshold cover a dtype difference
+as well as an implementation one. That is a reason to **measure the two components
+separately and record the split**, not a reason to forbid the comparison. The
+split is measurable without the port: the talker probes are captured on the
+prefill, which consumes the whole prompt and draws nothing, so the same oracle run
+at two dtypes can be compared directly. **No family has done this yet** -- it is
+owed by qwen3-tts, whose thresholds currently state the combined figure.
+
+One consequence to expect rather than discover. A lower-precision reference has a
+heavier tail: under BF16, seed 0 on the two-character input "Hi." produced 121
+codec frames where every other seed tried gave 12 or 13, and F32 never did it.
+That is the shipped model's behaviour, so a faithful port reproduces it, but a
+manifest case exists to cover something specific and should not be left sitting
+on an outlier that defeats its own coverage.
+
 ## Stochastic Replay and Public Seeds
 
 Stochastic model parity uses captured model inputs rather than relying on two
@@ -77,7 +146,9 @@ synthesize.cpp to reproduce PyTorch's generator implementation.
 ## Validation Phases
 
 1. The pinned oracle resolves text to token IDs, captures stochastic tensors, and
-   writes reference probes and PCM on CPU in stable case order.
+   writes reference probes and PCM in stable case order, at the **reference
+   dtype** on a device that reproduces run to run. See "Choosing the oracle's
+   dtype and device".
 2. The source/reference-dtype GGUF replays the same resolved token IDs and random
    tensors on CPU and passes tensor, structure, and waveform comparison.
 3. Public-request runs validate seed reporting, same-seed repeatability, controls,

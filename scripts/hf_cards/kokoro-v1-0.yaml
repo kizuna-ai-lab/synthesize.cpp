@@ -64,7 +64,22 @@ capabilities:
 
 validation:
   level: port_validated
+  # Two different claims. `quality_evaluation` is the automated grid ADR 0017
+  # defers -- no WER, no speaker similarity, no corpus -- and it has not run.
+  # `listening_audit` is one maintainer checking a small set for obvious
+  # regressions, which happened on 2026-07-26 and had no way to be reported until
+  # the generator grew a field for it. Neither moves the Validation Level.
   quality_evaluation: not_run
+  listening_audit: no_obvious_regression
+  listening_audit_detail:
+    listeners: 1
+    cases: 8 of 15
+    profiles: [F32, F16, Q8_MIXED]
+    backends: [CPU, CUDA]
+    date: 2026-07-26
+    method: >-
+      A comparison page switching between the pinned PyTorch reference and this
+      port mid-playback at the same offset, so the same instant is heard twice.
   date: 2026-07-26
   reference: the pinned upstream PyTorch implementation
   implementation_revision: workspace-snapshot-2026-07-26

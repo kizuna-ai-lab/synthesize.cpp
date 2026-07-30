@@ -1,5 +1,24 @@
 # vits-vctk Porting Log
 
+## 2026-07-28 — Republished F16 and Q8_MIXED
+
+- The published F16 and Q8_MIXED packages predated the transposed-convolution
+  override and the loader refused them outright. Downloading the published F16
+  and loading it reproduced the exact diagnosis rather than inferring it:
+  `tensor decoder.upsample.0.transpose_conv.weight has type f16, expected f32
+  for package profile`. Halving those eight tensors cost about 3e-3 relative on
+  the decoder's output to save roughly 5 MB, which is why they are kept exact
+  and why the refreshed packages are correspondingly larger.
+- F32 was already current on the repository and was not re-uploaded; its digest
+  matched byte for byte.
+- Replaced F16 at 74,208,224 / `ff11efb1` with 79,533,024 / `0b3c4e06` and Q8_MIXED at 55,047,392 / `149438d3` with 60,372,192 / `9f6caab6`,
+  and regenerated the card so its digests match the files beside it. Uploaded to
+  `jiangzhuo9357/vits-vctk-gguf` at revision `87cc87e28116`.
+- Verified by downloading all four refreshed packages from the repositories and
+  loading each: every digest matched the local file and none was refused. The
+  earlier revisions remain in the repository history, so the change is
+  revertible.
+
 ## 2026-07-23 — F32 multi-speaker variant completed
 
 - Pinned the official VCTK configuration and checkpoint from the existing VITS

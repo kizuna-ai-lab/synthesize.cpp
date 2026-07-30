@@ -41,6 +41,16 @@ upstream `qwen-tts` package pinned by git revision.
   far off real time, that is a finding about whether this family can satisfy the
   rule at all, and it belongs in the intake record rather than being discovered
   after the graph is written.
+- **Read "Findings From Reading qwentts.cpp" in `docs/porting/families/qwen3-tts.md`
+  before Task 3.** A source read of the reference port recorded three conversion
+  rules that produce no error and wrong output when missed -- the RVQ codebooks
+  are EMA accumulators and must be reconstructed, convolution kernels are forced
+  to F16 at load because ARM's im2col is strict about kernel dtype, and
+  SnakeBeta's alpha and beta pass through `exp()` every forward. It also records
+  that the 15 acoustic codebooks each carry a private embedding table and a
+  private linear head, which the configuration alone does not reveal, and that
+  deep talker layers need a cosine tolerance rather than max-abs. Task 3 Step 5
+  reads the upstream source; these are the specific things to confirm there.
 - Commit contracts, not payloads. Checkpoints go to the git-ignored
   `models/qwen3-tts-12hz-0-6b-customvoice/` cache. No training corpus is
   downloaded, and no checkpoint bytes are committed.
@@ -77,7 +87,7 @@ upstream `qwen-tts` package pinned by git revision.
   `from qwen_tts import Qwen3TTSModel` succeeds on CPU. Every later task runs
   its Python through `uv run --project scripts/envs/qwen3-tts`.
 
-- [ ] **Step 1: Write the environment declaration**
+- [x] **Step 1: Write the environment declaration**
 
 Create `scripts/envs/qwen3-tts/pyproject.toml`. The `qwen-tts` package is not on
 PyPI, so it is pinned by git revision. `gradio` is excluded because it is only
@@ -108,7 +118,7 @@ dependencies = [
 package = false
 ```
 
-- [ ] **Step 2: Resolve and lock**
+- [x] **Step 2: Resolve and lock**
 
 ```bash
 uv lock --project scripts/envs/qwen3-tts
@@ -119,7 +129,7 @@ Expected: `scripts/envs/qwen3-tts/uv.lock` is created. If resolution fails on
 package with an explicit version to `dependencies` and re-run. Record any such
 addition and its reason in the porting log in Task 5.
 
-- [ ] **Step 3: Verify the import path works on CPU**
+- [x] **Step 3: Verify the import path works on CPU**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python -c "
@@ -139,7 +149,7 @@ does not depend on this.
 If `import qwen_tts` fails on a missing module, add that module to
 `dependencies`, re-run Step 2, and repeat this step.
 
-- [ ] **Step 4: Record the resolved versions**
+- [x] **Step 4: Record the resolved versions**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python -c "
@@ -152,7 +162,7 @@ for p in ['torch','transformers','accelerate','numpy','librosa','soundfile','ein
 Keep this output. Task 5 copies it verbatim into `intake.json` under
 `reference_environment`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/envs/qwen3-tts/pyproject.toml scripts/envs/qwen3-tts/uv.lock
@@ -171,7 +181,7 @@ git commit -m "Lock the qwen3-tts CPU reference environment"
 - Produces: a local checkpoint directory, a per-file SHA-256 table, and a
   license finding. Task 5 records all three.
 
-- [ ] **Step 1: Confirm the cache path is git-ignored**
+- [x] **Step 1: Confirm the cache path is git-ignored**
 
 ```bash
 git check-ignore -v models/qwen3-tts-12hz-0-6b-customvoice || echo "NOT IGNORED"
@@ -181,7 +191,7 @@ Expected: a line naming the `.gitignore` rule that covers it. If it prints
 `NOT IGNORED`, stop and add the rule before downloading anything — committing
 checkpoint bytes violates the Global Constraints.
 
-- [ ] **Step 2: Download the pinned revision**
+- [x] **Step 2: Download the pinned revision**
 
 The variant repository bundles the talker weights, the `speech_tokenizer/`
 codec, and the byte-level BPE vocabulary, so this is the only download needed.
@@ -203,7 +213,7 @@ Expected: the path is printed and the directory contains `config.json`,
 `tokenizer_config.json`, `preprocessor_config.json`, and a `speech_tokenizer/`
 subdirectory.
 
-- [ ] **Step 3: Measure every downloaded file**
+- [x] **Step 3: Measure every downloaded file**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python -c "
@@ -220,7 +230,7 @@ print(json.dumps(out, indent=2))
 
 Keep this JSON array. Task 5 embeds it under `weights.files`.
 
-- [ ] **Step 4: Audit the license**
+- [x] **Step 4: Audit the license**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python - <<'PY'
@@ -241,12 +251,17 @@ PY
 Expected: `license: apache-2.0` in frontmatter for both, and no prose line
 asserting a non-commercial or training-data-derived restriction.
 
-**This step is a gate.** If a restriction appears, stop the whole plan and
+**This step is a gate, and it was run before Step 2 rather than after.** The
+ordering in this plan would have discovered a blocking restriction only after
+pulling 2.5 GB; running it first cannot change the answer. It was also re-run
+against the downloaded card, because Step 4 as written fetches `main` while the
+plan pins revision `85e237c1` -- those are not necessarily the same bytes.
+If a restriction appears, stop the whole plan and
 report it — this is the exact failure that removed OmniVoice from consideration,
 and `docs/porting/families/qwen3-tts.md` records that a downstream port's
 README is not a license source.
 
-- [ ] **Step 5: Verify the upstream source license**
+- [x] **Step 5: Verify the upstream source license**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python -c "
@@ -273,7 +288,7 @@ Nothing is committed by this task; its outputs are inputs to Task 5.
   the config dimensions. Resolves open questions 1, 2, and 4 in
   `docs/porting/families/qwen3-tts.md`.
 
-- [ ] **Step 1: Enumerate speakers and languages**
+- [x] **Step 1: Enumerate speakers and languages**
 
 Upstream exposes `get_supported_speakers()` and `get_supported_languages()` on
 the model, which is authoritative where documentation is not.
@@ -303,7 +318,7 @@ executable modelling code — that fact must be recorded, because
 `docs/scope.md` forbids loading executable code from a Model Package and the
 converter must therefore reimplement rather than import it.
 
-- [ ] **Step 2: Dump the configuration**
+- [x] **Step 2: Dump the configuration**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python - <<'PY'
@@ -322,7 +337,7 @@ head counts, RoPE base, any `mrope_section` value, the codec codebook count and
 size, the frame rate, and the hop length. These are the facts open questions 1
 and 2 ask to confirm against upstream rather than against a third-party port.
 
-- [ ] **Step 3: Inventory the tensors**
+- [x] **Step 3: Inventory the tensors**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python - <<'PY'
@@ -350,14 +365,14 @@ PY
 Keep this output. It is the basis for the converter's tensor catalog at stage
 `3-convert` and confirms the real parameter count for the record.
 
-- [ ] **Step 4: Record whether the talker and codec are separable**
+- [x] **Step 4: Record whether the talker and codec are separable**
 
 From the Step 3 prefixes, note whether the speaker embedding rows for
 CustomVoice live in the talker file and whether any ECAPA-TDNN speaker-encoder
 tensors are present. The family plan states CustomVoice carries no speaker
 encoder; confirm or correct that here.
 
-- [ ] **Step 5: Read the upstream codec and attention source**
+- [x] **Step 5: Read the upstream codec and attention source**
 
 Open questions 1 and 2 exist specifically because the family plan's codec
 description came from a third-party port and is marked *(second-hand)*. A
@@ -395,7 +410,7 @@ cd /tmp/qwen3tts-src && \
 grep -nE "rope|rotary|mrope|position_ids" qwen_tts/core/models/modeling_qwen3_tts.py | head -40
 ```
 
-- [ ] **Step 6: Record speaker dialect overrides**
+- [x] **Step 6: Record speaker dialect overrides**
 
 Open question 4 asks for the speakers *and* their dialect overrides.
 
@@ -446,9 +461,12 @@ record as a finding about the family rather than as a note about the oracle —
 Kokoro cost 95 percent and VITS 29 percent for holding two stages and one graph
 respectively, and this family holds far more.
 
-- [ ] **Step 1: Run one greedy synthesis on CPU**
+- [x] **Step 1: Run one greedy synthesis on CPU**
 
-`do_sample=False` selects greedy decoding on both the talker and the sub-talker,
+`do_sample=False` was assumed here to select greedy decoding on both the talker
+and the sub-talker. **That is wrong** -- it governs the Talker only, and the
+sub-talker's `subtalker_dosample` defaults to `True`. Both must be set to
+`False`, or the run is silently non-deterministic. Corrected 2026-07-27;
 which is what makes an autoregressive oracle reproducible. Upstream defaults are
 `do_sample=True, top_k=50, top_p=1.0, temperature=0.9, repetition_penalty=1.05`.
 
@@ -503,12 +521,12 @@ If this fails because CPU lacks a kernel used by the model, record the exact
 error and stop; a CPU oracle is mandatory and its absence is a finding that
 changes the family plan, not something to work around by moving to CUDA.
 
-- [ ] **Step 2: Repeat the identical greedy call**
+- [x] **Step 2: Repeat the identical greedy call**
 
 Re-run the exact command from Step 1, writing to `_smoke_b.wav` instead of
 `_smoke_a.wav`.
 
-- [ ] **Step 3: Compare the two runs**
+- [x] **Step 3: Compare the two runs**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python - <<'PY'
@@ -530,7 +548,7 @@ stochastic-replay approach in `docs/porting/families/qwen3-tts.md` needs more
 than a captured code sequence, which is a material finding for stage
 `5-port-validate`.
 
-- [ ] **Step 4: Measure the sampled path for the stochastic capability**
+- [x] **Step 4: Measure the sampled path for the stochastic capability**
 
 ```bash
 uv run --project scripts/envs/qwen3-tts python - <<'PY'
@@ -560,7 +578,7 @@ Expected: two unseeded sampled runs differ, and may differ in length. This
 establishes that the package sets the stochastic capability, matching how
 Kokoro's intake recorded its own stochastic behaviour.
 
-- [ ] **Step 5: Decide the audio delivery claim**
+- [x] **Step 5: Decide the audio delivery claim**
 
 Using the Step 1 and Step 2 evidence plus the `CONTEXT.md` definitions, decide
 whether Stage 1 claims **Chunked Audio Delivery** only, or whether the causal
@@ -583,7 +601,7 @@ question 5.
 - Consumes: the recorded outputs of Tasks 1 through 4.
 - Produces: the committed intake contract that stage `2-oracle` builds on.
 
-- [ ] **Step 1: Write `intake.json`**
+- [x] **Step 1: Write `intake.json`**
 
 Mirror the top-level shape of
 `reports/porting/kokoro/kokoro-v1-0/intake.json`. Read that file first, then
@@ -613,7 +631,7 @@ oracle_smoke         text, speaker, language, sample_rate, frames, rtf, greedy
 open_decisions       anything Tasks 2 through 4 could not settle
 ```
 
-- [ ] **Step 2: Write the porting log**
+- [x] **Step 2: Write the porting log**
 
 Create `_porting-log.md` following the structure of
 `reports/porting/kokoro/kokoro-v1-0/_porting-log.md`: a dated heading, a bullet
@@ -621,7 +639,7 @@ list of what was pinned and measured, then subsections for the license audit,
 the stochastic finding, and any open decision. Write what was measured, not what
 was expected. Where a number contradicts the family plan, say so explicitly.
 
-- [ ] **Step 3: Update the family plan**
+- [x] **Step 3: Update the family plan**
 
 In `docs/porting/families/qwen3-tts.md`:
 
@@ -633,7 +651,7 @@ In `docs/porting/families/qwen3-tts.md`:
 3. Strike each of the six Open Questions that Tasks 2 through 4 answered, moving
    the answer into the body. Leave any that remain open, and say why.
 
-- [ ] **Step 4: Verify nothing large or ignored is staged**
+- [x] **Step 4: Verify nothing large or ignored is staged**
 
 ```bash
 git status --short
@@ -644,7 +662,7 @@ Expected: only the three files listed above. If any file under
 `models/` appears, unstage it — the Global Constraints forbid committing
 checkpoint bytes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/intake.json \

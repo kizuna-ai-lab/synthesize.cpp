@@ -1,5 +1,24 @@
 # vits-ljspeech Porting Log
 
+## 2026-07-28 — Republished F16 and Q8_MIXED
+
+- The published F16 and Q8_MIXED packages predated the transposed-convolution
+  override and the loader refused them outright. Downloading the published F16
+  and loading it reproduced the exact diagnosis rather than inferring it:
+  `tensor decoder.upsample.0.transpose_conv.weight has type f16, expected f32
+  for package profile`. Halving those eight tensors cost about 3e-3 relative on
+  the decoder's output to save roughly 5 MB, which is why they are kept exact
+  and why the refreshed packages are correspondingly larger.
+- F32 was already current on the repository and was not re-uploaded; its digest
+  matched byte for byte.
+- Replaced F16 at 70,453,568 / `5fc428ba` with 75,778,368 / `8683788b` and Q8_MIXED at 52,890,240 / `df95091f` with 58,215,040 / `f751607f`,
+  and regenerated the card so its digests match the files beside it. Uploaded to
+  `jiangzhuo9357/vits-ljspeech-gguf` at revision `21b260f6cadf`.
+- Verified by downloading all four refreshed packages from the repositories and
+  loading each: every digest matched the local file and none was refused. The
+  earlier revisions remain in the repository history, so the change is
+  revertible.
+
 ## 2026-07-22 — Intake and oracle smoke
 
 - Pinned `jaywalnut310/vits` at commit

@@ -19,6 +19,23 @@ synth::ModelInfo model_info() {
     info.max_output_frames    = 100;
     info.min_speaking_rate    = 0.8f;
     info.max_speaking_rate    = 1.25f;
+    // An English-only model, declared rather than assumed. The validator used to
+    // hardcode this test; now the model has to say it.
+    info.languages            = {
+        { "en", SYNTH_LANGUAGE_DEFAULT | SYNTH_LANGUAGE_REGIONAL_FALLBACK }
+    };
+    return info;
+}
+
+// A model that declares several languages, which is what Qwen3-TTS is. `ko` is
+// deliberately absent so the suite can tell "declared" from "well-formed".
+synth::ModelInfo multilingual_model_info() {
+    synth::ModelInfo info = model_info();
+    info.languages        = {
+        { "en", SYNTH_LANGUAGE_REGIONAL_FALLBACK },
+        { "zh", SYNTH_LANGUAGE_REGIONAL_FALLBACK },
+        { "ja", 0                                }
+    };
     return info;
 }
 
@@ -91,8 +108,67 @@ int main() {
     request.language_tag      = "en_US";
     request.language_tag_size = 5;
     SYNTH_TEST_CHECK(synth::prepare_synthesis_request(info, &request, prepared) == SYNTH_ERR_INVALID_ARG);
+
+    // A multilingual model answers for what it declared, and only that. Before
+    // the validator read the model's own list, every one of these but "en" was
+    // refused no matter what the package said.
+    const synth::ModelInfo many = multilingual_model_info();
+    request.language_tag        = "zh";
+    request.language_tag_size   = 2;
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(many, &request, prepared) == SYNTH_OK);
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(info, &request, prepared) == SYNTH_ERR_UNSUPPORTED_LANGUAGE);
+    request.language_tag      = "ZH-cn";
+    request.language_tag_size = 5;
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(many, &request, prepared) == SYNTH_OK);
+    // Declared without regional fallback: the bare tag is served, a region is not.
+    request.language_tag      = "ja";
+    request.language_tag_size = 2;
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(many, &request, prepared) == SYNTH_OK);
+    request.language_tag      = "ja-JP";
+    request.language_tag_size = 5;
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(many, &request, prepared) == SYNTH_ERR_UNSUPPORTED_LANGUAGE);
+    // Well-formed and undeclared is a language error, not an argument error.
+    request.language_tag      = "ko";
+    request.language_tag_size = 2;
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(many, &request, prepared) == SYNTH_ERR_UNSUPPORTED_LANGUAGE);
+
+    // The resolved language is the capability that answered, not a constant. This
+    // was hardcoded "en" for every request, so a model that accepted zh reported
+    // English back -- docs/languages.md requires the resolved language and any
+    // fallback to be reported to the caller.
+    request.language_tag      = "zh";
+    request.language_tag_size = 2;
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(many, &request, prepared) == SYNTH_OK);
+    SYNTH_TEST_CHECK(prepared.resolved_language_size == 2);
+    SYNTH_TEST_CHECK(std::strncmp(prepared.resolved_language_tag, "zh", 2) == 0);
+    // A regional request reports the tag it fell back to, which is the fallback
+    // being reported rather than hidden.
+    request.language_tag      = "en-GB";
+    request.language_tag_size = 5;
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(many, &request, prepared) == SYNTH_OK);
+    SYNTH_TEST_CHECK(prepared.resolved_language_size == 2);
+    SYNTH_TEST_CHECK(std::strncmp(prepared.resolved_language_tag, "en", 2) == 0);
+    // No tag: the package's declared default, and nothing when it declares none.
     request.language_tag      = nullptr;
     request.language_tag_size = 0;
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(info, &request, prepared) == SYNTH_OK);
+    SYNTH_TEST_CHECK(prepared.resolved_language_size == 2);
+    SYNTH_TEST_CHECK(std::strncmp(prepared.resolved_language_tag, "en", 2) == 0);
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(many, &request, prepared) == SYNTH_OK);
+    SYNTH_TEST_CHECK(prepared.resolved_language_size == 0 && prepared.resolved_language_tag == nullptr);
+    // Restore an explicit, undeclared tag for the case below.
+    request.language_tag      = "ko";
+    request.language_tag_size = 2;
+
+    // A model declaring nothing accepts no explicit tag, but naming no language
+    // at all still works: that path never consults the list.
+    synth::ModelInfo silent = model_info();
+    silent.languages.clear();
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(silent, &request, prepared) == SYNTH_ERR_UNSUPPORTED_LANGUAGE);
+
+    request.language_tag      = nullptr;
+    request.language_tag_size = 0;
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(silent, &request, prepared) == SYNTH_OK);
 
     request.input_kind = SYNTH_INPUT_TEXT_UTF8;
     SYNTH_TEST_CHECK(synth::prepare_synthesis_request(info, &request, prepared) == SYNTH_ERR_UNSUPPORTED_INPUT);

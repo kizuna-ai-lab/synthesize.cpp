@@ -79,4 +79,12 @@ int available_cpu_parallelism() {
     return std::max(1, limit);
 }
 
+int default_synthesis_threads() {
+    const int available = available_cpu_parallelism();
+    if (available <= 2) {
+        return 1;
+    }
+    return std::min(available / 2, available - 1);
+}
+
 }  // namespace synth

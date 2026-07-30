@@ -1,15 +1,53 @@
 # Qwen3-TTS Family Selection and Port Plan
 
-Status: Selection accepted on 2026-07-26. Intake, conversion, C++
-implementation, and port validation are not started. Operator surface revised on
-2026-07-27: `ggml_col2im_1d` turned out to be upstream already, so the expected
-additions dropped from two to none.
+Status: Confirmed 2026-07-28. Intake, the oracle and conversion are complete;
+stages 4 through 7 have their measured work done: oracle replay and the public
+seam pass, the F16 profile is measured, and the codec runs on CUDA while the
+autoregressive half stays on the CPU. Q8_MIXED, the public backend control and
+stage 8 are not done. Port validation is not started. Selection was accepted on
+2026-07-26; the intake packet is
+`reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
 
 ## Decision
 
 The third Model Family is **Qwen3-TTS 12 Hz** (Qwen team, Alibaba). OmniVoice
 (Xiaomi / k2-fsa) is recorded as the leading fourth-family candidate, deferred
 for a licensing reason recorded below rather than a technical one.
+
+## Reference Contract
+
+The oracle is the pinned `QwenLM/Qwen3-TTS` PyTorch implementation at commit
+`022e286b98fbec7e1e916cb940cdf532cd9f488e` (package version 0.1.1, not published
+to PyPI, so the reference environment pins it by git revision), driving the
+`Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` weights at revision
+`85e237c12c027371202489a0ec509ded67b5e4b5`. Both carry an explicit Apache-2.0
+grant: the repository ships the Apache 2.0 text at the pinned commit, and the
+model card declares `license: apache-2.0` in frontmatter — verified against the
+card at the pinned revision, not only against `main`.
+
+The checkpoint is 13 files and 2,498,388,392 bytes; per-file SHA-256 digests are
+recorded in `intake.json` under `weights.files`. Upstream publishes no digest of
+its own, so unlike Kokoro this provenance is self-measured rather than
+cross-confirmed.
+
+`Qwen3TTSModel.generate_custom_voice` is the pinned inference entry point, driven
+at the checkpoint's bfloat16 on CUDA with `attn_implementation="eager"`. The first
+intake drove it on CPU in F32, which upcast every talker weight and described a
+model that does not exist. **It takes two independent
+sampling switches.** `do_sample` governs the Talker and `subtalker_dosample` the
+code predictor, the latter defaulting to `True`; a reproducible oracle requires
+both set to `False`, and setting only one is silently non-deterministic.
+
+Native output is 24,000 Hz mono F32 at a 12.5 Hz frame rate, so one codec frame
+is exactly 1,920 samples. The model consumes raw text through a Qwen2 byte-level
+BPE tokenizer whose vocabulary and merges ship in the variant repository.
+`trust_remote_code` is not required, so `docs/scope.md`'s rule against executable
+code in a Model Package is not engaged.
+
+Nine preset speakers are selected by codec-vocabulary token id rather than by an
+embedding table, which is why this variant carries no speaker encoder. Two of
+them, `eric` and `dylan`, pin a dialect language token regardless of the
+requested language.
 
 ## Why the Selection Criterion Changed
 
@@ -206,11 +244,17 @@ Profiles are measured for this family, not inherited from either predecessor.
 
 Two operators beyond the vendored set were expected here: a Snake activation and
 a 1-D column-to-image scatter-add for transposed convolution. **Both
-expectations were wrong, and the incremental surface is currently zero.** The
-project added a Snake activation for Kokoro, and `ggml_col2im_1d` turned out to
-be upstream already, with CPU, CUDA and Vulkan kernels — VITS was moved onto it
-on 2026-07-27 (`ggml-patches/README.md`). Intake should still measure rather
-than assume, but it starts from "nothing to add" rather than "two to add".
+expectations were wrong, and the incremental surface is zero.** This was
+measured against `qwentts.cpp`, which maintains a ggml fork to supply both as
+fused operators; this project needs neither, and therefore needs no fork.
+
+| Expected operator | Measured status |
+| --- | --- |
+| 1-D column scatter-add | `ggml_col2im_1d` is upstream, with CPU, CUDA and Vulkan kernels. No Metal, which is outside the validation matrix anyway. VITS was moved onto it on 2026-07-27, so it is exercised rather than merely present. |
+| SnakeBeta | `snake()` in `src/arch/kokoro/operations.cpp` already computes `x + sin²(αx)/α` from five ordinary operators. SnakeBeta is `x + sin²(αx)·(1/β)` with β independent — the divisor changes from α to a separate tensor. A parameter on the existing helper, not a new operator. |
+
+A fused `GGML_OP_SNAKE` would be a performance optimization only. Do not add one
+before a profile asks for it.
 
 If a local change does become necessary, there is no longer a mechanism for
 one: `ggml/` became a submodule on 2026-07-27 and a submodule cannot carry a
@@ -273,6 +317,175 @@ validated families, with Port Validation Suites, Golden Manifests, Model
 Packages, and recorded decisions. That distinction is real but narrower than it
 looked before these repositories were read.
 
+## Findings From Reading qwentts.cpp
+
+Recorded 2026-07-26 from a source read of `ServeurpersoCom/qwentts.cpp`, before
+any of this family's own code exists. Nothing here was copied; these are
+constraints to verify during intake and conversion, not adopted implementation.
+Anything later adopted as *code* triggers the `THIRD_PARTY_NOTICES.md`
+obligation described above.
+
+### Three conversion rules that fail silently
+
+Each of these produces a converter that raises no error and output that is
+wrong.
+
+**The RVQ codebooks are not codebooks.** The checkpoint stores EMA
+accumulators. The codebook has to be reconstructed at convert time:
+
+```python
+embedding = embedding_sum / clip(cluster_usage, 1e-5)[:, None]   # RVQ_EPS = 1e-5
+```
+
+`embed_sum` and `cluster_usage` are stored as pairs and must be matched by
+`(origin, side, layer)`. Skip this and the nearest-neighbour lookup returns
+garbage with no diagnostic. The reconstructed table must stay F32.
+
+**Convolution kernels are forced to F16 at load**, independently of the GGUF
+storage dtype, because ARM's im2col is strict about kernel dtype. This project's
+primary development host is aarch64, so it is directly in the path rather than a
+portability footnote.
+
+**SnakeBeta's α and β pass through `exp()` on every forward** in the reference
+implementation. They can be folded once on the CPU at load, leaving the graph to
+multiply plain F32 buffers. Whether the folding is valid depends on the exact
+forward, which is why Task 3 of the intake plan reads that source.
+
+### Tensor topology the config does not reveal
+
+The 15 acoustic codebooks each carry a **private embedding table and a private
+linear head**. A converter tensor catalog derived from the configuration alone
+will not have them.
+
+### Quantization observations
+
+`qwentts.cpp` keeps at source dtype: the RVQ codebooks and the projections
+wrapping them, the speaker encoder's final fully-connected layer, every snake
+α/β, and every 1-D tensor. Its stated reason for the codebooks is measured
+rather than assumed — Q8_0 and K-quants corrupt the reference-audio encoding and
+destroy voice cloning, and even BF16's mantissa loss is enough to make codes
+drift.
+
+That is the same shape as Kokoro's rule that the decoder's upstream stays at the
+reference dtype, and it fits this project's existing Quantization Profile
+framework without new mechanism. It is an input to profile design, not a
+conclusion; this family's profiles are measured for this family.
+
+### Validation: what transfers and what does not
+
+**Transferable.** Their staged probe table is close to what this family's Golden
+Manifest needs: `Embed`, `TrailingText`, `TTSPadEmbed`, `L0`, `L7`, `L14`,
+`L21`, `L27`, `Final`, `Logits`, `NextEmbStep0`, `TalkerHiddenStep1`.
+
+**Not transferable — their divergence percentages.** Their logs record the
+PyTorch reference on CUDA against C++ on CPU, which compares two kernel stacks.
+This project's oracle is CUDA bfloat16 -- see `docs/port-validation.md`,
+"Choosing the Oracle's dtype and Device" -- so the same caution applies to our own
+numbers and not only to theirs. Their
+figures should not be carried into this family's expectations; measure ours.
+
+**Not transferable — max-absolute tolerances on deep talker layers.** In one of
+their runs the per-layer max-abs is 13.07 / 13.09 / 13.42 at L7 / L14 / L21 and
+**66.8** at L27, while cosine similarity stays at or above 0.9998. Those are
+outlier channels ahead of the final norm. `tests/tolerances/qwen3-tts.json` must
+use a cosine threshold for these stages; a max-abs threshold would report
+catastrophic failure on a correct port.
+
+### Determinism: what "byte-exact sampling" there does not mean here
+
+`src/philox.h` implements Philox4x32-10 and the header says it keeps the
+multinomial sampler "byte for byte aligned with the upstream Python pipeline".
+Read carefully before drawing the obvious conclusion.
+
+Two things make it inapplicable as-is:
+
+- Philox matches PyTorch's **CUDA** generator (cuRAND). This project's oracle
+  runs on CUDA too, so that much would agree -- but the replay seam captures the
+  codes rather than reproducing the stream, so no generator has to be matched.
+- Their alignment is achieved by **replacing `torch.multinomial` in the
+  reference** — `tests/cossim_common.py` defines `patched_multinomial`, which
+  pulls the uniform draw from their own Philox stream and walks the F32
+  cumulative sum the way `src/sampling.h` does. The oracle was changed to match
+  the port, not the other way round.
+
+That is a legitimate way to isolate the RNG, and it is the same *idea* as this
+project's stochastic-replay seam: neutralize the generator so everything else
+can be compared. The difference is where the neutralization happens. Theirs
+modifies the reference implementation; ours captures the draws as model inputs
+and replays them, leaving the oracle stock. Ours is the less invasive of the two
+and stays valid when the reference changes.
+
+**The conclusion to carry into stage 5: do not plan on end-to-end sampled parity
+against an unmodified PyTorch oracle.** Neither port achieves it. Compare the
+deterministic prefix, and replay the draws across the seam.
+
+If a sampled path is ever compared, the operation order has to match
+HuggingFace's `generate()` chain exactly, because each step changes the
+distribution the next one sees:
+
+```
+repetition_penalty -> temperature -> top_k -> top_p -> softmax -> multinomial
+```
+
+Details in their implementation worth confirming against upstream rather than
+assuming: `top_p` softmaxes the full vocabulary over the *sorted* tensor so the
+cumulative-sum boundary matches `TopPLogitsWarper`; the Talker masks
+`[vocab - 1024, vocab)` except `codec_eos` before sampling while the
+CodePredictor needs no suppression; and the greedy path (`temperature <= 0`)
+is argmax over the suppressed logits with no repetition penalty and no draw at
+all.
+
+### Native Streaming Synthesis looks reachable, and this is what it costs
+
+Open question 5 asks whether the causal codec decoder qualifies as Native
+Streaming Synthesis under `CONTEXT.md` or only Chunked Audio Delivery.
+`qwentts.cpp` carries an existence proof for the stronger claim, which intake
+should confirm against upstream rather than inherit.
+
+They keep three pieces of decoder state resident between frames:
+
+1. every causal convolution's left context,
+2. every transposed convolution's overlap carry,
+3. the transformer's sliding-window KV ring.
+
+With those, their `pipeline-codec.h` states that a `T=1` frame decode
+"reproduces the offline full decode exactly with zero re-decoded context". That
+is incremental synthesis, not chunking.
+
+The contrast is instructive. Their *other* path, `codec-chunked-decode.h`,
+decodes a whole buffer in bounded-VRAM chunks and must prepend
+`left_ctx_frames` of previously decoded frames and then strip the resulting
+samples, because a chunk decoded in isolation has edge artefacts where the
+causal kernel and the attention window have no left context. That path is a
+memory-bounding device, and it is what this project would ship if the state
+above were not carried — Chunked Audio Delivery, in `CONTEXT.md` terms.
+
+So the distinction between the two claims for this family is concrete: it is
+whether those three state objects are carried across frames. That is a design
+decision for stage 4, not a property of the architecture, and it should be
+recorded as such rather than discovered late.
+
+### Text frontend: the pieces this project would need
+
+Their byte-level BPE is 633 lines with no dependencies, reading vocabulary and
+merges from the GGUF payload. The parts are: the GPT-2 byte-to-Unicode encoding
+table, the GPT-2 regex pre-tokenizer, the BPE merge loop, and a registry of
+verbatim special tokens loaded from caller-named GGUF keys — which is how the
+TTS style markers and language tags are handled.
+
+That matches the second built-in Text Frontend Provider sketched above, and
+sizes it: a self-contained, unit-testable slice with no executable per-model
+mapping logic. The one piece that is logic rather than data is the GPT-2
+pre-tokenizer regex, which is fixed across models rather than per-package.
+
+### Performance shape of the code predictor
+
+Their fix resets the predictor KV cache each frame, prefills two positions
+(`talker_hidden` and `embed(c0)`), then replays 14 single-token steps against a
+graph built lazily at the first frame — uploading `N*4` bytes of code ids per
+step. That takes the inner loop from `O(Σ(g+2)²)` to `O(16)`. Recorded as a
+known-good shape to compare against, not as a design commitment.
+
 ## OmniVoice as Fourth-Family Candidate
 
 OmniVoice (`k2-fsa/OmniVoice`) is technically the stronger fit on several axes:
@@ -306,26 +519,1373 @@ converted by a user but never published by the project, and what that means for
 a Port Validation Suite whose artifacts are already deliberately uncommitted.
 That question is left open here rather than answered.
 
+## Intake Measurements
+
+Measured on 2026-07-27 from revision `85e237c1` on CPU, not read from a port or
+a paper. These supersede the *(second-hand)* marks in the Architecture section.
+
+### Talker
+
+28 layers, hidden 1024, 16 attention heads over 8 KV heads, `head_dim` 128,
+intermediate 3072, RMSNorm eps 1e-6, `rope_theta` 1e6, codec vocabulary 3072,
+text vocabulary 151936 projected from `text_hidden_size` 2048. The code
+predictor is 5 layers at the same width with vocabulary 2048 and
+`num_code_groups` 16. `model.safetensors` holds 402 tensors and 905,788,672
+parameters across `talker.model` (311), `talker.code_predictor` (86),
+`talker.text_projection` (4) and `talker.codec_head` (1).
+
+`trust_remote_code` is **not** required. The modelling code lives in the
+installed `qwen_tts` package, not in the checkpoint, so `docs/scope.md`'s rule
+against executable code in a Model Package is not engaged.
+
+### The multimodal RoPE collapses exactly, and this is proven
+
+Open question 2 asked whether a 1-D collapse is equivalent. **It is, exactly.**
+
+`talker_config.rope_scaling` declares `mrope_section [24, 20, 20]` — summing to
+64, which is `head_dim / 2` — with `interleaved: true`, so the machinery looks
+real. It is never exercised. Every path that builds `position_ids` in
+`modeling_qwen3_tts.py` produces three identical rows:
+`cache_position.view(1,1,-1).expand(3, ...)`, `position_ids[None,...].expand(3,
+...)`, `position_ids.unsqueeze(0).expand(3,-1,-1)`, and `get_rope_index`, whose
+body is `attention_mask.cumsum(-1) - 1` followed by `.expand(3,-1,-1)`. That
+method's docstring describes temporal/height/width video positions and is
+inherited from Qwen2-VL; this model has no vision branch.
+
+`apply_interleaved_rope` starts from `x[0].clone()` and overwrites strided
+slices with rows 1 and 2. When the rows are equal each write stores the value it
+replaces. Checked directly: with three identical rows the output is
+`torch.equal` to plain 1-D RoPE; with three different rows it is not, differing
+by 5.5 at these shapes. So the operator is genuine and the collapse is safe only
+because of how the positions are built.
+
+**Consequence for stage 4: implement ordinary RoPE.** No sectioning, no
+interleaving. Record the reason, because the config will keep saying otherwise.
+
+### The codec, measured against the tensors rather than its config
+
+12.5 Hz frames at 24 kHz, `decode_upsample_rate` 1920 — which is exactly
+24000/12.5, and decomposes as `upsampling_ratios [2, 2]` then `upsample_rates
+[8, 5, 4, 3]`, four times four hundred and eighty. The two upsample blocks are
+ConvNeXt: `pwconv1` widens 1024 to 4096 and `pwconv2` returns it, the usual
+four-times expansion. `speech_tokenizer/model.safetensors` holds 496 tensors and
+170,557,441 parameters.
+
+The quantizer is 1 + 15, matching `num_code_groups` 16:
+`decoder.quantizer.rvq_first` has one VQ layer and `rvq_rest` has fifteen, each
+codebook `(2048, 256)`, wrapped by `input_proj` 512→256 and `output_proj`
+256→512.
+
+**`speech_tokenizer/config.json` disagrees with its own weights.** It declares
+`codebook_dim: 512` and `semantic_codebook_size: 4096`; the tensors are 256-dim
+and no codebook has 4096 entries anywhere in the file — the only 4096s are the
+ConvNeXt pointwise widths. `codebook_size: 2048` is the one that matches. A
+converter that sizes the codebooks from this config allocates the wrong tables.
+**Size from the tensors.**
+
+### The RVQ EMA rule, confirmed and with a trap the reference port does not hit
+
+The codebooks really are EMA accumulators, as recorded under the findings above.
+The checkpoint adds something that section does not mention: **the two sides use
+different field names for the same pair.**
+
+| Side | Fields | Count |
+| --- | --- | --- |
+| `decoder.quantizer.*.vq.layers.N._codebook` | `embedding_sum`, `cluster_usage` | 16 |
+| `encoder.quantizer.*.layers.N.codebook` | `embed_sum`, `cluster_usage` | 32 |
+
+A conversion rule keyed on `embedding_sum` silently skips every encoder
+codebook, and one keyed on `embed_sum` skips every decoder codebook. Both
+produce a converter that raises nothing. Encoder codebooks also carry an
+`initialized` flag of shape `(1,)`, which is not a weight and must be dropped.
+
+### Voices and languages: three different counts, all correct
+
+`get_supported_speakers()` returns nine: `aiden`, `dylan`, `eric`, `ono_anna`,
+`ryan`, `serena`, `sohee`, `uncle_fu`, `vivian`. They are not embeddings — each
+is a **token id** in the codec vocabulary (2861 to 3066), which is why this
+variant carries no speaker encoder. The tensor inventory confirms that: there
+are no ECAPA-TDNN tensors in either file. The family plan's claim was right.
+
+Two of the nine carry a dialect override in `spk_is_dialect`, which is not a
+boolean but a language name: `eric` → `sichuan_dialect`, `dylan` →
+`beijing_dialect`. Those two names appear in `codec_language_id` and nowhere in
+the public language list, so a dialect is reachable only by selecting its
+speaker, never by asking for it as a language.
+
+That produces three counts which are easy to confuse and are all correct:
+
+| Source | Count | Contents |
+| --- | --- | --- |
+| Model card frontmatter | 10 | the language codes |
+| `get_supported_languages()` | 11 | those 10 plus `auto` |
+| `codec_language_id` | 12 | those 10 plus the 2 dialects |
+
+For the Preset Voice Catalog: nine Voice Profiles, two of which pin the language
+token regardless of the request, and `auto` as a language meaning detect from
+text.
+
+### CPU oracle smoke, and what its speed says about the family
+
+Greedy on CPU, F32, eager attention, `aiden` in `english`, text
+"Qwen3-TTS is awesome!", on the aarch64 GB10 host with the GPU unused.
+
+| | value |
+| --- | --- |
+| sample rate | 24000 |
+| frames / duration | 97,920 / 4.08 s |
+| wall time | 39.6 s and 38.4 s |
+| **real-time factor** | **9.7 and 9.4** |
+| finite, peak | yes, 0.574 |
+
+**That number is about the family, not about the oracle.** Every sampled token
+conditions the next, so `docs/backends.md`'s discrete-output rule holds the
+autoregressive core on CPU on every Execution Backend — the CPU figure is
+therefore **not** automatically the CUDA figure, and the earlier claim that it was
+has been withdrawn. Two things make it a decision rather than an implication.
+
+Upstream deploys this model on CUDA with bfloat16 and FlashAttention 2; that is
+the only device guidance its model card gives. The figure above is CPU, F32 and
+eager attention, which is what the first oracle dump used before the dtype
+rule was written down. It is not a measurement of the model as its authors run
+it, and it is no longer how this family's oracle runs.
+
+Whether CUDA helps then depends on a policy question this family raises for the
+first time. `docs/backends.md`'s discrete-output rule would hold the
+autoregressive core on CPU on every backend, because each sampled token is a
+discrete value conditioning the next. Applied as written, CUDA buys almost
+nothing here -- Kokoro paid 95 % of synthesis time to hold two stages of seven
+and VITS 29 % to hold one graph, while this family would hold the loop itself.
+
+But the rule exists to keep *structural* results identical across backends, and
+this family is stochastic by design. Port validation replays the captured codes,
+so the sampler does not run in the graph being compared and its TF32 sensitivity
+cannot affect stage 5 at all. The rule bites only on the public request path,
+where the question becomes whether the same text and seed must yield the same
+tokens on CPU and CUDA. That promise is cheap for VITS and Kokoro and very
+expensive here.
+
+Stage 7 has to take that decision deliberately and record it. Until it does, the
+honest planning number for a Stage 1 **CPU** claim is roughly ten times slower
+than real time, and nothing is claimed about CUDA.
+
+The 1.7B ladder rung must be measured before it is promised anything.
+
+### Greedy is reproducible, but only with both switches
+
+The first attempt at this measurement produced two "greedy" runs that differed:
+69,120 against 65,280 frames, diverging at sample 20 — inside the very first
+frame. That looked like the material finding this plan warned about, that a
+greedy oracle is not reproducible against itself and the replay seam needs more
+than a captured code sequence.
+
+It was not. `generate_custom_voice` takes **two** sampling switches, and
+`do_sample` governs only the Talker. The sub-talker has its own
+`subtalker_dosample`, which defaults to `True`, so the code predictor was
+sampling under a nominally greedy call.
+
+With `do_sample=False` **and** `subtalker_dosample=False`, two runs in separate
+processes are bit-identical: 97,920 frames each, `max_abs_diff` exactly 0.0,
+peak agreeing to the last digit at 0.5742930173873901.
+
+So a reproducible oracle does exist, and the
+stochastic-replay seam needs only the captured code sequence the family plan
+assumed. **Any script that captures this oracle must set both switches**;
+setting one is silently non-deterministic, which is a worse failure than an
+error.
+
+Unseeded sampling behaves as expected and sets the stochastic capability: two
+runs gave 51,840 and 76,800 frames, differing by 0.70 over the common prefix.
+
+### Stage 1 claims Chunked Audio Delivery
+
+`CONTEXT.md` defines Native Streaming Synthesis as a *validated* capability to
+produce usable audio incrementally, so architecture alone cannot earn the claim.
+The call used here returns a complete waveform, and upstream is explicit that
+its own flag does not change that: `non_streaming_mode` "currently only
+simulates streaming text input when set to `false`, rather than enabling true
+streaming input or streaming generation".
+
+Stage 1 therefore claims **Chunked Audio Delivery**. The stronger claim remains
+reachable — the findings above name its cost, three pieces of decoder state
+carried across frames — and would need its own validated evidence at a later
+stage. Recording it this way keeps the two claims from being conflated by
+default, which `CONTEXT.md` warns against in both directions.
+
+## What Three More Ports Say
+
+Read on 2026-07-28: `HaujetZhao/Qwen3-TTS-GGUF`, `cgisky1980/Qwen3-TTS-Rust`,
+`mzyfc/Qwen3-TTS-ncnn`. Nothing was copied.
+
+**Licences differ and one is absent.** The Rust port declares
+`MIT OR Apache-2.0` in `Cargo.toml`. The ncnn port states none of its own and
+defers to its `THIRD_PARTY_NOTICES.md`. The GGUF port ships **no licence at
+all** -- the Apache-2.0 headers inside it belong to a vendored copy of upstream
+-- so it is readable but nothing in it may be reused. Treat all three as
+read-only until a licence is confirmed, and remember the
+`THIRD_PARTY_NOTICES.md` obligation applies to code adopted, not to
+understanding gained.
+
+### Every existing port splits the model; this project does not
+
+All three separate the Talker from the Code Predictor and run the codec
+elsewhere: the GGUF and Rust ports drive two llama.cpp GGUFs plus ONNX
+Runtime for the codec, and the ncnn port exports the Talker and Code Predictor
+as separate ncnn graphs. This project's single versioned C ABI over one GGML
+runtime is the harder path, and it is a deliberate difference rather than an
+oversight -- but it is worth knowing that no existing port attempts it.
+
+### The Code Predictor is the bottleneck, not the Talker
+
+The GGUF port states it directly, and the arithmetic is checkable: one second of
+audio is 12.5 frames, and each frame needs 15 sequential Code Predictor steps,
+so the predictor runs 187.5 steps per second against the Talker's 12.5. At the
+0.6B rung the predictor is roughly 0.1B against the Talker's 0.6B, which puts
+about two and a half times more work per second in the predictor. That is why
+the same port reports the 0.6B and 1.7B rungs performing similarly: the rung
+size changes only the Talker.
+
+This is where stage 4's effort belongs, and it explains why `qwentts.cpp`'s
+cache-reset rewrite of the predictor inner loop mattered as much as it did.
+
+### Quantized CPU inference is far faster than the PyTorch reference
+
+| Port | Backend | Quantization | Real-time factor |
+| --- | --- | --- | ---: |
+| Rust | CUDA | Q5_K_M | 0.553 |
+| Rust | CUDA | Q8_0 | 0.640 |
+| Rust | CPU | Q5_K_M | 1.677 |
+| Rust | CPU | Q8_0 | 1.866 |
+| GGUF, 1.7B | discrete GPU | Q5_K | 0.35 |
+| GGUF, 1.7B | CPU | Q5_K | 1.3 |
+| GGUF, 1.7B | integrated GPU | Q5_K | 1.3 |
+
+Two independent implementations put quantized CPU inference between 1.3 and
+1.9, on the same or a larger rung than this project's Stage 1 target. The 9.4
+recorded from this project's own oracle is PyTorch, float32, eager attention --
+an unoptimised reference, not a prediction of what a GGML port achieves.
+
+**This changes the open question about the discrete-output rule.** The cost of
+holding the autoregressive core on CPU is not the six-to-nine times implied by
+comparing the PyTorch CPU reference against CUDA. Measured against these ports
+it is closer to two or three times, from roughly 0.55 to roughly 1.7, and stays
+near real time. That is a far cheaper price for cross-backend determinism than
+the earlier framing suggested, and the decision should be taken against these
+numbers rather than against the reference's.
+
+### Smaller corroborations
+
+The GGUF port exposes **independent seeds for the Talker and the Predictor**,
+which is the same two-sampler structure this project found in
+`do_sample`/`subtalker_dosample`. The ncnn port chose deterministic greedy
+generation for its numerical acceptance work, the approach this project tried
+and abandoned after finding greedy degenerates on some speaker-and-input
+pairings -- worth watching whether they hit the same wall.
+
+Their voice-clone path is in-context learning: reference text and target text
+are concatenated, and the reference audio is injected as a speaker embedding
+plus its codes so the model continues in that voice. That is the mechanism the
+Reference Model Variant Ladder's later rungs will need, and it is not what this
+Stage 1 CustomVoice variant does.
+
+## Where the Time Actually Goes
+
+Measured 2026-07-28 on the pinned reference, one sentence of English, with the
+talker, the code predictor and the codec timed separately.
+
+| | talker.model | code predictor | codec decode |
+| --- | --- | --- | --- |
+| CUDA BF16 | 38 calls, 1.00 s, 30.0 % | **555 calls, 1.45 s, 43.5 %** | 0.16 s, 4.9 % |
+| CPU F32 | 42 calls, 8.97 s, 27.1 % | **615 calls, 22.46 s, 67.9 %** | 1.19 s, 3.6 % |
+
+The call counts confirm the structure rather than assuming it: 555/37 and
+615/41 are both exactly 15 predictor steps per frame.
+
+### The codec is not worth outsourcing
+
+The other three ports run the codec in a second runtime -- ONNX Runtime in two,
+specialised ncnn graphs in the third. On these measurements that cannot be a
+performance decision: the codec is **3.6 % to 4.9 % of synthesis**, at a
+real-time factor of 0.053 on CUDA and 0.370 on CPU. Both are far under real
+time, and a perfect codec would return at most four percent.
+
+Against that, a second runtime costs a second dependency, a second backend
+abstraction beside `BackendPlan`, and a Model Package that is no longer one
+GGUF. The operator surface argument that might justify it does not apply here
+either: intake measured the incremental surface at zero, because
+`ggml_col2im_1d` is upstream and already exercised by VITS, and SnakeBeta is a
+parameter on Kokoro's existing `snake()`.
+
+**Decision: implement the codec in GGML like every other stage.** The reason
+the other ports outsourced it is build effort, not speed, and this project has
+already paid most of that cost in two earlier families.
+
+### The code predictor is overhead-bound, which makes it an opportunity
+
+It is the largest single cost, and it is *not* compute-bound. One step is
+5 layers at hidden 1024 with intermediate 3072 and a 2048-entry head:
+
+    per-token MACs   80.7 M      ->  161 MFLOP
+    CPU F32   36.51 ms/step      ->   4.4 GFLOP/s
+    CUDA BF16  2.61 ms/step      ->  61.9 GFLOP/s
+
+A GB10 is a teraflop-class device, so the reference is running the predictor at
+well under one percent of the hardware. The arithmetic is tiny; the cost is
+what surrounds it.
+
+The reason is visible in the reference. Every frame calls a full HuggingFace
+`generate()` on the predictor for its fifteen steps -- generation-config
+resolution, logits processors, stopping criteria and cache allocation, twelve
+and a half times per second of audio.
+
+The loop this project has to build is small and completely static:
+
+1. reset the predictor's KV cache for the frame;
+2. prefill exactly two positions, the talker hidden state and the embedding of
+   the semantic code;
+3. run `code_group_count - 1` single-token steps, where step *i* uses **its own**
+   embedding table and **its own** output head -- the private tables per code
+   group that the configuration does not reveal;
+4. sum the sixteen code embeddings to form the next talker input, adding the
+   trailing text hidden state while one remains.
+
+Every step has identical shapes, so the graph can be built once and replayed
+with a new code id, which is what `qwentts.cpp` reports taking its inner loop
+from quadratic to constant. **This is the one place where this port should
+expect to beat the reference substantially rather than merely match it**, and
+it is where stage 4's effort belongs.
+
+## The Code Predictor as Built
+
+Built 2026-07-28 in `src/arch/qwen3-tts/code-predictor.{h,cpp}` and its `-host`
+counterpart, over the shared decoder block in `operations.{h,cpp}`.
+
+Three things about the block are specific enough to get wrong silently, and all
+three are now pinned by a test against the reference's own
+`Qwen3TTSDecoderLayer`:
+
+- **Per-head QK-Norm.** Qwen3 normalizes each head of q and k at `head_dim`
+  before rope, not the packed projection. Qwen2 has no such norm at all, so a
+  block carried over from a Qwen2 port would simply lack it.
+- **NEOX rope.** The halves of each head rotate against each other. The
+  interleaved GPT-J layout applies the same angles to the wrong elements, which
+  degrades quality without failing anything.
+- **Grouped attention by broadcast.** `ggml_mul_mat` maps query head `i` to key
+  head `i/(q_heads/kv_heads)`, which is exactly the blocked grouping the
+  reference's `repeat_interleave` produces, so no materialized repeat is needed.
+
+The talker and the predictor share this block exactly: 16 query heads over 8
+key/value heads, `head_dim` 128, hidden 1024, intermediate 3072, `rope_theta`
+1e6, `rms_norm_eps` 1e-6, every layer `full_attention` with no sliding window.
+They differ only in layer count -- 28 against 5 -- and in rope type.
+
+**The key/value cache is written in place through a view, never grown by
+concatenation.** For the predictor's sixteen positions the two are equivalent.
+For the talker they are not: concatenation copies the whole cache once per step,
+which turns an utterance from linear into quadratic. The block therefore takes a
+persistent cache and a graph, and expands its cache writes before the reads that
+depend on them.
+
+### The step schedule
+
+Per frame the reference calls `generate()` once and takes fifteen steps inside
+it. Written out, that is one prefill of two positions -- the talker's hidden
+state and its embedding of the semantic code -- followed by fourteen
+single-token steps, sixteen positions in total, producing fifteen acoustic
+codes. The cache is per frame and starts empty each time.
+
+The table and head indices are not aligned, which is the trap:
+
+| call | positions | embedding table | output head | code produced |
+| --- | --- | --- | --- | --- |
+| prefill | 0, 1 | none -- the talker supplies both | 0 | group 1 |
+| step g (1..14) | g+1 | g-1 | g | group g+1 |
+
+A call embeds the *previous* code through the table of the group that code
+belongs to, one behind its own head. A wrong table still yields plausible codes
+and only subtly wrong audio, so the mapping lives in
+`code_predictor_schedule()` as data rather than as arithmetic scattered through
+a loop, and is unit-tested at the real group count of sixteen.
+
+`small_to_mtp_projection` is an `Identity` for this variant because the talker
+and predictor hidden sizes both equal 1024, so the package carries no tensor for
+it. The 1.7B rung would need one, and the builder rejects a projection bound on
+one side only.
+
+### Selection is a host seam
+
+Sampling turns a distribution into a value that indexes the next step's
+embedding table, so a code differing by one between backends changes the entire
+rest of the frame. That places it and its input path on the CPU under
+`docs/backends.md`. The filter order is the reference's -- temperature, then
+top-k, then top-p, then the draw -- and the package's generation defaults for
+this head are temperature 0.9, top-k 50, and top-p 1.0, which keeps the whole
+distribution and is therefore inert unless a request overrides it.
+
+The draw itself is not comparable to the reference: PyTorch's generator and this
+project's seeded stream are different streams by construction, which is why the
+Port Validation Contract replays codes rather than reproducing them. What must
+match is the distribution behind the draw, so the frame test decodes greedily
+and compares every step's logits. They agree to 4.8e-07 on the CPU and 8.3e-07
+on CUDA, and every code matches.
+
+## The Package as Cut
+
+Re-cut 2026-07-28: **657 tensors, 2274 MB**, down from 818 and 2493.
+
+### The codec encoder is not carried
+
+The speech tokenizer's encoder half turns audio into codes. Synthesis runs the
+other way, so no graph in this package can reach it, and this checkpoint could
+not use it regardless: `model.safetensors` is 402 tensors, all `talker.`, with
+no speaker encoder at all, and the reference builds voice-clone prompts from the
+**Base** variant. Sixteen of the encoder's codebooks and both of its quantizer
+projections were bit-identical to the decoder's, so part of the 225 MB was
+literally the same weights stored twice.
+
+Dropping it is reversible for one conversion run, and leaves the catalog
+covering exactly what a graph can reach -- no region that is present, unread and
+therefore unvalidated. Reference Audio voice cloning is expected to need a
+different checkpoint variant, which re-cuts the package anyway.
+
+### Two defects the catalog surfaced
+
+Both would have failed at load, and neither was visible before something tried
+to resolve tensors by name.
+
+**27 names exceeded `GGML_MAX_NAME`.** GGML stores a tensor name in a fixed
+64-byte field and truncates past it without a word. A truncated name is not
+findable by the name the catalog asks for, and two names differing only past the
+cut become one tensor. Five path patterns overflowed, the longest at 70
+characters. The components that made them long are shortened --
+`post_attention_layernorm` to `post_attn_norm`, `self_attn_layer_scale` to
+`self_attn_scale`, `mlp_layer_scale` to `mlp_scale`, `_codebook.codebook` to
+`codebook` -- and the converter now refuses to emit any name at or over the
+limit, which is the part that keeps it from recurring.
+
+**The Voice catalog and the speaker table were ordered differently.** The
+generic `synthesize.voice.N.id` list was alphabetical and
+`synthesize.qwen3-tts.speakers.names` was by codec token id. They describe one
+catalog and the loader reads them index by index, so every entry named one
+speaker and would have selected another. The loader's own consistency check
+refused the package outright, which is how this was found. Both now follow the
+manifest's order.
+
+### Codec geometry is in the package
+
+The package carried only sample rate, hop and frame rate, which is not enough to
+derive a single codec tensor's shape. It now carries the decoder's own numbers
+under `synthesize.qwen3-tts.codec.decoder.*`, and the converter checks them
+rather than copying them: the upsample factors must multiply to exactly one
+frame of samples (8 x 5 x 4 x 3 x 2 x 2 = 1920), the residual stack must halve
+once per stage, and the codec must take the number of code groups the talker
+emits.
+
+| | value |
+| --- | --- |
+| latent / decoder dim | 1024 / 1536 |
+| codebook dim / size | 512 (quantizer runs at 256) / 2048 |
+| quantizers | 16, of which 1 semantic |
+| transformer | 8 layers, hidden 512, intermediate 1024, 16 heads x 64, sliding window 72 |
+| residual stages | rates 8, 5, 4, 3 -- widths 1536 -> 768 -> 384 -> 192 -> 96 |
+| ConvNeXt upsample | ratios 2, 2 at latent width |
+
+## The Tensor Catalog
+
+Built 2026-07-28 in `src/arch/qwen3-tts/catalog.{h,cpp}`.
+
+Every entry is resolved by canonical name with its storage type and shape
+checked, and the shape is **derived from the package's hyper-parameters** rather
+than written out. A package whose metadata and tensors disagree is refused at
+load; past that point the mistake stops being an error and becomes wrong audio.
+Under the source profile the type follows the half -- the talker carries the
+checkpoint's BF16, the codec the tokenizer's F32. No quantized package exists
+for this family yet, so a package claiming one is refused rather than measured
+against a rule nobody has written.
+
+After resolution the package is swept: **a tensor the catalog never asked for is
+an error.** A name nobody resolves is a name nobody checked.
+
+Confidence comes from two independent statements of the same package agreeing.
+The unit test writes the entry list out by hand from the checkpoint's layout
+while the catalog derives it from hyper-parameters; and `expected_tensor_count()`
+derives the total by arithmetic while the resolver derives it by enumeration. On
+the real package the arithmetic gives 657 against 657 present, and every region
+binds -- 28 talker layers, 15 predictor heads, 4 residual stages, 15 acoustic
+codebooks.
+
+One shape trap is worth naming because it survives an element-count check:
+`Conv1d` stores `[out, in, kernel]` and `ConvTranspose1d` stores
+`[in, out, kernel]`, so GGML reports `[kernel, in, out]` against
+`[kernel, out, in]`. The two differ only in the order of the trailing pair. A
+converter that confused them produces a package with exactly the right number of
+elements in every tensor, so the catalog resolves them through separate helpers
+and the test pins the swap as a rejection.
+
+## The Talker as Built
+
+Built 2026-07-28 in `src/arch/qwen3-tts/talker.{h,cpp}` and its `-host`
+counterpart.
+
+### The multimodal rope really does collapse
+
+The talker's attention is the shared block's except that it goes through the
+reference's `apply_multimodal_rotary_pos_emb` with `interleaved=True` and
+`mrope_section = [24, 20, 20]`, where the code predictor uses the plain helper.
+Intake argued from the shapes that this is exactly plain rope for this model
+because every `position_ids` path yields three identical rows. That argument is
+now checked: the test runs the real `Qwen3TTSTalkerModel` with a scaled-down but
+genuinely interleaved section shape, and the port's hidden state agrees to
+3.6e-07 on the CPU. Position ids are plain `0..n-1` --
+`attention_mask.cumsum(-1) - 1` with no left padding at batch one, and
+`position_id_per_seconds` never enters.
+
+### Two towers meet at every position
+
+The talker's input is a sum, not a concatenation. The text side is a token from
+the 151936-entry text embedding at width 2048, brought to 1024 by
+`text_projection`: two linears **with biases** and a SiLU between them. The codec
+side is a row of the talker's own 3072-entry codec embedding. Both are pinned by
+the test, because a mistake in either is a wrong voice rather than an error.
+
+### The prompt layout
+
+Every entry below is off-by-one bait, and none of it fails loudly:
+
+| position | text side | codec side |
+| --- | --- | --- |
+| 0..2 | the role prefix's tokens | *none* |
+| 3 | tts_pad | codec_think, or codec_nothink for auto |
+| 4 | tts_pad | codec_think_bos |
+| 5 | tts_pad | the language token, **absent** for auto |
+| 6 | tts_pad | codec_think_eos |
+| 7 | tts_pad | the speaker token, absent without a preset Voice |
+| 8 | **tts_bos** | codec_pad |
+| 9 | the **first** text token | codec_bos |
+
+Ten positions with a language and a speaker, nine for either alone, eight for
+neither. What makes it a trap:
+
+- The codec stream is one longer than the text stream beside it, because its last
+  token belongs to the position after it.
+- The single tts_bos in the whole prompt sits one before the end.
+- codec_bos pairs with the first text token, not with a pad -- which is why the
+  schedule below starts at the *second* text token.
+- Asking for auto is a shorter prompt, not the same prompt with a default
+  language. nothink replaces think and no language token is emitted at all.
+
+Decode step `k` then adds, on top of that frame's sixteen summed code
+embeddings, `trailing[k]` -- the text tokens from the second onward, then one
+tts_eos -- and the projected tts_pad embedding for every step past the end. That
+last part is what lets the talker keep emitting frames after the text runs out.
+
+A frame whose **semantic code** is `codec_eos` ends the utterance, and that frame
+is not part of it.
+
+### The layout is a host seam
+
+It is entirely discrete -- token ids and which table each position reads -- so it
+returns positions rather than tensors, and the graph only performs the two
+lookups and the sum. The flattener then checks what the graph relies on instead
+of assuming it: every position carries a text token, and the codec positions form
+a contiguous tail. A gap would mean the codec stream is not a tail, and the graph
+accumulates it into the text stream as one.
+
+### A test hazard worth recording
+
+Reading an intermediate back after `ggml_backend_graph_compute` is unsound
+without `ggml_set_output`: the graph allocator is free to reuse its buffer for a
+later node. This test reads four tensors including two intermediates, and
+`ggml_acc` was handed the text tower's own buffer, so the prefill readback was
+off by 2.05 while the final logits were correct to 3.9e-07. Marking the outputs
+fixed it. A test that reads only the final tensor never meets this.
+
+## The Codec Decoder as Built
+
+Built 2026-07-28 in `src/arch/qwen3-tts/codec.{h,cpp}`. Codes in, waveform out,
+agreeing with the reference's own `Qwen3TTSTokenizerV2Decoder` to **1.5e-06** on
+the CPU across a 442-node graph.
+
+### It is not the shared block
+
+The codec's transformer looks like a Qwen3 block and is not one:
+
+- **No per-head norms.** Adding them would renormalize vectors the reference
+  leaves alone.
+- **Per-branch layer scales.** Each residual branch is multiplied by a learned
+  per-channel vector, initialised near 0.01, before being added back. Leaving one
+  unbound runs that branch a hundredfold hot.
+- **A sliding window of 72 frames** on top of causality. That is under six
+  seconds at 12.5 Hz, and an utterance routinely exceeds it, so the window is
+  part of the model rather than an optimisation to skip.
+
+Residual quantization sums its levels rather than concatenating them -- each
+level refines the one before it -- and the semantic/acoustic split is the same
+one the talker and the predictor make.
+
+### Layout and operators
+
+The stack is channel-major, `ne = [channels, length]`, matching the rest of the
+family; the reference transposes around its pre-transformer and this does not
+have to, because the transformer already wants `[hidden, positions]`.
+
+Two ggml facts forced the operator choice, both found by running rather than
+reading:
+
+- **`ggml_conv_1d`'s CPU path asserts an F16 kernel** and this family's are F32.
+  Convolutions are built from `ggml_im2col` and a matrix multiply, which is what
+  VITS already does for the same reason.
+- **`nn.GELU()` is the exact erf form; `ggml_gelu` is the tanh approximation.**
+  The difference is 2.4e-4 in a single ConvNeXt block -- small, but two thousand
+  times what the rest of the stack disagrees by, and the real decoder has sixty
+  of them. `ggml_gelu_erf` brings it to 1.8e-07.
+
+Causality is the recurring hazard. Every convolution sees only the present and
+the past, which is left-only padding; ggml pads symmetrically, so each pads wide
+and keeps the prefix. The transposed form is causal by cropping instead, dropping
+the trailing `kernel - stride` samples. Either mistake shifts the waveform in
+time and fails nothing.
+
+### Testing notes worth keeping
+
+**Saturation hides errors.** At the same weight scale as the rest of the stack,
+random weights drove forty percent of the reference waveform into the ±1 clamp,
+where a wrong sample matches a right one. The final convolution is drawn small on
+purpose so nothing saturates.
+
+**The codebooks are EMA accumulators.** The reference divides `embedding_sum` by
+`cluster_usage`; holding the usage at exactly one makes the accumulator the
+table, so the test can fill the table directly. It must not draw the usage from
+the shared weight stream -- doing so shifted every weight after the first
+codebook and produced a waveform wrong by 0.98.
+
+**`%.9g` renders 1.0 as `1`, and `1f` is not a C++ float literal.** This is the
+first reference whose output reaches exactly one, because the clamp puts it
+there. Every dump script now formats through one guard.
+
+**The accelerator tolerance here is looser than elsewhere in the family**, at
+2e-2 against 1e-4 on the CPU, and the test says why: 442 nodes with exponentials
+in them, TF32 matmuls, and a diffuse error -- mean 7e-4 with no outlier, against
+2.3e-07 on the CPU for the same graph. It still catches a wiring fault by a wide
+margin; the one above showed up at 0.98.
+
+### Unused in the decode path
+
+The package binds `quantizer.*.input_proj` for both quantizers -- four tensors,
+about 1 MB -- and nothing reads them. They are the encode direction of the
+projection pair. The catalog resolves them so the package sweep stays absolute;
+dropping them would mean filtering inside a module rather than at a prefix.
+
+## The Text Frontend as Built
+
+Built 2026-07-28 in `src/arch/qwen3-tts/bpe.{h,cpp}`. Byte-level byte-pair, which
+no frontend in this project provided: the symbol-map frontend maps one symbol to
+one id, and this maps a byte sequence to a sequence of merged pieces.
+
+Against the real 151,643-entry vocabulary it reproduces the reference
+tokenizer's ids **exactly on all thirteen cases**, including Chinese, Japanese,
+Korean, an emoji outside the basic plane, contractions and the prompt template.
+
+### The pre-tokenizer is the risky stage
+
+The Qwen pattern is
+
+    (?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+
+
+No C++ standard library implements `\p{L}`, so it is written out branch by
+branch, first-match-wins, and the classes come from `src/unicode-ranges.h` --
+806 ranges generated from Python's own Unicode data by
+`scripts/generate-unicode-ranges.py`. Classifying by hand would be wrong exactly
+at the edges, and the edges are where text-to-speech input lands.
+
+Two rules in that pattern are easy to miss and change every downstream token:
+
+- **A leading space belongs to the word after it**, so `" ab"` is one piece.
+- **Whitespace gives up its last character** when a non-space follows, which is
+  what makes that possible.
+
+Merging is greedy by **rank**, not by position: the lowest-ranked pair anywhere
+in the piece merges first. Taking pairs left to right produces a different and
+equally plausible tokenization.
+
+### Special tokens are added tokens
+
+`<|im_start|>` is id 151644 against a vocabulary of 151643. They sit *past* the
+vocabulary and cannot be looked up in it, so each is configured with its own id,
+taken from the package's token metadata. This was found by running the frontend
+against the real package, which refused it.
+
+### The prompt template is a fixed string
+
+The checkpoint carries no chat template. The reference wraps every request in
+
+    <|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n
+
+and slices the result at 3 and -5 -- the role prefix and the closing markers --
+which is exactly what the talker's prompt layout expects.
+
+### Not registered yet
+
+The comparison against the real vocabulary needs the package, so it belongs to
+the integration tier this family does not have. The unit test pins the split
+against the reference pattern's own output, which is the only stage checkable
+without a 151k-entry vocabulary.
+
+## Orchestration and the Public Seam
+
+Built 2026-07-28 in `src/arch/qwen3-tts/model.cpp` and wired through
+`src/synthesize.cpp`. `"Hello there."` with the `aiden` voice produces fifteen
+frames, 28,800 samples at 24 kHz -- 1.20 seconds of audio in the range
+[-0.42, 0.61].
+
+### Placement: everything is on the CPU
+
+The sampled code is a discrete output, and `docs/backends.md` holds a discrete
+output and every stage feeding it on CPU. Here that is the talker *and* the code
+predictor, which the intake measured at **73.5 %** of synthesis. The codec, the
+only stage that could sit on an accelerator, is **4.9 %**.
+
+So every graph runs on the CPU scheduler and the weights live in the CPU buffer.
+No mirroring is needed, because nothing reads them from two places -- unlike
+Kokoro and VITS, where the held stages were a minority and the rest stayed on the
+primary backend. Whether the codec is worth a second buffer for a 4.9 % ceiling
+is stage 7's decision, with the measurement in hand.
+
+### Four seam findings
+
+None of these could have been found by a unit test: all four live at the boundary
+between the family and the core.
+
+**`ModelInfo::vocab_size` means the vocabulary the frontend's ids index.** The
+core range-checks every returned token against it. That is the text tower's
+151,936, not the codec's 3,072; mapping it to the codec's rejected every request
+with `SYNTH_ERR_INVALID_ARG` and no diagnostic.
+
+**The core resolves an absent language tag to `"en"`.** The package names its
+languages in full (`english`, `chinese`, …), so the family bridges BCP-47 to
+those names on the primary subtag alone. The two dialect entries are deliberately
+absent from that table: they are speaker overrides the reference reaches through
+`spk_is_dialect`, not languages a request can ask for.
+
+**The declared frame limit is not a cache size.** The talker attends over the
+whole utterance at 229 kB a frame, and the package declares fifteen million
+frames -- a generic "no limit". Sizing the cache from it asked for **three
+terabytes**. It now comes from the request's effective limit, with a default of
+2048 frames: about 164 seconds and 481 MB.
+
+**ggml's elementwise operators reject BF16.** `ggml_mul_mat` reads a BF16 weight
+directly; `ggml_add` and `ggml_mul` abort inside `binary_op`. Every norm gain and
+bias in the talker half is BF16 because that is what the checkpoint stores, so
+they are cast where they meet an elementwise operator.
+
+### The language seam, and how it was found
+
+The core used to be English-only in two places: `synth_model_get_language_count`
+returned 1 with a hardcoded `"en"`, and the request validator ran a
+`supported_english_tag` check before dispatch. This family is the first
+multilingual one, so nine of its ten requestable languages were unreachable
+through the public interface -- and therefore through the CLI and both bindings.
+
+That was noted here as a known limit and shipped anyway, which is the part worth
+recording. Every one of the eighteen Golden cases passes with Chinese, Japanese,
+German and Korean text, because the replay harness drives the family directly and
+never crosses the validator. Stage 5's public-request phase did cross it, but only
+ever with `en`. A gate that no test approaches is a gate that stays shut, and it
+took someone asking for a long Chinese sentence to find it.
+
+The fix moves the declaration to where `docs/languages.md` already said it lived:
+`ModelInfo::languages` carries BCP-47 tags with `SYNTH_LANGUAGE_*` flags, each
+family fills it, the validator matches against it, and the enumeration reports it.
+VITS and Kokoro declare `en` with regional fallback, which is exactly what the
+hardcoded test did for them. This family maps its package's full names --
+`chinese`, `japanese` -- to tags on the way out, dropping the two dialect entries,
+which are speaker overrides rather than requestable languages.
+
+One divergence to settle: `docs/languages.md` says a multilingual variant without
+a declared default requires an explicit tag. This family declares no
+`SYNTH_LANGUAGE_DEFAULT`, and omitting the tag gives the reference's no-think
+prompt, which carries no language token at all rather than falling back to one.
+That is the reference's behaviour and is not the same as "has no default".
+
+The turn wrapper lives in the frontend rather than in the core. The core runs the
+frontend, and for this family wrapping the request in an assistant turn is part
+of turning text into the ids the model consumes -- so it belongs there rather
+than as a family branch in the core.
+
+### Not yet measured
+
+Synthesis of 1.2 seconds took 30 seconds of wall clock on CPU. That is a
+real-time factor of 25 against the reference's measured 9.4, and it is expected
+to be dominated by rebuilding a graph per decode step -- 15 predictor steps and
+one talker step per frame, each allocating a scheduler. `qwentts.cpp` reports
+building the predictor's inner graph once and replaying it. That is stage 7's
+work and the intake already named it as where this port should beat the
+reference rather than match it.
+
+## Stage 5: Oracle Replay
+
+`scripts/validate-qwen3-tts-replay.py` drives `synthesize-qwen3-tts-replay-real`
+over the Golden Manifest's cases and compares the port against the oracle's
+artifacts.
+
+### Why replay rather than reproduce
+
+The oracle sampled its codes from PyTorch's generator, and this port draws from
+its own seeded stream. Reproducing the same codes is not possible and is not the
+claim; the contract's seam is to **replay** the oracle's codes and compare
+everything downstream of the draw on identical inputs. So `run_synthesis` takes
+an optional code stream, and with it set the loop never samples and never
+consults the stop code -- the replay's length ends it.
+
+### What is compared, and how
+
+The oracle hooks the talker's **first forward alone** -- the prefill, the pass a
+port reproduces without the sampled history behind it. So the probes are the
+whole prompt's hidden states at layers 0, 7, 14, 21 and 27, the final norm, and
+the codec head over every prompt position. The waveform is compared separately,
+after the oracle's codes are fed back through the codec.
+
+Deep talker layers are compared by **cosine similarity, not max-abs**. The
+tolerance file recorded this before any measurement existed, from reading the
+reference port: per-layer max-abs of 13.07 / 13.09 / 13.42 at L7 / L14 / L21 and
+66.8 at L27 while cosine held at or above 0.9998. Those are outlier channels
+ahead of the final norm, and a max-abs threshold would report catastrophic
+failure on a correct port. The measurements below have the same shape.
+
+### Four defects it found
+
+None was reachable by a unit test: all four are agreements with the reference
+that only the reference can settle.
+
+**The prompt was the streaming layout.** `generate_custom_voice` defaults to
+`non_streaming_mode=True`, which puts the whole text in the prompt and leaves the
+decode loop nothing but padding to contribute. The streaming layout puts one
+token in the prompt and feeds the rest a frame at a time. Both synthesize speech.
+
+**The codec block was one position short.** `tts_bos` pairs with `codec_pad`, and
+only `codec_bos` is held back for the position closing the prompt.
+
+**The probes were captured per frame rather than over the prefill.** A per-frame
+capture has exactly the same shape as a prefill capture whenever the frame count
+happens to equal the prompt length -- which it did on the first case tried. That
+is how a wrong capture survives a shape check.
+
+**The replay adapter read the acoustic codes level-major.** The oracle splits
+column 0 from columns 1..15 of a `[frames, 16]` block, so that stream is
+frame-major. Transposed codes decode to audio rather than to an error.
+
+Before these, layer 0 sat at a cosine of **-0.01**.
+
+### Measured tolerances
+
+All eighteen Golden cases pass. The oracle runs bfloat16 on CUDA and the port
+runs F32 on CPU, so these cover a dtype and a device difference as well as an
+implementation one. That comparison is permitted rather than merely tolerated --
+see `docs/port-validation.md`, which was revised on 2026-07-30 after its earlier
+wording turned out to forbid the only comparison a BF16-checkpoint family can
+make -- and it comes with a condition this family has not met yet: the dtype and
+implementation components of each threshold are not separated.
+
+| probe | worst cosine | worst max-abs | gate |
+| --- | --- | --- | --- |
+| talker.hidden_l0 | 0.999992 | 0.084 | cosine 0.99996 |
+| talker.hidden_l7 | 0.999986 | 4.53 | cosine 0.99993 |
+| talker.hidden_l14 | 0.999971 | 7.63 | cosine 0.999855 |
+| talker.hidden_l21 | 0.999942 | 12.05 | cosine 0.99971 |
+| talker.hidden_l27 | 0.999915 | 17.39 | cosine 0.999575 |
+| talker.final | 0.999452 | 3.84 | cosine 0.99726 |
+| talker.logits | 0.999522 | 1.44 | cosine 0.99761 |
+| audio.pcm | 0.999427 | 0.154 | cosine 0.997135, max-abs 0.5 |
+
+Every threshold is **five times the measured deviation in (1 - cosine)**. That
+headroom absorbs run-to-run variation and stays far tighter than any defect this
+suite caught: a transposed code stream gave cosine 0.017 and a prompt one
+position short gave -0.01.
+
+The talker probes gate on cosine alone, and max-abs is recorded as observed. The
+deep layers carry outlier channels ahead of the final norm -- 17.4 at L27 against
+a cosine of 0.99992 -- so a max-abs gate would report catastrophic failure on a
+correct port. The waveform gates on both, because a listener hears the waveform
+and a cosine over it would hide a constant offset.
+
+`--check` reads the file and refuses to run when a stage is not recorded in it,
+so a tolerance stays an input to validation rather than something the suite
+writes for itself.
+
+### A fifth defect, in the harness
+
+A dictionary fallback in the validator turned the manifest's `"auto"` language
+into `"en"`, so the port built a prompt carrying a language token where the
+oracle built one without. That is one position longer, and it surfaced as a shape
+mismatch rather than a number -- the honest failure, but the cause was the
+harness and not the port.
+
+### Phase 3: the public seam
+
+`scripts/validate-qwen3-tts-public.py` drives `synth_synthesize` the way a caller
+does, injecting nothing. Eight checks, each of which can break while every tensor
+comparison still passes:
+
+| check | result |
+| --- | --- |
+| the seed is reported as requested | 7 in, 7 out |
+| the same seed reproduces byte for byte | identical digests |
+| a different seed changes the audio | seed 7 and seed 8 differ |
+| a random seed is reported concretely | reported 11889680619108445593 |
+| the reported random seed reproduces | identical digests |
+| a different Voice changes the audio | aiden and vivian differ |
+| the resolved Voice is reported | `vivian` |
+| a dialect speaker still synthesizes | 21,120 frames |
+
+Byte-identical rather than close, because the sampler is the only stochastic part
+and it is seeded. Reporting a seed that does not reproduce would be worse than
+reporting none, so the random-seed path is replayed rather than merely observed.
+
+### Not done in this stage
+
+Phases 4 and 5 of the contract -- the quantization profiles and the Execution
+Backends -- are stages 6 and 7 and have not started. Neither validator is
+registered with CTest yet: both need the package, so they belong to the
+integration tier this family still does not have.
+
+## Stage 6: Quantization Profiles
+
+### The quantizer refused this family
+
+Its source profile is mixed -- a bfloat16 talker and an F32 codec -- and the tool
+accepted only F32 and F16 sources. `dequantize_to_f32` already handled BF16
+through its type traits, so the guard was the whole of it.
+
+### Where the policy lands
+
+Classification is by name, as for the other two families, so a converter or
+runtime change cannot have a storage type assigned to it by a catch-all suffix
+rule. What differs is which tensors are held:
+
+- **The quantizer's codebooks and both kernel-one projections stay at the
+  reference dtype.** A residual codebook's later levels carry small magnitudes,
+  so a relative error there is a large one against the residual it is meant to
+  correct. The whole quantizer is under 35 MB of a 2 GB package.
+- **Per-head norms, the codec's per-branch layer scales and the SnakeBeta curves
+  stay exact.** Each multiplies or seeds a whole head or branch, the layer scales
+  start near 0.01, and together they are a rounding error of the file.
+- **The six transposed convolutions stay F32**, the override VITS makes for the
+  same reason: they run as a column matrix multiply into `col2im_1d` and CUDA's
+  F16 multiply accumulates in half precision.
+
+The catalog carries a **role per tensor** rather than re-deriving one from the
+name. The quantizer classifies by name and the runtime by role; having the
+runtime repeat the name classification is how the two drift apart.
+
+### F16 is a speed profile, not a size one
+
+It is **the same 2168 MB as the source** and **4.5 times faster**. That is not
+what a halving profile usually buys, and the reason is ggml rather than the
+model: its CPU bfloat16 matrix multiply is far slower than its F16 one, so
+halving weights that were already two bytes wide is nearly free accuracy and a
+large amount of time.
+
+| stage | BF16 source | F16 |
+| --- | --- | --- |
+| talker | 13.66 s | 1.74 s |
+| code predictor | 25.11 s | 3.65 s |
+| codec | 4.20 s | 4.19 s |
+| **wall** | **43.04 s** | **9.64 s** |
+
+A 37-frame case is 2.96 seconds of audio, so the real-time factor goes from 14.5
+to **3.3** -- faster than the reference's own measured 9.4 on CPU.
+
+Accuracy is a wash and on the deep talker layers marginally better, which follows
+from where the bits are: F16 carries ten mantissa bits against bfloat16's seven.
+The waveform agreement is *identical* to the source profile's, because the codec
+that produced it is the same F32 graph.
+
+All eighteen cases pass under the committed `f16-vs-oracle` stage.
+
+### The codec is never halved
+
+Halving it goes the wrong way. Its convolutions run through `ggml_im2col` into a
+matrix multiply, and ggml's F16 path there is slower on CPU than its F32 one: a
+uniform F16 profile took the codec from 4.2 seconds to **7.3**, and the whole
+case from 9.6 to 12.8. So the codec half stays at the reference dtype under every
+profile, in the quantizer's policy and the catalog's expectation both. It is 457
+MB of space that costs more time than it returns.
+
+### Q8_MIXED, and the refusal that was wrong
+
+Built 2026-07-29. **1359 MiB against 2169, and a real-time factor of 0.85 against
+F16's 1.24** on the same 9.6 second case: smaller *and* faster than real time.
+
+This profile was refused for a month on a reason that did not survive being
+checked. The refusal said packing a convolution kernel was a runtime change this
+family had not made -- true in itself, and irrelevant, because
+`classify_qwen3_codec` reports every codec tensor as sensitive under every
+profile. No convolution kernel ever reaches a quantized type, so none is ever
+packed. The belief was never tested, and nothing failed while it was wrong.
+
+What actually blocked it was one gate in the quantizer. A two-dimensional weight
+must not be packed -- a `[1024, 3072]` projection would become one row of
+3145728 -- and the guard that says so was written for Kokoro and gated on its
+name. This family's entire quantizable half is two-dimensional, so without that
+guard every talker matrix was packed into nonsense.
+
+The split, measured from the package:
+
+| half | tensors | size | rows divisible by 32 |
+| --- | ---: | ---: | ---: |
+| talker | 316 | 1457.6 MiB | all |
+| code predictor | 86 | 270.0 MiB | all |
+| codec | 255 | 436.0 MiB | 212.0 MiB |
+
+The autoregressive half is 80 % of the package and quantizes without argument:
+rows of 1024, 2048 and 3072. The codec's convolutions carry the kernel in the
+fastest dimension -- rows of 7, 16, 3 and 1 -- and stay at F32, which is the same
+decision F16 makes and for the same measured reason.
+
+Accuracy over the eighteen Golden cases: the waveform is unchanged at cosine
+0.999427, because replay supplies the codes and the codec that renders them did
+not move. The talker did: its final hidden state and logits fall from 0.9994 to
+**0.9956**, about eight times the deviation.
+
+**That number deserves more weight than the unchanged waveform.** Replay cannot
+show what a logits difference of that size does to a *draw*, because it does not
+draw. In normal operation this profile will sometimes select different codes,
+exactly as a different backend does. Whether that is audible is a listening
+question this profile has not been asked yet.
+
+One trap worth keeping. `ggml_n_dims` collapses trailing unit dimensions, so
+VITS's `decoder.post.weight` at `[7, 32, 1]` reports as two-dimensional. Writing
+the guard as a general rule about shape rather than naming the families leaves it
+a row of seven and breaks VITS -- which is what the quantizer's own fixture
+caught when it was written that way.
+
+### Q5_K_MIXED is buildable and is not recommended
+
+Built 2026-07-29. **1035 MiB against 2169, a real-time factor of 0.82, and the
+worst talker logits at cosine 0.9648.** The first two numbers are good and the
+third is why this profile is not proposed for publication.
+
+| profile | size | RTF | talker.logits | talker.final |
+| --- | ---: | ---: | ---: | ---: |
+| F16 | 2168.9 MiB | 1.21 | 0.999458 | 0.999430 |
+| Q8_MIXED | 1359.2 MiB | 0.85 | 0.995731 | 0.995634 |
+| Q5_K_MIXED | 1035.3 MiB | 0.82 | 0.964769 | 0.962882 |
+
+Against Q8 it buys 324 MiB and **essentially no speed** -- 0.82 against 0.85,
+inside run-to-run variation -- for eight times the deviation in the logits. The
+logits are the distribution the draw is made from, and this family has already
+demonstrated what a disturbed draw costs: a perturbation an order of magnitude
+*smaller* than this gap is what the missing repetition penalty amounted to, and
+it truncated sentences.
+
+Where the error is, measured rather than assumed. Every hidden state stays above
+0.9993; `talker.final`, one RMSNorm later, is 0.9629. The deep layers carry
+outlier channels ahead of that norm -- max-abs reaches 28 at L27 -- so normalizing
+amplifies the relative error in every other channel. The amplification of
+(1 - cosine) from L27 to final is 7.7x under F16, 33x under Q8 and 55x under Q5_K.
+
+Holding the output head at the reference dtype was tried and does not help:
+`talker.codec_head.weight` is 6 MiB and sits *after* `talker.final`, which is
+already degraded. Logits moved 0.9648 to 0.9691 and final did not move at all.
+The error is 28 layers of accumulation, not one tensor, so the usual remedy of
+keeping the output head at higher precision has nothing to fix here.
+
+The profile is left in the quantizer because it is correct and cheap to keep --
+one row in the table, one enum, one branch -- and because a future variant with a
+shallower talker may want it. It carries no committed tolerances and no published
+package, which is the accurate way to say "buildable, not validated".
+
+### The sampler carried its own copy of the checkpoint's decisions
+
+Found 2026-07-29, by listening. Long inputs stopped mid-sentence under every
+profile -- English at 198 characters and Chinese at 58 both lost their tail, at a
+point that moved with the seed.
+
+The talker ends an utterance by drawing the codec end token, so everything in
+front of that draw decides when it stops. This port reimplemented the filter
+chain -- temperature, then top-k, then top-p -- and omitted `repetition_penalty`,
+which the checkpoint ships at 1.05 and which the oracle samples with. The three
+values it did implement were hardcoded at 0.9 / 50 / 1.0 and matched
+`generation_config.json` exactly, which is why nothing looked wrong.
+
+**The defect is the second copy, not the missing field.** A port that keeps its
+own version of the checkpoint's decisions drifts from them silently, and the only
+signal is a listener noticing a sentence end early. The converter now reads
+`generation_config.json` and writes all seven values into the package -- the
+talker's four and the code predictor's three, which upstream configures
+separately and which ships no penalty. The loader requires them, so a package cut
+before this refuses to load rather than sampling with something else, and the
+generation config is digested beside `config.json`.
+
+Verified by listening on the two reported lines, two seeds, both profiles: they
+finish. Recorded for what it is -- one listener, informally.
+
+### A retracted claim: the public CUDA request never moved the sampler
+
+Recorded 2026-07-29, retracted the same day.
+
+This family doc and the tolerance file both carried the claim that requesting
+`SYNTH_BACKEND_CUDA` through the public seam placed the sampled path on the
+accelerator, and that this was in tension with `docs/backends.md`'s
+discrete-output rule. The evidence was that one case drew ten frames on CUDA
+against eleven on CPU.
+
+**That comparison used two different binaries** -- a Release CPU build against the
+CUDA preset -- and optimization level alone changes CPU float contraction enough
+to move a draw. The cleanup investigation found this incidentally while checking
+something else: the same CPU code gives one PCM digest under `-O3` and another
+under `-O2`.
+
+Re-run properly, one binary, `--backend cpu` against `--backend cuda`, five cases
+across English, Chinese and Japanese and three Voices: **frame counts are
+identical in every one.** The sampled code sequence does not change. Only the
+waveform bytes differ, which is the codec's tensor-core arithmetic and the same
+signature the BF16-on-CUDA sweep shows.
+
+So the placement was already what stage 7 measured and what the rule requires --
+the codec moves, the talker and the code predictor do not. No change was needed,
+and one was nearly made on the strength of a comparison that had two variables in
+it.
+
+### Stage 7's remaining gaps, closed 2026-07-29
+
+Three things the family doc had been recording as owed.
+
+**The source profile on CUDA.** Swept: eighteen cases, every talker probe
+*bit-for-bit equal* to the CPU entry, which is the placement proving itself
+rather than being asserted -- the talker feeds a sampled code and stays on the
+CPU, so only the waveform can move, and it does, 0.999427 to 0.999404. Against
+F16 on CUDA the waveform is identical to six digits under both profiles; the
+codec is almost entirely F32 either way, which is read off the tensor types
+rather than tested causally.
+
+**Repeated-run and resource cleanup.** `docs/backends.md` gate 6 has always
+required it and **no family had it in code.** Every case of all four manifests
+declares `resource_cleanup` in its `checks` array, and outside the manifests and
+the schema enum that string appears nowhere in the repository: nothing reads a
+case's `checks` at all, and `backend_placement` is equally unenforced. VITS's
+recorded evidence was twenty repeated *processes*, which cannot see an in-process
+leak because exit reclaims everything -- and `docs/testing.md` already says a
+manual run does not substitute for a registered test.
+
+Measured before writing anything: thirty cycles on CPU leave the post-free
+resident set oscillating in an 18 MB band with no trend, the minimum falling at
+cycle 12; on CUDA it rises 7.6 MB over the first two cycles and then plateaus at
+0-156 kB, which is context warm-up rather than a leak, since a leaked codec
+buffer is tens of megabytes and a leaked model 1.4 GB. Three cycles under
+LeakSanitizer are clean, with a deliberately leaking control program used to
+confirm the sanitizer was armed.
+
+`tests/qwen3_tts_public_cleanup_test.cpp` asserts the **floor** of post-free
+resident memory rather than last-minus-first. That distinction is load-bearing: a
+leak raises the floor, arena churn only raises peaks, and a first draft using
+last-minus-first failed on a run whose first cycle happened to land in a trough.
+
+**Twenty Golden cases.** Two utterances roughly twice the previous longest, 18.7
+and 21.3 seconds against 9.3. Every committed threshold held and no worst-case
+figure moved -- the new cases score *better* than the suite worst on every probe.
+The port does not degrade with length. That is worth stating precisely because
+the truncation defect appeared only past the old maximum: it was the sampler, and
+these cases exist so the suite now reaches the lengths where a defect of that
+shape lives.
+
+### Closing the gap: the filter chain is compared, not the audio
+
+Added 2026-07-29. `tests/qwen3_tts_sampling_test.cpp` feeds this port's filter
+chain and Hugging Face's own logits processors **the same logits** and compares
+the distributions they produce. `scripts/dump_reference_qwen3_tts_sampling.py`
+captures the reference side, reading the parameters out of the checkpoint's
+`generation_config.json` rather than repeating them -- a fixture built from
+hardcoded numbers would reproduce this port's mistake instead of catching it.
+
+**Verified by breaking it.** With the penalty forced back to 1.0 the test fails;
+restored, it passes. A regression test that has never been seen to fail is a
+guess.
+
+Two designs were tried first and rejected, which is worth recording because both
+look reasonable:
+
+- **Duration proportional to text.** Correct behaviour varies by seed enough to
+  overlap the truncated behaviour -- at 256 characters the fixed port produced
+  16.0 to 22.2 seconds across three seeds -- so a threshold would either miss the
+  defect or fire on healthy runs. It also would not have caught this one: the
+  longest Golden case is 140 characters, and at that length the broken port
+  emitted 117 frames against the oracle's 116.
+- **Transcribing the output and comparing it to the input.** This decides the
+  question outright, and it is the WER tooling ADR 0017 defers. Adding it here
+  would be a large new dependency taken against a standing decision.
+
+What the chosen check does *not* cover: it compares the filters, not the draw,
+and not the prompt. A defect in how the prompt is laid out at length would still
+reach a listener before it reached the suite. The Golden manifest's longest case
+is still 140 characters, and extending it needs oracle runs.
+
+### Why eighteen Golden cases could not see it
+
+The Port Validation Contract's replay seam feeds the oracle's codes so that
+comparison is deterministic. That is the right design and it has a consequence
+worth naming: **`select_code` is the one stage the Golden suite never executes.**
+Every probe in `tests/tolerances/qwen3-tts.json` was within tolerance before and
+after this fix, to the digit, because none of them samples.
+
+Stage 5's public-request phase does sample. It asserted relations between runs --
+the same seed reproduces, a different seed differs, a different Voice moves the
+audio -- and never that the speech was complete. The longest Golden case is 140
+characters.
+
+So the suite validated everything except what the model says. There is a unit
+test for the penalty's arithmetic now, which is not the same thing: what is still
+missing is a check that a long input terminates on the end token with a duration
+proportional to its text, and that needs designing rather than asserting.
+
+## Stage 7: Execution Backends
+
+### What can move, and what cannot
+
+The talker and the code predictor feed a sampled code. `docs/backends.md` holds a
+discrete output and every stage upstream of it on the CPU, so neither can move --
+together they are 59 percent of wall clock under the F16 profile. The codec is
+the one stage that is free, and it is the other 41.
+
+The intake estimated that share at 4.9 percent from the reference's own timings.
+It is four times that here, because this port's autoregressive half is much
+faster relative to its codec than PyTorch's was. Measuring rather than inheriting
+the estimate is what made the placement worth doing.
+
+### The measurement
+
+A 37-frame case, same build, F16 profile:
+
+| | codec | wall |
+| --- | --- | --- |
+| codec on CPU | 8.44 s | 20.69 s |
+| codec on CUDA | **0.24 s** | **12.50 s** |
+
+Thirty-five times on the stage and 1.66 end to end.
+
+The codec half gets same-named twins on the primary backend and the catalog binds
+it against those. The talker and the predictor get none: a second copy of 1.8 GB
+that can never leave the CPU would be read by nothing. The package sweep still
+runs over the package alone, because a twin is a placement detail rather than a
+tensor the package carries.
+
+### Placement is proven by the probes, not asserted
+
+Running the whole suite with the codec on CUDA leaves **six of the eight probes
+bit-identical** to the CPU stage, and `talker.final` agreeing to six decimals --
+CPU reduction order is not bit-stable across runs at different thread
+schedules. Only the waveform moved, and only in the sixth decimal of its cosine,
+which is the codec's tensor-core arithmetic.
+
+That is the shape a correct split has. Had the talker moved, its probes would
+have shifted with it.
+
+| probe | CPU F16 | codec on CUDA |
+| --- | --- | --- |
+| talker.hidden_l0 | 0.999989 | 0.999989 |
+| talker.hidden_l27 | 0.999926 | 0.999926 |
+| talker.logits | 0.999458 | 0.999458 |
+| audio.pcm | 0.999427 | **0.999404** |
+
+All eighteen cases pass under the committed `f16-cuda-codec-vs-oracle` stage.
+
+### Hardware note
+
+Asking for `GGML_BACKEND_DEVICE_TYPE_GPU` misses this machine entirely: the
+GB10's CUDA device reports as **integrated**. The runner takes the first device
+that is not the CPU rather than the first that calls itself a GPU, and anyone
+testing on Spark hardware will need the same.
+
+### It is reachable from the public seam
+
+`synth_model_load` with `SYNTH_BACKEND_CUDA` gets the split: the seam passes the
+selected device, `BackendPlan` makes it primary, and the model creates the codec
+twins because primary is no longer the CPU. Both paths synthesize the same
+utterance through `synth_synthesize` and return the same 28,800 samples.
+
+### When it pays, and when it does not
+
+Synthesis is 1.66 times faster with the split. Loading is about seven seconds
+slower, because 457 MB of codec weights are copied into the accelerator's buffer
+and the CUDA context is created.
+
+For a one-shot 1.2-second utterance that is a net loss -- 17.9 seconds against
+10.9 end to end including load. For a long utterance, or any process that loads
+once and synthesizes repeatedly, it is a clear win. The split is therefore a
+deployment choice rather than a default, which is what the backend request on
+`synth_model_load` already expresses.
+
+### Not done in this stage
+
+The repeated-run cleanup the contract asks for is not written.
+
+## Stage 8: Publication, Prepared
+
+The model card is written and rendered from
+`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml`, with the digests checked
+against the packages on disk by the generator. **Nothing has been published.**
+Publishing is an outward-facing act and needs its own confirmation, which has not
+been given; see `OUTWARD_INTERACTION_POLICY.md`.
+
+| profile | size | sha256 (first 16) | CPU cosine | CUDA cosine |
+| --- | --- | --- | --- | --- |
+| BF16 (source) | 2168.8 MB | `aa96f152a113e199` | 0.999427 | not measured |
+| F16 | 2168.9 MB | `db19d6317d156ad3` | 0.999427 | 0.999404 |
+
+What the card declares and why:
+
+- **`port_validated`, quality evaluation not run.** No arena or listening
+  evidence supports a quality claim for this family and the project has no
+  capability to produce one, which the intake accepted as a risk.
+- **English only.** The checkpoint carries codec language tokens for nine more
+  languages and two of its speakers pin a Chinese dialect; those paths load and
+  run, but none has its own validation cases, so none is advertised.
+- **Three profiles.** Q8_MIXED shipped 2026-07-29; see above.
+- **The encoder half is absent**, and the card says so rather than leaving a
+  reader to wonder why a speech tokenizer package cannot tokenize speech.
+
+### What a publication would still need
+
+- A decision on whether to publish at all, which is jiangzhuo's.
+- The CUDA column for the source profile, which was never measured -- the
+  accelerator work was done under F16.
+- The repeated-run cleanup stage 7 owes.
+
 ## Open Questions for Intake
 
 1. Confirm the codec decoder topology against upstream rather than against a
    port: SEANet stage ratios, ConvNeXt upsample factor, DAC strides, and whether
-   SnakeBeta exponentials can be folded at load.
-2. Confirm the RoPE section collapse is exactly equivalent for a
-   text-plus-codec timeline.
-3. Measure real CPU speed for the 0.6B Stage 1 variant on project hardware. The
-   Code Predictor's per-frame sequential steps are reported to dominate
-   generation time; confirm the cost and the documented cache-reset mitigation
-   before committing to a CPU claim.
-4. Enumerate the CustomVoice preset speakers and their dialect overrides for the
-   Preset Voice Catalog.
-5. Determine whether the causal codec decoder qualifies as Native Streaming
-   Synthesis under `CONTEXT.md`, or whether Stage 1 claims only Chunked Audio
-   Delivery.
+   SnakeBeta exponentials can be folded at load. **Mostly resolved 2026-07-27**
+   from the checkpoint -- ratios, factors and quantizer geometry are under "The
+   codec, measured against the tensors". What remains is the SnakeBeta folding,
+   which needs the forward rather than the shapes.
+2. ~~Confirm the RoPE section collapse is exactly equivalent for a
+   text-plus-codec timeline.~~ **Resolved 2026-07-27**: exactly equivalent, and
+   proven rather than argued. See "The multimodal RoPE collapses exactly".
+3. ~~Measure real CPU speed for the 0.6B Stage 1 variant on project hardware.~~
+   **Resolved 2026-07-27**: real-time factor 9.4 to 9.7 greedy on CPU, and that
+   is a floor set by the first oracle configuration tried, not a measurement of
+   the model as upstream deploys it (CUDA, bfloat16, FlashAttention 2) -- and not
+   how this family's oracle ended up running either. Whether CUDA
+   helps is a stage-7 policy decision, not an implication -- see "CPU oracle
+   smoke". The cache-reset mitigation is still unmeasured here; it is a stage-4
+   implementation concern.
+4. ~~Enumerate the CustomVoice preset speakers and their dialect overrides for
+   the Preset Voice Catalog.~~ **Resolved 2026-07-27**: nine speakers as codec
+   token ids, two with dialect overrides. See "Voices and languages".
+5. ~~Determine whether the causal codec decoder qualifies as Native Streaming
+   Synthesis under `CONTEXT.md`.~~ **Resolved 2026-07-27**: Stage 1 claims
+   Chunked Audio Delivery. See "Stage 1 claims Chunked Audio Delivery". The
+   stronger claim stays reachable at a later stage with its own evidence, and
+   its cost is named under the qwentts findings.
 6. Establish upstream provenance and redistribution permission for publishing
-   converted Model Packages, as was done for Kokoro. Alibaba does not disclose
-   training corpora; the Apache-2.0 grant is the basis relied on, and it is the
-   same basis on which Kokoro was accepted.
+   converted Model Packages, as was done for Kokoro. **Basis settled
+   2026-07-27**, decision deliberately not taken. Both the source at `022e286b`
+   and the checkpoint at `85e237c1` carry an explicit Apache-2.0 grant, audited
+   at the pinned revision rather than at `main`, with no restriction prose in
+   either card. Alibaba does not disclose training corpora, so Apache-2.0 is the
+   basis relied on, the same basis on which Kokoro was accepted. Publishing
+   anything remains a separate act requiring its own confirmation.
 
 ## Accepted Risks
 

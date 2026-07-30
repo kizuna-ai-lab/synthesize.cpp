@@ -1,6 +1,7 @@
 #include "synthesize.h"
 
 #include "arch/kokoro/kokoro.h"
+#include "arch/qwen3-tts/qwen3-tts.h"
 #include "arch/vits/vits.h"
 #include "audio-delivery.h"
 #include "backend-device.h"
@@ -27,12 +28,13 @@
 // core runtime reads. Only one implementation pointer is ever set, and `info`
 // says which.
 struct synth_model {
-    synth::ModelInfo                      info;
-    std::unique_ptr<synth::vits::Model>   vits;
-    std::unique_ptr<synth::kokoro::Model> kokoro;
+    synth::ModelInfo                        info;
+    std::unique_ptr<synth::vits::Model>     vits;
+    std::unique_ptr<synth::kokoro::Model>   kokoro;
+    std::unique_ptr<synth::qwen3tts::Model> qwen3_tts;
     // What only the VITS synthesis path reads; Kokoro's equivalents live behind
     // its own seeded entry point.
-    synth::vits::ModelInfo                vits_extras;
+    synth::vits::ModelInfo                  vits_extras;
 };
 
 struct synth_context {
@@ -183,6 +185,25 @@ synth_sink_result_t SYNTH_CALL collect_audio(void * user_data, const synth_audio
     return SYNTH_SINK_CONTINUE;
 }
 
+// An output limit fills the result metadata it resolved, per docs/c-interface.md:
+// "On success, cancellation, output-limit termination, or sink error, the
+// implementation fills every result field it has resolved."
+//
+// It is not a sink completion. deliver_complete_audio returns before touching the
+// sink when the frame count is zero, and the ABI has no completion callback --
+// the contract forbids a zero-length final chunk. What was missing was the
+// metadata: a limit stop reported actual_seed 0, sample_rate 0 and an empty
+// resolved Voice, while the two sibling families filled all of it.
+//
+// Nor is it a graph failure. Routing it through the generic branch also emitted a
+// `synthesis.graph_failed` diagnostic, which the sibling paths do not.
+synth_status_t report_output_limit(const synth::AudioDeliveryInfo & info,
+                                   const synth_audio_sink_t *       sink,
+                                   synth_result_t *                 out_result) {
+    (void) synth::deliver_complete_audio(nullptr, 0, info, sink, out_result);
+    return SYNTH_ERR_OUTPUT_LIMIT;
+}
+
 void reset_result(synth_result_t * result) {
     if (result != nullptr) {
         const uint64_t struct_size = result->struct_size;
@@ -224,15 +245,24 @@ synth_status_t read_model_family(const char * model_path, synth::ModelFamily & f
         family = synth::ModelFamily::Kokoro;
         return SYNTH_OK;
     }
+    if (architecture == "qwen3-tts") {
+        family = synth::ModelFamily::Qwen3Tts;
+        return SYNTH_OK;
+    }
     return SYNTH_ERR_UNSUPPORTED_ARCH;
 }
 
 synth::ModelInfo shared_info(const synth::vits::ModelInfo & info) {
     synth::ModelInfo shared;
-    shared.family               = synth::ModelFamily::Vits;
-    shared.has_package_default  = info.has_package_default;
-    shared.preset_voice_ids     = info.preset_voice_ids;
-    shared.preset_voice_flags   = info.preset_voice_flags;
+    shared.family              = synth::ModelFamily::Vits;
+    shared.has_package_default = info.has_package_default;
+    shared.preset_voice_ids    = info.preset_voice_ids;
+    shared.preset_voice_flags  = info.preset_voice_flags;
+    // English-only, and now says so rather than relying on the validator having
+    // assumed it. Regional fallback keeps "en-GB" and "en-029" accepted.
+    shared.languages           = {
+        { "en", SYNTH_LANGUAGE_DEFAULT | SYNTH_LANGUAGE_REGIONAL_FALLBACK }
+    };
     shared.text_frontend        = info.text_frontend;
     shared.input_flags          = info.input_flags;
     shared.capability_flags     = info.capability_flags;
@@ -249,10 +279,13 @@ synth::ModelInfo shared_info(const synth::vits::ModelInfo & info) {
 
 synth::ModelInfo shared_info(const synth::kokoro::ModelInfo & info) {
     synth::ModelInfo shared;
-    shared.family               = synth::ModelFamily::Kokoro;
-    shared.has_package_default  = info.has_package_default;
-    shared.preset_voice_ids     = info.preset_voice_ids;
-    shared.preset_voice_flags   = info.preset_voice_flags;
+    shared.family              = synth::ModelFamily::Kokoro;
+    shared.has_package_default = info.has_package_default;
+    shared.preset_voice_ids    = info.preset_voice_ids;
+    shared.preset_voice_flags  = info.preset_voice_flags;
+    shared.languages           = {
+        { "en", SYNTH_LANGUAGE_DEFAULT | SYNTH_LANGUAGE_REGIONAL_FALLBACK }
+    };
     shared.text_frontend        = info.text_frontend;
     shared.input_flags          = info.input_flags;
     shared.capability_flags     = info.capability_flags;
@@ -260,6 +293,40 @@ synth::ModelInfo shared_info(const synth::kokoro::ModelInfo & info) {
     shared.output_channel_count = info.output_channel_count;
     shared.vocab_size           = info.vocab_size;
     shared.samples_per_frame    = info.samples_per_frame;
+    shared.max_input_tokens     = info.max_input_tokens;
+    shared.max_output_frames    = info.max_output_frames;
+    shared.min_speaking_rate    = info.min_speaking_rate;
+    shared.max_speaking_rate    = info.max_speaking_rate;
+    return shared;
+}
+
+synth::ModelInfo shared_info(const synth::qwen3tts::ModelInfo &         info,
+                             std::shared_ptr<const synth::TextFrontend> frontend,
+                             uint32_t                                   samples_per_frame,
+                             uint32_t                                   text_vocab_size) {
+    synth::ModelInfo shared;
+    shared.family              = synth::ModelFamily::Qwen3Tts;
+    shared.has_package_default = info.has_package_default;
+    shared.preset_voice_ids    = info.preset_voice_ids;
+    // This family declares no per-Voice flags, so every entry is zero rather
+    // than absent: the two lists are read in step.
+    shared.preset_voice_flags.assign(info.preset_voice_ids.size(), 0);
+    // Every language the package declares, not just the one the validator used
+    // to allow. No entry is marked DEFAULT: a request that names no language
+    // gets this family's no-think prompt, which carries no language token at
+    // all, so there is no language it silently falls back to.
+    for (const std::string & tag : info.language_tags) {
+        shared.languages.push_back({ tag, SYNTH_LANGUAGE_REGIONAL_FALLBACK });
+    }
+    shared.text_frontend        = std::move(frontend);
+    shared.input_flags          = info.input_flags;
+    shared.capability_flags     = info.capability_flags;
+    shared.output_sample_rate   = info.output_sample_rate;
+    shared.output_channel_count = info.output_channel_count;
+    // The ids the core range-checks come from the text frontend, so this is
+    // the text tower's vocabulary rather than the codec's.
+    shared.vocab_size           = text_vocab_size;
+    shared.samples_per_frame    = samples_per_frame;
     shared.max_input_tokens     = info.max_input_tokens;
     shared.max_output_frames    = info.max_output_frames;
     shared.min_speaking_rate    = info.min_speaking_rate;
@@ -392,9 +459,10 @@ synth_status_t synth_model_get_device(const synth_model_t * model, synth_backend
         return SYNTH_ERR_INVALID_ARG;
     }
     try {
-        ggml_backend_dev_t device = model->kokoro != nullptr ? model->kokoro->primary_device() :
-                                    model->vits != nullptr   ? model->vits->primary_device() :
-                                                               nullptr;
+        ggml_backend_dev_t device = model->qwen3_tts != nullptr ? model->qwen3_tts->primary_device() :
+                                    model->kokoro != nullptr    ? model->kokoro->primary_device() :
+                                    model->vits != nullptr      ? model->vits->primary_device() :
+                                                                  nullptr;
         if (device == nullptr) {
             return SYNTH_ERR_BACKEND;
         }
@@ -462,7 +530,18 @@ synth_status_t synth_model_load(const char *                      model_path,
         const bool     include_accelerators = backend != SYNTH_BACKEND_CPU;
         auto           model                = std::make_unique<synth_model>();
         synth_status_t status               = SYNTH_OK;
-        if (family == synth::ModelFamily::Kokoro) {
+        if (family == synth::ModelFamily::Qwen3Tts) {
+            status = synth::qwen3tts::Model::load(model_path, selected_device, include_accelerators, model->qwen3_tts);
+            if (status == SYNTH_OK) {
+                synth::qwen3tts::ModelInfo info;
+                status = model->qwen3_tts->get_info(info);
+                if (status == SYNTH_OK) {
+                    model->info =
+                        shared_info(info, model->qwen3_tts->text_frontend(), model->qwen3_tts->samples_per_frame(),
+                                    model->qwen3_tts->text_vocab_size());
+                }
+            }
+        } else if (family == synth::ModelFamily::Kokoro) {
             status = synth::kokoro::Model::load(model_path, selected_device, include_accelerators, model->kokoro);
             if (status == SYNTH_OK) {
                 synth::kokoro::ModelInfo info;
@@ -511,7 +590,7 @@ synth_status_t synth_context_create(const synth_model_t * model, synth_context_t
     try {
         auto context     = std::make_unique<synth_context>();
         context->model   = model;
-        context->threads = synth::available_cpu_parallelism();
+        context->threads = synth::default_synthesis_threads();
         context->active.clear();
         *out_context = context.release();
         return SYNTH_OK;
@@ -524,6 +603,28 @@ synth_status_t synth_context_create(const synth_model_t * model, synth_context_t
 
 void synth_context_free(synth_context_t * context) {
     delete context;
+}
+
+synth_status_t synth_context_set_threads(synth_context_t * context, int32_t threads) {
+    if (context == nullptr || threads < 0) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    // Taking the lease refuses the call while a synthesis is running on this
+    // context, rather than letting the count change under a graph mid-flight.
+    ContextLease lease(context);
+    if (!lease.acquired()) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    context->threads = threads == 0 ? synth::default_synthesis_threads() : threads;
+    return SYNTH_OK;
+}
+
+synth_status_t synth_context_get_threads(const synth_context_t * context, int32_t * out_threads) {
+    if (context == nullptr || out_threads == nullptr) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    *out_threads = context->threads;
+    return SYNTH_OK;
 }
 
 void synth_model_capabilities_init(synth_model_capabilities_t * capabilities, uint64_t struct_size) {
@@ -611,7 +712,7 @@ synth_status_t synth_model_get_language_count(const synth_model_t * model, uint6
     if (model == nullptr) {
         return SYNTH_ERR_INVALID_ARG;
     }
-    *out_count = 1;
+    *out_count = model->info.languages.size();
     return SYNTH_OK;
 }
 
@@ -626,13 +727,15 @@ synth_status_t synth_model_get_language(const synth_model_t *         model,
     }
     const uint64_t struct_size = out_language->struct_size;
     synth_language_capability_init(out_language, struct_size);
-    if (index != 0) {
+    if (index >= model->info.languages.size()) {
         return SYNTH_ERR_INVALID_ARG;
     }
-    static const char            language_tag[] = "en";
-    const char *                 tag            = language_tag;
-    const uint64_t               tag_size       = 2;
-    const synth_language_flags_t flags          = SYNTH_LANGUAGE_DEFAULT | SYNTH_LANGUAGE_REGIONAL_FALLBACK;
+    // Borrowed from the Loaded Model, which outlives the capability the caller
+    // is handed, exactly as the preset Voice ids are.
+    const synth::LanguageCapability & entry    = model->info.languages[static_cast<size_t>(index)];
+    const char *                      tag      = entry.tag.c_str();
+    const uint64_t                    tag_size = entry.tag.size();
+    const synth_language_flags_t      flags    = static_cast<synth_language_flags_t>(entry.flags);
     write_visible(out_language, offsetof(synth_language_capability_t, tag), &tag, sizeof(tag));
     write_visible(out_language, offsetof(synth_language_capability_t, tag_size), &tag_size, sizeof(tag_size));
     write_visible(out_language, offsetof(synth_language_capability_t, flags), &flags, sizeof(flags));
@@ -685,6 +788,77 @@ synth_status_t synth_synthesize(synth_context_t *          context,
     if (cancellation_requested(prepared)) {
         (void) synth::deliver_complete_audio(nullptr, 0, delivery_info, sink, out_result);
         return SYNTH_ERR_CANCELLED;
+    }
+
+    if (context->model->info.family == synth::ModelFamily::Qwen3Tts) {
+        try {
+            synth::qwen3tts::SynthesisRequest family_request;
+            family_request.token_ids = prepared.token_ids;
+            family_request.voice_id.assign(prepared.resolved_voice_id != nullptr ? prepared.resolved_voice_id : "",
+                                           size_t(prepared.resolved_voice_size));
+            family_request.language.assign(
+                prepared.resolved_language_tag != nullptr ? prepared.resolved_language_tag : "",
+                size_t(prepared.resolved_language_size));
+            family_request.seed              = actual_seed;
+            family_request.threads           = context->threads;
+            // The core's limit is in native frames, which for this family is the
+            // codec's hop, so it doubles as the cache's size.
+            // The public field counts output PCM frames; this family's limit
+            // counts codec frames of `samples_per_frame` each. Passing one as the
+            // other let a request for 600 frames emit 21120 of them, against the
+            // contract's guarantee that a nonzero value is never exceeded.
+            //
+            // Zero still means unset here, which is why the raw request value is
+            // used rather than the normalised one: the normalised value is the
+            // package's fifteen-million "no limit", and the family sizes its
+            // talker cache from what it is given.
+            const uint32_t samples_per_frame = context->model->info.samples_per_frame;
+            if (prepared.requested_frame_limit != 0 && samples_per_frame != 0) {
+                family_request.max_frames = prepared.requested_frame_limit / samples_per_frame;
+                if (family_request.max_frames == 0) {
+                    // A limit smaller than one frame cannot be met by emitting
+                    // anything, and asking for zero frames would be read as unset.
+                    return report_output_limit(delivery_info, sink, out_result);
+                }
+            } else {
+                family_request.max_frames = 0;  // the family applies kDefaultMaxFrames
+            }
+
+            synth::qwen3tts::SynthesisOutput synthesis;
+            status = context->model->qwen3_tts->run_synthesis(family_request, synthesis);
+            // This family is the only one that carries the request's limit into
+            // its own loop, so it is the only one whose limit stop arrives here
+            // rather than at a delivering check further down. Taking the generic
+            // branch left every resolved result field zeroed and called it a
+            // graph failure.
+            if (status == SYNTH_ERR_OUTPUT_LIMIT) {
+                return report_output_limit(delivery_info, sink, out_result);
+            }
+            if (status != SYNTH_OK) {
+                emit_diagnostic(prepared.diagnostics, status, "synthesis.graph_failed", synth_status_string(status));
+                return status;
+            }
+            // The limit is in native frames, and this family's frame is the
+            // codec's hop rather than one sample.
+            if (synthesis.frame_count > prepared.effective_frame_limit) {
+                (void) synth::deliver_complete_audio(nullptr, 0, delivery_info, sink, out_result);
+                return SYNTH_ERR_OUTPUT_LIMIT;
+            }
+            if (cancellation_requested(prepared)) {
+                (void) synth::deliver_complete_audio(nullptr, 0, delivery_info, sink, out_result);
+                return SYNTH_ERR_CANCELLED;
+            }
+            return synth::deliver_complete_audio(synthesis.audio.data(), synthesis.audio.size(), delivery_info, sink,
+                                                 out_result);
+        } catch (const std::bad_alloc &) {
+            emit_diagnostic(prepared.diagnostics, SYNTH_ERR_OOM, "allocation.failed",
+                            "synthesis temporary allocation failed");
+            return SYNTH_ERR_OOM;
+        } catch (...) {
+            emit_diagnostic(prepared.diagnostics, SYNTH_ERR_INTERNAL, "internal.exception",
+                            "unexpected exception during synthesis");
+            return SYNTH_ERR_INTERNAL;
+        }
     }
 
     if (context->model->info.family == synth::ModelFamily::Kokoro) {

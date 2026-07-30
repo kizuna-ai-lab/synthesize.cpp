@@ -339,3 +339,83 @@ seven TTS markers occupy 151669–151675 in the documented order, all
   2 need only the decoder side; the split is roughly `semantic_model` (210) plus
   `acoustic_encoder` (110) plus `encoder_semantic` (13) against
   `acoustic_decoder` (110) plus `decoder_semantic` (14) plus `quantizer` (64).
+
+## 2026-07-30 — Conversion (stage 3): 798 tensors emitted
+
+`scripts/convert-omnivoice.py` produced
+`models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf`, 3,189,953,536 bytes,
+sha256 `b03fcdf81e7a4ef650f715cf13f29bef078d29ebf7c3c19fd7c39fb3b6f9a256`.
+
+**Emitted tensor count: 798**, all F32. Task 10's `expected_tensor_count`
+arithmetic must reproduce this:
+
+| Half | Source | Skipped | Folded | Emitted |
+| --- | ---: | ---: | ---: | ---: |
+| Generator (`model.safetensors`) | 313 | 1 | 0 | **312** |
+| Codec (`audio_tokenizer/model.safetensors`) | 527 | 40 | 2 → 1 | **486** |
+| | | | | **798** |
+
+The 41 skipped source tensors, itemized:
+
+- 1 — `codebook_layer_offsets`, the checkpoint's only I64 tensor. Dropped only
+  after the converter proves it still equals `arange(8) * 1025`; if the values
+  ever move, the conversion stops rather than deleting information.
+- 2 — `fc1.*` and 14 — `decoder_semantic.*`. Both feed the training-only
+  semantic reconstruction loss. `HiggsAudioV2TokenizerModel.encode` (transformers
+  5.14.1) uses `encoder_semantic`, `acoustic_encoder`, `fc`, `quantizer`; `.decode`
+  uses `quantizer`, `fc2`, `acoustic_decoder`. Neither reaches `fc1` or
+  `decoder_semantic`.
+- 24 — the per-quantizer k-means state, 3 × 8: `codebook.embed_avg`,
+  `codebook.cluster_size`, `codebook.inited`. The intake's finding holds against
+  the weights: `codebook.embed` is a **live table** and nothing is reconstructed.
+
+The weight-norm fold turns
+`semantic_model.encoder.pos_conv_embed.conv.parametrizations.weight.original0/1`
+into one `…pos_conv_embed.conv.weight` (2 → 1). It goes through
+`torch._weight_norm`, the operator the reference itself calls on every forward,
+so the folded kernel is **bit-identical** — a hand-written `g·v/‖v‖` agreed only
+to ~5e-9, which is enough to move an argmax this family commits and feeds back.
+
+**The encode half ships.** Cloning is in this family's product surface, so
+`semantic_model` (210), `acoustic_encoder` (110), `encoder_semantic` (13) and
+`fc` (2) are all carried — the opposite of qwen3-tts's encoder drop. That
+settles the last open decision from the intake list in favour of shipping it.
+
+### `NAME_SHORTENINGS`: four rules, all load-bearing
+
+59 emitted names overrun `GGML_MAX_NAME` before shortening; the longest is 77.
+Rules are applied per path component so the catalog reads uniformly, which is
+why 153 names are rewritten to fix those 59.
+
+| Rule | Names rewritten | Overflows it alone fixes |
+| --- | ---: | ---: |
+| `.attention.` → `.attn.` | 96 | 2 |
+| `.feed_forward.` → `.ff.` | 48 | 48 |
+| `.intermediate_dense.` → `.inter_dense.` | 24 | 24 |
+| `.feature_extractor.conv_layers.` → `.feat_conv.` | 9 | 9 |
+
+Longest emitted name after shortening: 62 characters. No two names collide.
+The brief's other two candidate rules — `.final_layer_norm.` and
+`.pos_conv_embed.` — were **dropped**: neither name overflows once the fold has
+collapsed the parametrization pair, and a rename nobody needs only makes the
+catalog harder to read. `test_every_shortening_rule_is_load_bearing` re-derives
+this from the committed inventory, so a fifth gratuitous rule cannot be added
+silently.
+
+### The three config disagreements were resolved from the tensors
+
+Recorded in the conversion report under `config_disagreements` rather than
+silently resolved: `acoustic_model_config.n_codebooks` 9 against 8 measured
+tables, `acoustic_model_config.codebook_dim` 8 against measured 64,
+`acoustic_model_config.sampling_rate` 16000 against the top-level 24000. The
+package is sized from `quantizer.quantizers.N.codebook.embed`, all eight of them
+`[1024, 64]`, and `add_metadata` refuses to write a geometry the tables
+contradict.
+
+### Licence carriage
+
+`audio_tokenizer/LICENSE` was copied byte-identically to
+`models/omnivoice-0-6b/LICENSE-higgs-audio-2.txt`, 9,171 bytes, sha256
+`ac933dc084d119bd20401956b90d11ae87c248b2da62622cd580d82cdf2fa049` — the digest
+the intake pinned. The report's `licenses` list carries all three grants, with
+the CC-BY-NC sentence quoted verbatim from the model card.

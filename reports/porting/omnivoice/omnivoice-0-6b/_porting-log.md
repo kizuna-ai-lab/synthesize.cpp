@@ -492,3 +492,23 @@ is `cpu`.
 overload, the load branch, and the synthesis stub. `include/synthesize.h` is
 untouched: this family added no public ABI surface, which is the point of the
 seam being where it is.
+
+## 2026-07-30 — Ruling: `general.license` set to `other`
+
+The final review's parked finding — the GGUF's machine-readable `general.license`
+key carried `cc-by-nc-4.0`, a clean SPDX slug for a grant the upstream card
+never version-states — was ruled on: `scripts/convert-omnivoice.py` now writes
+`license_id="other"`, the same choice `convert-vits.py` makes for checkpoint
+redistribution terms that are not a clean SPDX identifier. `license_name` and
+`license_link` are unchanged; they already carry the full three-license story
+("CC-BY-NC (version unstated upstream) + Boson Higgs Audio 2 Community License
+(codec)" at `https://huggingface.co/k2-fsa/OmniVoice`). The ship-stage card
+frontmatter is a separate, later decision.
+
+Re-running the converter against the same locally held weights reproduced the
+same shape — 798 tensors, tensor-for-tensor identical to the run above — with a
+new file sha256, because the metadata changed:
+`3ecaa5e2f6fbd735296ba1cd60680c90467be22d2140dc4f208fe80111ecb9e5`, superseding
+`b03fcdf81e7a4ef650f715cf13f29bef078d29ebf7c3c19fd7c39fb3b6f9a256` recorded
+above. `synthesize-omnivoice-load-real` was re-run against the re-cut package
+and passed.

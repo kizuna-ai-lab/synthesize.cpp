@@ -748,7 +748,11 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
             "Source-dtype synthesize.cpp conversion of the pinned k2-fsa/OmniVoice "
             "checkpoint: F32 mask-predict generator plus F32 Higgs Audio V2 codec."
         ),
-        license_id="cc-by-nc-4.0",
+        # Upstream states no CC-BY-NC version, so no SPDX version slug is
+        # invented here (same call as convert-vits.py's unstated redistribution
+        # terms); license_name/license_link carry the full three-license story
+        # instead. The ship-stage card frontmatter is a separate, later decision.
+        license_id="other",
         license_name="CC-BY-NC (version unstated upstream) + Boson Higgs Audio 2 Community License (codec)",
         license_link="https://huggingface.co/k2-fsa/OmniVoice",
     )

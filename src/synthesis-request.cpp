@@ -247,6 +247,7 @@ synth_status_t prepare_synthesis_request(const ModelInfo &          info,
     const uint64_t request_limit = read_field(request, offsetof(synth_request_t, max_output_frames), uint64_t(0));
     output.effective_frame_limit =
         request_limit == 0 ? info.max_output_frames : std::min(request_limit, info.max_output_frames);
+    output.requested_frame_limit = request_limit;
     output.should_cancel =
         read_field(request, offsetof(synth_request_t, should_cancel), static_cast<synth_cancel_callback_t>(nullptr));
     output.cancel_user_data =

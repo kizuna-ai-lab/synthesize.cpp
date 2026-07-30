@@ -510,6 +510,21 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         "tokens:32,0,81,83,16,61,53,156,25,16,83,44,156,138,64,16,81,83,16,58" "af_heart")
     synth_add_cleanup_test(qwen3-tts "${SYNTH_QWEN3_TTS_TEST_MODEL}" 24 "text:Hi." "aiden" "en")
 
+    # What a limit stop reports back. Registered because it needs the package:
+    # docs/c-interface.md makes an output limit one of four cases that must fill
+    # the result, and this family reported it as a graph failure with every
+    # resolved field zeroed.
+    if(EXISTS "${SYNTH_QWEN3_TTS_TEST_MODEL}")
+        add_executable(synthesize-qwen3-tts-output-limit-test qwen3_tts_output_limit_test.cpp)
+        target_link_libraries(synthesize-qwen3-tts-output-limit-test PRIVATE synthesize)
+        synth_register_integration_target(synthesize-qwen3-tts-output-limit-test)
+        add_test(NAME synthesize-qwen3-tts-output-limit
+            COMMAND synthesize-qwen3-tts-output-limit-test ${SYNTH_QWEN3_TTS_TEST_MODEL})
+        set_tests_properties(synthesize-qwen3-tts-output-limit PROPERTIES
+            LABELS "integration;abi;qwen3-tts"
+            TIMEOUT 600)
+    endif()
+
     # Qwen3-TTS's two validators. Both need the package, which is why they sat
     # unregistered while the family shipped -- and being unregistered is how the
     # replay stage stopped being something CI could run at all.

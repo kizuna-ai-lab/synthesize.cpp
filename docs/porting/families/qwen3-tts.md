@@ -31,7 +31,9 @@ its own, so unlike Kokoro this provenance is self-measured rather than
 cross-confirmed.
 
 `Qwen3TTSModel.generate_custom_voice` is the pinned inference entry point, driven
-on CPU in F32 with `attn_implementation="eager"`. **It takes two independent
+at the checkpoint's bfloat16 on CUDA with `attn_implementation="eager"`. The first
+intake drove it on CPU in F32, which upcast every talker weight and described a
+model that does not exist. **It takes two independent
 sampling switches.** `do_sample` governs the Talker and `subtalker_dosample` the
 code predictor, the latter defaulting to `True`; a reproducible oracle requires
 both set to `False`, and setting only one is silently non-deterministic.
@@ -377,8 +379,9 @@ Manifest needs: `Embed`, `TrailingText`, `TTSPadEmbed`, `L0`, `L7`, `L14`,
 
 **Not transferable — their divergence percentages.** Their logs record the
 PyTorch reference on CUDA against C++ on CPU, which compares two kernel stacks.
-`docs/port-validation.md` Phase 1 requires the oracle on CPU, so this project
-compares CPU PyTorch against CPU GGML — a strictly better condition. Their
+This project's oracle is CUDA bfloat16 -- see `docs/port-validation.md`,
+"Choosing the Oracle's dtype and Device" -- so the same caution applies to our own
+numbers and not only to theirs. Their
 figures should not be carried into this family's expectations; measure ours.
 
 **Not transferable — max-absolute tolerances on deep talker layers.** In one of
@@ -396,9 +399,9 @@ Read carefully before drawing the obvious conclusion.
 
 Two things make it inapplicable as-is:
 
-- Philox matches PyTorch's **CUDA** generator (cuRAND). PyTorch's **CPU**
-  generator is MT19937. `docs/port-validation.md` Phase 1 puts this project's
-  oracle on CPU, so their stream would not match ours even in principle.
+- Philox matches PyTorch's **CUDA** generator (cuRAND). This project's oracle
+  runs on CUDA too, so that much would agree -- but the replay seam captures the
+  codes rather than reproducing the stream, so no generator has to be matched.
 - Their alignment is achieved by **replacing `torch.multinomial` in the
   reference** — `tests/cossim_common.py` defines `patched_multinomial`, which
   pulls the uniform draw from their own Philox stream and walks the F32
@@ -643,9 +646,9 @@ has been withdrawn. Two things make it a decision rather than an implication.
 
 Upstream deploys this model on CUDA with bfloat16 and FlashAttention 2; that is
 the only device guidance its model card gives. The figure above is CPU, F32 and
-eager attention because `docs/port-validation.md` Phase 1 requires a CPU oracle,
-so it is a floor set by this project's validation rule, not a measurement of the
-model as its authors run it.
+eager attention, which is what the first oracle dump used before the dtype
+rule was written down. It is not a measurement of the model as its authors run
+it, and it is no longer how this family's oracle runs.
 
 Whether CUDA helps then depends on a policy question this family raises for the
 first time. `docs/backends.md`'s discrete-output rule would hold the
@@ -685,7 +688,7 @@ With `do_sample=False` **and** `subtalker_dosample=False`, two runs in separate
 processes are bit-identical: 97,920 frames each, `max_abs_diff` exactly 0.0,
 peak agreeing to the last digit at 0.5742930173873901.
 
-So the reproducible CPU oracle Phase 1 requires does exist, and the
+So a reproducible oracle does exist, and the
 stochastic-replay seam needs only the captured code sequence the family plan
 assumed. **Any script that captures this oracle must set both switches**;
 setting one is silently non-deterministic, which is a worse failure than an
@@ -1857,8 +1860,9 @@ What the card declares and why:
    proven rather than argued. See "The multimodal RoPE collapses exactly".
 3. ~~Measure real CPU speed for the 0.6B Stage 1 variant on project hardware.~~
    **Resolved 2026-07-27**: real-time factor 9.4 to 9.7 greedy on CPU, and that
-   is a floor set by this project's CPU-oracle rule, not a measurement of the
-   model as upstream deploys it (CUDA, bfloat16, FlashAttention 2). Whether CUDA
+   is a floor set by the first oracle configuration tried, not a measurement of
+   the model as upstream deploys it (CUDA, bfloat16, FlashAttention 2) -- and not
+   how this family's oracle ended up running either. Whether CUDA
    helps is a stage-7 policy decision, not an implication -- see "CPU oracle
    smoke". The cache-reset mitigation is still unmeasured here; it is a stage-4
    implementation concern.

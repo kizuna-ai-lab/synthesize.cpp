@@ -185,6 +185,25 @@ synth_sink_result_t SYNTH_CALL collect_audio(void * user_data, const synth_audio
     return SYNTH_SINK_CONTINUE;
 }
 
+// An output limit fills the result metadata it resolved, per docs/c-interface.md:
+// "On success, cancellation, output-limit termination, or sink error, the
+// implementation fills every result field it has resolved."
+//
+// It is not a sink completion. deliver_complete_audio returns before touching the
+// sink when the frame count is zero, and the ABI has no completion callback --
+// the contract forbids a zero-length final chunk. What was missing was the
+// metadata: a limit stop reported actual_seed 0, sample_rate 0 and an empty
+// resolved Voice, while the two sibling families filled all of it.
+//
+// Nor is it a graph failure. Routing it through the generic branch also emitted a
+// `synthesis.graph_failed` diagnostic, which the sibling paths do not.
+synth_status_t report_output_limit(const synth::AudioDeliveryInfo & info,
+                                   const synth_audio_sink_t *       sink,
+                                   synth_result_t *                 out_result) {
+    (void) synth::deliver_complete_audio(nullptr, 0, info, sink, out_result);
+    return SYNTH_ERR_OUTPUT_LIMIT;
+}
+
 void reset_result(synth_result_t * result) {
     if (result != nullptr) {
         const uint64_t struct_size = result->struct_size;
@@ -780,14 +799,41 @@ synth_status_t synth_synthesize(synth_context_t *          context,
             family_request.language.assign(
                 prepared.resolved_language_tag != nullptr ? prepared.resolved_language_tag : "",
                 size_t(prepared.resolved_language_size));
-            family_request.seed       = actual_seed;
-            family_request.threads    = context->threads;
+            family_request.seed              = actual_seed;
+            family_request.threads           = context->threads;
             // The core's limit is in native frames, which for this family is the
             // codec's hop, so it doubles as the cache's size.
-            family_request.max_frames = prepared.effective_frame_limit;
+            // The public field counts output PCM frames; this family's limit
+            // counts codec frames of `samples_per_frame` each. Passing one as the
+            // other let a request for 600 frames emit 21120 of them, against the
+            // contract's guarantee that a nonzero value is never exceeded.
+            //
+            // Zero still means unset here, which is why the raw request value is
+            // used rather than the normalised one: the normalised value is the
+            // package's fifteen-million "no limit", and the family sizes its
+            // talker cache from what it is given.
+            const uint32_t samples_per_frame = context->model->info.samples_per_frame;
+            if (prepared.requested_frame_limit != 0 && samples_per_frame != 0) {
+                family_request.max_frames = prepared.requested_frame_limit / samples_per_frame;
+                if (family_request.max_frames == 0) {
+                    // A limit smaller than one frame cannot be met by emitting
+                    // anything, and asking for zero frames would be read as unset.
+                    return report_output_limit(delivery_info, sink, out_result);
+                }
+            } else {
+                family_request.max_frames = 0;  // the family applies kDefaultMaxFrames
+            }
 
             synth::qwen3tts::SynthesisOutput synthesis;
             status = context->model->qwen3_tts->run_synthesis(family_request, synthesis);
+            // This family is the only one that carries the request's limit into
+            // its own loop, so it is the only one whose limit stop arrives here
+            // rather than at a delivering check further down. Taking the generic
+            // branch left every resolved result field zeroed and called it a
+            // graph failure.
+            if (status == SYNTH_ERR_OUTPUT_LIMIT) {
+                return report_output_limit(delivery_info, sink, out_result);
+            }
             if (status != SYNTH_OK) {
                 emit_diagnostic(prepared.diagnostics, status, "synthesis.graph_failed", synth_status_string(status));
                 return status;

@@ -1,0 +1,2718 @@
+{
+  "$schema": "../../../docs/schemas/synthesize-golden-manifest-v1.schema.json",
+  "schema": "synthesize-golden-manifest-v1",
+  "suite_version": 1,
+  "family": "omnivoice",
+  "variant": "omnivoice-0-6b",
+  "source": {
+    "repository": "https://github.com/k2-fsa/OmniVoice",
+    "revision": "468e927ba3716cd8dd86421148dfb3046e9f9d7b",
+    "artifacts": [
+      {
+        "role": "checkpoint",
+        "locator": "https://huggingface.co/k2-fsa/OmniVoice/resolve/c5fdb5ccb189668d56333f77ba2629f4cd7535f4/model.safetensors",
+        "sha256": "730839316de585f4c8298ec0e1712efc10fb19c6fa4e36eb741cb8d51ebcf6aa"
+      },
+      {
+        "role": "checkpoint",
+        "locator": "https://huggingface.co/k2-fsa/OmniVoice/resolve/c5fdb5ccb189668d56333f77ba2629f4cd7535f4/audio_tokenizer/model.safetensors",
+        "sha256": "fe7c5e8785e0a05833e1bfc3e002ec7f55af21e306b2e7154a448c1f54ccfb0d"
+      },
+      {
+        "role": "config",
+        "locator": "https://huggingface.co/k2-fsa/OmniVoice/resolve/c5fdb5ccb189668d56333f77ba2629f4cd7535f4/config.json",
+        "sha256": "5e359117e13b420c5e0c925d4aba650d624767131f1d1746928f8b850d5dc372"
+      },
+      {
+        "role": "config",
+        "locator": "https://huggingface.co/k2-fsa/OmniVoice/resolve/c5fdb5ccb189668d56333f77ba2629f4cd7535f4/audio_tokenizer/config.json",
+        "sha256": "eefb20806f7104e77c9a5277c9df0f9bb8826b08eb1d4e8ab2b9829b6ef9fac1"
+      },
+      {
+        "role": "frontend-resource",
+        "locator": "https://huggingface.co/k2-fsa/OmniVoice/resolve/c5fdb5ccb189668d56333f77ba2629f4cd7535f4/tokenizer.json",
+        "sha256": "408f669b7e2b045fdf54201d815bd364e6667dbd845115da81239c40bc6dcfd1"
+      },
+      {
+        "role": "license",
+        "locator": "https://raw.githubusercontent.com/k2-fsa/OmniVoice/468e927ba3716cd8dd86421148dfb3046e9f9d7b/LICENSE",
+        "sha256": "c843a20ede4d1e7595c2736b88fc62cb7483a8c082eb7092a3772248849c59e2"
+      },
+      {
+        "role": "license",
+        "locator": "https://huggingface.co/k2-fsa/OmniVoice/resolve/c5fdb5ccb189668d56333f77ba2629f4cd7535f4/audio_tokenizer/LICENSE",
+        "sha256": "ac933dc084d119bd20401956b90d11ae87c248b2da62622cd580d82cdf2fa049"
+      },
+      {
+        "role": "reference-audio",
+        "locator": "https://zhu-han.github.io/omnivoice/audios/seedtts/prompt/seedtts_ref_en_1.wav",
+        "sha256": "57f25abc75c2e7cc4d3c9a6e45f54160034bc714b2ba952407dae7f91d6d31f3"
+      }
+    ]
+  },
+  "reference": {
+    "implementation": "k2-fsa/OmniVoice@468e927ba3716cd8dd86421148dfb3046e9f9d7b",
+    "framework": "pytorch-2.13.0+cu130",
+    "runner": "scripts/dump_reference_omnivoice_pytorch.py",
+    "environment_lock": "scripts/envs/omnivoice/uv.lock",
+    "dtype": "float32",
+    "device": "cpu"
+  },
+  "package_contract": {
+    "native_audio": {
+      "sample_rate_hz": 24000,
+      "channels": 1,
+      "sample_format": "f32le"
+    },
+    "input_kinds": [
+      "text_utf8"
+    ],
+    "frontend": {
+      "provider": "synthesize.qwen_bpe",
+      "contract_version": 1
+    },
+    "language_tags": [
+      "auto",
+      "en",
+      "zh",
+      "ja"
+    ],
+    "voices": {
+      "mode": "profile-sources",
+      "default_id": null,
+      "preset_ids": []
+    },
+    "stochastic": true,
+    "speaking_rate_range": [
+      0.5,
+      2.0
+    ],
+    "max_input_tokens": 2048,
+    "max_output_frames": 750
+  },
+  "tolerance_file": "tests/tolerances/omnivoice.json",
+  "case_artifact_root": "build/goldens/omnivoice",
+  "cases": [
+    {
+      "id": "omni-upstream-readme",
+      "origin": {
+        "kind": "upstream_example",
+        "locator": "https://github.com/k2-fsa/OmniVoice/blob/468e927ba3716cd8dd86421148dfb3046e9f9d7b/README.md#L231"
+      },
+      "coverage": [
+        "upstream-example",
+        "auto-voice",
+        "language-agnostic",
+        "greedy-exact"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": null,
+        "text": "This is a sentence without any voice prompt."
+      },
+      "voice": {
+        "kind": "package_default"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 0.0,
+          "class_temperature": 0.0,
+          "language": null,
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-short-en",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "short-sequence",
+        "auto-voice",
+        "greedy-exact"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "en",
+        "text": "OmniVoice speaks with one voice."
+      },
+      "voice": {
+        "kind": "package_default"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 0.0,
+          "class_temperature": 0.0,
+          "language": "en",
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-short-zh",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "short-sequence",
+        "chinese-script",
+        "greedy-exact"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "zh",
+        "text": "欢迎使用语音合成引擎。"
+      },
+      "voice": {
+        "kind": "package_default"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 0.0,
+          "class_temperature": 0.0,
+          "language": "zh",
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-short-ja",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "short-sequence",
+        "japanese-script",
+        "greedy-exact"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "ja",
+        "text": "音声合成へようこそ。"
+      },
+      "voice": {
+        "kind": "package_default"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 0.0,
+          "class_temperature": 0.0,
+          "language": "ja",
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-lang-none",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "language-agnostic",
+        "auto-voice",
+        "greedy-exact"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": null,
+        "text": "This request names no language."
+      },
+      "voice": {
+        "kind": "package_default"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 0.0,
+          "class_temperature": 0.0,
+          "language": null,
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-punctuation",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "punctuation",
+        "auto-voice",
+        "greedy-exact"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "en",
+        "text": "Wait — really?! Yes; truly: it works... (mostly)."
+      },
+      "voice": {
+        "kind": "package_default"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 0.0,
+          "class_temperature": 0.0,
+          "language": "en",
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-digits",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "digits",
+        "duration-weighting",
+        "greedy-exact"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "en",
+        "text": "In 2026 the model counted 1234567890 samples."
+      },
+      "voice": {
+        "kind": "package_default"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 0.0,
+          "class_temperature": 0.0,
+          "language": "en",
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-nonverbal",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "nonverbal-tag",
+        "auto-voice",
+        "greedy-exact"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "en",
+        "text": "That is funny [laughter] but let me think."
+      },
+      "voice": {
+        "kind": "package_default"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 0.0,
+          "class_temperature": 0.0,
+          "language": "en",
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-medium-en",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "medium-sequence",
+        "auto-voice",
+        "greedy-exact"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "en",
+        "text": "The engine reads a whole paragraph without pausing for breath. It holds one voice from the first word to the last. Nothing in the timing depends on the machine that runs it. It sounds the same everywhere."
+      },
+      "voice": {
+        "kind": "package_default"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 0.0,
+          "class_temperature": 0.0,
+          "language": "en",
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-long-boundary",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "near-frame-limit",
+        "long-sequence",
+        "greedy-exact"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "en",
+        "text": "A golden case near the frame limit earns its place, because the cost of running it is paid on every backend and in every quantization profile this family ships. It sits here to prove that the canvas length the estimator computes on the host lands inside the ceiling the package declares, and that nothing in the decode loop degrades as the sequence grows longer. The shorter cases cannot show that, because a defect that accumulates with length has no room to appear in them."
+      },
+      "voice": {
+        "kind": "package_default"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 0.0,
+          "class_temperature": 0.0,
+          "language": "en",
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-rate-slow",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "speaking-rate-minimum",
+        "duration-scaling",
+        "greedy-exact"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "en",
+        "text": "OmniVoice speaks with one voice."
+      },
+      "voice": {
+        "kind": "package_default"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 0.5,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 0.0,
+          "class_temperature": 0.0,
+          "language": "en",
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-rate-fast",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "speaking-rate-maximum",
+        "duration-scaling",
+        "greedy-exact"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "en",
+        "text": "OmniVoice speaks with one voice."
+      },
+      "voice": {
+        "kind": "package_default"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 2.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 0.0,
+          "class_temperature": 0.0,
+          "language": "en",
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-design-en",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "voice-design",
+        "english-description",
+        "greedy-exact"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "en",
+        "text": "Voice design shapes who is speaking."
+      },
+      "voice": {
+        "kind": "description_text",
+        "description": "female, young adult, high pitch"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 0.0,
+          "class_temperature": 0.0,
+          "language": "en",
+          "instruct": "female, young adult, high pitch",
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-design-zh",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "voice-design",
+        "chinese-description",
+        "greedy-exact"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "zh",
+        "text": "语音设计决定说话人。"
+      },
+      "voice": {
+        "kind": "description_text",
+        "description": "男，老年，低音调"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 0.0,
+          "class_temperature": 0.0,
+          "language": "zh",
+          "instruct": "男，老年，低音调",
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-clone-en",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "voice-clone",
+        "reference-audio",
+        "greedy-exact"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "en",
+        "text": "A cloned voice reads this sentence.",
+        "reference": {
+          "artifact": "https://zhu-han.github.io/omnivoice/audios/seedtts/prompt/seedtts_ref_en_1.wav",
+          "transcript": "Some call me nature. Others call me Mother Nature. I've been here for over four point and five billion years, twenty-two thousand five hundred times longer than you.",
+          "language_tag": "en"
+        }
+      },
+      "voice": {
+        "kind": "reference_audio"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 0.0,
+          "class_temperature": 0.0,
+          "language": "en",
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0,
+          "denoise": true,
+          "preprocess_prompt": false,
+          "ref_text": "Some call me nature. Others call me Mother Nature. I've been here for over four point and five billion years, twenty-two thousand five hundred times longer than you."
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "ref.pcm_24k",
+            "path": "ref/pcm_24k.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "ref.tokens",
+            "path": "ref/tokens.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "ref.semantic_hidden",
+            "path": "ref/semantic_hidden.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-clone-zh",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "voice-clone",
+        "cross-lingual-clone",
+        "greedy-exact"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "zh",
+        "text": "克隆的声音读出这句话。",
+        "reference": {
+          "artifact": "https://zhu-han.github.io/omnivoice/audios/seedtts/prompt/seedtts_ref_en_1.wav",
+          "transcript": "Some call me nature. Others call me Mother Nature. I've been here for over four point and five billion years, twenty-two thousand five hundred times longer than you.",
+          "language_tag": "en"
+        }
+      },
+      "voice": {
+        "kind": "reference_audio"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 0.0,
+          "class_temperature": 0.0,
+          "language": "zh",
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0,
+          "denoise": true,
+          "preprocess_prompt": false,
+          "ref_text": "Some call me nature. Others call me Mother Nature. I've been here for over four point and five billion years, twenty-two thousand five hundred times longer than you."
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "ref.pcm_24k",
+            "path": "ref/pcm_24k.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "ref.tokens",
+            "path": "ref/tokens.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "ref.semantic_hidden",
+            "path": "ref/semantic_hidden.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-fast-mode",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "fast-mode",
+        "step-count",
+        "greedy-exact"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "en",
+        "text": "OmniVoice speaks with one voice."
+      },
+      "voice": {
+        "kind": "package_default"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 16,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 0.0,
+          "class_temperature": 0.0,
+          "language": "en",
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-sampled-seed-zero",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "sampled-path",
+        "seed-contract"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "en",
+        "text": "Sampling follows the seed."
+      },
+      "voice": {
+        "kind": "package_default"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 5.0,
+          "class_temperature": 0.0,
+          "language": "en",
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0,
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-sampled-seed-one",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "sampled-path",
+        "seed-contract"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "en",
+        "text": "Sampling follows the seed."
+      },
+      "voice": {
+        "kind": "package_default"
+      },
+      "request": {
+        "seed_u64": "1",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 5.0,
+          "class_temperature": 0.0,
+          "language": "en",
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0,
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "omni-sampled-seed-forty-two",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/omnivoice.md#reference-contract"
+      },
+      "coverage": [
+        "sampled-path",
+        "seed-contract"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "en",
+        "text": "Sampling follows the seed."
+      },
+      "voice": {
+        "kind": "package_default"
+      },
+      "request": {
+        "seed_u64": "42",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "num_step": 32,
+          "guidance_scale": 2.0,
+          "t_shift": 0.1,
+          "layer_penalty_factor": 5.0,
+          "position_temperature": 5.0,
+          "class_temperature": 0.0,
+          "language": "en",
+          "instruct": null,
+          "postprocess_output": false,
+          "pad_duration": 0.0,
+          "fade_duration": 0.0,
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "input.token_ids",
+            "path": "input/token_ids.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.token_grid",
+            "path": "input/prompt_grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "generator.hidden_l0",
+            "path": "generator/hidden_l0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l7",
+            "path": "generator/hidden_l7.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l14",
+            "path": "generator/hidden_l14.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l21",
+            "path": "generator/hidden_l21.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.hidden_l27",
+            "path": "generator/hidden_l27.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.final",
+            "path": "generator/final.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "generator.logits_step0",
+            "path": "generator/logits_step0.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.grid",
+            "path": "codes/grid.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio/pcm.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    }
+  ],
+  "relations": [
+    {
+      "kind": "artifact_differs",
+      "phase": "public_request",
+      "cases": [
+        "omni-sampled-seed-zero",
+        "omni-sampled-seed-one",
+        "omni-sampled-seed-forty-two"
+      ],
+      "artifact": "audio.pcm"
+    },
+    {
+      "kind": "artifact_differs",
+      "phase": "oracle_replay",
+      "cases": [
+        "omni-short-en",
+        "omni-design-en",
+        "omni-clone-en"
+      ],
+      "artifact": "audio.pcm"
+    },
+    {
+      "kind": "artifact_differs",
+      "phase": "oracle_replay",
+      "cases": [
+        "omni-rate-slow",
+        "omni-short-en",
+        "omni-rate-fast"
+      ],
+      "artifact": "audio.pcm"
+    }
+  ]
+}

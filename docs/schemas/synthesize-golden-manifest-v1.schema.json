@@ -102,7 +102,8 @@
             "config",
             "source",
             "frontend-resource",
-            "license"
+            "license",
+            "reference-audio"
           ]
         },
         "locator": {
@@ -222,7 +223,7 @@
       "properties": {
         "mode": {
           "type": "string",
-          "enum": ["fixed-default", "preset-catalog"]
+          "enum": ["fixed-default", "preset-catalog", "profile-sources"]
         },
         "default_id": {
           "type": ["string", "null"]
@@ -363,6 +364,9 @@
         },
         "artifact": {
           "$ref": "#/$defs/generatedArtifact"
+        },
+        "reference": {
+          "$ref": "#/$defs/caseReference"
         }
       },
       "oneOf": [
@@ -399,6 +403,24 @@
         }
       ]
     },
+    "caseReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact", "transcript", "language_tag"],
+      "properties": {
+        "artifact": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transcript": {
+          "type": "string",
+          "minLength": 1
+        },
+        "language_tag": {
+          "type": ["string", "null"]
+        }
+      }
+    },
     "voice": {
       "type": "object",
       "additionalProperties": false,
@@ -406,7 +428,12 @@
       "properties": {
         "kind": {
           "type": "string",
-          "enum": ["package_default", "preset_voice"]
+          "enum": [
+            "package_default",
+            "preset_voice",
+            "description_text",
+            "reference_audio"
+          ]
         },
         "id": {
           "type": "string",
@@ -414,6 +441,10 @@
         },
         "oracle_id": {
           "type": ["integer", "string"]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
         }
       },
       "oneOf": [
@@ -431,6 +462,21 @@
             }
           },
           "required": ["id", "oracle_id"]
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "description_text"
+            }
+          },
+          "required": ["description"]
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "reference_audio"
+            }
+          }
         }
       ]
     },

@@ -22,6 +22,7 @@ add_library(synthesize
     arch/qwen3-tts/talker-host.cpp
     arch/qwen3-tts/weights.cpp
     arch/omnivoice/catalog.cpp
+    arch/omnivoice/frontend-host.cpp
     arch/omnivoice/weights.cpp
     arch/kokoro/catalog.cpp
     arch/kokoro/decoder.cpp

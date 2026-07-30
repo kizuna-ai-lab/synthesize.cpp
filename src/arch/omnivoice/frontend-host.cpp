@@ -286,8 +286,17 @@ synth_status_t tokenize_wrapped_text(const TextFrontend &   frontend,
 
     // No tag: one call over the whole string, which is what the reference falls
     // back to and what keeps this path identical to a plain prepare.
+    //
+    // The clear is not redundant. A frontend that fails partway through a span
+    // returns the error with what it had already emitted still in the vector --
+    // the byte-pair frontend does exactly that -- so passing `ids` straight out
+    // would break this function's postcondition on the path most requests take.
     if (found == 0) {
-        return frontend.prepare(SYNTH_INPUT_TEXT_UTF8, wrapped.data(), wrapped.size(), 0, ids);
+        const synth_status_t status = frontend.prepare(SYNTH_INPUT_TEXT_UTF8, wrapped.data(), wrapped.size(), 0, ids);
+        if (status != SYNTH_OK) {
+            ids.clear();
+        }
+        return status;
     }
 
     if (last < wrapped.size()) {

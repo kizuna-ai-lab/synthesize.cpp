@@ -259,13 +259,35 @@ int check_nonverbal_split() {
     SYNTH_TEST_CHECK((doubled == std::vector<int32_t>{ 11, 6, 0, 10, 3, 4, 9, 2, 7, 12, 11, 8, 5, 3, 4, 12 }));
 
     // A byte the vocabulary cannot name is still a package defect, and the
-    // tag-aware path must not swallow the failure -- on either side of the tag.
+    // tag-aware path must not swallow the failure -- on either side of the tag,
+    // and on the no-tag path, which is the one most requests take.
+    //
+    // Each call is seeded with junk first, so an empty result proves the vector
+    // was cleared rather than merely never written to.
+    const auto rejects = [&](const std::string & text) {
+        std::vector<int32_t> ids = { 999, 998 };
+        return synth::omnivoice::tokenize_wrapped_text(*frontend, text, ids) != SYNTH_OK && ids.empty();
+    };
+    SYNTH_TEST_CHECK(rejects("z [laughter]"));
+    SYNTH_TEST_CHECK(rejects("[laughter] z"));
+    // No tag at all, failing partway through the one span. The frontend emits
+    // "a" and the space before it reaches the byte it cannot name, so this is
+    // the case where a status returned straight through would carry two ids out
+    // with it.
+    SYNTH_TEST_CHECK(rejects("a z"));
+    SYNTH_TEST_CHECK(rejects("<|text_start|>a z<|text_end|>"));
+
+    // The guarantee is this function's, not one it inherits: a plain prepare
+    // over the same input does leave its partial output behind. If that ever
+    // changes the clear above becomes redundant rather than wrong, and this
+    // line is what will say so.
+    std::vector<int32_t> partial;
+    SYNTH_TEST_CHECK(plain("a z", partial) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK((partial == std::vector<int32_t>{ 0, 13 }));
+
+    // The exact status is passed through unchanged.
     std::vector<int32_t> rejected;
-    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, "z [laughter]", rejected) ==
-                     SYNTH_ERR_INVALID_ARG);
-    SYNTH_TEST_CHECK(rejected.empty());
-    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, "[laughter] z", rejected) ==
-                     SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, "a z", rejected) == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(rejected.empty());
 
     // Empty input is an empty sequence, not a failure.

@@ -19,6 +19,9 @@ using synth::qwen_pretokenize;
 //     <|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n
 std::string qwen_assistant_turn(const std::string & text);
 
+// How many tokens the role prefix and the closing markers occupy, so a caller
+// can split a tokenized turn back into its parts without re-tokenizing. The
+// reference slices the same way, at 3 and -5.
 constexpr size_t kAssistantRolePrefixTokens = 3;
 constexpr size_t kAssistantSuffixTokens     = 5;
 

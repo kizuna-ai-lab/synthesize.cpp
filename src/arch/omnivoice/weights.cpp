@@ -1,4 +1,5 @@
-#include "arch/omnivoice/catalog.h"
+#include "arch/omnivoice/weights.h"
+
 #include "gguf-metadata.h"
 #include "gguf.h"
 

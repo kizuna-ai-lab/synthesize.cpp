@@ -478,6 +478,10 @@ Script classify(uint32_t codepoint) {
     if (found != std::end(kScriptRanges)) {
         return found->script;
     }
+    // Upstream tests `code > 0x20000` -- strictly greater, so U+20000 itself is
+    // `default` (1.0) and only U+20001 onward is `cjk`. Verified against
+    // omnivoice/utils/duration.py at 468e927b; the asymmetry is upstream's, and
+    // matching it is the contract.
     if (codepoint > 0x20000) {
         return Script::Cjk;
     }

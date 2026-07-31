@@ -3,182 +3,140 @@
 #include "synthesize.h"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
-struct ggml_context;
-struct ggml_tensor;
+struct gguf_context;
 
 namespace synth::omnivoice {
 
-struct HParams;
-
-struct LinearWeights {
-    ggml_tensor * weight = nullptr;
-    ggml_tensor * bias   = nullptr;
+// Plan 1 carries the source profile only; quantization profiles are a stage-6
+// decision and extend this enum then.
+enum class QuantizationProfile : uint32_t {
+    F32,
 };
 
-// GGML reports a Conv1d kernel stored as [out, in, kernel] in reverse, so its ne
-// is [kernel, in, out]; a ConvTranspose1d stores [in, out, kernel] and so
-// reports [kernel, out, in]. The two are easy to mistake for each other and the
-// mistake only shows up as noise, so they are resolved by separate helpers.
-//
-// Several of this family's convolutions carry no bias -- the HuBERT feature
-// extractor's and the codec's semantic encoder's -- and leave `bias` null.
-struct Conv1dWeights {
-    ggml_tensor * weight = nullptr;
-    ggml_tensor * bias   = nullptr;
+// The mask-predict generator: a Qwen3 block stack run bidirectionally over the
+// whole canvas. No KV cache exists because no position is ever causal.
+struct GeneratorParams {
+    uint32_t layer_count          = 0;
+    uint32_t hidden_size          = 0;
+    uint32_t attention_head_count = 0;
+    uint32_t key_value_head_count = 0;
+    uint32_t head_dim             = 0;
+    uint32_t intermediate_size    = 0;
+    uint32_t text_vocab_size      = 0;
+    float    rms_norm_eps         = 0.0f;
+    float    rope_theta           = 0.0f;
 };
 
-struct LayerNormWeights {
-    ggml_tensor * weight = nullptr;
-    ggml_tensor * bias   = nullptr;
+// The 8-codebook token canvas the generator predicts into.
+struct AudioCanvasParams {
+    uint32_t num_codebooks = 0;
+    uint32_t vocab_size    = 0;  // 1025: 1024 codes plus the mask id
+    uint32_t mask_id       = 0;
 };
 
-// Higgs DAC uses plain Snake, not SnakeBeta: one curve per channel and no second
-// one, so a port that assumed the beta pair would look for a tensor that is not
-// there.
-struct SnakeWeights {
-    ggml_tensor * alpha = nullptr;
+// The Higgs Audio V2 codec halves this package carries in full: DAC decoder
+// (the vocoder), and the encode path for cloning.
+struct CodecParams {
+    uint32_t              sample_rate          = 0;
+    uint32_t              hop_length           = 0;
+    float                 frame_rate_hz        = 0.0f;
+    uint32_t              decoder_hidden_size  = 0;
+    uint32_t              encoder_hidden_size  = 0;
+    uint32_t              hidden_size          = 0;  // fc2's output width
+    uint32_t              codebook_dim         = 0;
+    uint32_t              codebook_size        = 0;
+    uint32_t              semantic_sample_rate = 0;
+    std::vector<uint32_t> upsampling_ratios;
 };
 
-// One Qwen3 block of the mask-predict generator. It is the ordinary block --
-// per-head q/k/v norms, gated feed-forward -- run bidirectionally, which changes
-// the graph but not the tensors.
-struct GeneratorLayerWeights {
-    ggml_tensor * input_layernorm = nullptr;
-    ggml_tensor * q_proj = nullptr, *k_proj = nullptr, *v_proj = nullptr, *o_proj = nullptr;
-    ggml_tensor * q_norm = nullptr, *k_norm = nullptr;  // per-head, width head_dim
-    ggml_tensor * post_attention_layernorm = nullptr;
-    ggml_tensor * gate_proj = nullptr, *up_proj = nullptr, *down_proj = nullptr;
+// The HuBERT semantic branch, used only when preparing a cloning profile.
+struct SemanticParams {
+    uint32_t              hidden_size          = 0;
+    uint32_t              layer_count          = 0;
+    uint32_t              attention_head_count = 0;
+    uint32_t              intermediate_size    = 0;
+    float                 layer_norm_eps       = 0.0f;
+    std::vector<uint32_t> conv_dim;
+    std::vector<uint32_t> conv_kernel;
+    std::vector<uint32_t> conv_stride;
 };
 
-struct GeneratorWeights {
-    ggml_tensor *                      text_embedding = nullptr;  // llm.embed_tokens.weight; tied -- no lm_head exists
-    std::vector<GeneratorLayerWeights> layers;
-    ggml_tensor *                      norm             = nullptr;
-    // The eight codebooks are stacked into one table each, so a canvas slot
-    // indexes codebook * vocab_size + code.
-    ggml_tensor *                      audio_embeddings = nullptr;
-    ggml_tensor *                      audio_heads      = nullptr;
+// The seven prompt markers plus eos/pad, by value. All are added tokens past
+// the base vocabulary.
+struct SpecialTokens {
+    uint32_t denoise        = 0;
+    uint32_t lang_start     = 0;
+    uint32_t lang_end       = 0;
+    uint32_t instruct_start = 0;
+    uint32_t instruct_end   = 0;
+    uint32_t text_start     = 0;
+    uint32_t text_end       = 0;
+    uint32_t eos            = 0;
+    uint32_t pad            = 0;
 };
 
-// One residual vector quantizer. Unlike most RVQ ports the projections here are
-// Linears with biases, not kernel-1 convolutions.
-struct RvqQuantizerWeights {
-    LinearWeights input_proj;
-    LinearWeights output_proj;
-    ggml_tensor * codebook = nullptr;
+// The checkpoint's own decoding defaults, carried in the package rather than
+// restated here. position_temperature 5.0 means the public path samples;
+// both temperatures zero is the deterministic mode the goldens use.
+struct GenerationDefaults {
+    uint32_t num_step             = 0;
+    float    guidance_scale       = 0.0f;
+    float    t_shift              = 0.0f;
+    float    layer_penalty_factor = 0.0f;
+    float    position_temperature = 0.0f;
+    float    class_temperature    = 0.0f;
 };
 
-// The DAC residual unit, dilated 1, 3 and 9 across the three of a block. The
-// dilation changes no shape, so only the count reaches the catalog.
-struct DacResidualUnit {
-    SnakeWeights  snake1;
-    Conv1dWeights conv1;
-    SnakeWeights  snake2;
-    Conv1dWeights conv2;
+// The Reference Audio limits and Serialized Profile identity the Voice Profile
+// module enforces from Plan 3 on; read and validated from Plan 1 so a package
+// is whole from its first cut.
+struct ProfileContract {
+    std::string schema;
+    uint32_t    schema_version = 0;
+    std::string compatibility_id_hex;  // 64 hex chars = 32 bytes
+    uint32_t    reference_sample_rate = 0;
+    uint32_t    reference_channels    = 0;
+    uint64_t    min_frames_per_clip   = 0;
+    uint64_t    max_frames_per_clip   = 0;
+    uint64_t    max_total_frames      = 0;
+    uint64_t    max_reference_count   = 0;
 };
 
-// Activation, transposed convolution that upsamples by the block's ratio, then
-// the three residual units at the halved width.
-struct AcousticDecoderBlock {
-    SnakeWeights                 snake1;
-    Conv1dWeights                conv_t1;
-    std::vector<DacResidualUnit> res_units;
+struct HParams {
+    std::string         model_variant;
+    QuantizationProfile quantization_profile         = QuantizationProfile::F32;
+    uint32_t            quantization_profile_version = 1;
+    uint32_t            architecture_version         = 1;
+
+    uint32_t input_flags          = 0;
+    uint32_t capability_flags     = 0;
+    uint32_t output_sample_rate   = 0;
+    uint32_t output_channel_count = 0;
+    uint64_t max_input_tokens     = 0;
+    uint64_t max_output_frames    = 0;
+    float    min_speaking_rate    = 0.0f;
+    float    max_speaking_rate    = 0.0f;
+
+    GeneratorParams    generator;
+    AudioCanvasParams  audio;
+    CodecParams        codec;
+    SemanticParams     semantic;
+    SpecialTokens      tokens;
+    GenerationDefaults generation;
+    ProfileContract    profile;
+
+    // Validated languages as BCP-47 tags. For this family the tag is also the
+    // exact text the prompt's language slot carries, so no name bridge exists.
+    std::vector<std::string> language_tags;
+
+    bool        frontend_present = false;
+    std::string frontend_provider;
+    uint32_t    frontend_contract_version = 0;
 };
 
-struct AcousticDecoderWeights {
-    Conv1dWeights                     conv1;  // hidden_size -> decoder_hidden_size
-    std::vector<AcousticDecoderBlock> blocks;
-    SnakeWeights                      snake1;
-    Conv1dWeights                     conv2;  // -> one channel, the mono waveform
-};
-
-// The encoder block is the decoder's mirror in order as well as in shape: the
-// residual units come first, at the block's input width, and the strided
-// convolution that doubles the width comes last.
-struct AcousticEncoderBlock {
-    std::vector<DacResidualUnit> res_units;
-    SnakeWeights                 snake1;
-    Conv1dWeights                conv1;
-};
-
-struct AcousticEncoderWeights {
-    Conv1dWeights                     conv1;  // one channel in -> encoder_hidden_size
-    std::vector<AcousticEncoderBlock> blocks;
-    SnakeWeights                      snake1;
-    Conv1dWeights                     conv2;  // -> hidden_size
-};
-
-// One HuBERT encoder layer. It is a post-norm BERT block, not a Qwen3 one: every
-// projection is biased and square, and the two norms sit after their branches.
-struct SemanticLayerWeights {
-    LinearWeights    q_proj;
-    LinearWeights    k_proj;
-    LinearWeights    v_proj;
-    LinearWeights    out_proj;
-    LayerNormWeights layer_norm;
-    LinearWeights    inter_dense;
-    LinearWeights    output_dense;
-    LayerNormWeights final_layer_norm;
-};
-
-// The HuBERT semantic branch, reached only when preparing a cloning profile.
-struct SemanticModelWeights {
-    // Bias-free, one per conv_dim entry; the first reads the raw waveform.
-    std::vector<Conv1dWeights>        feat_conv;
-    // feat_extract_norm is "group", so only the first convolution is normalized.
-    LayerNormWeights                  feat_conv_norm;
-    LayerNormWeights                  feature_projection_norm;
-    LinearWeights                     feature_projection;
-    Conv1dWeights                     pos_conv;  // grouped, and weight-norm already folded
-    std::vector<SemanticLayerWeights> layers;
-    LayerNormWeights                  encoder_norm;
-};
-
-// Two bias-free convolutions around an ELU, added back to the input.
-struct SemanticEncoderResUnit {
-    Conv1dWeights conv1;
-    Conv1dWeights conv2;
-};
-
-struct SemanticEncoderBlock {
-    std::vector<SemanticEncoderResUnit> res_units;
-    Conv1dWeights                       conv;
-};
-
-// The codec's own encoder over HuBERT features, whose output is concatenated
-// with the acoustic encoder's before the quantizer.
-struct SemanticEncoderWeights {
-    Conv1dWeights                     conv;  // bias-free
-    std::vector<SemanticEncoderBlock> blocks;
-};
-
-struct ModelWeights {
-    GeneratorWeights                 generator;
-    std::vector<RvqQuantizerWeights> quantizers;  // order = codebook index
-    LinearWeights                    fc;          // encode-path concat projection
-    LinearWeights                    fc2;         // decode-path concat width -> hidden_size
-    AcousticDecoderWeights           acoustic_decoder;
-    AcousticEncoderWeights           acoustic_encoder;
-    SemanticModelWeights             semantic_model;
-    SemanticEncoderWeights           encoder_semantic;
-};
-
-// Resolves the whole catalog against a loaded package.
-//
-// Every shape is derived from the package's own hyper-parameters rather than
-// hardcoded, so a package whose metadata and tensors disagree is refused here
-// instead of producing wrong audio later. Afterwards the package is swept: a
-// tensor the catalog never asked for is an error, not something to ignore,
-// because a name nobody resolves is a name nobody checked.
-//
-// Plan 1 is CPU-only, so there is no accelerator-twin context parameter yet; the
-// backends stage adds that seam once there is a placement to make.
-synth_status_t build_model_weights(ggml_context * context, const HParams & hparams, ModelWeights & weights);
-
-// The number of tensors a package for these hyper-parameters must contain.
-// Exposed so a caller can size a context before resolving anything.
-uint64_t expected_tensor_count(const HParams & hparams);
+synth_status_t read_hparams(const gguf_context * gguf, HParams & hparams);
 
 }  // namespace synth::omnivoice

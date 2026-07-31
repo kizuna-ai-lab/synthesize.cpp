@@ -11,7 +11,7 @@
 // schema, compatibility id, clip limits -- has to be whole from the first cut
 // even though nothing consumes it before Plan 3.
 
-#include "arch/omnivoice/catalog.h"
+#include "arch/omnivoice/weights.h"
 #include "gguf.h"
 #include "test-assert.h"
 

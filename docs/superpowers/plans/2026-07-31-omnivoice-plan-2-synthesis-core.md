@@ -1597,6 +1597,10 @@ cmake --build build --target synthesize-omnivoice-generator-test
 
 Expected: FAIL — `generator.h` symbols undefined until Step 2's files are added; once they compile, the test must pass its numeric checks or the layer diff (per-head norms, no scales, NEOX rope at theta 1e6) is wrong — debug against the script's intermediate values, never by widening the tolerance.
 
+- [ ] **Step 4b: Correct the family doc's embedding-merge sentence**
+
+docs/porting/families/omnivoice.md (Architecture section, the sentence around line 160 reading "the sequence embedding is the text embedding of row 0 **plus** the sum of the eight codebook embeddings") states the opposite of the verified upstream semantics and of the code this task just built. Upstream's `_prepare_embed_inputs` ends in `torch.where(audio_mask.unsqueeze(-1), audio_embeds, text_embeds)` — a SELECT: audio positions carry the summed offset codebook embeddings alone, and the text stream computed at those positions is discarded. Rewrite the sentence to state the select semantics (in the doc's voice, one or two sentences), naming `torch.where` so the next reader cannot re-derive the addition. This is the "where-vs-add merge trap" Task 9's debugging list names; the doc is the authority implementers debug against, so it must not point the wrong way.
+
 - [ ] **Step 5: Green, sanitize, format, commit**
 
 ```bash
@@ -1605,7 +1609,8 @@ ctest --test-dir build --output-on-failure -R synthesize-omnivoice-generator-tes
 cmake --build build-sanitize --target synthesize-check-unit
 scripts/ci/clang-format.sh --fix
 git add src/arch/omnivoice/generator.h src/arch/omnivoice/generator.cpp src/CMakeLists.txt \
-        scripts/dump_reference_omnivoice_generator.py tests/omnivoice_generator_test.cpp tests/CMakeLists.txt
+        scripts/dump_reference_omnivoice_generator.py tests/omnivoice_generator_test.cpp tests/CMakeLists.txt \
+        docs/porting/families/omnivoice.md
 git commit -m "$(cat <<'EOF'
 Build the omnivoice bidirectional generator graph with its canvas embedding
 

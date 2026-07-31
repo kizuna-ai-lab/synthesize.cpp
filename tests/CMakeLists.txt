@@ -339,6 +339,9 @@ if(SYNTH_BUILD_PYTHON_TESTS)
     # plus the VITS and Kokoro converter contracts. The VITS environment owns
     # the repository's locked tooling; a family whose tests need environment
     # specific dependencies gets its own registration.
+    # The OmniVoice converter tests ride this same discovery; their one
+    # package-dependent case skips here and runs for real under
+    # synthesize-omnivoice-python-unit below.
     add_test(
         NAME synthesize-vits-python-unit
         COMMAND ${SYNTH_UV_EXECUTABLE} run
@@ -349,6 +352,21 @@ if(SYNTH_BUILD_PYTHON_TESTS)
     set_tests_properties(synthesize-vits-python-unit PROPERTIES
         LABELS "unit;python;vits;kokoro"
         TIMEOUT 180
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    # The OmniVoice converter's positive generation-defaults test needs the
+    # upstream package, which exists only in this family's locked environment;
+    # under the VITS discovery above it skips forever. Running the module where
+    # the import resolves enforces the "defaults come from the pinned package"
+    # rule instead of permanently skipping it.
+    add_test(
+        NAME synthesize-omnivoice-python-unit
+        COMMAND ${SYNTH_UV_EXECUTABLE} run
+            --project ${CMAKE_SOURCE_DIR}/scripts/envs/omnivoice
+            --locked python -m unittest -v
+            tests.python.test_convert_omnivoice)
+    set_tests_properties(synthesize-omnivoice-python-unit PROPERTIES
+        LABELS "unit;python;omnivoice"
+        TIMEOUT 600
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 

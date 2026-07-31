@@ -125,6 +125,23 @@ class GoldenManifestSchemaTest(unittest.TestCase):
                 tolerance = REPO_ROOT / manifest["tolerance_file"]
                 self.assertTrue(tolerance.is_file(), f"missing {manifest['tolerance_file']}")
 
+    def test_tolerance_case_count_matches_manifest(self):
+        """A tolerance file describing N cases must mean the manifest's N.
+
+        The qwen3-tts file said 18 while its manifest had grown to 20 -- an
+        honest historical number that read as a current claim. case_count is
+        bookkeeping about the suite, so it tracks the suite.
+        """
+        for path, manifest in self.manifests:
+            with self.subTest(manifest=path.name):
+                tolerance_path = REPO_ROOT / manifest["tolerance_file"]
+                tolerance = json.loads(tolerance_path.read_text(encoding="utf-8"))
+                if "case_count" not in tolerance:
+                    continue
+                self.assertEqual(
+                    tolerance["case_count"], len(manifest["cases"]),
+                    f"{manifest['tolerance_file']}: case_count disagrees with {path.name}")
+
     def test_environment_lock_is_committed(self):
         for path, manifest in self.manifests:
             with self.subTest(manifest=path.name):

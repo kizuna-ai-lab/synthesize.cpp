@@ -218,15 +218,30 @@ bool read_generator(const GgufMetadata & meta, HParams & hparams) {
     }
     // Products of these fields feed int64 shape arithmetic in the catalog;
     // guarding the products here means no consumer has to prove overflow
-    // freedom case by case.
+    // freedom case by case. Checked one at a time and named in the message --
+    // a single combined condition can only ever report the first field of the
+    // five, which is a wrong diagnosis whenever a different one is the actual
+    // offender.
     const uint64_t attention_inner = uint64_t(generator.attention_head_count) * generator.head_dim;
     const uint64_t kv_inner        = uint64_t(generator.key_value_head_count) * generator.head_dim;
-    if (attention_inner > kMaxDimensionProduct || kv_inner > kMaxDimensionProduct ||
-        generator.hidden_size > kMaxDimensionProduct || generator.intermediate_size > kMaxDimensionProduct ||
-        generator.text_vocab_size > kMaxDimensionProduct) {
-        std::fprintf(stderr, "omnivoice: generator geometry is implausibly large (%llu-wide attention)\n",
-                     static_cast<unsigned long long>(attention_inner));
-        return false;
+
+    const struct {
+        const char * field;
+        uint64_t     value;
+    } guarded_products[] = {
+        { "attention_head_count * head_dim", attention_inner                       },
+        { "key_value_head_count * head_dim", kv_inner                              },
+        { "hidden_size",                     uint64_t(generator.hidden_size)       },
+        { "intermediate_size",               uint64_t(generator.intermediate_size) },
+        { "text_vocab_size",                 uint64_t(generator.text_vocab_size)   },
+    };
+
+    for (const auto & product : guarded_products) {
+        if (product.value > kMaxDimensionProduct) {
+            std::fprintf(stderr, "omnivoice: generator geometry is implausibly large (%s is %llu)\n", product.field,
+                         static_cast<unsigned long long>(product.value));
+            return false;
+        }
     }
     if (generator.rms_norm_eps <= 0.0f || generator.rope_theta <= 0.0f) {
         std::fprintf(stderr, "omnivoice: non-positive rms_norm_eps or rope_theta\n");

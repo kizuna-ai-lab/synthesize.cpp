@@ -31,7 +31,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -48,16 +47,6 @@ namespace {
 // enter as leaves rather than nodes.
 constexpr size_t kSchedulerLeafAllowance = 4096;
 
-// The replay seam calls decode_codes free-standing, so there is no output
-// object in scope to write its timing and placement into; run_synthesis copies
-// them out of this scratch straight after its own call. The qwen3-tts pattern
-// (src/arch/qwen3-tts/model.cpp), sited above run_synthesis here because this
-// file defines the two members the other way round -- a measurement, not state
-// the model carries between calls.
-thread_local double   codec_seconds_           = 0.0;
-thread_local uint64_t codec_placed_nodes_      = 0;
-thread_local uint64_t codec_accelerator_nodes_ = 0;
-
 // A wall clock for the placement measurement. Monotonic, because the question is
 // how long a stage took and not what time it was.
 double now_seconds() {
@@ -65,29 +54,8 @@ double now_seconds() {
     return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
 }
 
-// Keeps the narrowest margin seen so far. A NaN margin means the scoring broke,
-// so it wins the comparison rather than losing to every real number and leaving
-// the report reading like a healthy run; once recorded it is not displaced.
-void note_margin(MarginReport &     report,
-                 MarginReport::Kind kind,
-                 float              value,
-                 uint32_t           step,
-                 uint32_t           codebook,
-                 uint64_t           frame) {
-    if (report.measured) {
-        const bool already_broken = std::isnan(report.value);
-        const bool narrower       = std::isnan(value) || value < report.value;
-        if (already_broken || !narrower) {
-            return;
-        }
-    }
-    report.measured = true;
-    report.kind     = kind;
-    report.value    = value;
-    report.step     = step;
-    report.codebook = codebook;
-    report.frame    = frame;
-}
+// note_margin lives in generator-host.{h,cpp} now, where its NaN-wins update
+// rule is unit-testable without a Model.
 
 // Duplicated from qwen3-tts rather than shared: the third copy is the signal
 // to hoist (the BPE rule), and stage 7's graph-reuse question may reshape this
@@ -607,13 +575,10 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     }
     output.codes = std::move(canvas);
 
-    status = decode_codes(output.codes, frames, threads, output.audio);
+    status = decode_codes(output.codes, frames, threads, output.audio, &output.codec_seconds, &output.codec_placement);
     if (status != SYNTH_OK) {
         return status;
     }
-    output.codec_seconds                     = codec_seconds_;
-    output.codec_placement.nodes             = codec_placed_nodes_;
-    output.codec_placement.accelerator_nodes = codec_accelerator_nodes_;
     // Decision 3 of the plan: the residual output scaling lives HERE, inside
     // the family's synthesis path, faithful to the oracle. Auto-voice and
     // voice-design requests take the no-reference branch; the clone branches
@@ -626,10 +591,12 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     return SYNTH_OK;
 }
 
-synth_status_t Model::decode_codes(const std::vector<int32_t> & codes,
-                                   uint64_t                     frame_count,
-                                   int                          threads,
-                                   std::vector<float> &         audio) {
+synth_status_t Model::decode_codes(const std::vector<int32_t> &      codes,
+                                   uint64_t                          frame_count,
+                                   int                               threads,
+                                   std::vector<float> &              audio,
+                                   double *                          out_seconds,
+                                   SynthesisOutput::StagePlacement * out_placement) {
     audio.clear();
     Impl &          impl    = *implementation_;
     const HParams & hparams = impl.hparams;
@@ -668,13 +635,29 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> & codes,
     if (status != SYNTH_OK) {
         return status;
     }
-    codec_seconds_           = now_seconds() - started;
-    codec_placed_nodes_      = run.placed_nodes;
-    codec_accelerator_nodes_ = run.accelerator_nodes;
+    // Reported directly to the caller rather than through a scratch variable:
+    // run_synthesis passes its own output fields, and the replay seam -- the
+    // only free-standing caller -- passes its own locals. Before this, a
+    // free-standing call's timing and placement were measured and then
+    // discarded, which is why the three sampled cases (probe-only, so
+    // run_synthesis's own decode_codes call is never reached) reported a
+    // fictional zero for both.
+    if (out_seconds != nullptr) {
+        *out_seconds = now_seconds() - started;
+    }
+    if (out_placement != nullptr) {
+        out_placement->nodes             = run.placed_nodes;
+        out_placement->accelerator_nodes = run.accelerator_nodes;
+    }
     read_floats(wave, audio);
     if (audio.size() != size_t(frame_count) * hparams.codec.hop_length) {
         std::fprintf(stderr, "omnivoice: the codec produced %zu samples for %llu frames\n", audio.size(),
                      (unsigned long long) frame_count);
+        // The owed-length check runs after read_floats already populated
+        // `audio` with the wrong-length buffer; every other refusal above
+        // returns before audio is ever written, and this path must leave the
+        // same cleared-on-error contract rather than hand back stale bytes.
+        audio.clear();
         return SYNTH_ERR_INTERNAL;
     }
     return SYNTH_OK;

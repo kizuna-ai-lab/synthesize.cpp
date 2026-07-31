@@ -209,10 +209,20 @@ def main() -> int:
     manifest = json.loads(arguments.manifest.read_text(encoding="utf-8"))
     oracle_root = pathlib.Path(manifest["case_artifact_root"])
 
+    # A typo in --cases used to select nothing and then pass, which is the
+    # same false green as running no cases at all -- refused before anything
+    # runs (sibling to scripts/validate-omnivoice-replay.py's identical guard).
+    known = {case["id"] for case in manifest["cases"]}
+    if arguments.cases:
+        unknown = sorted(set(arguments.cases) - known)
+        if unknown:
+            print(f"--cases names {unknown}, which {arguments.manifest} does not define")
+            return 1
+    cases = [case for case in manifest["cases"]
+             if not arguments.cases or case["id"] in arguments.cases]
+
     results = []
-    for case in manifest["cases"]:
-        if arguments.cases and case["id"] not in arguments.cases:
-            continue
+    for case in cases:
         outcome = run_case(arguments, case, oracle_root)
         if outcome is None:
             print(f"  {case['id']}: no oracle artifacts, skipped")
@@ -271,6 +281,16 @@ def main() -> int:
             "worst": worst,
         }, indent=2) + "\n", encoding="utf-8")
         print(f"\nreport: {arguments.report}")
+
+    # Comparing nothing is not passing. Both shapes of "nothing" reach here: a
+    # --cases filter that (despite the refusal above) selected no case is
+    # impossible now, but an oracle_root whose payload was never materialized
+    # still skips every case, and that must not read as a clean sweep.
+    compared = [outcome for outcome in results if outcome["status"] == "ok"]
+    if not compared:
+        print(f"\nno case produced a comparison: {len(cases)} selected, "
+              f"{len(cases) - len(results)} skipped for missing oracle artifacts under {oracle_root}")
+        return 1
 
     failures = [outcome["case"] for outcome in results if outcome["status"] != "ok"]
     if failures:

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "arch/omnivoice/generator-host.h"
 #include "synthesize.h"
 #include "text-frontend.h"
 
@@ -63,33 +64,9 @@ struct SynthesisRequest {
     std::vector<uint32_t> probe_layers;       // layer indices probed at step 0
 };
 
-// The narrowest decision the greedy loop made, filled when
-// SynthesisRequest::margin_report is set.
-//
-// Two kinds of decision can be narrow, and this port's two knife-edge cases at
-// the slice-5 gate were one of each. A `selection` margin is the guided-score
-// gap between the last candidate a step committed and the best one it rejected:
-// close it and a different POSITION is committed, which changes every later
-// step's context. An `argmax` margin is the gap between a committed position's
-// token and its runner-up: close it and a different TOKEN lands in that slot.
-//
-// A step that commits everything still masked rejects nothing, so it can only
-// contribute argmax margins; a step that rejects something contributes its
-// selection margin. `value` is the smallest margin over the whole run and the
-// remaining fields name the position it was measured at. Note the scope: argmax
-// margins are collected on full-commit steps only, which is where the flip that
-// motivated this instrument happened -- a narrow argmax on a partially
-// committing step is not screened.
-struct MarginReport {
-    enum class Kind { selection, argmax };
-
-    bool     measured = false;
-    Kind     kind     = Kind::selection;
-    float    value    = 0.0f;
-    uint32_t step     = 0;
-    uint32_t codebook = 0;
-    uint64_t frame    = 0;
-};
+// MarginReport is declared in generator-host.h: filled when
+// SynthesisRequest::margin_report is set, and its NaN-wins update rule
+// (note_margin) lives there too, where it is unit-testable without a Model.
 
 struct SynthesisOutput {
     // The canvas length, set from the request rather than from the loop, so the
@@ -169,10 +146,20 @@ class Model {
     // Decodes a committed grid (codebook-major [num_codebooks * frame_count],
     // values in [0, codebook_size)) to the RAW waveform -- no volume branch,
     // so the replay seam can apply the oracle's branch per case.
-    synth_status_t decode_codes(const std::vector<int32_t> & codes,
-                                uint64_t                     frame_count,
-                                int                          threads,
-                                std::vector<float> &         audio);
+    //
+    // `out_seconds`/`out_placement` report THIS call's own codec timing and
+    // node placement when non-null. run_synthesis passes its own output
+    // fields here directly; the replay seam calls this free-standing (there is
+    // no SynthesisOutput in scope), and without these out-params its codec
+    // pass left the caller's copy at its zero default -- the CPU-only
+    // placement rule was vacuous for every case that never runs the greedy
+    // loop.
+    synth_status_t decode_codes(const std::vector<int32_t> &      codes,
+                                uint64_t                          frame_count,
+                                int                               threads,
+                                std::vector<float> &              audio,
+                                double *                          out_seconds   = nullptr,
+                                SynthesisOutput::StagePlacement * out_placement = nullptr);
 
   private:
     struct Impl;

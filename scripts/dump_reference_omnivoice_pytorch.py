@@ -204,6 +204,17 @@ def load_manifest(path: pathlib.Path) -> dict:
             require(request, key, f"{where}.request")
 
         parameters = require(require(case, "oracle", where), "parameters", f"{where}.oracle")
+        if reference_input is not None:
+            # Resolving the digest HERE turns an unpinned reference into an
+            # `error:` + exit 1 before any model loads, instead of a
+            # ManifestError escaping mid-dump with three cases already written.
+            reference_digest(manifest, reference_input["artifact"])
+            if parameters.get("preprocess_prompt") is not False:
+                raise ManifestError(
+                    f"{where}: a clone case must pin preprocess_prompt=false; anything else "
+                    "lets silence stripping into a parity baseline"
+                )
+
         for key in ("num_step", "position_temperature", "class_temperature", "language",
                     "instruct", "postprocess_output",
                     "audio_chunk_duration", "audio_chunk_threshold"):
@@ -597,13 +608,14 @@ def materialise_reference(locator: str, digest: str, directory: pathlib.Path) ->
     destination = directory / locator.rsplit("/", 1)[-1]
     if not destination.exists():
         print(f"fetching {locator}", flush=True)
-        with urllib.request.urlopen(locator) as response:  # noqa: S310 - pinned https locator
+        with urllib.request.urlopen(locator, timeout=60) as response:  # noqa: S310 - pinned https locator
             destination.write_bytes(response.read())
     actual = hashlib.sha256(destination.read_bytes()).hexdigest()
     if actual != digest:
         raise SystemExit(
             f"{destination}: sha256 {actual} does not match the manifest's {digest}. "
-            "Refusing to dump a clone case against an unpinned reference."
+            "Refusing to dump a clone case against an unpinned reference. "
+            "If a stale cached file is the cause, delete it and re-run to re-fetch."
         )
     return destination
 
@@ -913,6 +925,18 @@ def write_case(case: dict, case_dir: pathlib.Path, produced: dict) -> dict:
             f"{case_id}: the dump produced {unexpected or 'nothing extra'} that the manifest "
             f"does not expect, and is missing {unproduced or 'nothing'}"
         )
+
+    # The manifest declares each artifact's format independently of which
+    # writer produces it; a mismatch here means the two drifted and the dump
+    # would write bytes the comparison script reads under the wrong dtype.
+    writer_formats = {write_i32: "i32le", write_f32: "f32le", write_json: "json"}
+    for name, (writer, _payload) in produced.items():
+        declared = expected[name]["format"]
+        if writer_formats[writer] != declared:
+            raise SystemExit(
+                f"{case_id}: {name} is declared {declared!r} but the dump would write "
+                f"{writer_formats[writer]!r}; the manifest and the writer registry drifted"
+            )
 
     # Clear the case directory first. A re-run after the artifact set changed
     # would otherwise leave the previous run's files beside the new ones, and

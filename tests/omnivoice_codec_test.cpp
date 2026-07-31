@@ -474,8 +474,54 @@ int check_rejections() {
 
     // A decoder whose block count disagrees with the upsampling ratios: the
     // ratio a block upsamples by comes from the hyper-parameters, so a package
-    // that resolved a different number of them would read past the list.
+    // that resolved a different number of them would read past the list. This
+    // is the EMPTY half of the compound condition (`decoder.blocks.empty() ||
+    // decoder.blocks.size() != ratios.size()`) -- weights.acoustic_decoder.blocks
+    // was never assigned above.
     SYNTH_TEST_CHECK(synth::omnivoice::build_codec_decoder(ctx, codes, weights, make_hparams()) == nullptr);
+
+    // The NON-empty half of that same condition: a resolved block count that
+    // disagrees with the ratio list without being zero. make_hparams() pins
+    // two ratios; one resolved block is neither empty nor two.
+    synth::omnivoice::ModelWeights mismatched_blocks = weights;
+    mismatched_blocks.acoustic_decoder.blocks.resize(1);
+    SYNTH_TEST_CHECK(synth::omnivoice::build_codec_decoder(ctx, codes, mismatched_blocks, make_hparams()) == nullptr);
+
+    // The residual-length guard: DacResidualUnit's own conv1 is kernel 7 with
+    // padding 3*dilation, which is exactly length-preserving (2*padding ==
+    // dilation*(kernel-1)). A package whose conv1 resolved to kernel 5 with
+    // that SAME padding formula -- the builder's own constant, not something
+    // this fixture controls -- grows the branch by 2*dilation samples instead
+    // of preserving it, and without the guard the mismatched ggml_add would
+    // abort on a shape assertion rather than return nullptr.
+    synth::omnivoice::HParams residual_hparams = make_hparams();
+    residual_hparams.codec.upsampling_ratios.assign({ 2 });  // one block, stride 2
+    synth::omnivoice::ModelWeights residual_weights;
+    residual_weights.quantizers = quantizers;
+    residual_weights.fc2.weight = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kConcat, kAcoustic);
+    residual_weights.fc2.bias   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, kAcoustic);
+    residual_weights.acoustic_decoder.conv1.weight =
+        ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 7, kAcoustic, kDecoderHidden);
+    residual_weights.acoustic_decoder.conv1.bias = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, kDecoderHidden);
+    residual_weights.acoustic_decoder.blocks.resize(1);
+    synth::omnivoice::AcousticDecoderBlock & residual_block = residual_weights.acoustic_decoder.blocks[0];
+    const int64_t                            narrower       = int64_t(kDecoderHidden) / 2;
+    residual_block.snake1.alpha   = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, kDecoderHidden, 1);
+    // conv_t1 is [kernel, out, in]; stride 2 -> kernel 2*stride=4, out=narrower, in=kDecoderHidden.
+    residual_block.conv_t1.weight = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 4, narrower, kDecoderHidden);
+    residual_block.conv_t1.bias   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, narrower);
+    residual_block.res_units.resize(kDacUnits);
+    // Only unit 0 needs real weights: the mutated kernel-5 conv1 makes the
+    // builder return nullptr on unit 0's own residual add, before units 1 and
+    // 2 (left default-constructed) are ever reached.
+    synth::omnivoice::DacResidualUnit & mutated_unit = residual_block.res_units[0];
+    mutated_unit.snake1.alpha                        = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, narrower, 1);
+    mutated_unit.conv1.weight = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, /* kernel */ 5, narrower, narrower);
+    mutated_unit.conv1.bias   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, narrower);
+    mutated_unit.snake2.alpha = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, narrower, 1);
+    mutated_unit.conv2.weight = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, narrower, narrower);
+    mutated_unit.conv2.bias   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, narrower);
+    SYNTH_TEST_CHECK(synth::omnivoice::build_codec_decoder(ctx, codes, residual_weights, residual_hparams) == nullptr);
     return 0;
 }
 
@@ -524,6 +570,26 @@ int check_host_guards() {
     std::vector<float> empty;
     synth::omnivoice::apply_no_reference_volume(empty);
     SYNTH_TEST_CHECK(empty.empty());
+
+    // The guard's own boundary (`peak <= 1e-6`), one ULP on each side. At
+    // exactly 1e-6 the guard fires (inclusive) and the signal is untouched;
+    // one ULP above it, the guard does not fire and the peak is scaled to
+    // exactly 0.5 -- x / x is exact for any finite nonzero x, so the lone
+    // sample IS the peak and 1.0 * 0.5 rounds to nothing.
+    std::vector<float> at_threshold = { 1e-6f, -1e-6f };
+    synth::omnivoice::apply_no_reference_volume(at_threshold);
+    SYNTH_TEST_CHECK(at_threshold[0] == 1e-6f);
+    SYNTH_TEST_CHECK(at_threshold[1] == -1e-6f);
+
+    const float        below      = std::nextafter(1e-6f, 0.0f);
+    std::vector<float> just_below = { below };
+    synth::omnivoice::apply_no_reference_volume(just_below);
+    SYNTH_TEST_CHECK(just_below[0] == below);
+
+    const float        above      = std::nextafter(1e-6f, 1.0f);
+    std::vector<float> just_above = { above };
+    synth::omnivoice::apply_no_reference_volume(just_above);
+    SYNTH_TEST_CHECK(just_above[0] == 0.5f);
     return 0;
 }
 

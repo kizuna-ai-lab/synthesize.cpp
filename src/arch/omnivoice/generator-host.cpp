@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <limits>
 
 namespace synth::omnivoice {
@@ -223,6 +224,39 @@ void fill_shifted_audio_ids(const int32_t *        grid,
             output[size_t(codebook) * count + index] = grid[size_t(codebook) * row_stride + offset + index] + shift;
         }
     }
+}
+
+void note_margin(MarginReport &     report,
+                 MarginReport::Kind kind,
+                 float              value,
+                 uint32_t           step,
+                 uint32_t           codebook,
+                 uint64_t           frame) {
+    if (report.measured) {
+        const bool already_broken = std::isnan(report.value);
+        const bool narrower       = std::isnan(value) || value < report.value;
+        if (already_broken || !narrower) {
+            return;
+        }
+    }
+    report.measured = true;
+    report.kind     = kind;
+    report.value    = value;
+    report.step     = step;
+    report.codebook = codebook;
+    report.frame    = frame;
+}
+
+std::string margin_value_json(float value) {
+    if (std::isnan(value)) {
+        return "NaN";
+    }
+    if (std::isinf(value)) {
+        return value > 0.0f ? "Infinity" : "-Infinity";
+    }
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "%.9g", double(value));
+    return buffer;
 }
 
 }  // namespace synth::omnivoice

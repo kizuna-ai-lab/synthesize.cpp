@@ -163,17 +163,25 @@ def admissible_grids(manifest_path: pathlib.Path, case: dict,
 
 
 def compare_grid(admissible: list[tuple[str, np.ndarray]], actual: np.ndarray) -> dict:
-    """Exact equality against the admissible set, naming which one matched."""
-    matched, closest, fewest = None, None, None
+    """Exact equality against the admissible set, naming which one matched.
+
+    `elements` reports the size of the grid `mismatches` was actually counted
+    against -- the CLOSEST admissible grid, primary or an alternate -- rather
+    than always the primary's. A primary-sized report is only correct when the
+    closest grid happens to be the primary; a same-shaped suite never
+    exercises the difference, but a mismatched-size alternate would otherwise
+    print an element count that was never compared.
+    """
+    matched, closest, fewest, closest_elements = None, None, None, None
     for name, expected in admissible:
         count = (int((expected != actual).sum()) if expected.shape == actual.shape
                  else int(expected.size))
         if fewest is None or count < fewest:
-            fewest, closest = count, name
+            fewest, closest, closest_elements = count, name, int(expected.size)
         if count == 0:
             matched = name
             break
-    return {"elements": int(admissible[0][1].size), "mismatches": fewest,
+    return {"elements": closest_elements, "mismatches": fewest,
             "exact": matched is not None, "matched": matched, "closest": closest,
             "admissible": [name for name, _ in admissible]}
 

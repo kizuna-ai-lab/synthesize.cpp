@@ -11,7 +11,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace {
@@ -373,6 +375,77 @@ int check_shifted_ids() {
     return 0;
 }
 
+// --------------------------------------------------------------------------
+// note_margin / margin_value_json
+// --------------------------------------------------------------------------
+
+// The update rule the greedy loop's margin report is built on: keep the
+// narrowest measurement, except once a NaN has been recorded nothing may ever
+// displace it again. Untested before this task because note_margin lived as
+// a file-local helper in model.cpp, reachable only through a full Model.
+int check_note_margin_nan_wins() {
+    using synth::omnivoice::MarginReport;
+    const float nan_value = std::numeric_limits<float>::quiet_NaN();
+
+    MarginReport report;
+    SYNTH_TEST_CHECK(!report.measured);
+
+    // The first call always records, whatever it sees.
+    synth::omnivoice::note_margin(report, MarginReport::Kind::selection, 5.0f, /*step*/ 1, /*codebook*/ 0,
+                                  /*frame*/ 0);
+    SYNTH_TEST_CHECK(report.measured);
+    SYNTH_TEST_CHECK(report.value == 5.0f);
+
+    // A narrower real value overwrites.
+    synth::omnivoice::note_margin(report, MarginReport::Kind::argmax, 2.0f, /*step*/ 2, /*codebook*/ 1,
+                                  /*frame*/ 7);
+    SYNTH_TEST_CHECK(report.value == 2.0f);
+    SYNTH_TEST_CHECK(report.kind == MarginReport::Kind::argmax);
+    SYNTH_TEST_CHECK(report.step == 2 && report.codebook == 1 && report.frame == 7);
+
+    // A wider real value does not.
+    synth::omnivoice::note_margin(report, MarginReport::Kind::selection, 9.0f, /*step*/ 3, /*codebook*/ 0,
+                                  /*frame*/ 0);
+    SYNTH_TEST_CHECK(report.value == 2.0f);
+    SYNTH_TEST_CHECK(report.step == 2);
+
+    // NaN wins even though it is not numerically "narrower" than 2.0 -- the
+    // scoring broke, and that must read as broken rather than as a healthy
+    // 2.0 f run. The position it is recorded at moves to where the break
+    // happened.
+    synth::omnivoice::note_margin(report, MarginReport::Kind::argmax, nan_value, /*step*/ 4, /*codebook*/ 3,
+                                  /*frame*/ 9);
+    SYNTH_TEST_CHECK(std::isnan(report.value));
+    SYNTH_TEST_CHECK(report.step == 4 && report.codebook == 3 && report.frame == 9);
+
+    // Once broken, NOTHING displaces it -- not a tiny real value, and not a
+    // second NaN at a different position (which would otherwise silently
+    // move the reported location of the break).
+    synth::omnivoice::note_margin(report, MarginReport::Kind::selection, 1e-9f, /*step*/ 5, /*codebook*/ 0,
+                                  /*frame*/ 0);
+    SYNTH_TEST_CHECK(std::isnan(report.value));
+    SYNTH_TEST_CHECK(report.step == 4);
+    synth::omnivoice::note_margin(report, MarginReport::Kind::argmax, nan_value, /*step*/ 6, /*codebook*/ 0,
+                                  /*frame*/ 0);
+    SYNTH_TEST_CHECK(std::isnan(report.value));
+    SYNTH_TEST_CHECK(report.step == 4);
+    return 0;
+}
+
+// The JSON spellings for values a bare printf would render as `nan`/`inf`,
+// which is not JSON and which Python's own parser rejects.
+int check_margin_value_json() {
+    SYNTH_TEST_CHECK(synth::omnivoice::margin_value_json(std::numeric_limits<float>::quiet_NaN()) == "NaN");
+    SYNTH_TEST_CHECK(synth::omnivoice::margin_value_json(std::numeric_limits<float>::infinity()) == "Infinity");
+    SYNTH_TEST_CHECK(synth::omnivoice::margin_value_json(-std::numeric_limits<float>::infinity()) == "-Infinity");
+    // A finite value round-trips as an ordinary JSON number, not one of the
+    // three non-finite spellings.
+    const std::string finite = synth::omnivoice::margin_value_json(6.1e-04f);
+    SYNTH_TEST_CHECK(finite != "NaN" && finite != "Infinity" && finite != "-Infinity");
+    SYNTH_TEST_CHECK(std::fabs(std::strtof(finite.c_str(), nullptr) - 6.1e-04f) < 1e-9f);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -389,5 +462,7 @@ int main() {
     SYNTH_TEST_CHECK(check_select_commits_nan_guard() == 0);
     SYNTH_TEST_CHECK(check_prompt_grid() == 0);
     SYNTH_TEST_CHECK(check_shifted_ids() == 0);
+    SYNTH_TEST_CHECK(check_note_margin_nan_wins() == 0);
+    SYNTH_TEST_CHECK(check_margin_value_json() == 0);
     return 0;
 }

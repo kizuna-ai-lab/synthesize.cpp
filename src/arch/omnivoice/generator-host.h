@@ -3,6 +3,7 @@
 #include "synthesize.h"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace synth::omnivoice {
@@ -125,5 +126,53 @@ void fill_shifted_audio_ids(const int32_t *        grid,
                             uint32_t               num_codebooks,
                             uint32_t               vocab_size,
                             std::vector<int32_t> & output);
+
+// The narrowest decision the greedy loop made, filled when a caller asks for
+// a margin report (SynthesisRequest::margin_report in omnivoice.h).
+//
+// Two kinds of decision can be narrow, and this port's two knife-edge cases at
+// the slice-5 gate were one of each. A `selection` margin is the guided-score
+// gap between the last candidate a step committed and the best one it rejected:
+// close it and a different POSITION is committed, which changes every later
+// step's context. An `argmax` margin is the gap between a committed position's
+// token and its runner-up: close it and a different TOKEN lands in that slot.
+//
+// A step that commits everything still masked rejects nothing, so it can only
+// contribute argmax margins; a step that rejects something contributes its
+// selection margin. `value` is the smallest margin over the whole run and the
+// remaining fields name the position it was measured at. Note the scope: argmax
+// margins are collected on full-commit steps only, which is where the flip that
+// motivated this instrument happened -- a narrow argmax on a partially
+// committing step is not screened.
+struct MarginReport {
+    enum class Kind { selection, argmax };
+
+    bool     measured = false;
+    Kind     kind     = Kind::selection;
+    float    value    = 0.0f;
+    uint32_t step     = 0;
+    uint32_t codebook = 0;
+    uint64_t frame    = 0;
+};
+
+// Keeps the narrowest margin measurement seen so far in `report`. A NaN value
+// means the scoring broke, so it wins the comparison rather than losing to
+// every real number and leaving the report reading like a healthy run; once
+// recorded it locks the report -- broken is broken, and a later real number
+// must not quietly displace it. The first call always records, whatever it
+// sees.
+void note_margin(MarginReport &     report,
+                 MarginReport::Kind kind,
+                 float              value,
+                 uint32_t           step,
+                 uint32_t           codebook,
+                 uint64_t           frame);
+
+// A margin value the way JSON must see it. `NaN`/`Infinity`/`-Infinity` are
+// not valid JSON tokens by the spec, but they are exactly what Python's `json`
+// module (and most other parsers) accept and round-trip; the alternative --
+// `nan`/`inf`, what a plain printf produces -- is what those parsers reject
+// outright, turning a broken run's report unreadable rather than visible.
+std::string margin_value_json(float value);
 
 }  // namespace synth::omnivoice

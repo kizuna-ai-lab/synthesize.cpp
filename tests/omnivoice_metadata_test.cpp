@@ -397,6 +397,37 @@ int run_generator_rejections() {
                              gguf_set_val_u32(g, "synthesize.omnivoice.generator.head_dim", 65536);
                          },
                          "attention geometry whose products leave shape arithmetic") == 0);
+
+    // The five guarded products are now checked one at a time so the
+    // diagnostic names the actual offender; a combined condition could only
+    // ever report attention_inner regardless of which field broke the
+    // ceiling (T5 review). Each case below pushes exactly one field over it
+    // while the other four stay small, which the mutation above -- all three
+    // attention fields huge at once -- cannot distinguish.
+    //
+    // key_value_head_count has no isolated case: the GQA divisibility rule
+    // above requires key_value_head_count <= attention_head_count whenever
+    // attention_head_count > 0, and both multiply the SAME head_dim, so
+    // kv_inner can never exceed the ceiling while attention_inner does not.
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.attention_head_count", 8388610);
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.key_value_head_count", 2);
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.head_dim", 4);
+                         },
+                         "attention_head_count * head_dim alone over the ceiling") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.omnivoice.generator.hidden_size", 1u << 25); },
+            "hidden_size alone over the ceiling") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.omnivoice.generator.intermediate_size", 1u << 25); },
+            "intermediate_size alone over the ceiling") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.omnivoice.generator.text_vocab_size", 1u << 25); },
+            "text_vocab_size alone over the ceiling") == 0);
     return 0;
 }
 

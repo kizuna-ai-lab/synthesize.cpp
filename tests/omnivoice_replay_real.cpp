@@ -27,7 +27,6 @@
 #include "arch/omnivoice/omnivoice.h"
 
 #include <chrono>
-#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -85,26 +84,10 @@ bool write_i32(const std::string & path, const std::vector<int32_t> & values) {
     return bool(output);
 }
 
-// A margin that is not finite would print as `nan` or `inf`, which is not JSON
-// and which Python's own parser rejects -- an unreadable report, minutes into a
-// sweep, instead of a visible anomaly. Emit the spellings that parser accepts.
-// Both values are reachable: +inf means a committed token had no rival at all,
-// and NaN means the scoring broke.
-std::string margin_value(float value) {
-    if (std::isnan(value)) {
-        return "NaN";
-    }
-    if (std::isinf(value)) {
-        return value > 0.0f ? "Infinity" : "-Infinity";
-    }
-    char buffer[32];
-    std::snprintf(buffer, sizeof(buffer), "%.9g", double(value));
-    return buffer;
-}
-
 // The margin report as one JSON value: `null` when nothing measured it, so the
 // key's presence never depends on the flag and the validator can read it
-// unconditionally.
+// unconditionally. margin_value_json (generator-host.h) supplies the
+// NaN/Infinity spellings Python's json module accepts.
 std::string margin_json(const synth::omnivoice::MarginReport & margin) {
     if (!margin.measured) {
         return "null";
@@ -113,7 +96,8 @@ std::string margin_json(const synth::omnivoice::MarginReport & margin) {
     std::snprintf(buffer, sizeof(buffer),
                   "{\"kind\": \"%s\", \"value\": %s, \"step\": %u, \"codebook\": %u, \"frame\": %llu}",
                   margin.kind == synth::omnivoice::MarginReport::Kind::selection ? "selection" : "argmax",
-                  margin_value(margin.value).c_str(), margin.step, margin.codebook, (unsigned long long) margin.frame);
+                  synth::omnivoice::margin_value_json(margin.value).c_str(), margin.step, margin.codebook,
+                  (unsigned long long) margin.frame);
     return buffer;
 }
 
@@ -277,11 +261,23 @@ int main(int argc, char ** argv) {
     size_t freerun_samples   = 0;
     size_t alternate_samples = 0;
     if (ok && decode) {
-        std::vector<float> audio;
-        status = model->decode_codes(oracle_grid, frames, 0, audio);
+        std::vector<float>                                audio;
+        double                                            replay_codec_seconds = 0.0;
+        synth::omnivoice::SynthesisOutput::StagePlacement replay_codec_placement;
+        status = model->decode_codes(oracle_grid, frames, 0, audio, &replay_codec_seconds, &replay_codec_placement);
         if (status != SYNTH_OK) {
             std::fprintf(stderr, "decode_codes -> %d\n", int(status));
             return 1;
+        }
+        // A probe-only request (the three sampled cases) never reaches
+        // run_synthesis's own decode_codes call, so output.codec_seconds and
+        // output.codec_placement are still their zero defaults; this replay
+        // decode is the only codec pass such a case makes. Reporting it here
+        // instead of a fictional zero is what makes the validator's CPU-only
+        // placement rule non-vacuous for those three cases.
+        if (!run_greedy) {
+            output.codec_seconds   = replay_codec_seconds;
+            output.codec_placement = replay_codec_placement;
         }
         if (volume == "peak") {
             // One formula, one home: the same helper run_synthesis applies, so
@@ -303,6 +299,14 @@ int main(int argc, char ** argv) {
             std::vector<int32_t> alternate_grid;
             if (!read_i32(alt_grid_path, alternate_grid)) {
                 std::fprintf(stderr, "cannot read the alternate grid %s\n", alt_grid_path.c_str());
+                return 2;
+            }
+            // Same shape check the oracle grid gets at load time: a truncated
+            // or transposed witness would otherwise divide silently and hand
+            // decode_codes a frame count one short of the real grid.
+            if (alternate_grid.empty() || alternate_grid.size() % kCodebooks != 0) {
+                std::fprintf(stderr, "%s holds %zu values, not a whole %u-codebook grid\n", alt_grid_path.c_str(),
+                             alternate_grid.size(), kCodebooks);
                 return 2;
             }
             std::vector<float> alternate;

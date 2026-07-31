@@ -109,10 +109,10 @@ int main(int argc, char ** argv) {
     }
     const uint64_t frames = oracle_grid.size() / kCodebooks;
 
-    // Stays empty when the case has no reference audio, which is what the
-    // auto-voice and voice-design cases are.
     std::vector<int32_t> reference_tokens;
-    read_i32(case_dir + "/ref/tokens.i32", reference_tokens);
+    // Absence is expected, not an error: only the two cloning cases dump a
+    // reference stream, and the rest are auto-voice or voice-design.
+    const bool           has_reference = read_i32(case_dir + "/ref/tokens.i32", reference_tokens);
 
     // The prompt this port would assemble must BE the oracle's step-0 input.
     // Byte equality here is a free structural check on the grid layout before
@@ -126,7 +126,13 @@ int main(int argc, char ** argv) {
     }
     if (prompt.grid.size() != oracle_prompt.size() ||
         std::memcmp(prompt.grid.data(), oracle_prompt.data(), oracle_prompt.size() * sizeof(int32_t)) != 0) {
-        std::fprintf(stderr, "assembled prompt grid differs from input/prompt_grid.i32\n");
+        // Whether a reference stream was loaded is the first thing to check
+        // when the grids disagree, so it goes in the message rather than
+        // needing a second run to discover.
+        std::fprintf(stderr,
+                     "assembled prompt grid differs from input/prompt_grid.i32 "
+                     "(%zu vs %zu values, reference stream %s)\n",
+                     prompt.grid.size(), oracle_prompt.size(), has_reference ? "loaded" : "absent");
         return 2;
     }
 

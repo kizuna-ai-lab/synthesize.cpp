@@ -25,6 +25,25 @@ import numpy as np
 PROBE_LAYERS = (0, 7, 14, 21, 27)
 VOLUME_BY_BRANCH = {"peak_normalise_to_0.5": "peak", "none": "none"}
 
+# The refusals Plan 2's unbuilt stages print, and the stage each one names.
+# These strings are the contract between src/arch/omnivoice/model.cpp's two
+# not-built-yet messages and this script: without them `--require all` before
+# Task 12 lands reports a generic `runner-failed` on all 20 cases, which is
+# indistinguishable from a parity regression. Tasks 10 and 12 delete the
+# message and its row here together.
+NOT_BUILT_MARKERS = (
+    ("omnivoice: the greedy decode loop is slice 5 and not built yet", "run_synthesis greedy loop"),
+    ("omnivoice: codec decode is slice 6 and not built yet", "decode_codes"),
+)
+
+
+def unbuilt_stage(stderr: str) -> str | None:
+    """The stage a runner failure blames on an unbuilt slice, or None."""
+    for marker, stage in NOT_BUILT_MARKERS:
+        if marker in stderr:
+            return stage
+    return None
+
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
@@ -110,8 +129,13 @@ def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
                VOLUME_BY_BRANCH[branch]] + [str(layer) for layer in PROBE_LAYERS]
     finished = subprocess.run(command, capture_output=True)
     if finished.returncode != 0:
-        return {"case": case_id, "status": "runner-failed",
-                "stderr": finished.stderr.decode("utf-8", "replace")[:400]}
+        stderr = finished.stderr.decode("utf-8", "replace")
+        # A stage this plan has not built yet is not a parity regression, and
+        # saying "runner-failed" for it would read as one.
+        stage = unbuilt_stage(stderr)
+        if stage is not None:
+            return {"case": case_id, "status": "stage-not-built", "stage": stage}
+        return {"case": case_id, "status": "runner-failed", "stderr": stderr[:400]}
     stats = None
     for line in reversed(finished.stdout.decode("utf-8", "replace").splitlines()):
         if line.startswith("{"):
@@ -149,16 +173,29 @@ def main(argv=None) -> int:
     arguments = parse_args(argv)
     manifest = json.loads(arguments.manifest.read_text(encoding="utf-8"))
     oracle_root = pathlib.Path(manifest["case_artifact_root"])
+    known = {case["id"] for case in manifest["cases"]}
+    # A typo in --cases used to select nothing and then pass, which is the same
+    # false green as running no cases at all.
+    if arguments.cases is not None:
+        unknown = sorted(set(arguments.cases) - known)
+        if unknown:
+            print(f"--cases names {unknown}, which {arguments.manifest} does not define")
+            return 1
     cases = [case for case in manifest["cases"]
              if arguments.cases is None or case["id"] in arguments.cases]
 
     results, failures, structural_failures = [], 0, 0
+    not_built: dict[str, int] = {}
     worst: dict[str, dict] = {}
     for case in cases:
         result = run_case(arguments, case, oracle_root)
         if result is None:
             continue
         results.append(result)
+        if result["status"] == "stage-not-built":
+            not_built[result["stage"]] = not_built.get(result["stage"], 0) + 1
+            print(f"{result['case']}: stage not built yet: {result['stage']}")
+            continue
         if result["status"] != "ok":
             failures += 1
             print(f"{result['case']}: {result['status']}")
@@ -184,10 +221,11 @@ def main(argv=None) -> int:
             failures += 1
             print(f"{result['case']}: nodes left the CPU: {placement}")
 
+    compared = [result for result in results if result["status"] == "ok"]
     print(f"\n{'probe':32} {'max_abs':>12} {'min_cosine':>12}")
     for name in sorted(worst):
         print(f"{name:32} {worst[name]['max_abs']:12.6g} {worst[name]['min_cosine']:12.8f}")
-    exact = [r for r in results if r.get("grid") is not None]
+    exact = [r for r in compared if r.get("grid") is not None]
     if exact:
         good = sum(1 for r in exact if r["grid"]["exact"])
         print(f"token grids exact: {good}/{len(exact)}")
@@ -202,6 +240,18 @@ def main(argv=None) -> int:
             "cases": results, "worst": worst,
         }, indent=2) + "\n", encoding="utf-8")
 
+    if not_built:
+        named = ", ".join(f"{stage} ({count} case(s))" for stage, count in sorted(not_built.items()))
+        print(f"\nstage not built yet: {named} -- this plan has not reached it, "
+              f"which is not a parity result. Re-run with --require probes for what slice 4 gates.")
+        return 1
+    # Comparing nothing is not passing. Both shapes of "nothing" reach here: a
+    # --cases filter that selected no case, and a case_artifact_root whose
+    # payload was never materialized, in which case every case was skipped.
+    if not compared:
+        print(f"\nno case produced a comparison: {len(cases)} selected, "
+              f"{len(cases) - len(results)} skipped for missing oracle artifacts under {oracle_root}")
+        return 1
     if failures or structural_failures:
         return 1
     if not arguments.check:
@@ -218,9 +268,14 @@ def main(argv=None) -> int:
         print(f"\ntolerance cell {arguments.profile}/{arguments.backend}/{arguments.stage} "
               f"is not recorded in {arguments.tolerances}")
         return 1
+    probes = stage.get("probes")
+    if not probes:
+        print(f"\ntolerance cell {arguments.profile}/{arguments.backend}/{arguments.stage} "
+              f"records no probes in {arguments.tolerances}")
+        return 1
     breaches = 0
     for name, observed in sorted(worst.items()):
-        limits = stage["probes"].get(name)
+        limits = probes.get(name)
         if limits is None:
             print(f"{name}: no tolerance recorded")
             breaches += 1

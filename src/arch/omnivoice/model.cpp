@@ -28,6 +28,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <new>
 #include <utility>
@@ -243,6 +244,9 @@ synth_status_t generator_branch_forward(const BackendPlan &       plan,
     if (status != SYNTH_OK) {
         return status;
     }
+    // All four accumulate ACROSS forwards, and a decode run makes two per step:
+    // `generator_placement.nodes` is a running total, not a graph's node count.
+    // Only the probe-only path (one forward) leaves it equal to one graph's.
     output.generator_seconds += now_seconds() - started;
     output.generator_setup_seconds += run.setup_seconds;
     output.generator_placement.nodes += run.placed_nodes;
@@ -382,11 +386,15 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     if (!inputs.commit(impl.backend_plan->cpu_backend())) {
         return SYNTH_ERR_OOM;
     }
-    // The unconditional branch's canvas is the target region alone -- no text,
-    // no reference -- and every step refills it. Task 10 owns both that refill
-    // and the forward that reads it; slice 4 compares only the conditional
-    // row, which is the only one the oracle dumps probes for.
-    (void) t_uncond_audio;
+    // The unconditional branch's canvas is the TARGET REGION ALONE -- no style
+    // markers, no text, no reference audio -- refilled from the same committed
+    // canvas the conditional branch's target region carries, and read at
+    // positions that restart at zero. That is the reference's second batch row:
+    // dropping the condition means dropping every conditioning token, not
+    // blanking them in place, so its sequence is `target_frames` long where the
+    // conditional one is `total`. Nothing compares it directly -- the oracle
+    // dumps no unconditional probe -- so the exact-token gate is the only thing
+    // that holds this definition honest.
 
     ggml_backend_tensor_set(t_text, request.prompt_text_ids.data(), 0, ggml_nbytes(t_text));
     // static_cast rather than a functional cast: `size_t(total)` here parses as
@@ -426,12 +434,102 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         return SYNTH_OK;
     }
 
-    // === Task 10 replaces everything below this line with the greedy loop. ===
-    std::fprintf(stderr,
-                 "omnivoice: the greedy decode loop is slice 5 and not built yet "
-                 "(would have run %u steps at guidance %.2f)\n",
-                 num_step, double(guidance));
-    return SYNTH_ERR_INTERNAL;
+    // The canonical canvas: the target region's committed state, codebook-major
+    // [codebooks * frames], all mask at step 0. The reference writes committed
+    // tokens back into both the conditional and unconditional rows; here both
+    // branches' id tensors are refilled from this one grid, so there is a
+    // single source of truth instead of two copies to keep in step.
+    std::vector<int32_t> canvas(size_t(codebooks) * frames, int32_t(hparams.audio.mask_id));
+
+    const std::vector<uint64_t> schedule =
+        commit_schedule(uint64_t(codebooks) * frames, num_step, double(hparams.generation.t_shift));
+
+    std::vector<float>           uncond_logits;
+    std::vector<int32_t>         uncond_shifted;
+    std::vector<MaskedCandidate> candidates;
+    // One position's logits in the read-back buffer: codebooks * vocab floats,
+    // position-major (position s starts at s * row).
+    const uint64_t               row = uint64_t(codebooks) * vocab;
+    const ForwardProbeSinks      no_probes;
+
+    for (uint32_t step = 0; step < num_step; ++step) {
+        if (step > 0) {
+            // The reference tokens never move; only the target region follows
+            // the canvas. Refill and rerun the conditional branch (step 0's ran
+            // above, with the probes).
+            for (uint32_t codebook = 0; codebook < codebooks; ++codebook) {
+                int32_t * target_row =
+                    prompt.grid.data() + size_t(codebook) * total + prompt.audio_start() + prompt.reference_frames;
+                std::memcpy(target_row, canvas.data() + size_t(codebook) * frames, size_t(frames) * sizeof(int32_t));
+            }
+            fill_shifted_audio_ids(prompt.grid.data(), total, prompt.audio_start(), prompt.audio_length(), codebooks,
+                                   vocab, shifted);
+            ggml_backend_tensor_set(t_cond_audio, shifted.data(), 0, ggml_nbytes(t_cond_audio));
+            status = generator_branch_forward(*impl.backend_plan, impl.weights, hparams, t_text, t_cond_audio,
+                                              t_cond_pos, threads, no_probes, cond_logits, output);
+            if (status != SYNTH_OK) {
+                return status;
+            }
+        }
+        if (guidance != 0.0f) {
+            // The unconditional branch carries the target region only -- no
+            // style markers, no text, no reference audio.
+            fill_shifted_audio_ids(canvas.data(), frames, 0, frames, codebooks, vocab, uncond_shifted);
+            ggml_backend_tensor_set(t_uncond_audio, uncond_shifted.data(), 0, ggml_nbytes(t_uncond_audio));
+            status = generator_branch_forward(*impl.backend_plan, impl.weights, hparams, nullptr, t_uncond_audio,
+                                              t_uncond_pos, threads, no_probes, uncond_logits, output);
+            if (status != SYNTH_OK) {
+                return status;
+            }
+        }
+
+        const uint64_t budget = schedule[step];
+        if (budget == 0) {
+            // A zero-budget step still ran both forwards above, and must: the
+            // reference's batched forward is unconditional on k, and skipping
+            // it here would only save time, not change the grid.
+            continue;
+        }
+        candidates.clear();
+        for (uint32_t codebook = 0; codebook < codebooks; ++codebook) {
+            for (uint64_t frame = 0; frame < frames; ++frame) {
+                if (canvas[size_t(codebook) * frames + frame] != int32_t(hparams.audio.mask_id)) {
+                    continue;  // committed in an earlier step; cannot be revisited
+                }
+                const size_t    cond_offset   = size_t(total - frames + frame) * row + size_t(codebook) * vocab;
+                const size_t    uncond_offset = size_t(frame) * row + size_t(codebook) * vocab;
+                MaskedCandidate candidate;
+                candidate.codebook = codebook;
+                candidate.frame    = frame;
+                float log_prob     = 0.0f;
+                choose_token(cond_logits.data() + cond_offset,
+                             guidance != 0.0f ? uncond_logits.data() + uncond_offset : nullptr, vocab,
+                             hparams.audio.mask_id, guidance, candidate.token, log_prob);
+                // The layer penalty biases commitment toward the coarse
+                // codebooks first. (audio_codebook_weights is training-loss
+                // weighting and plays NO part here -- see the family doc.)
+                candidate.score = log_prob - float(codebook) * hparams.generation.layer_penalty_factor;
+                candidates.push_back(candidate);
+            }
+        }
+        const size_t committed = select_commits(candidates, budget);
+        for (size_t index = 0; index < committed; ++index) {
+            const MaskedCandidate & choice                          = candidates[index];
+            canvas[size_t(choice.codebook) * frames + choice.frame] = choice.token;
+        }
+    }
+
+    for (int32_t token : canvas) {
+        if (token == int32_t(hparams.audio.mask_id)) {
+            std::fprintf(stderr, "omnivoice: a mask survived the schedule; the loop is wrong\n");
+            return SYNTH_ERR_INTERNAL;
+        }
+    }
+    output.frame_count = frames;
+    output.codes       = std::move(canvas);
+    // Task 12 attaches the codec decode and the volume branch here; until then
+    // the committed grid is the product and output.audio stays empty.
+    return SYNTH_OK;
 }
 
 synth_status_t Model::decode_codes(const std::vector<int32_t> & codes,

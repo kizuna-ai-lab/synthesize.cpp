@@ -766,9 +766,167 @@ Placement: 832 nodes per forward, **0 off the CPU** on every case, as
 docs/backends.md's discrete-output rule requires. The validator fails the run
 if any node leaves the CPU, so this is enforced rather than observed.
 
+> Read the two paragraphs above per *graph*, not per *run*. Every number in
+> them comes from a probe-only run, which makes exactly one forward, so
+> `generator_seconds`, `generator_setup_seconds` and
+> `generator_placement.nodes` each held one graph's value. Those three fields
+> have always accumulated; from slice 5 on, a decode run makes two forwards per
+> step and they report totals — 53 184 nodes for a 32-step run, not 832. See
+> the slice 5 entry.
+
 Not covered by this slice, and deliberately: the **unconditional** CFG branch
 has no oracle artifact, so nothing here compares it — its tensors are
 allocated in the persistent input buffer and Task 10 owns both its refill and
 its forward. Likewise the greedy loop and the codec both still refuse loudly
 (`SYNTH_ERR_INTERNAL`), which is what the runner's `run-greedy 1` and
 `decode-replay 1` flags exercise today.
+
+## 2026-07-31 — slice 5 — free-running greedy decode: 15/17 exact
+
+The free-running mask-predict loop is in (`src/arch/omnivoice/model.cpp`,
+`run_synthesis`) and reproduces the oracle's 8 × T token grid **exactly on 15
+of the 17 greedy golden cases**. The two that differ do so for the same
+reason, and it is not a rule this port got wrong: both are F32 near-ties that
+the port and the oracle broke in opposite directions. The gate was not
+relaxed, no fixture was touched, and the exact-token comparison stays exact.
+
+Wall clocks, F32 CPU, `default_synthesis_threads()` on this 20-CPU machine.
+"forwards" is `2 × num_step` — the reference's one batched forward per step is
+realized here as two, the conditional over the whole prompt and the
+unconditional over the target region alone.
+
+| case | frames | steps | exact | mismatches | runner wall (s) | generator (s) | forwards |
+|---|---:|---:|:--:|---:|---:|---:|---:|
+| `omni-upstream-readme` | 67 | 32 | yes | 0 | 10.9 | 10.8 | 64 |
+| `omni-short-en` | 50 | 32 | yes | 0 | 8.1 | 8.0 | 64 |
+| `omni-short-zh` | 54 | 32 | yes | 0 | 8.6 | 8.5 | 64 |
+| `omni-short-ja` | 47 | 32 | yes | 0 | 7.5 | 7.4 | 64 |
+| `omni-lang-none` | 49 | 32 | yes | 0 | 7.8 | 7.7 | 64 |
+| `omni-punctuation` | 67 | 32 | yes | 0 | 10.5 | 10.4 | 64 |
+| `omni-digits` | 132 | 32 | yes | 0 | 20.0 | 19.7 | 64 |
+| `omni-nonverbal` | 61 | 32 | yes | 0 | 9.7 | 9.6 | 64 |
+| `omni-medium-en` | 307 | 32 | yes | 0 | 44.2 | 43.7 | 64 |
+| `omni-long-boundary` | 719 | 32 | yes | 0 | 122.2 | 120.4 | 64 |
+| `omni-rate-slow` | 100 | 32 | yes | 0 | 14.3 | 14.2 | 64 |
+| `omni-rate-fast` | 25 | 32 | yes | 0 | 5.0 | 4.9 | 64 |
+| `omni-design-en` | 50 | 32 | yes | 0 | 8.5 | 8.4 | 64 |
+| `omni-design-zh` | 49 | 32 | yes | 0 | 8.1 | 8.0 | 64 |
+| `omni-clone-en` | 70 | 32 | yes | 0 | 37.2 | 37.0 | 64 |
+| `omni-clone-zh` | 76 | 32 | **no** | 574 / 608 | 38.8 | 38.6 | 64 |
+| `omni-fast-mode` | 50 | 16 | **no** | 1 / 400 | 4.0 | 4.0 | 32 |
+
+The whole 20-case sweep (17 greedy free-runs plus the three sampled cases'
+probe-only forwards) is **365 s of runner wall**, ~9 min end to end including
+20 loads of the 3.0 GiB F32 package. The step-0 probe rows are unchanged from
+slice 4 to the digit — the loop's first forward IS slice 4's forward — so the
+`--require probes` gate still passes 20/20.
+
+### The two mismatches are one phenomenon, measured
+
+Both were instrumented directly: a temporary build printed, per step, every
+committed position whose token differs from the oracle's final grid, that
+position's guided log-probabilities for both candidate tokens, and the
+**selection margin** — the score of the lowest-ranked position the step kept
+against the highest-ranked one it rejected. The instrumentation is not
+committed; its numbers are.
+
+**`omni-fast-mode` — a token flip at 6.9e-05, no cascade.** The single
+differing slot is codebook 7, frame 8, committed at **step 15 of 16** (the
+last step). The port commits token 1004, the oracle 237, and the two tokens'
+guided log-probabilities are `-2.65722704` and `-2.65729570` — a gap of
+**6.87e-05**. The conditional branch alone prefers 237 by 0.79 nats; CFG at
+`guidance_scale = 2.0` amplifies the unconditional branch's disagreement until
+the two are level to five decimal places. Because the flip lands on the final
+step, nothing downstream of it re-runs, which is why exactly 1 of 400 slots
+moved. This is the same slot class the T2 re-dump already caught moving under
+a torch thread-count change alone.
+
+**`omni-clone-zh` — a *position* flip at 4.1e-06, cascading.** The 574/608
+figure is not 574 independent errors; it is one coin flip at **step 1** and 30
+steps of consequence. Steps 0 and 1 commit correct tokens; the divergence is
+in *which position* step 1 keeps:
+
+```
+step=1 budget=3 committed=3 masked=606
+  kept_low       = -0.872900724  [codebook 0, frame  0, token 1011]
+  best_rejected  = -0.872904778  [codebook 0, frame 68, token  252]
+  select_margin  =  4.05e-06
+```
+
+The oracle's final grid holds **252 at (codebook 0, frame 68)** — the exact
+token of the candidate this port rejected by four parts in a million. From
+step 2 onward the two canvases hold different committed sets, so every later
+forward sees different context and the grids separate almost completely. The
+large per-token margins reported at steps 2+ (2 to 22 nats) are *downstream of*
+that swap, not evidence of independent rule errors.
+
+`omni-clone-en` is the control: structurally identical to `omni-clone-zh` —
+same 351-frame reference, same 50-token text region, only 70 frames instead of
+76 — and it matches the oracle on all 560 slots.
+
+### How close the whole suite runs to the boundary
+
+Minimum selection margin per case, over every step that committed anything:
+
+| case | min select margin | at step | diverged |
+|---|---:|---:|:--:|
+| `omni-clone-zh` | **4.05e-06** | 1 | yes |
+| `omni-rate-slow` | **9.54e-06** | 28 | no |
+| `omni-short-en` | 1.16e-04 | 7 | no |
+| `omni-long-boundary` | 2.05e-04 | 11 | no |
+| `omni-rate-fast` | 2.44e-04 | 10 | no |
+| `omni-lang-none` | 6.03e-04 | 11 | no |
+| the remaining 11 | 1.2e-03 … 5.0e-03 | — | no |
+
+Two cases sit below 1e-05. One of them flipped and one did not; `omni-rate-slow`
+kept a candidate that beat its rival by 9.5e-06 and happened to agree with the
+oracle. That is luck, not correctness, and it is the honest reading of this
+gate: at 15/17 the port is not *nearly* right on two cases, it is exactly right
+on every case whose outcome F32 arithmetic can actually determine.
+
+The scale that settles it: slice 4 measured this port's step-0 logits against
+the oracle's at **6.1e-04 worst max_abs** (cosine 0.99999991), ordinary F32
+reduction-order divergence compounding through 28 blocks. The CFG combination
+`log_softmax(3·log p_c − 2·log p_u)` amplifies rather than damps that. A 4.1e-06
+score gap is ~150× below the measured logit divergence and a 6.9e-05 gap ~9×
+below it. Neither is a quantity F32 arithmetic on this graph can resolve, in
+either direction. No threshold would help: a tolerance on a token id is
+meaningless, and the only "fix" that would move these two cases is to make the
+port's arithmetic bit-identical to torch's, which is not a thing this project
+claims anywhere.
+
+### What is deliberately NOT concluded here
+
+That 15/17 is acceptable. It is a **finding for the plan owner to rule on**,
+not a standard this task lowered. `docs/porting/families/omnivoice.md` defines
+`structural_exactness` for this family as equality of the 8 × T grid, and
+`scripts/validate-omnivoice-replay.py` still exits 1 on anything short of
+17/17. Whatever the ruling, it has to be written into the family doc and the
+Golden manifest rather than absorbed silently by the validator.
+
+### Loop mechanics worth recording
+
+- **Two forwards per step, not one.** The reference batches a conditional and
+  an unconditional sequence into one padded forward; padding them to a common
+  length here would buy nothing on the CPU and would need the padded-diagonal
+  attention mask upstream carries for exactly that reason. Two separate
+  forwards are the same arithmetic without the mask.
+- **The unconditional canvas is the target region alone**, positions restarting
+  at zero, refilled every step from the same committed canvas the conditional
+  branch's target region carries. No oracle artifact compares it, so the
+  exact-token gate is the only thing holding that definition honest — which,
+  given 15/17 with both failures explained by near-ties, it now does.
+- **Already-committed positions are skipped rather than scored at `-inf`.**
+  Upstream masks them with `-inf` before `topk`; the budget is clamped to what
+  remains masked, so a `-inf` candidate can never be selected and excluding it
+  from the candidate list is the same selection with a smaller sort.
+- **`generator_placement.nodes` is now a sum over forwards.** The conditional
+  graph places 832 nodes and the unconditional one 830 (it has no text
+  embedding to merge), so a 32-step run reports **53 184** and a 16-step run
+  **26 592**, against **832** for a probe-only run. It was 832 flat in slice 4;
+  the slice-4 entry's "832 nodes per forward" reading still holds per graph,
+  but the field it was read from no longer reports one graph. **0 off the CPU**
+  on every case, still enforced by the validator rather than observed.
+- The `--require grid` path no longer has a not-built stage to name: the greedy
+  loop's refusal string and its row in the validator's `NOT_BUILT_MARKERS` were
+  deleted together, leaving only the codec's for Task 12.

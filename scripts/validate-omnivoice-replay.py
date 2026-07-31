@@ -26,15 +26,13 @@ PROBE_LAYERS = (0, 7, 14, 21, 27)
 VOLUME_BY_BRANCH = {"peak_normalise_to_0.5": "peak", "none": "none"}
 
 # The refusals Plan 2's unbuilt stages print, and the stage each one names.
-# These strings are the contract between src/arch/omnivoice/model.cpp's two
-# not-built-yet messages and this script: without them `--require all` before
+# These strings are the contract between src/arch/omnivoice/model.cpp's
+# not-built-yet message and this script: without it `--require all` before
 # Task 12 lands reports a generic `runner-failed` on all 20 cases, which is
-# indistinguishable from a parity regression. Tasks 10 and 12 delete the
-# message and its row here together.
-NOT_BUILT_MARKERS = (
-    ("omnivoice: the greedy decode loop is slice 5 and not built yet", "run_synthesis greedy loop"),
-    ("omnivoice: codec decode is slice 6 and not built yet", "decode_codes"),
-)
+# indistinguishable from a parity regression. A slice deletes its message and
+# its row here together -- Task 10 took the greedy loop's, so only the codec's
+# remains, and `--require grid` now has no not-built stage left to name.
+NOT_BUILT_MARKERS = (("omnivoice: codec decode is slice 6 and not built yet", "decode_codes"),)
 
 
 def unbuilt_stage(stderr: str) -> str | None:

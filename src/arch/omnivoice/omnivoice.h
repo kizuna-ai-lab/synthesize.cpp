@@ -75,11 +75,18 @@ struct SynthesisOutput {
     std::vector<float>              final_hidden;  // [positions][hidden]
     std::vector<std::vector<float>> layer_hidden;  // one per requested layer
 
+    // Summed over every graph a stage ran, not one graph's count: a greedy
+    // decode makes two generator forwards per step (conditional and
+    // unconditional), so `generator_placement.nodes` reads as ~64 x one graph's
+    // node count on a 32-step run and only equals one graph's on the
+    // probe-only path. `accelerator_nodes` is a total for the same reason --
+    // the CPU-only rule is "this stays zero", which a sum states just as well.
     struct StagePlacement {
         uint64_t nodes             = 0;
         uint64_t accelerator_nodes = 0;
     };
 
+    // Also totals across forwards, for the same reason.
     double         generator_seconds       = 0.0;
     double         generator_setup_seconds = 0.0;
     double         codec_seconds           = 0.0;

@@ -304,6 +304,13 @@ target_link_libraries(synthesize-omnivoice-load-synthetic-test PRIVATE synthesiz
 add_test(NAME synthesize-omnivoice-load-synthetic-test
     COMMAND synthesize-omnivoice-load-synthetic-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-synthetic)
 synth_register_unit_target(synthesize-omnivoice-load-synthetic-test)
+add_executable(synthesize-omnivoice-decode-loop-test omnivoice_decode_loop_test.cpp)
+target_include_directories(synthesize-omnivoice-decode-loop-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(synthesize-omnivoice-decode-loop-test PRIVATE synthesize ggml)
+add_test(NAME synthesize-omnivoice-decode-loop-test
+    COMMAND synthesize-omnivoice-decode-loop-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-synthetic)
+synth_register_unit_target(synthesize-omnivoice-decode-loop-test)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-synthetic)
 set_tests_properties(
     synthesize-omnivoice-metadata-test
@@ -313,6 +320,7 @@ set_tests_properties(
     synthesize-omnivoice-generator-host-test
     synthesize-omnivoice-model-errors-test
     synthesize-omnivoice-load-synthetic-test
+    synthesize-omnivoice-decode-loop-test
     PROPERTIES LABELS "unit;omnivoice")
 set_tests_properties(
     synthesize-vits-text-encoder-host-test

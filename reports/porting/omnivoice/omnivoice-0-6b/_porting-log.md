@@ -573,7 +573,7 @@ torch_version: 2.13.0+cu130, cpu_capability: SVE128`.
 
 The dumper now pins torch to one intra-op and one inter-op thread with
 deterministic algorithms demanded, records that configuration in every
-`metadata.json`, and sha256-verifies all five weights-repository inputs against
+`metadata.json`, and sha256-verifies all six weights-repository inputs against
 the manifest before loading anything. `audio_chunk_duration`/`audio_chunk_threshold`
 are pinned at 15.0/30.0 in every case (upstream's own defaults at the pinned
 revision); 30 s equals the 750-frame package ceiling, so no golden case can
@@ -661,7 +661,7 @@ the codec.** Two loci are now demonstrated, separately:
   above.** Ten of the twenty cases (`omni-short-zh`, `omni-punctuation`,
   `omni-digits`, `omni-medium-en`, `omni-rate-slow`, `omni-design-en`,
   `omni-design-zh`, `omni-clone-en`, `omni-clone-zh`, `omni-fast-mode`) moved
-  one or more of the six step-0 generator probes
+  one or more of the seven step-0 generator probes
   (`generator/hidden_l{0,7,14,21,27}.f32`, `generator/final.f32`,
   `generator/logits_step0.f32`) — e.g. `omni-punctuation`'s
   `logits_step0.f32` went `b07c407b…` to `688e6365…`. Nine of those ten still
@@ -674,17 +674,33 @@ the codec.** Two loci are now demonstrated, separately:
   (`ce41f5b2…` to `70ebe309…`), and its generator probes moved too (all but
   `hidden_l0.f32`, which — like `omni-punctuation`'s — stayed identical while
   every later layer diverged, for reasons this run does not investigate
-  further). Fewer refinement steps leave the per-frame distribution less
-  converged, i.e. closer to a tie, so the same drift that seventeen 32-step
-  cases absorbed without a discrete change was enough here to cross the
-  argmax boundary. This is consistent with, not proof of, that causal story.
+  further). The move is exactly 1 of the grid's 400 `int32` slots — codebook 7
+  of 8, frame 8 of 50 (0-indexed), `1004` to `237` — the other 399 slots and
+  the grid's length both unchanged, no cascade. Fewer refinement steps leave
+  the per-frame distribution less converged, i.e. closer to a tie, so the
+  same drift that seventeen 32-step cases absorbed without a discrete change
+  was enough here to cross the argmax boundary at that one frame. This is
+  consistent with, not proof of, that causal story. An exact-token comparison
+  for this case therefore has essentially no margin: whoever writes
+  `omni-fast-mode`'s comparison logic must know this case sits on a knife's
+  edge, where a single flipped code is expected from ordinary floating-point
+  variation (a different compiler, a different BLAS/GGML kernel) and is not
+  by itself evidence of a porting bug.
 
 As before, this run changed three settings at once (one thread, one interop
 thread, deterministic algorithms demanded) relative to the ambient dumps it is
 compared against, so it still cannot attribute the drift to a single one of
-the three; it answers *where* the sensitivity shows up (codec always, backbone
-in half the suite, and rarely all the way to the discrete grid), not *which*
-pinned knob is responsible. `build/goldens/omnivoice/` (git-ignored) now holds
-this pinned+chunked dump uniformly across all 20 cases; no comparison or
-tolerance work has been built against any of the superseded digests, so
-nothing downstream depended on them.
+the three; it answers *where* the sensitivity shows up, not *which* pinned
+knob is responsible: codec-stage sensitivity is proven for 18 of the 20 cases
+(everything except `omni-fast-mode`, whose own grid also moved, so its audio
+change is not attributable to the codec in isolation, and `omni-short-en`,
+where nothing moved at all); backbone-stage sensitivity is separately proven
+for half the suite. `build/goldens/omnivoice/` (git-ignored) now holds this
+pinned+chunked dump uniformly across all 20 cases; no comparison or tolerance
+work has been built against any of the superseded digests, so nothing
+downstream depended on them. The superseded ambient dump and the batch
+records behind the numbers above live only under `/tmp/`
+(`/tmp/omnivoice_pre_redump_backup/`, `/tmp/omnivoice_pre_redump.sha256`,
+`/tmp/omnivoice_batch*.json`) and will not survive this machine; `/tmp` is
+ephemeral, so the digests and counts recorded in this log, not those files,
+are the durable record of this comparison.

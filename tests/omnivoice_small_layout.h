@@ -41,8 +41,7 @@ inline void add_bare_conv(std::vector<Entry> & out, const std::string & prefix, 
 
 // ConvTranspose1d stores [in, out, kernel], so the trailing pair is reversed
 // against a plain convolution's.
-inline void add_transpose_conv(std::vector<Entry> & out, const std::string & prefix, int64_t k, int64_t in,
-                                int64_t o) {
+inline void add_transpose_conv(std::vector<Entry> & out, const std::string & prefix, int64_t k, int64_t in, int64_t o) {
     add(out, prefix + ".weight", { k, o, in });
     add(out, prefix + ".bias", { o });
 }

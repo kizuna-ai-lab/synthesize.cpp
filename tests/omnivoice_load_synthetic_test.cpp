@@ -35,8 +35,8 @@ int check_missing_frontend_arrays_are_refused(const char * directory) {
         synth::omnivoice::testing::SyntheticPackageOptions options;
         options.omit_frontend_vocab  = variant == 0;
         options.omit_frontend_merges = variant == 1;
-        const std::string path = package_path(directory, variant == 0 ? "synthetic-no-vocab.gguf"
-                                                                      : "synthetic-no-merges.gguf");
+        const std::string path =
+            package_path(directory, variant == 0 ? "synthetic-no-vocab.gguf" : "synthetic-no-merges.gguf");
         SYNTH_TEST_CHECK(synth::omnivoice::testing::write_synthetic_package(path, options));
         std::unique_ptr<synth::omnivoice::Model> model;
         // The package declares a frontend it does not carry: the load must fail

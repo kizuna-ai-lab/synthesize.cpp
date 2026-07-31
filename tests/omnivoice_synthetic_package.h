@@ -6,10 +6,9 @@
 // frontend. Options knock out exactly one thing so a test can prove one
 // refusal.
 
-#include "omnivoice_small_layout.h"
-
 #include "ggml.h"
 #include "gguf.h"
+#include "omnivoice_small_layout.h"
 
 #include <cstdint>
 #include <string>
@@ -42,8 +41,8 @@ inline bool write_synthetic_package(const std::string & path, const SyntheticPac
     // Enough for every small tensor's data plus headers; the largest entry is
     // the [8, 40] text embedding at reduced widths.
     ggml_init_params parameters{};
-    parameters.mem_size = 8u * 1024 * 1024;
-    parameters.no_alloc = false;
+    parameters.mem_size    = 8u * 1024 * 1024;
+    parameters.no_alloc    = false;
     ggml_context * context = ggml_init(parameters);
     if (context == nullptr) {
         return false;
@@ -103,7 +102,8 @@ inline bool write_synthetic_package(const std::string & path, const SyntheticPac
     gguf_set_val_u32(gguf, "synthesize.omnivoice.codec.sample_rate", h.codec.sample_rate);
     gguf_set_val_u32(gguf, "synthesize.omnivoice.codec.hop_length", h.codec.hop_length);
     gguf_set_val_f32(gguf, "synthesize.omnivoice.codec.frame_rate_hz", h.codec.frame_rate_hz);
-    set_i32_array(gguf, "synthesize.omnivoice.codec.upsampling_ratios", { 2, 3 });
+    set_i32_array(gguf, "synthesize.omnivoice.codec.upsampling_ratios",
+                  std::vector<int32_t>(h.codec.upsampling_ratios.begin(), h.codec.upsampling_ratios.end()));
     gguf_set_val_u32(gguf, "synthesize.omnivoice.codec.decoder_hidden_size", h.codec.decoder_hidden_size);
     gguf_set_val_u32(gguf, "synthesize.omnivoice.codec.encoder_hidden_size", h.codec.encoder_hidden_size);
     gguf_set_val_u32(gguf, "synthesize.omnivoice.codec.hidden_size", h.codec.hidden_size);
@@ -165,8 +165,7 @@ inline bool write_synthetic_package(const std::string & path, const SyntheticPac
 
     // --- Tensors: the small layout with real F32 payloads.
     for (const Entry & entry : entries) {
-        ggml_tensor * tensor =
-            ggml_new_tensor(context, GGML_TYPE_F32, int(entry.ne.size()), entry.ne.data());
+        ggml_tensor * tensor = ggml_new_tensor(context, GGML_TYPE_F32, int(entry.ne.size()), entry.ne.data());
         if (tensor == nullptr) {
             gguf_free(gguf);
             ggml_free(context);

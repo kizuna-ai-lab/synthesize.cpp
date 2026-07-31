@@ -1381,3 +1381,26 @@ catches that, and it does — the orientation trap would show as cosine ≈ 0.
 | `cmake --build build --target synthesize-check-unit` | 78/78 passed |
 | `cmake --build build-sanitize --target synthesize-check-unit` (ASan/UBSan) | 78/78 passed |
 | real package (3.0 GiB F32 GGUF) | loaded and synthesised 20 times in the sweep |
+
+### Self-review additions
+
+Two hardenings the first cut did not have, both on the new free-run channel:
+
+- **The work directory is reused across runs**, so a `pcm_freerun.f32` or
+  `pcm_alt.f32` left by an earlier invocation would have been compared as if
+  this one had written it. The validator now cross-checks each against the
+  sample count the runner reported in its own JSON (`freerun_samples`,
+  `alternate_samples`) and refuses (`stale-freerun-waveform`) rather than
+  comparing.
+- **A case that matches an alternate with no `--alt-grid` passed** used to have
+  nothing to compare against. That now fails loudly instead of passing quietly.
+  Negative control, `--alt-grid` withheld from the command by hand:
+  `omni-fast-mode: matched omni-fast-mode.alternate-grid-1.i32, but no decode of
+  that grid was produced to compare its free-run waveform against`, **exit 1**.
+
+`--require probes` and `--require grid` re-smoked after the change (exit 0
+each): the free-run channel is inert at both levels, as intended.
+
+**For Task 14:** the worst-table has a new row, `audio.pcm_freerun`, which
+`--check` will demand a tolerance cell for alongside `audio.pcm`. Measured
+values to write it from are in the table above.

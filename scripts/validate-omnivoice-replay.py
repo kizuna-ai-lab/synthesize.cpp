@@ -249,7 +249,14 @@ def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
         measurements["audio.pcm"] = compare(read_f32(oracle / "audio/pcm.f32"), pcm)
         finite = bool(np.isfinite(pcm).all())
     if decode and run_greedy:
+        # Read the count the runner reported, not just the file: the work
+        # directory is reused across runs, so a file left by an earlier
+        # invocation would otherwise be compared as if this one had written it.
         produced = read_f32(work / "pcm_freerun.f32")
+        if int(stats.get("freerun_samples", 0)) != produced.size:
+            return {"case": case_id, "status": "stale-freerun-waveform",
+                    "stderr": f"the runner reported {stats.get('freerun_samples')} free-run samples "
+                              f"but pcm_freerun.f32 holds {produced.size}"}
         finite = finite and bool(np.isfinite(produced).all())
         if grid["matched"] == "primary":
             # The port chose the oracle's grid, so its own waveform is owed the
@@ -262,8 +269,13 @@ def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
             # produced, and comparing against the primary's would report a
             # difference the case does not claim. What is still owed is that
             # decoding that same committed alternate reproduces it.
-            reference = read_f32(work / "pcm_alt.f32") if (work / "pcm_alt.f32").is_file() else None
-            comparable = reference is not None and reference.shape == produced.shape
+            reported = int(stats.get("alternate_samples", 0))
+            reference = read_f32(work / "pcm_alt.f32") if reported and (work / "pcm_alt.f32").is_file() else None
+            # Same stale-file rule, and here it also catches the case where the
+            # port matched an alternate that no --alt-grid was passed for: then
+            # there is nothing to compare and saying so beats reporting a pass.
+            comparable = (reference is not None and reference.size == reported
+                          and reference.shape == produced.shape)
             freerun = {
                 "mode": "decode-determinism", "grid": grid["matched"],
                 "max_abs": float(np.abs(reference - produced).max(initial=0.0)) if comparable else None,
@@ -344,10 +356,14 @@ def main(argv=None) -> int:
                 print(f"{result['case']}: free-run waveform exempt from oracle parity "
                       f"(port matched {freerun['grid']}); identical to this port's own "
                       f"decode of that grid")
+            elif freerun["max_abs"] is None:
+                structural_failures += 1
+                print(f"{result['case']}: matched {freerun['grid']}, but no decode of that grid "
+                      f"was produced to compare its free-run waveform against")
             else:
                 structural_failures += 1
                 print(f"{result['case']}: free-run waveform differs from this port's own "
-                      f"decode of {freerun['grid']} (max_abs {freerun['max_abs']})")
+                      f"decode of {freerun['grid']} (max_abs {freerun['max_abs']:.6g})")
         # Plan 2 is CPU-only: a node on an accelerator is a placement bug.
         placement = result["stats"]["placement"]
         if placement["generator"][1] != 0 or placement["codec"][1] != 0:

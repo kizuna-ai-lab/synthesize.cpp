@@ -92,13 +92,20 @@ struct MarginReport {
 };
 
 struct SynthesisOutput {
+    // The canvas length, set from the request rather than from the loop, so the
+    // probe-only path reports it too. Empty on neither path: a request that
+    // reaches a forward has a canvas.
     uint64_t             frame_count = 0;
     // The committed grid, codebook-major [num_codebooks * frame_count] --
     // codebook c, frame t at c * frame_count + t, the oracle's codes/grid.i32
     // layout exactly.
     std::vector<int32_t> codes;
     // The decoded waveform with the no-reference volume branch applied
-    // (peak-normalise-to-0.5), which is what the oracle returns to its caller.
+    // (peak-normalise-to-0.5), which is what the oracle returns to its caller
+    // for auto-voice and voice-design requests. Plan 2 applies that branch
+    // unconditionally, including to a request carrying reference tokens: the
+    // other two arms of the oracle's chain key off a reference RMS that only
+    // Plan 3's cloning path can supply. Empty on the probe-only path.
     std::vector<float>   audio;
 
     // Step-0 conditional probes, in ggml read-back order; the runner reorders

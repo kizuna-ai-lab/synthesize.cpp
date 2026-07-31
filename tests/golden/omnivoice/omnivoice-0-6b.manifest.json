@@ -130,7 +130,9 @@
           "instruct": null,
           "postprocess_output": false,
           "pad_duration": 0.0,
-          "fade_duration": 0.0
+          "fade_duration": 0.0,
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -257,7 +259,9 @@
           "instruct": null,
           "postprocess_output": false,
           "pad_duration": 0.0,
-          "fade_duration": 0.0
+          "fade_duration": 0.0,
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -384,7 +388,9 @@
           "instruct": null,
           "postprocess_output": false,
           "pad_duration": 0.0,
-          "fade_duration": 0.0
+          "fade_duration": 0.0,
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -511,7 +517,9 @@
           "instruct": null,
           "postprocess_output": false,
           "pad_duration": 0.0,
-          "fade_duration": 0.0
+          "fade_duration": 0.0,
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -638,7 +646,9 @@
           "instruct": null,
           "postprocess_output": false,
           "pad_duration": 0.0,
-          "fade_duration": 0.0
+          "fade_duration": 0.0,
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -765,7 +775,9 @@
           "instruct": null,
           "postprocess_output": false,
           "pad_duration": 0.0,
-          "fade_duration": 0.0
+          "fade_duration": 0.0,
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -892,7 +904,9 @@
           "instruct": null,
           "postprocess_output": false,
           "pad_duration": 0.0,
-          "fade_duration": 0.0
+          "fade_duration": 0.0,
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -1019,7 +1033,9 @@
           "instruct": null,
           "postprocess_output": false,
           "pad_duration": 0.0,
-          "fade_duration": 0.0
+          "fade_duration": 0.0,
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -1146,7 +1162,9 @@
           "instruct": null,
           "postprocess_output": false,
           "pad_duration": 0.0,
-          "fade_duration": 0.0
+          "fade_duration": 0.0,
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -1273,7 +1291,9 @@
           "instruct": null,
           "postprocess_output": false,
           "pad_duration": 0.0,
-          "fade_duration": 0.0
+          "fade_duration": 0.0,
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -1400,7 +1420,9 @@
           "instruct": null,
           "postprocess_output": false,
           "pad_duration": 0.0,
-          "fade_duration": 0.0
+          "fade_duration": 0.0,
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -1527,7 +1549,9 @@
           "instruct": null,
           "postprocess_output": false,
           "pad_duration": 0.0,
-          "fade_duration": 0.0
+          "fade_duration": 0.0,
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -1655,7 +1679,9 @@
           "instruct": "female, young adult, high pitch",
           "postprocess_output": false,
           "pad_duration": 0.0,
-          "fade_duration": 0.0
+          "fade_duration": 0.0,
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -1783,7 +1809,9 @@
           "instruct": "男，老年，低音调",
           "postprocess_output": false,
           "pad_duration": 0.0,
-          "fade_duration": 0.0
+          "fade_duration": 0.0,
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -1918,7 +1946,9 @@
           "fade_duration": 0.0,
           "denoise": true,
           "preprocess_prompt": false,
-          "ref_text": "Some call me nature. Others call me Mother Nature. I've been here for over four point and five billion years, twenty-two thousand five hundred times longer than you."
+          "ref_text": "Some call me nature. Others call me Mother Nature. I've been here for over four point and five billion years, twenty-two thousand five hundred times longer than you.",
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -2068,7 +2098,9 @@
           "fade_duration": 0.0,
           "denoise": true,
           "preprocess_prompt": false,
-          "ref_text": "Some call me nature. Others call me Mother Nature. I've been here for over four point and five billion years, twenty-two thousand five hundred times longer than you."
+          "ref_text": "Some call me nature. Others call me Mother Nature. I've been here for over four point and five billion years, twenty-two thousand five hundred times longer than you.",
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -2210,7 +2242,9 @@
           "instruct": null,
           "postprocess_output": false,
           "pad_duration": 0.0,
-          "fade_duration": 0.0
+          "fade_duration": 0.0,
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -2337,7 +2371,9 @@
           "postprocess_output": false,
           "pad_duration": 0.0,
           "fade_duration": 0.0,
-          "seeded_by": "request.seed_u64"
+          "seeded_by": "request.seed_u64",
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -2464,7 +2500,9 @@
           "postprocess_output": false,
           "pad_duration": 0.0,
           "fade_duration": 0.0,
-          "seeded_by": "request.seed_u64"
+          "seeded_by": "request.seed_u64",
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {
@@ -2591,7 +2629,9 @@
           "postprocess_output": false,
           "pad_duration": 0.0,
           "fade_duration": 0.0,
-          "seeded_by": "request.seed_u64"
+          "seeded_by": "request.seed_u64",
+          "audio_chunk_duration": 15.0,
+          "audio_chunk_threshold": 30.0
         },
         "stochastic_inputs": [
           {

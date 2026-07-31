@@ -69,6 +69,7 @@ PROBE_ARTIFACT_PREFIX = "generator.hidden_l"
 
 # 24 kHz mono at a 25 Hz frame rate: one codec frame is exactly 960 samples.
 SAMPLES_PER_FRAME = 960
+FRAME_RATE_HZ = 25.0
 NATIVE_SAMPLE_RATE = 24000
 AUDIO_MASK_ID = 1024
 NUM_CODEBOOKS = 8
@@ -204,8 +205,17 @@ def load_manifest(path: pathlib.Path) -> dict:
 
         parameters = require(require(case, "oracle", where), "parameters", f"{where}.oracle")
         for key in ("num_step", "position_temperature", "class_temperature", "language",
-                    "instruct", "postprocess_output"):
+                    "instruct", "postprocess_output",
+                    "audio_chunk_duration", "audio_chunk_threshold"):
             require(parameters, key, f"{where}.oracle.parameters")
+        threshold_frames = float(parameters["audio_chunk_threshold"]) * FRAME_RATE_HZ
+        if threshold_frames < float(contract["max_output_frames"]):
+            raise ManifestError(
+                f"{where}: audio_chunk_threshold {parameters['audio_chunk_threshold']} s is "
+                f"{threshold_frames:.0f} frames, below max_output_frames "
+                f"{contract['max_output_frames']}; a golden case could silently take the "
+                "chunked long-form path, which is out of scope"
+            )
         unknown = set(parameters) - GEN_CONFIG_KEYS - GENERATE_ARGUMENT_KEYS - DUMPER_ONLY_KEYS
         if unknown:
             raise ManifestError(

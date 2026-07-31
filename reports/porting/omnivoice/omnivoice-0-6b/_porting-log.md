@@ -568,3 +568,123 @@ depended on the old digests. `metadata.json`'s `environment` block for the
 re-dumped case reads
 `num_threads: 1, num_interop_threads: 1, deterministic_algorithms: True,
 torch_version: 2.13.0+cu130, cpu_capability: SVE128`.
+
+## 2026-07-31 — Oracle hardening and re-dump (Plan 2 Tasks 1–2)
+
+The dumper now pins torch to one intra-op and one inter-op thread with
+deterministic algorithms demanded, records that configuration in every
+`metadata.json`, and sha256-verifies all five weights-repository inputs against
+the manifest before loading anything. `audio_chunk_duration`/`audio_chunk_threshold`
+are pinned at 15.0/30.0 in every case (upstream's own defaults at the pinned
+revision); 30 s equals the 750-frame package ceiling, so no golden case can
+take the chunked long-form path, and `load_manifest` now refuses a manifest
+where that stops being true (`threshold_frames < max_output_frames`, checked
+against `package_contract.max_output_frames` right after the two keys are
+required). Pinning the two keys touched only `oracle.parameters` in all 20
+cases — one added trailing-comma line plus two new keys per case, 60 insertions
+/ 20 deletions, nothing else reformatted (`git diff --stat`).
+
+**Full re-dump under the pinned configuration was NOT a clean no-op: 90 of 226
+binary artifacts moved.** The literal Step 3 command hung a first background
+run after ~81s (it wrote two of twenty cases and stopped silently, with the
+tracked process gone and no exit code — the sandbox appears to reap a
+long-running background job once the turn that started it stops actively
+supervising it, not a bug in the dumper). Because `run_case` builds every
+artifact in memory and only calls `write_case` once at the very end, the
+half-finished third case's on-disk directory was untouched by the aborted
+run — confirmed by its `metadata.json` still lacking the `environment` block
+before the retry. The recovery was 7 supervised foreground invocations of the
+same script, each with a `--case` subset small enough to finish inside one
+tool call, sequentially, against the same weights and manifest:
+
+    uv run --project scripts/envs/omnivoice --locked python scripts/dump_reference_omnivoice_pytorch.py \
+      --manifest tests/golden/omnivoice/omnivoice-0-6b.manifest.json \
+      --weights-dir models/omnivoice-0-6b \
+      --report /tmp/omnivoice_batchN.json \
+      --case <id> [--case <id> ...]
+
+run for the batches `{omni-upstream-readme, omni-short-en, omni-short-zh,
+omni-short-ja, omni-lang-none}`, `{omni-punctuation, omni-digits,
+omni-nonverbal, omni-fast-mode}`, `{omni-medium-en, omni-rate-slow,
+omni-rate-fast}`, `{omni-long-boundary}`, `{omni-design-en, omni-design-zh,
+omni-clone-en, omni-clone-zh}` (this one hit a 10-minute tool timeout on the
+fourth case, `omni-clone-zh`, after the first three wrote cleanly; the killed
+attempt left no partial files for the same in-memory-then-write reason above),
+`{omni-clone-zh}` alone, and `{omni-sampled-seed-zero, omni-sampled-seed-one,
+omni-sampled-seed-forty-two}`. The seven per-batch `dump-report.json`s were
+concatenated (in manifest case order) into
+`build/goldens/omnivoice/dump-report.json`, the one used below and by every
+later task; `total_wall_seconds` across the batches that actually finished
+sums to 1811.6s (≈30.2 CPU-minutes), close to the brief's "tens of minutes"
+estimate despite the reload overhead of splitting into seven processes. Every
+greedy case's in-process double-run replay was identical and no greedy case's
+RNG state moved (`double_run_identical: true`, `rng_untouched: true` for all
+17), so within one fixed configuration the family is exactly as deterministic
+as previously established; what follows is about drift *across* the
+ambient-to-pinned configuration change, not within it.
+
+The byte-identity check was the brief's literal Step 3, filter included, since
+carry-over 10 requires the command actually run, not an idealized one:
+
+    find build/goldens/omnivoice -name '*.i32' -o -name '*.f32' | grep -v '_smoke\|_pre_redump\|-replay' \
+      | sort | xargs sha256sum > /tmp/omnivoice_pre_redump.sha256
+    # ... seven batched invocations in place of the single one above ...
+    find build/goldens/omnivoice -name '*.i32' -o -name '*.f32' | grep -v '_smoke\|_pre_redump\|-replay' \
+      | sort | xargs sha256sum > /tmp/omnivoice_post_redump.sha256
+    diff /tmp/omnivoice_pre_redump.sha256 /tmp/omnivoice_post_redump.sha256
+
+226 files on both sides, 0 added, 0 removed, 90 with a changed digest — not
+`BINARIES-UNCHANGED`. Per the supersession rule this pinned+chunked dump is
+the new baseline regardless; nineteen of the twenty case directories had never
+been re-dumped since Plan 1 (only `omni-short-en` was, as a Task 1 smoke test),
+so this is the first time the thread/determinism pinning actually ran against
+them. `omni-short-en` itself is fully unchanged top to bottom — its `before`
+state in this diff was already Task 1's pinned dump, so this run only added
+the (behaviourally inert) chunk keys to its `metadata.json`; both its
+`codes/grid.i32` (`60473d82…`) and `audio/pcm.f32` (`7a063dac…`) digests
+reproduce Task 1's recorded values exactly, an independent cross-check that
+this run used the identical configuration.
+
+**Divergence isolation, the open question Task 1 left (`generator/hidden_l*.f32`,
+`generator/logits_step0.f32` old vs. new): the sensitivity is not confined to
+the codec.** Two loci are now demonstrated, separately:
+
+- **Codec-stage sensitivity, proven directly.** Eighteen of the nineteen
+  cases whose audio changed kept `codes/grid.i32` — the full committed
+  discrete token sequence across every frame, not just step 0 — byte-identical
+  between the ambient and pinned dumps. A moved `audio/pcm.f32` fed by a
+  byte-identical discrete input can only come from the codec/DAC-decode stage
+  itself, so for these eighteen cases the DAC decoder's floating-point
+  reduction order is confirmed sensitive to the pinned settings, exactly Task
+  1's original hypothesis.
+- **Backbone-stage sensitivity, also proven directly, and independent of the
+  above.** Ten of the twenty cases (`omni-short-zh`, `omni-punctuation`,
+  `omni-digits`, `omni-medium-en`, `omni-rate-slow`, `omni-design-en`,
+  `omni-design-zh`, `omni-clone-en`, `omni-clone-zh`, `omni-fast-mode`) moved
+  one or more of the six step-0 generator probes
+  (`generator/hidden_l{0,7,14,21,27}.f32`, `generator/final.f32`,
+  `generator/logits_step0.f32`) — e.g. `omni-punctuation`'s
+  `logits_step0.f32` went `b07c407b…` to `688e6365…`. Nine of those ten still
+  left `codes/grid.i32` unmoved: the backbone's own reduction order drifted
+  measurably at the very first forward pass, but not by enough to flip any
+  argmax/Gumbel-boundary decision across the whole generation.
+- **The two loci compound in the suite's thinnest margin.** `omni-fast-mode`
+  (`num_step: 16`, the fewest diffusion refinement steps of any case — every
+  other case runs 32) is the only case where `codes/grid.i32` itself moved
+  (`ce41f5b2…` to `70ebe309…`), and its generator probes moved too (all but
+  `hidden_l0.f32`, which — like `omni-punctuation`'s — stayed identical while
+  every later layer diverged, for reasons this run does not investigate
+  further). Fewer refinement steps leave the per-frame distribution less
+  converged, i.e. closer to a tie, so the same drift that seventeen 32-step
+  cases absorbed without a discrete change was enough here to cross the
+  argmax boundary. This is consistent with, not proof of, that causal story.
+
+As before, this run changed three settings at once (one thread, one interop
+thread, deterministic algorithms demanded) relative to the ambient dumps it is
+compared against, so it still cannot attribute the drift to a single one of
+the three; it answers *where* the sensitivity shows up (codec always, backbone
+in half the suite, and rarely all the way to the discrete grid), not *which*
+pinned knob is responsible. `build/goldens/omnivoice/` (git-ignored) now holds
+this pinned+chunked dump uniformly across all 20 cases; no comparison or
+tolerance work has been built against any of the superseded digests, so
+nothing downstream depended on them.

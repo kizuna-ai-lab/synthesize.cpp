@@ -387,6 +387,16 @@ int run_generator_rejections() {
         expect_rejected(
             [](gguf_context * g) { gguf_set_val_str(g, "synthesize.omnivoice.generator.attention", "causal"); },
             "this family's generator is bidirectional") == 0);
+
+    // Products of these fields feed int64 shape arithmetic in the catalog; a
+    // package this large is not a model, it is an overflow attempt.
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.attention_head_count", 65536);
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.key_value_head_count", 65536);
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.head_dim", 65536);
+                         },
+                         "attention geometry whose products leave shape arithmetic") == 0);
     return 0;
 }
 
@@ -399,6 +409,18 @@ int run_canvas_and_codec_rejections() {
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.omnivoice.audio.num_codebooks", 0); },
                         "a canvas of no codebooks") == 0);
+    // Products of these fields feed int64 shape arithmetic in the catalog; a
+    // canvas this large is not a model, it is an overflow attempt. Keeps
+    // mask_id == vocab_size - 1 and vocab_size == codebook_size + 1 satisfied
+    // so only the new size rule can fire.
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_u32(g, "synthesize.omnivoice.audio.num_codebooks", 1u << 16);
+                             gguf_set_val_u32(g, "synthesize.omnivoice.audio.vocab_size", (1u << 16) + 1);
+                             gguf_set_val_u32(g, "synthesize.omnivoice.audio.mask_id", 1u << 16);
+                             gguf_set_val_u32(g, "synthesize.omnivoice.codec.codebook_size", 1u << 16);
+                         },
+                         "a canvas whose embedding table exceeds any real package") == 0);
 
     SYNTH_TEST_CHECK(expect_rejected(
                          [](gguf_context * g) {
@@ -408,9 +430,23 @@ int run_canvas_and_codec_rejections() {
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { set_i32_array(g, "synthesize.omnivoice.codec.upsampling_ratios", {}); },
                         "an empty ratio stack upsamples nothing") == 0);
+    // Before the early-exceed check this product could wrap uint64_t; whether
+    // it then collided with the hop was luck, not a rule.
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             set_i32_array(g, "synthesize.omnivoice.codec.upsampling_ratios",
+                                           { 2147483647, 2147483647, 2147483647 });
+                         },
+                         "upsampling ratios that would wrap the hop product") == 0);
+    // One rule per mutation: each of these breaks exactly one reader check, so
+    // a reordering of read_codec cannot silently change which rule a test
+    // exercises.
     SYNTH_TEST_CHECK(
-        expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.omnivoice.codec.hop_length", 1024); },
-                        "hop and frame rate must agree with the sample rate") == 0);
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_f32(g, "synthesize.omnivoice.codec.frame_rate_hz", 30.0f); },
+            "hop and frame rate must agree with the sample rate") == 0);
+    // Fires the codec-vs-declared-output rule; the frame relation is checked
+    // later and never reached.
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.omnivoice.codec.sample_rate", 16000); },
                         "codec rate must match the declared output rate") == 0);

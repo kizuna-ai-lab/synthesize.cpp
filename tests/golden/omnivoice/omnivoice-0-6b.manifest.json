@@ -1,7 +1,7 @@
 {
   "$schema": "../../../docs/schemas/synthesize-golden-manifest-v1.schema.json",
   "schema": "synthesize-golden-manifest-v1",
-  "suite_version": 1,
+  "suite_version": 2,
   "family": "omnivoice",
   "variant": "omnivoice-0-6b",
   "source": {

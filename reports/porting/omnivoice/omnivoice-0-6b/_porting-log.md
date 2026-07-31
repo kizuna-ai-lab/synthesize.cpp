@@ -1598,3 +1598,23 @@ profile or a second backend is likeliest to flip a token first.
 | `scripts/ci/clang-format.sh --check-diff` | clean |
 | package GGUF | `3ecaa5e2f6fbd735296ba1cd60680c90467be22d2140dc4f208fe80111ecb9e5`, unchanged |
 | public seam | still `synthesis.not_implemented` for omnivoice |
+
+## 2026-07-31 — Golden suite bumped to revision 2, correcting a missed bump
+
+Final review of the whole branch caught a metadata gap: `docs/port-validation.md`
+defines `suite_version` as a monotonically increasing variant-suite revision,
+incremented by any manifest change that alters what validation proves, and the
+"Ruling implemented" commit above did exactly that — it enumerated a second
+admissible grid for `omni-fast-mode` and re-picked `omni-clone-zh`'s text and
+oracle grid — while leaving `suite_version` at 1. The qwen3-tts precedent this
+project already has is the manifest that took two new cases (eighteen to
+twenty) and went from `suite_version` 1 to 2 for that alone; two revisions to
+existing cases is the same kind of change, only smaller in scope, and it was
+missed here. `tests/golden/omnivoice/omnivoice-0-6b.manifest.json` now carries
+`suite_version: 2`. `tests/tolerances/omnivoice.json` carries its own
+`suite_version` field, and its thresholds were measured after the ruling
+commit landed, not before, so they were never stale — only mislabeled at 1; it
+moves to 2 for that reason, not because any figure in it was re-measured.
+Neither `scripts/validate-omnivoice-replay.py` nor either Python unit gate
+compares the two files' `suite_version` values or asserts a literal one, so
+this is a metadata correction with no behavior change.

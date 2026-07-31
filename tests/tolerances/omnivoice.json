@@ -2,7 +2,7 @@
   "schema": "synthesize-tolerances-v1",
   "family": "omnivoice",
   "variant": "omnivoice-0-6b",
-  "suite_version": 1,
+  "suite_version": 2,
   "status": "thresholds-committed-and-enforced",
   "reference_stage": "source-f32-oracle-vs-f32-cpu",
   "case_count": 20,

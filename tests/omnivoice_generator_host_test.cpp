@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -65,7 +66,13 @@ int check_schedule_real_parameters() {
 
     SYNTH_TEST_CHECK(timesteps.size() == kNumStep + 1);
     SYNTH_TEST_CHECK(timesteps.front() == 0.0);
-    SYNTH_TEST_CHECK(timesteps.back() == 1.0);
+    // Not 1.0: computed in float32 to match upstream's torch.linspace tensor
+    // dtype, t_shift 0.1 is not exact in binary floating point, and the
+    // float32 quotient at t = 1 lands a few ulps short of 1.0 rather than
+    // recovering it exactly. Independently recomputed (Python, struct-based
+    // float32 simulation of the exact formula below) and its double-to-hex
+    // round-trip verified bit-exact against this literal.
+    SYNTH_TEST_CHECK(timesteps.back() == 0.9999997615814209);
 
     SYNTH_TEST_CHECK(schedule.size() == kNumStep);
     uint64_t sum = 0;
@@ -81,6 +88,31 @@ int check_schedule_real_parameters() {
         largest = std::max(largest, count);
     }
     SYNTH_TEST_CHECK(schedule.back() == largest);
+    return 0;
+}
+
+// A regression fixture anchored to the float32/float64 divergence: at these
+// parameters, computing shifted_timesteps in double instead of float32 (this
+// family's actual failure mode, caught in review) changes the last two
+// entries from {256, 384} to {257, 383} -- a different commit count at step
+// 30, which is a different set of committed positions and a different token
+// grid downstream. Independently recomputed (Python, struct-based float32
+// simulation of the exact formula in generator-host.cpp): float32 gives
+// {..., 131, 178, 256, 384}; a double-precision version of the same formula
+// gives {..., 131, 178, 257, 383}. Both sum to 1640, so the sum invariant
+// alone cannot see this defect -- only the exact per-step values can.
+int check_schedule_upstream_regression() {
+    const std::vector<uint64_t> schedule = synth::omnivoice::commit_schedule(1640, 32, 0.1);
+    SYNTH_TEST_CHECK(schedule.size() == 32);
+    SYNTH_TEST_CHECK(schedule[28] == 131);
+    SYNTH_TEST_CHECK(schedule[29] == 178);
+    SYNTH_TEST_CHECK(schedule[30] == 256);
+    SYNTH_TEST_CHECK(schedule[31] == 384);
+    uint64_t sum = 0;
+    for (uint64_t count : schedule) {
+        sum += count;
+    }
+    SYNTH_TEST_CHECK(sum == 1640);
     return 0;
 }
 
@@ -169,6 +201,33 @@ int check_select_commits() {
     return 0;
 }
 
+// A NaN score is not something honest logits produce, but the comparator
+// must stay a strict weak ordering even so: std::partial_sort's introspective
+// algorithm relies on that guarantee, and a violated one is undefined
+// behavior -- memory corruption, not just a wrong order. This does not prove
+// UB is absent on every implementation; it proves the comparator itself is
+// well-defined (a NaN-scored candidate sorts after every real one, and two
+// NaN-scored candidates fall back to the codebook/frame tie-break), which is
+// what makes the algorithm's precondition hold regardless of implementation.
+int check_select_commits_nan_guard() {
+    const float                  nan_value  = std::numeric_limits<float>::quiet_NaN();
+    std::vector<MaskedCandidate> candidates = {
+        { /* codebook */ 0, /* frame */ 0, /* token */ 0, /* score */ nan_value },
+        { /* codebook */ 1, /* frame */ 0, /* token */ 0, /* score */ 5.0f      },
+        { /* codebook */ 2, /* frame */ 0, /* token */ 0, /* score */ nan_value },
+        { /* codebook */ 3, /* frame */ 0, /* token */ 0, /* score */ 2.0f      },
+    };
+    const size_t kept = synth::omnivoice::select_commits(candidates, 4);
+    SYNTH_TEST_CHECK(kept == 4);
+    // The two real scores sort first, highest first; the two NaN-scored
+    // candidates come last, tie-broken by codebook.
+    SYNTH_TEST_CHECK(candidates[0].codebook == 1 && candidates[0].score == 5.0f);
+    SYNTH_TEST_CHECK(candidates[1].codebook == 3 && candidates[1].score == 2.0f);
+    SYNTH_TEST_CHECK(candidates[2].codebook == 0 && std::isnan(candidates[2].score));
+    SYNTH_TEST_CHECK(candidates[3].codebook == 2 && std::isnan(candidates[3].score));
+    return 0;
+}
+
 // --------------------------------------------------------------------------
 // build_prompt_grid
 // --------------------------------------------------------------------------
@@ -251,10 +310,12 @@ int main() {
     SYNTH_TEST_CHECK(check_schedule_hand_fixture() == 0);
     SYNTH_TEST_CHECK(check_schedule_clamps() == 0);
     SYNTH_TEST_CHECK(check_schedule_real_parameters() == 0);
+    SYNTH_TEST_CHECK(check_schedule_upstream_regression() == 0);
     SYNTH_TEST_CHECK(check_choose_token_guided() == 0);
     SYNTH_TEST_CHECK(check_choose_token_bans_mask() == 0);
     SYNTH_TEST_CHECK(check_choose_token_unguided() == 0);
     SYNTH_TEST_CHECK(check_select_commits() == 0);
+    SYNTH_TEST_CHECK(check_select_commits_nan_guard() == 0);
     SYNTH_TEST_CHECK(check_prompt_grid() == 0);
     SYNTH_TEST_CHECK(check_shifted_ids() == 0);
     return 0;

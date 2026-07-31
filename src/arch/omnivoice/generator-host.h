@@ -48,6 +48,12 @@ synth_status_t build_prompt_grid(const std::vector<int32_t> & text_ids,
 // t' = t_shift * t / (1 + (t_shift - 1) * t). t_shift 0.1 makes the early
 // intervals small: the loop commits little while everything is masked and most
 // near the end.
+//
+// Computed in float32, matching the dtype of upstream's own
+// `torch.linspace(0, 1, num_step + 1)` tensor -- not an approximation of
+// convenience. A double-precision computation of the same formula disagrees
+// with the float32 one at roughly 1% of canvas lengths (see generator-host.cpp),
+// each disagreement changing which positions a step commits.
 std::vector<double> shifted_timesteps(uint32_t num_step, double t_shift);
 
 // Per-step commit budgets over total_mask = 8 * T positions. Step s commits

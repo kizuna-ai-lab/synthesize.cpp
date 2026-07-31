@@ -50,18 +50,29 @@ synth_status_t build_prompt_grid(const std::vector<int32_t> & text_ids,
 std::vector<double> shifted_timesteps(uint32_t num_step, double t_shift) {
     std::vector<double> timesteps(size_t(num_step) + 1);
     for (uint32_t index = 0; index <= num_step; ++index) {
-        const double t = num_step == 0 ? 0.0 : double(index) / double(num_step);
-        // The formula's true value at t = 1 is t_shift / t_shift = 1 for any
-        // nonzero t_shift, but the naive division loses that exactly: most
-        // t_shift values (0.1 included) are not exact in binary floating
-        // point, so `1.0 + (t_shift - 1.0)` does not recover t_shift bit for
-        // bit and the quotient lands a couple of ulps off 1.0. The endpoint
-        // is pinned directly rather than left to drift.
-        if (t == 1.0 && t_shift != 0.0) {
-            timesteps[index] = 1.0;
-        } else {
-            timesteps[index] = t_shift * t / (1.0 + (t_shift - 1.0) * t);
-        }
+        // Upstream's `_get_time_steps` runs this formula over a
+        // `torch.linspace(0, 1, num_step + 1)` tensor, which is float32 by
+        // default (torch 2.13.0) -- reproducing that dtype is not optional.
+        // Sweeping total_mask over [1, 6000] found the double-precision and
+        // float32 schedules disagree at roughly 1% of canvas lengths (e.g.
+        // num_step 32: T in {205, 247, 295, 407, 410, ...}); a divergent step
+        // commits a different set of positions, which is a different token
+        // grid, and no committed Golden case happens to land on a divergent
+        // T, so only this fixture -- not the exact-token gate -- would ever
+        // catch a regression here. So every arithmetic step below is float32,
+        // cast to double only once at the very end for commit_schedule's own
+        // (double) arithmetic.
+        //
+        // Caveat: `float(index / num_step)` coincides with torch.linspace's
+        // own start + step * i kernel only because 1 / num_step is exact in
+        // binary floating point for this family's num_step values (16, 32).
+        // If num_step ever becomes a free knob, this must switch to
+        // linspace's own construction (or refuse a num_step for which
+        // 1 / num_step is not exact) rather than trust this shortcut.
+        const float t           = num_step == 0 ? 0.0f : float(double(index) / double(num_step));
+        const float numerator   = float(t_shift) * t;
+        const float denominator = 1.0f + float(t_shift - 1.0) * t;
+        timesteps[index]        = double(numerator / denominator);
     }
     return timesteps;
 }
@@ -160,7 +171,19 @@ void choose_token(const float * cond,
 size_t select_commits(std::vector<MaskedCandidate> & candidates, uint64_t budget) {
     const size_t keep   = size_t(std::min<uint64_t>(budget, candidates.size()));
     const auto   before = [](const MaskedCandidate & left, const MaskedCandidate & right) {
-        if (left.score != right.score) {
+        // A NaN score compares false against everything, including itself
+        // (`left.score != right.score` is true for a NaN vs. anything, even
+        // another NaN), so without this guard the plain score branch below
+        // makes `before` non-transitive across a NaN candidate -- undefined
+        // behavior for std::partial_sort, not just a wrong order. Route NaN
+        // scores after every real one, and let two NaN-scored candidates fall
+        // through to the codebook/frame tie-break as if they were equal.
+        const bool left_nan  = left.score != left.score;
+        const bool right_nan = right.score != right.score;
+        if (left_nan != right_nan) {
+            return right_nan;
+        }
+        if (!left_nan && left.score != right.score) {
             return left.score > right.score;
         }
         if (left.codebook != right.codebook) {

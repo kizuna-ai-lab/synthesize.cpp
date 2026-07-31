@@ -512,3 +512,47 @@ new file sha256, because the metadata changed:
 `b03fcdf81e7a4ef650f715cf13f29bef078d29ebf7c3c19fd7c39fb3b6f9a256` recorded
 above. `synthesize-omnivoice-load-real` was re-run against the re-cut package
 and passed.
+
+## 2026-07-31 — Oracle hardening: pinned threads/determinism moved `audio/pcm.f32`
+
+Plan 2 Task 1 hardened `scripts/dump_reference_omnivoice_pytorch.py` two ways,
+closing the two carry-over items from Plan 1's final review:
+
+- **Execution is now pinned**, immediately after the runtime `import torch`:
+  `torch.set_num_interop_threads(1)`, `torch.set_num_threads(1)`,
+  `torch.use_deterministic_algorithms(True)`. Every dump now records the
+  configuration it ran under — torch version, thread counts, the
+  deterministic-algorithms flag, and `torch.backends.cpu.get_cpu_capability()`
+  — in `metadata.json`'s new `"environment"` block (per case) and the dump
+  report's top-level `"environment"` block. Before this, the twenty exact-token
+  baselines were proven bit-reproducible only across two runs on this one
+  machine with its ambient thread count; nothing pinned that configuration or
+  recorded it.
+- **Every weights-repository input the dump reads is now sha256-verified**
+  against the manifest's `source.artifacts` before torch is even imported:
+  both `model.safetensors` files, both `config.json` files, and
+  `tokenizer.json`. Previously only the clone reference wav was digest-checked;
+  the weights, configs and tokenizer were trusted. A deliberately corrupted
+  `tokenizer.json` (RED, `/tmp/omni-fake`, made of symlinks to the real big
+  files plus one corrupted small file) was rejected before any import or model
+  load, in under three seconds wall time (dominated by `uv`'s environment
+  sync, not the check): `tokenizer.json: sha256 … does not match the
+  manifest's …; refusing to dump against unpinned inputs`, exit 1.
+
+**GREEN — one case re-dumped under the pinned configuration, `omni-short-en`
+(greedy).** `codes/grid.i32` is byte-identical to the pre-change dump
+(`60473d82…`): the committed token grid does not move under thread pinning, as
+expected for a family whose greedy decode makes no RNG draw. `audio/pcm.f32`
+**did move** — `2710bbd2…` (unpinned, ambient thread count) to `7a063dac…`
+(pinned to one thread, deterministic algorithms required) — so the DAC
+decoder's floating-point reduction order was in fact sensitive to thread count,
+which is exactly the failure mode the pinning exists to close. Per the task
+brief this is not reverted: the pinned configuration supersedes the unpinned
+one that produced every baseline dumped so far. The twenty existing case
+directories under `build/goldens/omnivoice/` (git-ignored, not committed) are
+stale for their audio artifact until Task 2's full re-dump regenerates all of
+them consistently under this configuration; no comparison or tolerance work
+has been built against them yet, so nothing downstream depended on the old
+digests. `metadata.json`'s `environment` block for the re-dumped case reads
+`num_threads: 1, num_interop_threads: 1, deterministic_algorithms: True,
+torch_version: 2.13.0+cu130, cpu_capability: SVE128`.

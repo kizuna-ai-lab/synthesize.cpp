@@ -531,6 +531,41 @@ class SemanticProbe:
 # ---------------------------------------------------------------------------
 
 
+def verify_pinned_inputs(manifest: dict, weights_dir: pathlib.Path) -> list[str]:
+    """sha256-verify every weights-repository input the manifest pins.
+
+    Until now only the clone reference audio was checked; the weights, configs
+    and tokenizer the dump actually reads were trusted. A parity baseline dumped
+    from silently different inputs would be wrong in a way no later gate could
+    localise, so a mismatch stops the dump.
+    """
+    marker = "/resolve/"
+    verified = []
+    for artifact in manifest["source"]["artifacts"]:
+        locator = artifact["locator"]
+        if marker not in locator:
+            # Source-repository files (the Apache LICENSE) and the clone
+            # reference (checked by materialise_reference) are not dump inputs.
+            continue
+        relative = locator.split(marker, 1)[1].split("/", 1)[1]
+        local = weights_dir / relative
+        if not local.is_file():
+            raise SystemExit(f"{local}: the manifest pins this input and it is missing")
+        actual = hashlib.sha256(local.read_bytes()).hexdigest()
+        if actual != artifact["sha256"]:
+            raise SystemExit(
+                f"{local}: sha256 {actual} does not match the manifest's "
+                f"{artifact['sha256']}; refusing to dump against unpinned inputs"
+            )
+        verified.append(relative)
+    required = {"model.safetensors", "audio_tokenizer/model.safetensors",
+                "config.json", "audio_tokenizer/config.json", "tokenizer.json"}
+    missing = required - set(verified)
+    if missing:
+        raise SystemExit(f"the manifest pins no digest for dump inputs: {sorted(missing)}")
+    return verified
+
+
 def reference_digest(manifest: dict, locator: str) -> str:
     for artifact in manifest.get("source", {}).get("artifacts", []):
         if artifact.get("locator") == locator:
@@ -615,6 +650,17 @@ def build_clone_prompt(model, path: pathlib.Path, ref_text: str, preprocess_prom
 # ---------------------------------------------------------------------------
 # The dump
 # ---------------------------------------------------------------------------
+
+
+def torch_environment(torch) -> dict:
+    """The execution configuration a baseline depends on, recorded per dump."""
+    return {
+        "torch_version": torch.__version__,
+        "num_threads": torch.get_num_threads(),
+        "num_interop_threads": torch.get_num_interop_threads(),
+        "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+        "cpu_capability": torch.backends.cpu.get_cpu_capability(),
+    }
 
 
 def volume_branch(ref_rms) -> str:
@@ -1000,6 +1046,7 @@ def run_case(model, case: dict, output_root: pathlib.Path, clones: dict,
             "step": 0,
             "batch_row": "conditional (row 0 of the CFG pair)",
         },
+        "environment": torch_environment(torch),
         "shapes": {
             "prompt_grid": [NUM_CODEBOOKS, conditional_length],
             "token_ids": [prompt["text_region"]],
@@ -1078,7 +1125,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: no weights directory at {arguments.weights_dir}", file=sys.stderr)
         return 1
 
+    verified_inputs = verify_pinned_inputs(manifest, arguments.weights_dir)
+    print(f"verified {len(verified_inputs)} pinned inputs against the manifest", flush=True)
+
     import torch
+
+    # Exact-token baselines must be reproducible off this machine, not merely on
+    # it. The thread pool is pinned because oneDNN/MKL reduction order can move
+    # with pool size, and deterministic algorithms are demanded rather than
+    # hoped for: an op with no deterministic CPU path aborts the dump instead of
+    # quietly varying. set_num_interop_threads must run before any parallel op,
+    # which is why this sits directly under the import.
+    torch.set_num_interop_threads(1)
+    torch.set_num_threads(1)
+    torch.use_deterministic_algorithms(True)
 
     from omnivoice.models.omnivoice import OmniVoice
 
@@ -1132,6 +1192,8 @@ def main(argv: list[str] | None = None) -> int:
             "norm": discovery.norm_path,
             "semantic": type(model.audio_tokenizer.semantic_model).__name__,
         },
+        "environment": torch_environment(torch),
+        "verified_inputs": verified_inputs,
         "case_count": 0,
         "cases": [],
     }

@@ -138,7 +138,15 @@ class GraphRun {
     uint64_t accelerator_nodes = 0;
 
     // `on_primary` places the graph on the primary backend rather than the CPU.
-    // Only the codec ever asks for it: everything else feeds a sampled code.
+    // NO Plan-2 caller passes it: the generator may not (its output is a
+    // sampled code, and docs/backends.md's discrete-outputs rule holds it and
+    // its whole input path on the CPU), and the codec -- the one stage that
+    // could -- takes the false default here too, because Plan 2 has no
+    // measurement to move it on. The parameter is kept as the seam stage 7
+    // needs to move a stage without reworking this class, matching the
+    // qwen3-tts precedent; that rule is what will decide which stages may ever
+    // pass true. See the placement note at the top of this file, which says the
+    // same thing about today's state.
     synth_status_t run(ggml_tensor * output, const char * stage, int threads, bool on_primary = false) {
         if (!ok() || output == nullptr) {
             return SYNTH_ERR_INTERNAL;

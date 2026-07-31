@@ -1384,17 +1384,25 @@ catches that, and it does — the orientation trap would show as cosine ≈ 0.
 
 ### Self-review additions
 
-Two hardenings the first cut did not have, both on the new free-run channel:
+Two guards on the new free-run channel. **Neither can happen through this
+validator's own path** — it always passes `--alt-grid` when a case pins an
+alternate, and the runner always writes `pcm_freerun.f32` when it is asked for
+both a greedy run and a decode. The point is not that either was reachable; it
+is that the channel **no longer depends on that** being true, which is what
+made the first cut's correctness an argument rather than a check.
 
 - **The work directory is reused across runs**, so a `pcm_freerun.f32` or
-  `pcm_alt.f32` left by an earlier invocation would have been compared as if
-  this one had written it. The validator now cross-checks each against the
-  sample count the runner reported in its own JSON (`freerun_samples`,
-  `alternate_samples`) and refuses (`stale-freerun-waveform`) rather than
-  comparing.
-- **A case that matches an alternate with no `--alt-grid` passed** used to have
-  nothing to compare against. That now fails loudly instead of passing quietly.
-  Negative control, `--alt-grid` withheld from the command by hand:
+  `pcm_alt.f32` left by an earlier invocation, or missing entirely, would have
+  been read as this run's output. The validator now cross-checks each against
+  the sample count the runner reported in its own JSON (`freerun_samples`,
+  `alternate_samples`) and returns `stale-freerun-waveform` rather than
+  comparing — absence goes down the same road as a size disagreement, so a
+  missing waveform is a reported result and not a `FileNotFoundError`
+  traceback.
+- **A case matching an alternate with no `--alt-grid` decode to compare
+  against** now fails loudly instead of passing quietly. Demonstrated by a
+  **hand invocation** with the `--alt-grid` argument patched out of the command
+  — not something the validator can produce for itself:
   `omni-fast-mode: matched omni-fast-mode.alternate-grid-1.i32, but no decode of
   that grid was produced to compare its free-run waveform against`, **exit 1**.
 
@@ -1404,3 +1412,29 @@ each): the free-run channel is inert at both levels, as intended.
 **For Task 14:** the worst-table has a new row, `audio.pcm_freerun`, which
 `--check` will demand a tolerance cell for alongside `audio.pcm`. Measured
 values to write it from are in the table above.
+
+### Fix round 1 (review): the `on_primary` comment was contradicting the header
+
+`GraphRun::run`'s `on_primary` parameter comment still read *"Only the codec
+ever asks for it"* — inherited from before this slice existed — while the same
+commit's file header said the codec runs on the CPU scheduler like everything
+else. Both cannot be true, and the header is the true one: **no Plan-2 caller
+passes `on_primary` at all.** The generator may not (its output is a sampled
+code, so docs/backends.md's discrete-outputs rule pins it and its whole input
+path to the CPU), and the codec — the one stage that could — takes the false
+default too, because Plan 2 has no measurement to move it on.
+
+The parameter stays: it is the seam stage 7 needs to move a stage without
+reworking the class, which is the qwen3-tts precedent. Its comment now says
+exactly that, and names the discrete-outputs rule as what will decide which
+stages may ever pass `true`. Comment-only; both gates re-run green afterwards.
+
+Also folded: the `pcm_freerun.f32` read was unguarded where its `pcm_alt.f32`
+sibling checks `.is_file()`, so a missing free-run waveform would have raised a
+`FileNotFoundError` traceback instead of the `stale-freerun-waveform` result
+the guard above it exists to produce. Absence now takes the same road as a size
+disagreement. Negative control — the read pointed at a filename the runner
+never writes — `omni-rate-fast: stale-freerun-waveform`, **exit 1**, no
+traceback. The three-case real-package check re-run afterwards: 3/3 grids exact,
+`audio.pcm` 3.54e-06, `audio.pcm_freerun` 3.25e-06, fast-mode still exempt and
+identical, exit 0.

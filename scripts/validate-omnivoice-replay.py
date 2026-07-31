@@ -252,11 +252,16 @@ def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
         # Read the count the runner reported, not just the file: the work
         # directory is reused across runs, so a file left by an earlier
         # invocation would otherwise be compared as if this one had written it.
-        produced = read_f32(work / "pcm_freerun.f32")
+        # Absence goes down the same road as a size disagreement -- a missing
+        # waveform is a runner that did not produce one, which is a result to
+        # report, not a traceback to raise.
+        waveform = work / "pcm_freerun.f32"
+        produced = read_f32(waveform) if waveform.is_file() else np.empty(0, dtype=np.float32)
         if int(stats.get("freerun_samples", 0)) != produced.size:
             return {"case": case_id, "status": "stale-freerun-waveform",
                     "stderr": f"the runner reported {stats.get('freerun_samples')} free-run samples "
-                              f"but pcm_freerun.f32 holds {produced.size}"}
+                              f"but pcm_freerun.f32 holds {produced.size}"
+                              f"{'' if waveform.is_file() else ' (the file is not there at all)'}"}
         finite = finite and bool(np.isfinite(produced).all())
         if grid["matched"] == "primary":
             # The port chose the oracle's grid, so its own waveform is owed the

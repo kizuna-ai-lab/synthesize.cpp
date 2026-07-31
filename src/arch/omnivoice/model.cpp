@@ -14,20 +14,258 @@
 // half arrives with the stage that can use it.
 
 #include "arch/omnivoice/catalog.h"
+#include "arch/omnivoice/generator-host.h"
+#include "arch/omnivoice/generator.h"
 #include "arch/omnivoice/omnivoice.h"
 #include "arch/omnivoice/weights.h"
 #include "backend-plan.h"
 #include "bpe-frontend.h"
+#include "cpu-parallelism.h"
 #include "ggml-backend.h"
 #include "ggml.h"
 #include "gguf-metadata.h"
 #include "gguf.h"
 
+#include <chrono>
+#include <cstdio>
 #include <fstream>
 #include <new>
 #include <utility>
+#include <vector>
 
 namespace synth::omnivoice {
+
+namespace {
+
+// Headroom in the scheduler's hash set for the weights a graph reads, which
+// enter as leaves rather than nodes.
+constexpr size_t kSchedulerLeafAllowance = 4096;
+
+// A wall clock for the placement measurement. Monotonic, because the question is
+// how long a stage took and not what time it was.
+double now_seconds() {
+    using clock = std::chrono::steady_clock;
+    return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
+}
+
+// Duplicated from qwen3-tts rather than shared: the third copy is the signal
+// to hoist (the BPE rule), and stage 7's graph-reuse question may reshape this
+// family's copy anyway. A fresh GraphRun per forward is the measured, known
+// pattern; its cost is what setup_seconds exists to expose.
+
+// A context sized for a graph's headers plus the graph itself.
+class GraphRun {
+  public:
+    GraphRun(const BackendPlan & plan, size_t nodes) : plan_(plan), nodes_(nodes) {
+        ggml_init_params parameters{};
+        parameters.mem_size = ggml_tensor_overhead() * (nodes + 256) + ggml_graph_overhead_custom(nodes, false);
+        parameters.no_alloc = true;
+        context_            = ggml_init(parameters);
+        if (context_ != nullptr) {
+            graph_ = ggml_new_graph_custom(context_, nodes, false);
+        }
+    }
+
+    ~GraphRun() {
+        if (scheduler_ != nullptr) {
+            ggml_backend_sched_free(scheduler_);
+        }
+        if (context_ != nullptr) {
+            ggml_free(context_);
+        }
+    }
+
+    GraphRun(const GraphRun &)             = delete;
+    GraphRun & operator=(const GraphRun &) = delete;
+
+    ggml_context * context() const { return context_; }
+
+    ggml_cgraph * graph() const { return graph_; }
+
+    bool ok() const { return context_ != nullptr && graph_ != nullptr; }
+
+    // How long the scheduler took to be created and to place the graph, as
+    // opposed to computing it. A per-step rebuild pays this every step, and
+    // whether that dominates is the question stage 7 has to answer with a
+    // number rather than an argument.
+    double setup_seconds = 0.0;
+
+    // Where this graph's nodes were actually placed. Read from the scheduler
+    // after allocation, which is the only moment the answer exists: before it
+    // there is no assignment, and after compute the scheduler has been freed.
+    uint64_t placed_nodes      = 0;
+    uint64_t accelerator_nodes = 0;
+
+    // `on_primary` places the graph on the primary backend rather than the CPU.
+    // Only the codec ever asks for it: everything else feeds a sampled code.
+    synth_status_t run(ggml_tensor * output, const char * stage, int threads, bool on_primary = false) {
+        if (!ok() || output == nullptr) {
+            return SYNTH_ERR_INTERNAL;
+        }
+        const double setup_started = now_seconds();
+        ggml_build_forward_expand(graph_, output);
+        // A CPU-only scheduler over CPU-resident weights is one split; forcing
+        // nodes onto CPU inside a mixed graph is not the same thing and was
+        // measured five times slower. See docs/backends.md.
+        const size_t hash_size = size_t(ggml_graph_size(graph_)) + kSchedulerLeafAllowance;
+        scheduler_             = on_primary ? plan_.create_scheduler(hash_size) : plan_.create_cpu_scheduler(hash_size);
+        if (scheduler_ == nullptr) {
+            return SYNTH_ERR_BACKEND;
+        }
+        if (!ggml_backend_sched_alloc_graph(scheduler_, graph_)) {
+            return SYNTH_ERR_OOM;
+        }
+        const BackendPlacement placement = plan_.inspect_placement(scheduler_, graph_);
+        placed_nodes                     = placement.node_count - placement.view_node_count;
+        accelerator_nodes                = placement.off_cpu_node_count;
+        plan_.log_placement_if_enabled(stage, scheduler_, graph_);
+        plan_.set_threads(threads);
+        setup_seconds = now_seconds() - setup_started;
+        return ggml_backend_sched_graph_compute(scheduler_, graph_) == GGML_STATUS_SUCCESS ? SYNTH_OK :
+                                                                                             SYNTH_ERR_BACKEND;
+    }
+
+  private:
+    const BackendPlan &  plan_;
+    size_t               nodes_;
+    ggml_context *       context_   = nullptr;
+    ggml_cgraph *        graph_     = nullptr;
+    ggml_backend_sched_t scheduler_ = nullptr;
+};
+
+// A buffer of tensors the graphs read and write across calls: here the canvas
+// id and position inputs, which the graph allocator must not own because a
+// decode step refills what the previous step's graph read.
+class Persistent {
+  public:
+    ~Persistent() { reset(); }
+
+    Persistent()                               = default;
+    Persistent(const Persistent &)             = delete;
+    Persistent & operator=(const Persistent &) = delete;
+
+    bool open(size_t tensors) {
+        reset();
+        ggml_init_params parameters{};
+        parameters.mem_size = ggml_tensor_overhead() * tensors;
+        parameters.no_alloc = true;
+        context_            = ggml_init(parameters);
+        return context_ != nullptr;
+    }
+
+    ggml_context * context() const { return context_; }
+
+    bool commit(ggml_backend_t backend) {
+        buffer_ = ggml_backend_alloc_ctx_tensors(context_, backend);
+        return buffer_ != nullptr;
+    }
+
+    void reset() {
+        if (buffer_ != nullptr) {
+            ggml_backend_buffer_free(buffer_);
+            buffer_ = nullptr;
+        }
+        if (context_ != nullptr) {
+            ggml_free(context_);
+            context_ = nullptr;
+        }
+    }
+
+  private:
+    ggml_context *        context_ = nullptr;
+    ggml_backend_buffer_t buffer_  = nullptr;
+};
+
+void read_floats(const ggml_tensor * tensor, std::vector<float> & output) {
+    output.resize(size_t(ggml_nelements(tensor)));
+    ggml_backend_tensor_get(tensor, output.data(), 0, ggml_nbytes(tensor));
+}
+
+// Which probe buffers a forward should fill; empty = no probes.
+struct ForwardProbeSinks {
+    const std::vector<uint32_t> *     layer_indices = nullptr;
+    std::vector<float> *              logits_full   = nullptr;
+    std::vector<float> *              final_hidden  = nullptr;
+    std::vector<std::vector<float>> * layer_hidden  = nullptr;
+};
+
+// One full-canvas forward of one CFG branch on the CPU scheduler. Reads back
+// the FULL logits [vocab, codebooks, positions] into `logits`; the caller
+// slices the target region (the trailing target_frames positions). text_ids
+// is null for the unconditional branch, whose every position is an audio slot.
+//
+// Takes the plan/weights/hparams pieces rather than Model::Impl: a file-local
+// function cannot name a private nested type, and passing the pieces keeps it
+// callable from every member without a friend declaration.
+synth_status_t generator_branch_forward(const BackendPlan &       plan,
+                                        const ModelWeights &      weights,
+                                        const HParams &           hparams,
+                                        ggml_tensor *             text_ids,
+                                        ggml_tensor *             audio_ids,
+                                        ggml_tensor *             positions,
+                                        int                       threads,
+                                        const ForwardProbeSinks & probes,
+                                        std::vector<float> &      logits,
+                                        SynthesisOutput &         output) {
+    const AttentionShape shape{ hparams.generator.hidden_size,          hparams.generator.attention_head_count,
+                                hparams.generator.key_value_head_count, hparams.generator.head_dim,
+                                hparams.generator.rms_norm_eps,         hparams.generator.rope_theta };
+    // Each block is under fifty nodes; the embedding merge and the head add a
+    // fixed tail (the qwen3-tts budget formula).
+    const size_t         nodes = size_t(hparams.generator.layer_count) * 64 + 512;
+    GraphRun             run(plan, nodes);
+    if (!run.ok()) {
+        return SYNTH_ERR_OOM;
+    }
+    ggml_tensor * embeddings =
+        build_canvas_embedding(run.context(), weights.generator, text_ids, audio_ids, hparams.audio.num_codebooks);
+    std::vector<ggml_tensor *> layer_tensors;
+    ggml_tensor *              final_tensor = nullptr;
+    const bool                 probing      = probes.logits_full != nullptr;
+    ggml_tensor *              logits_tensor =
+        build_generator_forward(run.context(), embeddings, positions, nullptr, weights.generator, shape, hparams.audio,
+                                probing ? &layer_tensors : nullptr, probing ? &final_tensor : nullptr);
+    if (logits_tensor == nullptr) {
+        return SYNTH_ERR_INTERNAL;
+    }
+    if (probing) {
+        // Read-back tensors that are not the graph output must be marked and
+        // expanded before allocation, or the allocator reuses their buffers.
+        for (ggml_tensor * tensor : layer_tensors) {
+            ggml_set_output(tensor);
+            ggml_build_forward_expand(run.graph(), tensor);
+        }
+        ggml_set_output(final_tensor);
+        ggml_build_forward_expand(run.graph(), final_tensor);
+    }
+    const double         started = now_seconds();
+    const synth_status_t status  = run.run(logits_tensor, "omnivoice.generator", threads);
+    if (status != SYNTH_OK) {
+        return status;
+    }
+    output.generator_seconds += now_seconds() - started;
+    output.generator_setup_seconds += run.setup_seconds;
+    output.generator_placement.nodes += run.placed_nodes;
+    output.generator_placement.accelerator_nodes += run.accelerator_nodes;
+
+    read_floats(logits_tensor, logits);
+    if (probing) {
+        *probes.logits_full = logits;
+        read_floats(final_tensor, *probes.final_hidden);
+        probes.layer_hidden->clear();
+        for (uint32_t wanted : *probes.layer_indices) {
+            if (wanted >= layer_tensors.size()) {
+                return SYNTH_ERR_INVALID_ARG;
+            }
+            std::vector<float> values;
+            read_floats(layer_tensors[wanted], values);
+            probes.layer_hidden->push_back(std::move(values));
+        }
+    }
+    return SYNTH_OK;
+}
+
+}  // namespace
 
 struct Model::Impl {
     gguf_context *                      gguf            = nullptr;
@@ -100,6 +338,112 @@ uint32_t Model::samples_per_frame() const {
 
 uint32_t Model::text_vocab_size() const {
     return implementation_->hparams.generator.text_vocab_size;
+}
+
+synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisOutput & output) {
+    output                  = SynthesisOutput{};
+    Impl &          impl    = *implementation_;
+    const HParams & hparams = impl.hparams;
+
+    if (request.prompt_text_ids.empty() || request.target_frames == 0) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if (request.target_frames > hparams.max_output_frames) {
+        return SYNTH_ERR_OUTPUT_LIMIT;
+    }
+    const uint32_t num_step = request.num_step != 0 ? request.num_step : hparams.generation.num_step;
+    const float    guidance = hparams.generation.guidance_scale;
+    const int      threads  = request.threads > 0 ? request.threads : default_synthesis_threads();
+
+    PromptLayout   prompt;
+    synth_status_t status = build_prompt_grid(request.prompt_text_ids, request.reference_tokens, request.target_frames,
+                                              hparams.audio.num_codebooks, hparams.audio.mask_id, prompt);
+    if (status != SYNTH_OK) {
+        return status;
+    }
+    const uint64_t total     = prompt.total();
+    const uint64_t frames    = prompt.target_frames;
+    const uint32_t codebooks = hparams.audio.num_codebooks;
+    const uint32_t vocab     = hparams.audio.vocab_size;
+
+    // Every reusable input lives in one persistent buffer; the per-step
+    // refills touch only the audio-id tensors.
+    Persistent inputs;
+    if (!inputs.open(8)) {
+        return SYNTH_ERR_OOM;
+    }
+    ggml_context * ictx   = inputs.context();
+    ggml_tensor *  t_text = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, int64_t(prompt.text_length));
+    ggml_tensor *  t_cond_audio =
+        ggml_new_tensor_2d(ictx, GGML_TYPE_I32, int64_t(prompt.audio_length()), int64_t(codebooks));
+    ggml_tensor * t_uncond_audio = ggml_new_tensor_2d(ictx, GGML_TYPE_I32, int64_t(frames), int64_t(codebooks));
+    ggml_tensor * t_cond_pos     = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, int64_t(total));
+    ggml_tensor * t_uncond_pos   = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, int64_t(frames));
+    if (!inputs.commit(impl.backend_plan->cpu_backend())) {
+        return SYNTH_ERR_OOM;
+    }
+    // The unconditional branch's canvas is the target region alone -- no text,
+    // no reference -- and every step refills it. Task 10 owns both that refill
+    // and the forward that reads it; slice 4 compares only the conditional
+    // row, which is the only one the oracle dumps probes for.
+    (void) t_uncond_audio;
+
+    ggml_backend_tensor_set(t_text, request.prompt_text_ids.data(), 0, ggml_nbytes(t_text));
+    // static_cast rather than a functional cast: `size_t(total)` here parses as
+    // a parameter declaration, which makes the whole line a function
+    // declaration rather than a vector.
+    std::vector<int32_t> sequential(static_cast<size_t>(total));
+    for (uint64_t index = 0; index < total; ++index) {
+        sequential[size_t(index)] = int32_t(index);
+    }
+    ggml_backend_tensor_set(t_cond_pos, sequential.data(), 0, ggml_nbytes(t_cond_pos));
+    // The unconditional branch is its own sequence: positions restart at zero,
+    // exactly as the reference's padded batch gives its second row.
+    ggml_backend_tensor_set(t_uncond_pos, sequential.data(), 0, ggml_nbytes(t_uncond_pos));
+
+    std::vector<int32_t> shifted;
+    fill_shifted_audio_ids(prompt.grid.data(), total, prompt.audio_start(), prompt.audio_length(), codebooks, vocab,
+                           shifted);
+    ggml_backend_tensor_set(t_cond_audio, shifted.data(), 0, ggml_nbytes(t_cond_audio));
+
+    // --- Step-0 conditional forward, with probes when asked. Its logits are
+    // also step 0's conditional half once the loop runs.
+    ForwardProbeSinks sinks;
+    const bool        probing = !request.probe_layers.empty();
+    if (probing) {
+        sinks.layer_indices = &request.probe_layers;
+        sinks.logits_full   = &output.logits_step0;
+        sinks.final_hidden  = &output.final_hidden;
+        sinks.layer_hidden  = &output.layer_hidden;
+    }
+    std::vector<float> cond_logits;
+    status = generator_branch_forward(*impl.backend_plan, impl.weights, hparams, t_text, t_cond_audio, t_cond_pos,
+                                      threads, sinks, cond_logits, output);
+    if (status != SYNTH_OK) {
+        return status;
+    }
+    if (request.probe_only) {
+        return SYNTH_OK;
+    }
+
+    // === Task 10 replaces everything below this line with the greedy loop. ===
+    std::fprintf(stderr,
+                 "omnivoice: the greedy decode loop is slice 5 and not built yet "
+                 "(would have run %u steps at guidance %.2f)\n",
+                 num_step, double(guidance));
+    return SYNTH_ERR_INTERNAL;
+}
+
+synth_status_t Model::decode_codes(const std::vector<int32_t> & codes,
+                                   uint64_t                     frame_count,
+                                   int                          threads,
+                                   std::vector<float> &         audio) {
+    (void) codes;
+    (void) frame_count;
+    (void) threads;
+    audio.clear();
+    std::fprintf(stderr, "omnivoice: codec decode is slice 6 and not built yet\n");
+    return SYNTH_ERR_INTERNAL;
 }
 
 synth_status_t Model::load_cpu(const std::string & path, std::unique_ptr<Model> & output) {

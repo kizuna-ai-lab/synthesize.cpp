@@ -1,0 +1,230 @@
+// Replays the oracle's cases through the port and writes the artifacts the
+// Stage 5 validator compares.
+//
+// This is an adapter, not a test: it asserts nothing numeric and reports what
+// it produced. The comparison and its thresholds live in
+// scripts/validate-omnivoice-replay.py and tests/tolerances/omnivoice.json.
+//
+// Two parity channels ride one binary. The step-0 conditional forward's probes
+// and the replayed-grid waveform are threshold comparisons; the free-running
+// greedy grid is this family's structural_exactness and is compared exactly,
+// never under a tolerance.
+
+#include "arch/omnivoice/generator-host.h"
+#include "arch/omnivoice/omnivoice.h"
+
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace {
+
+constexpr uint32_t kCodebooks = 8;
+constexpr uint32_t kVocab     = 1025;
+// The generator's hidden width. Used only to check the read-back size against
+// the canvas length this runner already knows from the prompt layout, so a
+// silently reshaped probe buffer is caught before it is written out.
+constexpr uint32_t kHidden    = 1024;
+
+bool read_file(const std::string & path, std::vector<char> & bytes) {
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) {
+        return false;
+    }
+    const std::streamsize size = input.tellg();
+    input.seekg(0);
+    bytes.resize(size_t(size));
+    return bool(input.read(bytes.data(), size));
+}
+
+bool read_i32(const std::string & path, std::vector<int32_t> & values) {
+    std::vector<char> bytes;
+    if (!read_file(path, bytes) || bytes.size() % sizeof(int32_t) != 0) {
+        return false;
+    }
+    values.resize(bytes.size() / sizeof(int32_t));
+    std::memcpy(values.data(), bytes.data(), bytes.size());
+    return true;
+}
+
+bool write_f32(const std::string & path, const std::vector<float> & values) {
+    std::ofstream output(path, std::ios::binary);
+    if (!output) {
+        return false;
+    }
+    output.write(reinterpret_cast<const char *>(values.data()), std::streamsize(values.size() * sizeof(float)));
+    return bool(output);
+}
+
+bool write_i32(const std::string & path, const std::vector<int32_t> & values) {
+    std::ofstream output(path, std::ios::binary);
+    if (!output) {
+        return false;
+    }
+    output.write(reinterpret_cast<const char *>(values.data()), std::streamsize(values.size() * sizeof(int32_t)));
+    return bool(output);
+}
+
+}  // namespace
+
+int main(int argc, char ** argv) {
+    if (argc < 8) {
+        std::fprintf(stderr,
+                     "usage: %s <model.gguf> <case-dir> <out-dir> <num-step> <run-greedy 0|1> "
+                     "<decode-replay 0|1> <volume peak|none> [probe-layers...]\n",
+                     argv[0]);
+        return 2;
+    }
+    const std::string model_path(argv[1]);
+    const std::string case_dir(argv[2]);
+    const std::string out_dir(argv[3]);
+    const uint32_t    num_step   = uint32_t(std::atoi(argv[4]));
+    const bool        run_greedy = argv[5][0] == '1';
+    const bool        decode     = argv[6][0] == '1';
+    const std::string volume(argv[7]);
+    if (volume != "peak" && volume != "none") {
+        std::fprintf(stderr, "volume must be peak or none, got %s\n", volume.c_str());
+        return 2;
+    }
+
+    std::vector<int32_t> text_ids;
+    std::vector<int32_t> oracle_grid;
+    std::vector<int32_t> oracle_prompt;
+    if (!read_i32(case_dir + "/input/token_ids.i32", text_ids) ||
+        !read_i32(case_dir + "/codes/grid.i32", oracle_grid) ||
+        !read_i32(case_dir + "/input/prompt_grid.i32", oracle_prompt)) {
+        std::fprintf(stderr, "cannot read the oracle's artifacts under %s\n", case_dir.c_str());
+        return 2;
+    }
+    if (oracle_grid.empty() || oracle_grid.size() % kCodebooks != 0) {
+        std::fprintf(stderr, "codes/grid.i32 holds %zu values, not a whole 8-codebook grid\n", oracle_grid.size());
+        return 2;
+    }
+    const uint64_t frames = oracle_grid.size() / kCodebooks;
+
+    // Stays empty when the case has no reference audio, which is what the
+    // auto-voice and voice-design cases are.
+    std::vector<int32_t> reference_tokens;
+    read_i32(case_dir + "/ref/tokens.i32", reference_tokens);
+
+    // The prompt this port would assemble must BE the oracle's step-0 input.
+    // Byte equality here is a free structural check on the grid layout before
+    // a single forward runs. (The orientation trap is real: a transposed grid
+    // decodes to audio rather than to an error.)
+    synth::omnivoice::PromptLayout prompt;
+    if (synth::omnivoice::build_prompt_grid(text_ids, reference_tokens, frames, kCodebooks, kVocab - 1, prompt) !=
+        SYNTH_OK) {
+        std::fprintf(stderr, "cannot assemble the prompt grid\n");
+        return 2;
+    }
+    if (prompt.grid.size() != oracle_prompt.size() ||
+        std::memcmp(prompt.grid.data(), oracle_prompt.data(), oracle_prompt.size() * sizeof(int32_t)) != 0) {
+        std::fprintf(stderr, "assembled prompt grid differs from input/prompt_grid.i32\n");
+        return 2;
+    }
+
+    std::unique_ptr<synth::omnivoice::Model> model;
+    synth_status_t                           status = synth::omnivoice::Model::load_cpu(model_path, model);
+    if (status != SYNTH_OK) {
+        std::fprintf(stderr, "load -> %d\n", int(status));
+        return 1;
+    }
+
+    synth::omnivoice::SynthesisRequest request;
+    request.prompt_text_ids  = text_ids;
+    request.reference_tokens = reference_tokens;
+    request.target_frames    = frames;
+    request.num_step         = num_step;
+    request.probe_only       = !run_greedy;
+    request.threads          = 0;
+    for (int index = 8; index < argc; ++index) {
+        request.probe_layers.push_back(uint32_t(std::atoi(argv[index])));
+    }
+
+    synth::omnivoice::SynthesisOutput output;
+    const auto                        started = std::chrono::steady_clock::now();
+    status                                    = model->run_synthesis(request, output);
+    if (status != SYNTH_OK) {
+        std::fprintf(stderr, "run_synthesis -> %d\n", int(status));
+        return 1;
+    }
+
+    // Probes: hidden buffers are already the oracle's [S, hidden] order; the
+    // logits are read back position-major and the oracle stores them C-major
+    // [C, S, V], so reorder on write.
+    bool ok = true;
+    if (!request.probe_layers.empty()) {
+        const uint64_t positions = prompt.total();
+        if (output.final_hidden.size() != size_t(positions) * kHidden ||
+            output.logits_step0.size() != size_t(positions) * kCodebooks * kVocab) {
+            std::fprintf(stderr, "probe buffers are %zu hidden and %zu logits for %llu positions\n",
+                         output.final_hidden.size(), output.logits_step0.size(), (unsigned long long) positions);
+            return 1;
+        }
+        std::vector<float> reordered(output.logits_step0.size());
+        for (uint32_t codebook = 0; codebook < kCodebooks; ++codebook) {
+            for (uint64_t position = 0; position < positions; ++position) {
+                std::memcpy(reordered.data() + (size_t(codebook) * positions + position) * kVocab,
+                            output.logits_step0.data() + (size_t(position) * kCodebooks + codebook) * kVocab,
+                            kVocab * sizeof(float));
+            }
+        }
+        ok = write_f32(out_dir + "/logits_step0.f32", reordered) &&
+             write_f32(out_dir + "/final.f32", output.final_hidden);
+        for (size_t index = 0; index < output.layer_hidden.size() && ok; ++index) {
+            ok = write_f32(out_dir + "/hidden_l" + std::to_string(request.probe_layers[index]) + ".f32",
+                           output.layer_hidden[index]);
+        }
+    }
+    if (ok && run_greedy) {
+        ok = write_i32(out_dir + "/grid.i32", output.codes);
+    }
+
+    size_t samples = 0;
+    if (ok && decode) {
+        std::vector<float> audio;
+        status = model->decode_codes(oracle_grid, frames, 0, audio);
+        if (status != SYNTH_OK) {
+            std::fprintf(stderr, "decode_codes -> %d\n", int(status));
+            return 1;
+        }
+        if (volume == "peak") {
+            // The oracle's ungated no-reference branch: audio / peak * 0.5,
+            // two float operations per element in numpy's order.
+            float peak = 0.0f;
+            for (float value : audio) {
+                peak = std::fmax(peak, std::fabs(value));
+            }
+            if (peak > 1e-6f) {
+                for (float & value : audio) {
+                    value = value / peak * 0.5f;
+                }
+            }
+        }
+        samples = audio.size();
+        ok      = write_f32(out_dir + "/pcm.f32", audio);
+    }
+    if (!ok) {
+        std::fprintf(stderr, "cannot write under %s\n", out_dir.c_str());
+        return 2;
+    }
+
+    const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    std::printf(
+        "{\"frames\": %llu, \"samples\": %zu, \"probe_layers\": %zu, "
+        "\"generator_seconds\": %.4f, \"generator_setup_seconds\": %.4f, \"codec_seconds\": %.4f, "
+        "\"placement\": {\"generator\": [%llu, %llu], \"codec\": [%llu, %llu]}, \"wall_seconds\": %.4f}\n",
+        (unsigned long long) frames, samples, output.layer_hidden.size(), output.generator_seconds,
+        output.generator_setup_seconds, output.codec_seconds, (unsigned long long) output.generator_placement.nodes,
+        (unsigned long long) output.generator_placement.accelerator_nodes,
+        (unsigned long long) output.codec_placement.nodes,
+        (unsigned long long) output.codec_placement.accelerator_nodes, wall);
+    return 0;
+}

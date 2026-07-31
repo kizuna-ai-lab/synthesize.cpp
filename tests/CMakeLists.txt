@@ -392,6 +392,11 @@ target_include_directories(synthesize-qwen3-tts-replay-real PRIVATE ${CMAKE_SOUR
 target_link_libraries(synthesize-qwen3-tts-replay-real PRIVATE synthesize ggml)
 synth_register_integration_target(synthesize-qwen3-tts-replay-real)
 
+add_executable(synthesize-omnivoice-replay-real omnivoice_replay_real.cpp)
+target_include_directories(synthesize-omnivoice-replay-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(synthesize-omnivoice-replay-real PRIVATE synthesize ggml)
+synth_register_integration_target(synthesize-omnivoice-replay-real)
+
 # The runners are thin adapters shared by the Python Golden validators and
 # manual diagnostics. They are intentionally not themselves tests.
 add_executable(synthesize-kokoro-stages kokoro_stages_real.cpp)

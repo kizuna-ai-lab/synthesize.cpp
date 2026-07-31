@@ -704,3 +704,71 @@ records behind the numbers above live only under `/tmp/`
 `/tmp/omnivoice_batch*.json`) and will not survive this machine; `/tmp` is
 ephemeral, so the digests and counts recorded in this log, not those files,
 are the durable record of this comparison.
+
+## 2026-07-31 — slice 4 — single-forward parity
+
+The port's step-0 **conditional** forward now runs end to end through the
+replay harness (`tests/omnivoice_replay_real.cpp` +
+`scripts/validate-omnivoice-replay.py`) and is compared against the oracle's
+seven step-0 probes on **all 20 golden cases**. Every case ran; every case
+passed. Measurement mode only — `tests/tolerances/omnivoice.json` still has no
+`profiles` key, so `--check` refuses rather than passing vacuously, and Task 14
+is what turns these numbers into reviewed thresholds.
+
+Worst across the suite (`--require probes`, F32/CPU, 20/20 cases):
+
+| probe | worst max_abs | worst mean_abs | min cosine |
+|---|---:|---:|---:|
+| `generator.hidden_l0` | 5.72205e-05 | 4.4685e-07 | 0.999999870 |
+| `generator.hidden_l7` | 0.000411987 | 1.67257e-06 | 0.999999803 |
+| `generator.hidden_l14` | 0.000701904 | 4.91952e-06 | 0.999999905 |
+| `generator.hidden_l21` | 0.00415039 | 3.37815e-05 | 0.999999863 |
+| `generator.hidden_l27` | 0.0800781 | 0.000195814 | 0.999999786 |
+| `generator.final` | 0.0010376 | 5.28952e-06 | 0.999999828 |
+| `generator.logits_step0` | 0.000610352 | 4.32935e-05 | 0.999999909 |
+
+Three readings worth keeping:
+
+- **The `hidden_l27` max_abs is not a defect, and this family shows why the
+  cosine rule exists.** `l27` is the last block's output, read *before* the
+  final RMSNorm, and it carries the same outlier channels the qwen3-tts port
+  documented: its max_abs is two orders of magnitude larger than `l21`'s while
+  its cosine is 0.9999998 and its mean_abs is 2e-04. The very next probe,
+  `generator.final` — the same tensor after the norm — drops back to 1e-03
+  max_abs. A max-abs threshold set from `l21` would report catastrophic failure
+  on a correct port at `l27`.
+- **The divergence is monotone in depth and flat in canvas length.** `l0` sits
+  at 4e-05 on every one of the 20 cases regardless of whether the canvas is 41
+  or 820 positions, and each later probe is roughly one accumulation step
+  larger. That is the signature of ordinary F32 reduction-order difference
+  compounding through 28 blocks, not of a structural error, which would show up
+  as a step change at one depth or as growth with sequence length.
+- **The prompt grid matched byte-for-byte on all 20 cases before any forward
+  ran.** The runner assembles the grid with `build_prompt_grid` and `memcmp`s
+  it against the oracle's `input/prompt_grid.i32`; that covers the two
+  reference-audio clone cases (471 and 477 positions, 351 reference frames
+  each) and the two voice-design cases as well as the no-reference ones. The
+  check is not vacuous: feeding it a transposed 84×8 grid in place of the
+  oracle's 8×84 is refused with exit 2.
+
+Wall times, F32 CPU, `default_synthesis_threads()` on this 20-CPU machine: the
+whole 20-case sweep took **48.6 s** including 20 separate loads of the 3.0 GiB
+F32 package. Only **8.2 s** of that is the runners; the generator forward
+itself is 0.10 s at 41 positions, 0.79 s at 357, 1.14 s at 471 and **2.06 s at
+820** (`omni-long-boundary`, the longest canvas in the suite). Graph *setup*
+— scheduler creation plus placement, which a per-step rebuild would pay 32
+times over — is 0.30–0.40 ms per forward across all 20 cases, at most 0.31% of
+the forward it precedes. That number is what stage 7's graph-reuse question
+gets to argue against; on this evidence a fresh `GraphRun` per step is not
+where the time goes.
+
+Placement: 832 nodes per forward, **0 off the CPU** on every case, as
+docs/backends.md's discrete-output rule requires. The validator fails the run
+if any node leaves the CPU, so this is enforced rather than observed.
+
+Not covered by this slice, and deliberately: the **unconditional** CFG branch
+has no oracle artifact, so nothing here compares it — its tensors are
+allocated in the persistent input buffer and Task 10 owns both its refill and
+its forward. Likewise the greedy loop and the codec both still refuse loudly
+(`SYNTH_ERR_INTERNAL`), which is what the runner's `run-greedy 1` and
+`decode-replay 1` flags exercise today.

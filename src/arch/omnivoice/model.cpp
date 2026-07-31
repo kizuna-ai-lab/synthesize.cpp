@@ -485,9 +485,12 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
 
         const uint64_t budget = schedule[step];
         if (budget == 0) {
-            // A zero-budget step still ran both forwards above, and must: the
-            // reference's batched forward is unconditional on k, and skipping
-            // it here would only save time, not change the grid.
+            // The forwards above have already run, because this loop keeps the
+            // reference's shape: upstream computes the whole batch and only
+            // then does its per-item `if k <= 0: continue`. Nothing consumes
+            // those logits here, so hoisting the test above the forwards would
+            // produce the same grid, only faster -- shape fidelity is the
+            // reason to run them, not necessity.
             continue;
         }
         candidates.clear();

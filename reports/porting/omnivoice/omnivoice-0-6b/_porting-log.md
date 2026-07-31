@@ -787,8 +787,12 @@ The free-running mask-predict loop is in (`src/arch/omnivoice/model.cpp`,
 `run_synthesis`) and reproduces the oracle's 8 × T token grid **exactly on 15
 of the 17 greedy golden cases**. The two that differ do so for the same
 reason, and it is not a rule this port got wrong: both are F32 near-ties that
-the port and the oracle broke in opposite directions. The gate was not
-relaxed, no fixture was touched, and the exact-token comparison stays exact.
+the port and the oracle broke in opposite directions. For one of the two,
+`omni-fast-mode`, that is close to demonstrated rather than argued — the port's
+grid is **byte-identical to the ambient-torch dump T2 superseded**, so the
+disputed slot is one torch itself has already been observed to move. The gate
+was not relaxed, no fixture was touched, and the exact-token comparison stays
+exact.
 
 Wall clocks, F32 CPU, `default_synthesis_threads()` on this 20-CPU machine.
 "forwards" is `2 × num_step` — the reference's one batched forward per step is
@@ -838,13 +842,41 @@ guided log-probabilities are `-2.65722704` and `-2.65729570` — a gap of
 `guidance_scale = 2.0` amplifies the unconditional branch's disagreement until
 the two are level to five decimal places. Because the flip lands on the final
 step, nothing downstream of it re-runs, which is why exactly 1 of 400 slots
-moved. This is the same slot class the T2 re-dump already caught moving under
-a torch thread-count change alone.
+moved.
+
+**And this is not merely the same slot class the T2 re-dump caught — it is the
+same slot, and the port lands byte-for-byte on the grid torch itself produced
+before the pinning.** T2 recorded `omni-fast-mode`'s grid moving `ce41f5b2…` to
+`70ebe309…` under the thread/determinism pinning, "exactly 1 of the grid's 400
+`int32` slots — codebook 7 of 8, frame 8 of 50 (0-indexed), `1004` to `237`".
+The superseded ambient dump was still on this machine under
+`/tmp/omnivoice_pre_redump_backup/`, so the three digests could be compared
+directly:
+
+| grid | sha256 |
+|---|---|
+| this port's free run | `ce41f5b2c83b87a927c9a8609b38445ad51ee07470b448a5fd467e9605c9ebc4` |
+| T2-superseded **ambient torch** dump | `ce41f5b2c83b87a927c9a8609b38445ad51ee07470b448a5fd467e9605c9ebc4` |
+| current **pinned torch** oracle | `70ebe3093eb691c9409f0fdc8c525c875cd68781958045b4cf24313f8e8ff05a` |
+
+The port's grid **is** the ambient-torch grid, all 400 slots, bit for bit — a
+C++/GGML implementation independently reproducing a specific output of the
+reference implementation. The one slot separating both of them from the pinned
+oracle is flat index 358 = (codebook 7, frame 8), `1004` vs `237` — the same
+slot, the same two token ids, the same direction that a torch thread-count
+change alone produced. This is no longer "plausibly floating-point noise": the
+port's arithmetic landed on the side of the boundary that one torch
+configuration takes, and the oracle records the side another torch
+configuration takes. `/tmp` is ephemeral and will not survive this machine, so
+these digests — not that directory — are the durable record.
 
 **`omni-clone-zh` — a *position* flip at 4.1e-06, cascading.** The 574/608
 figure is not 574 independent errors; it is one coin flip at **step 1** and 30
-steps of consequence. Steps 0 and 1 commit correct tokens; the divergence is
-in *which position* step 1 keeps:
+steps of consequence. Step 0's two commits match the oracle's final grid.
+Step 1 commits three positions: two match the oracle's final grid, and the
+third does not — the port writes `1011` at (codebook 0, frame 0) where the
+oracle's final grid holds `250`. What the instrumentation shows is that this
+third commit won its slot by four parts in a million:
 
 ```
 step=1 budget=3 committed=3 masked=606
@@ -853,12 +885,31 @@ step=1 budget=3 committed=3 masked=606
   select_margin  =  4.05e-06
 ```
 
-The oracle's final grid holds **252 at (codebook 0, frame 68)** — the exact
-token of the candidate this port rejected by four parts in a million. From
-step 2 onward the two canvases hold different committed sets, so every later
-forward sees different context and the grids separate almost completely. The
-large per-token margins reported at steps 2+ (2 to 22 nats) are *downstream of*
-that swap, not evidence of independent rule errors.
+The verified fact, and the only one this evidence supports, is about the
+**rejected** candidate: the oracle's final grid holds **`252` at (codebook 0,
+frame 68)** — the exact token of the candidate this port rejected by 4.05e-06.
+The oracle dumps no per-step grid, so which step it committed that slot at is
+*not* observable here; what is observable is that the port and the oracle
+disagree about a slot the port lost by four parts in a million, and that the
+oracle's answer there is the one the port's runner-up carried. From step 2
+onward the two canvases hold different committed sets, so every later forward
+sees different context and the grids separate almost completely. The large
+per-token margins reported at steps 2+ (2 to 22 nats) are *downstream of* that
+divergence, not evidence of independent rule errors.
+
+Two things this case does **not** have, stated so the two mismatches are not
+read as equally well-evidenced:
+
+- **No digest corroboration.** Unlike `omni-fast-mode`, `omni-clone-zh`'s grid
+  did not move in the T2 re-dump: its ambient and pinned dumps are the same
+  file (`64d2b0119f968b0428dcbaa7b9fc04e59d4603d6b453493e3a6f91556e6d0c16`),
+  and the port's grid (`e61a871132d399ec535072192af79bafc0724bbcb31ecca88605e47a4104c05e`)
+  matches neither. Its case rests on the 4.05e-06 margin and on the rejected
+  candidate carrying the oracle's token — strong, but inference, not the byte
+  identity `omni-fast-mode` has.
+- **No per-step oracle.** Establishing the step-1 position swap beyond
+  inference would need the oracle to dump its canvas per step, which the
+  dumper does not do today. That is a cheap change if a ruling wants it.
 
 `omni-clone-en` is the control: structurally identical to `omni-clone-zh` —
 same 351-frame reference, same 50-token text region, only 70 frames instead of

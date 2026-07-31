@@ -1,6 +1,6 @@
 # Testing Policy
 
-Status: Confirmed, last updated on 2026-07-30.
+Status: Confirmed, last updated on 2026-07-31.
 
 Testing is a per-slice completion gate. A new converter rule, graph stage,
 runtime control, backend path, or public Interface is not complete merely because
@@ -120,6 +120,17 @@ cmake --build build --target synthesize-check-integration
 `synthesize-omnivoice-load-real` needs only the package: it opens it through
 the family loader and then through the public seam, and is registered under
 `integration`, `omnivoice`, and `abi`.
+
+`synthesize-omnivoice-replay-golden` runs the replay validator with `--check`
+against `tests/tolerances/omnivoice.json`, so it enforces the committed
+thresholds rather than measuring new ones. It also carries this family's
+`structural_exactness` claim, which is not a threshold at all: every greedy
+case's 8 x T token grid must equal the oracle's byte for byte (or a committed
+alternate grid's), and that arm fails independently of the tolerance file. It
+needs the oracle payload under `build/goldens/omnivoice/` as well as the
+package and is not registered without it. Budget a few minutes of wall clock:
+the 17 greedy free-runs re-run the whole decode loop, 7 min 33 s for the
+twenty-case sweep on a 20-CPU machine against a `TIMEOUT` of four hours.
 
 Run the DGX Spark CUDA 13.3 Update 1 gate in a separate build tree. CUDA F32
 matrix multiplies compute at TF32 precision and there is no build option to

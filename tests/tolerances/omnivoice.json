@@ -3,9 +3,70 @@
   "family": "omnivoice",
   "variant": "omnivoice-0-6b",
   "suite_version": 1,
-  "status": "pending-first-measurement",
+  "status": "thresholds-committed-and-enforced",
   "reference_stage": "source-f32-oracle-vs-f32-cpu",
   "case_count": 20,
-  "note": "Nothing has been measured yet. This file is committed ahead of the measurement so the Golden Manifest's `tolerance_file` resolves and so the shape of the eventual grid is fixed before any number lands in it -- not because a threshold exists.\n\nA tolerance is an input to validation, not an output of it. Recording the numbers a run happens to produce and calling them the acceptance criteria proves only that the run reproduced itself. So this file deliberately records no grid: `stages` is empty, and there is no `profiles` key at all, which makes every validator's `--check` refuse rather than pass vacuously -- scripts/validate-<family>-<stage>.py reads `tolerances.get(\"profiles\", {})` and stops when the requested cell is absent. Deleting a threshold to make a run pass would be visible in the diff; there is nothing here to delete.\n\nThe reference stage is `source-f32-oracle-vs-f32-cpu`, and that name is the whole reason this family's thresholds should end up tighter than qwen3-tts's. The checkpoint is F32 throughout and the oracle runs F32 on CPU, so the comparison carries neither a dtype difference nor a device difference -- only an implementation one. docs/port-validation.md's dtype-follows-the-checkpoint rule and its least-approximating-reproducible-device rule select the same configuration here instead of pulling apart, which is what made this family attractive in the first place.\n\nOne threshold this file will never need: the token grid. docs/porting/families/omnivoice.md defines `structural_exactness` for this family as exact equality of the 8 x T grid against the oracle's, and greedy decoding makes no RNG call at all, so that gate is equality rather than a number. What gets measured here is the waveform and the step-0 generator probes.\n\nThe grid will be keyed on Quantization Profile, Execution Backend and stage, the layout tests/python/test_tolerance_coverage.py checks. That test's legacy branch -- which asserts an empty `stages` object -- is what this file currently satisfies, and its docstring names exactly this situation: a family that arrived before its grid was swept. The first measurement replaces `stages` with a real `profiles` grid and this note with the reasoning behind the figures.\n\nQuantization is expected to be harder for this family than for any shipped so far, which is a reason to fix the shape now. A reference port measured token agreement collapsing from 100 percent to roughly 7 percent with F16 generator weights: an argmax flip at one step is committed, fed back into both branches, and conditions every later step, so error does not average out. Every profile re-passes the exact-token gate or is not shipped, and no perceptual claim substitutes for it.",
-  "stages": {}
+  "note": "Measured 2026-07-31 from the first working reference and implementation across all twenty Golden cases, then reviewed and committed. A tolerance is an input to validation, not an output of it.\n\nThe oracle and the port both run F32 on CPU, so these thresholds carry neither a dtype nor a device difference -- only an implementation one -- and are accordingly far tighter than qwen3-tts's. The deep generator probes gate on cosine; the two waveform probes gate on cosine AND max-abs, because a listener hears the waveform and a cosine over it would hide a constant offset.\n\nEvery cosine threshold is five times the measured deviation in (1 - cosine), rounded DOWN to six decimals -- the precision the qwen3-tts file already uses. At this family's scale that rounding is not cosmetic and the file says so rather than repeating a clean '5x': the measured deviations run from 9.06e-08 to 2.14e-07, so the committed gates land at 1e-06 (2e-06 at hidden_l27), which is between 5.1x and 11.0x the measured figure. Rounding the other way would tighten past the rule.\n\nThere is a second reason not to cut finer, and it is the more important one. The cosine estimate is computed in float32 over arrays of 24k to 6.7M elements, and on these same runs it returns cosines ABOVE 1.0 by as much as 2.08e-07 -- larger than every deviation in this table. A cosine gate finer than about 1e-06 would be measuring the estimator's own summation error, not the port, and would fail on a thread-count change. The waveform's max_abs is the channel that keeps real resolution here: 9e-05 committed against 1.69e-05 measured, five times the deviation rounded up to one significant figure, computed by subtraction rather than accumulation and so free of that noise floor.\n\naudio.pcm_freerun is NOT independent evidence on the 14 no-reference cases that matched the primary grid: the oracle's waveform there is already peak-normalised so the port's volume branch is the identity to the bit, and the free-run grid IS the replayed grid, which makes both sides byte-identical to audio.pcm's comparison -- the worst figures recorded for the two probes are the same numbers off the same case. Only the two clone cases compare something new (max_abs 2.83e-06 and 2.69e-06, against audio.pcm's 3.54e-06 and 4.34e-06), and omni-fast-mode is exempt on this channel because it matched an alternate grid the oracle has no waveform for. What the probe proves everywhere, and audio.pcm cannot, is that the codec is wired into the synthesis path at all.\n\nOne threshold this file will never carry: the token grid. structural_exactness for this family is EXACT equality of the committed 8 x T grid against the oracle's (17 greedy cases, measured 17/17 at commit time, one of them via the committed alternate grid); the validator fails any inexact grid unconditionally, before and independent of --check.\n\nThe grid is keyed on Quantization Profile, Execution Backend and stage, the layout tests/python/test_tolerance_coverage.py checks; F32 on CPU is the only measured cell, because Plan 2 is CPU-only and quantization is expected to be HARDER here than in any shipped family (a reference port measured token agreement collapsing to ~7% under an F16 generator; every future profile re-passes the exact-token gate or is not shipped).",
+  "profiles": {
+    "F32": {
+      "stages": {
+        "replay": {
+          "phase": "oracle_replay",
+          "backend": "CPU",
+          "cases": 20,
+          "description": "The oracle's grids replayed through the codec and the step-0 conditional forward compared against its probes; the greedy free-run grids compared exactly, outside this file.",
+          "probes": {
+            "generator.hidden_l0": {
+              "min_cosine": 0.999999,
+              "observed_min_cosine": 0.9999998701368862,
+              "observed_max_abs": 5.7220458984375e-05
+            },
+            "generator.hidden_l7": {
+              "min_cosine": 0.999999,
+              "observed_min_cosine": 0.999999803024822,
+              "observed_max_abs": 0.0004119873046875
+            },
+            "generator.hidden_l14": {
+              "min_cosine": 0.999999,
+              "observed_min_cosine": 0.9999999054187749,
+              "observed_max_abs": 0.000701904296875
+            },
+            "generator.hidden_l21": {
+              "min_cosine": 0.999999,
+              "observed_min_cosine": 0.9999998628960642,
+              "observed_max_abs": 0.004150390625
+            },
+            "generator.hidden_l27": {
+              "min_cosine": 0.999998,
+              "observed_min_cosine": 0.999999785985202,
+              "observed_max_abs": 0.080078125
+            },
+            "generator.final": {
+              "min_cosine": 0.999999,
+              "observed_min_cosine": 0.9999998281059764,
+              "observed_max_abs": 0.00103759765625
+            },
+            "generator.logits_step0": {
+              "min_cosine": 0.999999,
+              "observed_min_cosine": 0.9999999094299267,
+              "observed_max_abs": 0.0006103515625
+            },
+            "audio.pcm": {
+              "min_cosine": 0.999999,
+              "max_abs": 9e-05,
+              "observed_min_cosine": 0.9999998558210387,
+              "observed_max_abs": 1.6881152987480164e-05
+            },
+            "audio.pcm_freerun": {
+              "min_cosine": 0.999999,
+              "max_abs": 9e-05,
+              "observed_min_cosine": 0.9999998558210387,
+              "observed_max_abs": 1.6881152987480164e-05
+            }
+          },
+          "note": "Twenty cases: 17 greedy and 3 sampled. The sampled cases contribute the step-0 probes only -- their grids and waveforms are the public sampled path's claim, which Plan 3 makes -- so the two waveform probes above are measured over 20 and 16 cases respectively: audio.pcm covers every case, and audio.pcm_freerun covers 20 minus the 3 sampled cases (no greedy free-run) minus omni-fast-mode, which matched its alternate grid and is exempt from oracle parity on that channel.\n\nWorst-case attribution, for the review this file records rather than for the gate: hidden_l27's max_abs of 0.0801 is omni-digits and is the largest absolute figure anywhere in the table, which is why the deep probes are cosine-gated -- the pre-norm outlier channels make max-abs useless as a threshold while the cosine holds at eight nines. The waveform's worst cosine is omni-medium-en and its worst max_abs omni-nonverbal, at 1.7e-05 on a signal peaking at 0.5."
+        }
+      }
+    }
+  }
 }

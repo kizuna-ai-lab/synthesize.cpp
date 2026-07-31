@@ -605,6 +605,36 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             TIMEOUT 600)
     endif()
 
+    # OmniVoice's replay validator runs with --check, so it is a gate against
+    # the committed tolerances rather than a measurement -- and its exact-token
+    # arm fails any greedy case whose grid is not the oracle's, tolerance file
+    # or no. The golden sentinel is the oracle payload, deliberately not
+    # committed.
+    #
+    # TIMEOUT 14400: this gate re-runs 17 greedy free-runs, each 32 denoising
+    # steps at two forwards per step over the whole canvas -- omni-long-boundary
+    # alone is 719 frames and 126 s. The twenty-case sweep measured 7 min 33 s
+    # wall on a 20-CPU development machine, so four hours is headroom for a
+    # slower or busier one rather than an estimate: a gate that times out
+    # reports a failure it did not find.
+    set(_synth_omnivoice_golden_sentinel
+        "${CMAKE_SOURCE_DIR}/build/goldens/omnivoice/omni-short-en/codes/grid.i32")
+    if(EXISTS "${SYNTH_OMNIVOICE_TEST_MODEL}" AND EXISTS "${_synth_omnivoice_golden_sentinel}")
+        add_test(
+            NAME synthesize-omnivoice-replay-golden
+            COMMAND ${SYNTH_UV_EXECUTABLE} run
+                --project ${CMAKE_SOURCE_DIR}/scripts/envs/omnivoice
+                --locked python ${CMAKE_SOURCE_DIR}/scripts/validate-omnivoice-replay.py
+                --manifest ${CMAKE_SOURCE_DIR}/tests/golden/omnivoice/omnivoice-0-6b.manifest.json
+                --model ${SYNTH_OMNIVOICE_TEST_MODEL}
+                --runner $<TARGET_FILE:synthesize-omnivoice-replay-real>
+                --check --profile F32 --backend CPU --stage replay)
+        set_tests_properties(synthesize-omnivoice-replay-golden PROPERTIES
+            LABELS "integration;omnivoice;golden"
+            TIMEOUT 14400
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    endif()
+
     # Qwen3-TTS's two validators. Both need the package, which is why they sat
     # unregistered while the family shipped -- and being unregistered is how the
     # replay stage stopped being something CI could run at all.

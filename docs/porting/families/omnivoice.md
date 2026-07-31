@@ -1,14 +1,9 @@
 # OmniVoice Family Selection and Port Plan
 
-Status: Confirmed 2026-07-31. Intake, oracle materialization (20/20 cases
-dumped locally), source-dtype conversion (798-tensor F32 GGUF produced
-locally), and the stage-4 load slice (real-package smoke passing) are done.
-Of the synthesis graphs, the generator (bidirectional block, canvas embedding
-merge, full-canvas audio heads) and the free-running mask-predict decode loop
-are built: the port reproduces the oracle's 8 × T token grid exactly on
-**17 of 17** greedy golden cases, one of them through the dual-admissibility
-contract recorded under Port Validation Fit. The codec graphs and the waveform
-half of port validation have not started.
+Status: Confirmed 2026-07-31. Intake through the greedy synthesis core
+(slices 4–6) done: single-forward parity, exact token grids 17/17, replay
+waveform under committed tolerances (tests/tolerances/omnivoice.json). Public
+sampling, cloning, and the full validation suite have not started.
 
 ## Decision
 
@@ -99,6 +94,15 @@ processes, not merely repeatable inside one seeded process — the property that
 made OmniVoice the fourth-family candidate, and the property the whole
 validation strategy below is built on.
 
+`class_temperature`'s upstream default is **0.0**; only
+`position_temperature` defaults non-zero, at 5.0. So the public sampled path
+**draws positions, not classes, unless a caller raises it**: at the defaults
+the randomness decides which canvas positions a step commits, and the token
+written at a committed position is still the argmax described under The decode
+loop. A port that read both defaults as 5.0 would sample twice where upstream
+samples once. Plan 3's sampler is where the class branch is implemented and
+where a non-zero `class_temperature` first has a path to take.
+
 Every oracle run, greedy or sampled, pins `postprocess_output=False,
 pad_duration=0.0, fade_duration=0.0`. There is no pydub in the contract:
 silence trimming, fades, and padding are upstream product behavior, not model
@@ -148,6 +152,10 @@ transcript is required, language optional), voice design is **Description
 Text**, and auto-voice is the package default with no profile selected. The
 Preset Voice Catalog is empty and the package default is unnamed. OmniVoice is
 the first family to exercise the Reference Audio and Description Text sources.
+**Auto-voice means the voice follows the synthesis seed**: with no profile
+selected, nothing but the sampled path's draws picks the speaker, so a caller
+who wants the same speaker twice reuses the seed the request reports — there is
+no named default Voice to ask for instead.
 
 ### The prompt layout
 
@@ -241,6 +249,14 @@ The validation-only family seam that replays a Gumbel noise stream is a
 fallback, not the mechanism. It gets implemented only if a sampled-path parity
 case proves it necessary.
 
+**Measured 2026-07-31:** all 17 greedy cases reproduce the oracle's grid
+exactly on CPU F32 — 16 against the primary grid and `omni-fast-mode` against
+its committed alternate — and the replay-stage thresholds are committed in
+`tests/tolerances/omnivoice.json` with reference stage
+`source-f32-oracle-vs-f32-cpu`. `scripts/validate-omnivoice-replay.py --check`
+enforces them as the CTest gate `synthesize-omnivoice-replay-golden`, which
+registers whenever the package and the oracle payload are both present.
+
 ### The knife edge: dual-admissible grids and margin screening
 
 Ruling by jiangzhuo, 2026-07-31, on the slice-5 result. Greedy decoding is
@@ -298,6 +314,15 @@ this ruling had to be written for — and the third smallest is **1.16e-04**
 separates the cases that needed a ruling from the cases that did not, on the
 evidence rather than on a round number.
 
+**The split is 1.7× wide**, not the 12× the first reading of it reported. That
+reading compared 1.16e-04 against `omni-rate-slow`'s 9.5e-06 across what looked
+like an empty band, because the table it was drawn from listed selection
+margins only and `omni-fast-mode`'s **argmax** margin — 6.9e-05, sitting inside
+that band — had not been measured yet. Once both kinds are measured the nearest
+neighbours across the screen are 6.9e-05 and 1.16e-04. The screen still lands
+where the suite splits, but it splits narrowly: a future case between those two
+figures is a judgement call, not an obvious one.
+
 Two scope limits, stated so the screen is not read as stronger than it is.
 Argmax margins are collected on full-commit steps only — in practice the final
 step, the one the schedule gives the whole remainder — so a narrow argmax on a
@@ -316,6 +341,21 @@ demonstration. If a legitimate
 torch-side re-dump ever flips it, the remedy is the dual-admissibility
 mechanism — enumerate the second grid with its provenance — and never a
 threshold.
+
+**And the screen at 1e-4 is not the noise bound.** Six of the 17 greedy cases
+decide something by less than the 6.1e-04 logit divergence, and all six are
+retained. Two are the sub-threshold pair the ruling was written for —
+`omni-rate-slow` (9.5e-06) and `omni-fast-mode` (6.9e-05), named above. The
+other four clear the screen and are adopted without a ruling, and they are
+named here so the list is not mistaken for two: **`omni-short-en` (1.16e-04),
+`omni-long-boundary` (2.05e-04), `omni-rate-fast` (2.44e-04) and
+`omni-lang-none` (6.03e-04)**. Each of those four still turns on a decision
+this arithmetic does not resolve; they pass today because the port lands on the
+oracle's side of it. The screen governs which cases are *adopted*, and it is
+not a claim that every adopted case was decided by a comfortable margin. When a
+quantized profile or a second backend perturbs the scores, these four are where
+a flip is likeliest — ahead of the eleven above the bound — and the remedy is
+the same enumeration, never a threshold on a token id.
 
 **`omni-clone-zh` supersession.** The case's target text changed from
 `克隆的声音读出这句话。` to `克隆的声音也要说中文的句子。` on 2026-07-31 under this
@@ -437,12 +477,33 @@ by golden cases at both ends, not a clamp inherited from upstream. Explicit
 target duration is not exposed in v1: the request's frame limit remains a cap,
 not a target.
 
+**Recorded divergence: zero reference frames.** Handed a reference of *zero*
+audio tokens, upstream's estimator divides by zero and its `max(1, int(...))`
+returns a one-frame canvas. This port treats zero reference frames as **no
+reference** and takes the anchor pair instead. The divergence is deliberate and
+unreachable from a valid request: a Reference Audio profile with no audio
+behind it is refused at load, so zero frames can only mean a caller bug, and
+answering that bug with a one-frame canvas would turn it into a synthesis that
+technically succeeded. `tests/omnivoice_frontend_test.cpp` pins both halves of
+the rule — every anchored row reaches the same frame count from a request
+carrying no reference at all — and cites this paragraph.
+
 ## Delivery and Limits
 
 The family delivers complete audio only. There is no Chunked Audio Delivery
 claim and no Native Streaming Synthesis claim in v1: the model paints a whole
 canvas at once, so there is nothing partial to hand back that would be honest
 to call either.
+
+**The loader refuses a package without embedded generation defaults** — the
+converter's "second copy" doctrine is enforced at load, not merely at
+conversion. `num_step`, `guidance_scale`, `t_shift`, the layer penalty factor
+and both temperatures are read from the pinned upstream configuration by the
+converter and written into the GGUF; a package missing any of them is rejected
+with `omnivoice: package declares no generation defaults; re-cut it` rather
+than run against a hardcoded fallback. A fallback is exactly the second copy
+the doctrine forbids: it would let a package cut before a defaults change
+synthesise silently under the new code's numbers.
 
 `max_output_frames` is 750, which is 30 seconds at 25 Hz. That ceiling is a
 statement about what this port validates, not about what the model can do:
@@ -476,9 +537,9 @@ deliberately rejects rather than discovers later.
 Plan 2's port mirrors all three branches. A port that reproduced the codec
 perfectly and omitted this would be wrong by a per-utterance gain factor on
 every request, and the golden tolerances could not catch it because the oracle
-dumps carry the scaling too. Where the scaling *lives* — inside the family's
-synthesis path, or hoisted into a documented normalisation control the public
-interface names — is left open for Plan 2.
+dumps carry the scaling too. Where the scaling *lives* was decided on
+2026-07-31 and is recorded under Open Questions: inside the family's synthesis
+path, with no public normalisation control in v1.
 
 ## Quantization Profile Shape
 
@@ -658,13 +719,13 @@ Stage 6 decides, and a failing profile is simply not shipped.
 proves it necessary; the seed contract covers the public sampled path
 otherwise.
 
-**Where the residual output scaling lives.** Intake settled *what* it is — the
-ungated volume branch documented under Delivery and Limits — but not where the
-port puts it. Inside the family's synthesis path is faithful to the oracle and
-hides a per-utterance gain the public interface never mentions; hoisting it into
-a documented, disableable normalisation control is honest and diverges from the
-oracle unless the control defaults on. The golden tolerances depend on the
-answer, because the oracle dumps carry the scaling. Plan 2 decides.
+**Where the residual output scaling lives — decided 2026-07-31 (Plan 2).**
+Inside the family's synthesis path: `Model::run_synthesis` applies the
+no-reference peak-normalise-to-0.5 branch after codec decode, faithful to the
+oracle, and no public normalisation control exists in v1. The replay seam's
+`decode_codes` returns the raw waveform so validation can apply the oracle's
+branch per case. The quiet-reference and zero-reference branches are decided
+with cloning (Plan 3).
 
 **Voice-design instruct passthrough.** v1 does not reimplement upstream's
 `_resolve_instruct` normalization. Oracle cases pin already-normalized instruct

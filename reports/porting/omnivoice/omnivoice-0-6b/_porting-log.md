@@ -1438,3 +1438,158 @@ never writes — `omni-rate-fast: stale-freerun-waveform`, **exit 1**, no
 traceback. The three-case real-package check re-run afterwards: 3/3 grids exact,
 `audio.pcm` 3.54e-06, `audio.pcm_freerun` 3.25e-06, fast-mode still exempt and
 identical, exit 0.
+
+## 2026-07-31 — Plan 2 closeout — first tolerances committed, golden gate enforcing
+
+The measurement that slices 4–6 produced is now a committed grid and a
+registered CTest gate. `tests/tolerances/omnivoice.json` goes from
+`pending-first-measurement`, which made `--check` refuse, to
+`thresholds-committed-and-enforced`, which makes it gate.
+
+### Provenance of the numbers
+
+The thresholds are derived from **one** sweep — the first working reference and
+implementation, per `docs/port-validation.md` — re-run at this commit before
+being written down, and identical to slice 6's to every digit:
+
+```bash
+uv run --project scripts/envs/omnivoice --locked python scripts/validate-omnivoice-replay.py \
+  --model models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
+  --runner build/bin/synthesize-omnivoice-replay-real \
+  --require all --margin-report --report build/goldens/omnivoice-replay/full-report.json
+```
+
+**20/20 ok, 17/17 grids exact, exit 0, 417.3 s wall.**
+
+Every cosine threshold is five times the measured deviation in `(1 - cosine)`,
+rounded DOWN to six decimals; `audio.pcm` and `audio.pcm_freerun` additionally
+gate on max-abs at five times the measured value rounded UP to one significant
+figure.
+
+| probe | measured min_cosine | measured (1−cos) | committed min_cosine | actual headroom | measured max_abs | committed max_abs |
+|---|---:|---:|---:|---:|---:|---:|
+| `generator.hidden_l0` | 0.9999998701 | 1.299e-07 | 0.999999 | 7.7× | 5.72205e-05 | — |
+| `generator.hidden_l7` | 0.9999998030 | 1.970e-07 | 0.999999 | 5.1× | 0.000411987 | — |
+| `generator.hidden_l14` | 0.9999999054 | 9.458e-08 | 0.999999 | 10.6× | 0.000701904 | — |
+| `generator.hidden_l21` | 0.9999998629 | 1.371e-07 | 0.999999 | 7.3× | 0.00415039 | — |
+| `generator.hidden_l27` | 0.9999997860 | 2.140e-07 | **0.999998** | 9.3× | 0.0800781 | — |
+| `generator.final` | 0.9999998281 | 1.719e-07 | 0.999999 | 5.8× | 0.0010376 | — |
+| `generator.logits_step0` | 0.9999999094 | 9.057e-08 | 0.999999 | 11.0× | 0.000610352 | — |
+| `audio.pcm` | 0.9999998558 | 1.442e-07 | 0.999999 | 6.9× | 1.68812e-05 | **9e-05** |
+| `audio.pcm_freerun` | 0.9999998558 | 1.442e-07 | 0.999999 | 6.9× | 1.68812e-05 | **9e-05** |
+
+**The headroom column is the reviewed part, and it is not 5× anywhere.** Six
+decimals is the precision the qwen3-tts file uses, and there it is nearly
+lossless because that family's deviations are 1e-04 to 5e-03. Here they are
+1e-07, so the rounding dominates: eight probes collapse onto the same 1e-06
+gate and `hidden_l27` onto 2e-06. Rounding the other way would have tightened
+past the rule, so the coarser value is the one the rule permits — but writing
+"5×" in the file and committing 11× would have been a false statement, which is
+why the file states the ratio range.
+
+There is a second and better reason not to cut finer, found while reviewing the
+report rather than assumed: **the cosine estimator's own arithmetic is the
+noise floor here.** `cosine()` accumulates in float32 over 24k–6.7M element
+arrays, and on these same runs it returns values *above* 1.0 by up to
+**2.08e-07** — larger than every deviation in the table above. A gate at 5×
+(≈5e-07) would sit inside that noise and could fail on a thread-count change
+with nothing wrong in the port. The waveform's max-abs is the channel that
+keeps real resolution: it is a subtraction, not an accumulation, and 9e-05
+against a measured 1.68812e-05 on a signal peaking at 0.5 is a threshold that
+would actually catch a wrong gain.
+
+One dependency recorded in the file itself: **`audio.pcm_freerun` is not
+independent evidence on 14 of the 16 cases it covers.** For a no-reference case
+that matched the primary grid, the oracle waveform is already peak-normalised
+(so the port's volume branch is the identity to the bit) and the free-run grid
+*is* the replayed grid, which makes both sides byte-identical to `audio.pcm`'s
+comparison — the two probes' worst rows are the same numbers off the same case.
+Only `omni-clone-en` and `omni-clone-zh` compare something new (2.83e-06 and
+2.69e-06 against `audio.pcm`'s 3.54e-06 and 4.34e-06), and `omni-fast-mode` is
+exempt on this channel. What the probe proves everywhere, and `audio.pcm`
+cannot, is that the codec is wired into the synthesis path at all.
+
+No threshold exists for the token grid and none ever will: `structural_exactness`
+for this family is byte equality of the 8 × T grid against the oracle's or a
+committed alternate's, and the validator fails an inexact grid before `--check`
+is consulted.
+
+### The gate
+
+`synthesize-omnivoice-replay-golden`, registered beside the qwen3-tts golden
+blocks and mirroring them: package + oracle-payload sentinel
+(`build/goldens/omnivoice/omni-short-en/codes/grid.i32`, deliberately not
+committed), the locked `scripts/envs/omnivoice` uv environment,
+`--check --profile F32 --backend CPU --stage replay`, labels
+`integration;omnivoice;golden`, `TIMEOUT 14400`, working directory at the
+source root.
+
+Run exactly as CI would, after a clean configure with
+`-DSYNTH_BUILD_INTEGRATION_TESTS=ON`:
+
+```
+1/1 Test #87: synthesize-omnivoice-replay-golden ...   Passed  420.23 sec
+100% tests passed, 0 tests failed out of 1
+```
+
+A `ctest -V` re-run (419.70 s, exit 0) captured what the validator actually
+printed under the gate, since a passing CTest prints nothing: 17/17 grids
+exact, `omni-fast-mode` exact against its alternate, 16 free-run waveforms
+against the oracle and 1 exempt, and the closing line **`all probes within the
+F32/CPU/replay tolerances`**. Four hours of timeout against seven minutes of
+measured wall clock is headroom for a slower machine, not an estimate.
+
+**Negative controls, because a gate that cannot fail is not a gate.** Both ran
+`--cases omni-short-en --check` against a doctored `--tolerances` file in
+`/tmp`, leaving the committed one untouched:
+
+- cell deleted (`profiles: {}`) → `tolerance cell F32/CPU/replay is not
+  recorded in /tmp/t14-tol-nocell.json`, **exit 1**. This is the state the file
+  was in before this commit, so it is also the proof that `--check` was
+  refusing rather than passing vacuously all through Plan 2.
+- `generator.hidden_l27` tightened to `0.99999999` →
+  `generator.hidden_l27: cosine 0.99999998 breaches 0.99999999`, **exit 1**.
+
+Both printed the full worst-table first: the measurement happens either way,
+and only the verdict changes.
+
+### What Plan 2 does NOT close
+
+The public seam still answers `synthesis.not_implemented` for this family, and
+that is deliberate: everything above is reached through the replay harness.
+Stage 5 (Port Validate) is therefore partly done — the greedy replay half —
+and the rest is owed:
+
+- **Plan 3** — the public sampled path (Gumbel position draws, this project's
+  seed contract, `class_temperature`'s class branch), Reference Audio cloning
+  with the 24→16 kHz HuBERT resample and the quiet/zero-reference volume
+  branches, Description Text voice design, Serialized Profiles, and the public
+  request phase that opens the seam.
+- **Plan 4** — stage 6 quants (expected to be the hard one: every profile
+  re-passes the exact-token gate or is not shipped), stage 7 backends (the
+  codec moves first; the generator only on bit-identical grid evidence), and
+  stage 8 ship.
+
+Also still open and now written into the family doc rather than carried in a
+task list: the four golden cases that clear the 1e-4 margin screen while still
+sitting under the 6.1e-04 logit-divergence bound (`omni-short-en`,
+`omni-long-boundary`, `omni-rate-fast`, `omni-lang-none`) are where a quantized
+profile or a second backend is likeliest to flip a token first.
+
+### Gates
+
+| gate | result |
+|---|---|
+| full sweep, `--require all`, 20 cases, `--margin-report` | **20/20 ok, 17/17 exact**, exit 0, 417.3 s |
+| `ctest -R synthesize-omnivoice-replay-golden` (`--check` enforcing) | **Passed, 420.23 s**, exit 0; `-V` re-run 419.70 s, same verdict |
+| — negative control: tolerance cell removed | refused, exit 1 |
+| — negative control: `hidden_l27` tightened to 0.99999999 | breach reported, exit 1 |
+| `ctest -R synthesize-golden-manifest-contract` | passed (`case_count` 20 == manifest 20) |
+| `ctest -R synthesize-vits-python-unit` | passed (tolerance coverage: validators `{replay}` == measured `{replay}`) |
+| `ctest -R synthesize-omnivoice-python-unit` | passed |
+| `cmake --build build --target synthesize-check-unit` | 78/78 passed |
+| `cmake --build build-sanitize --target synthesize-check-unit` (ASan/UBSan) | 78/78 passed |
+| `ctest -L unit` | 78/78 passed |
+| `scripts/ci/clang-format.sh --check-diff` | clean |
+| package GGUF | `3ecaa5e2f6fbd735296ba1cd60680c90467be22d2140dc4f208fe80111ecb9e5`, unchanged |
+| public seam | still `synthesis.not_implemented` for omnivoice |

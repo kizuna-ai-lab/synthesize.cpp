@@ -1,9 +1,12 @@
 # OmniVoice Family Selection and Port Plan
 
-Status: Confirmed 2026-07-30. Intake, oracle materialization (20/20 cases
+Status: Confirmed 2026-07-31. Intake, oracle materialization (20/20 cases
 dumped locally), source-dtype conversion (798-tensor F32 GGUF produced
-locally), and the stage-4 load slice (real-package smoke passing) are done;
-synthesis graphs and port validation have not started.
+locally), and the stage-4 load slice (real-package smoke passing) are done.
+Of the synthesis graphs, the generator (bidirectional block, canvas embedding
+merge, full-canvas audio heads) is built and unit-checked against the real
+Qwen3 class; the decode loop, the codec graphs, and port validation against the
+oracle have not started.
 
 ## Decision
 
@@ -157,11 +160,16 @@ audio tokens are present.
 
 The whole prompt is a grid 8 rows deep. **Every row of the 8-codebook
 dimension repeats the same text ids**; the rows differ only where audio tokens
-live. The embedding merge is correspondingly asymmetric: the sequence embedding
-is the text embedding of row 0 plus the sum of the eight codebook embeddings,
-each read at its own offset into the shared audio embedding table
-(`arange(8) * 1025`). The target region is `T` frames of mask id 1024 in all
-eight rows, where `T` is the canvas length fixed by the duration estimator.
+live. The embedding merge is correspondingly asymmetric, and it **selects
+rather than adds**: `_prepare_embed_inputs` ends in
+`torch.where(audio_mask.unsqueeze(-1), audio_embeds, text_embeds)`, so a text
+position carries the text embedding of row 0 alone, and an audio position
+carries the sum of the eight codebook embeddings alone — each read at its own
+offset into the shared audio embedding table (`arange(8) * 1025`). The text
+embedding is computed at every position, audio ones included, and then thrown
+away wherever the audio mask is set; nothing is ever summed across the two
+streams. The target region is `T` frames of mask id 1024 in all eight rows,
+where `T` is the canvas length fixed by the duration estimator.
 
 ### The decode loop
 

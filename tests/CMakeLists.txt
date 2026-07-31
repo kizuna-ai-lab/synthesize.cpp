@@ -172,6 +172,7 @@ synth_add_unit_test(synthesize-qwen3-tts-sampling-test qwen3_tts_sampling_test.c
 synth_add_unit_test(synthesize-omnivoice-metadata-test omnivoice_metadata_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-catalog-test omnivoice_catalog_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-frontend-test omnivoice_frontend_test.cpp)
+synth_add_unit_test(synthesize-omnivoice-generator-test omnivoice_generator_test.cpp)
 synth_add_unit_test(synthesize-kokoro-lstm-test kokoro_lstm_test.cpp)
 synth_add_unit_test(synthesize-kokoro-catalog-test kokoro_catalog_test.cpp)
 synth_add_unit_test(synthesize-kokoro-plbert-test kokoro_plbert_test.cpp)
@@ -307,6 +308,7 @@ set_tests_properties(
     synthesize-omnivoice-metadata-test
     synthesize-omnivoice-catalog-test
     synthesize-omnivoice-frontend-test
+    synthesize-omnivoice-generator-test
     synthesize-omnivoice-model-errors-test
     synthesize-omnivoice-load-synthetic-test
     PROPERTIES LABELS "unit;omnivoice")

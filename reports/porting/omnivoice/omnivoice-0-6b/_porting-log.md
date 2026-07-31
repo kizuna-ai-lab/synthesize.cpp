@@ -1154,6 +1154,35 @@ listed. There was one:
 Re-dump: 151.8 s of model wall, 307 s end to end, `[1/1] omni-clone-zh`,
 6 pinned inputs verified against the manifest before it ran.
 
+**The tokenizer dump had to be refreshed with it, and this was nearly missed.**
+`scripts/dump_reference_omnivoice_tokenizer.py` produces a second, separate
+oracle — `build/goldens/omnivoice/tokenizer/cases.json` — whose duration rows
+are transcribed into `tests/omnivoice_frontend_test.cpp` as the committed
+statement of that file. A case's text is an input to *both* dumpers, so
+re-picking the text staled the frontend fixtures while every replay gate stayed
+green: the replay runner takes its frame count from the oracle artifacts and
+never calls `DurationEstimator` at all, so the estimator's only clone-zh
+coverage would have gone on testing a text no golden case uses. Re-run against
+the updated manifest (`13 pre-tokenizer strings, 53 id rows, 20 prompts, 24
+duration rows`), the case moves:
+
+| | old | new |
+|---|---:|---:|
+| `total_weight` | 30.5 | **39.5** |
+| `estimated_frames` | 76 | **98** |
+
+with `ref_text_total_weight` 140.4 and `num_ref_audio_tokens` 351 unchanged —
+the reference audio did not move. The estimator's 98 frames is the same 98 the
+PyTorch oracle dumped, which is the cross-check that matters: two independent
+reference paths agree on the new canvas length. `combined_text` for the case
+was refreshed from the same dump. All 24 duration rows were then compared
+against the fresh `cases.json` programmatically; only `omni-clone-zh` moved.
+
+The general rule this earns: **a golden case's text feeds every oracle the
+family has, and re-picking one means re-running all of them.** For omnivoice
+that is two dumpers, and only one of them is guarded by a gate that would have
+noticed.
+
 Manifest relations were re-checked and none moves: `omni-clone-zh` belongs to
 no `artifact_differs` relation. The same-text trio is
 `omni-short-en`/`omni-design-en`/`omni-clone-en`, all English; the zh design and

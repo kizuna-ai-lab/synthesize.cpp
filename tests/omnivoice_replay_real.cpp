@@ -118,6 +118,15 @@ int main(int argc, char ** argv) {
             margin_report = true;
             continue;
         }
+        // An unrecognized flag is refused rather than parsed as a positional.
+        // Falling through would send `--margin-reprot` to std::atoi, which
+        // reads it as probe layer 0 and silently produces a run with the
+        // report disabled -- the validator refuses an unknown --cases name for
+        // the same reason, and a typo must not read as a measurement.
+        if (argument.rfind("--", 0) == 0) {
+            std::fprintf(stderr, "unknown option %s\n", argument.c_str());
+            return 2;
+        }
         positional.push_back(argument);
     }
     if (positional.size() < 7) {

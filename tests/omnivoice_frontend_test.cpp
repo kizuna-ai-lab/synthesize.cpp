@@ -109,10 +109,10 @@ constexpr CombineCase kCombineCases[] = {
      "Some call me nature. Others call me Mother Nature. I've been here for over four point and "
       "five billion years, twenty-two thousand five hundred times longer than you. OmniVoice "
       "speaks with one voice."                                                                                                     },
-    { kCloneRefText,          "克隆的声音读出这句话。",
+    { kCloneRefText,          "克隆的声音也要说中文的句子。",
      "Some call me nature. Others call me Mother Nature. I've been here for over four point and "
       "five billion years, twenty-two thousand five hundred times longer than you."
-      "克隆的声音读出这句话。"                                                                                                     },
+      "克隆的声音也要说中文的句子。"                                                                                               },
 };
 
 int check_combine_text() {
@@ -391,7 +391,7 @@ constexpr DurationCase kDurationCases[] = {
     { "omni-design-en",              "OmniVoice speaks with one voice.",                  kAnchorText,   true,  28.3,  14.1,  25,  1.0f, 50  },
     { "omni-design-zh",              "语音设计决定说话人。",                              kAnchorText,   true,  27.5,  14.1,  25,  1.0f, 49  },
     { "omni-clone-en",               "OmniVoice speaks with one voice.",                  kCloneRefText, false, 28.3,  140.4, 351, 1.0f, 70  },
-    { "omni-clone-zh",               "克隆的声音读出这句话。",                            kCloneRefText, false, 30.5,  140.4, 351, 1.0f, 76  },
+    { "omni-clone-zh",               "克隆的声音也要说中文的句子。",                      kCloneRefText, false, 39.5,  140.4, 351, 1.0f, 98  },
     { "omni-fast-mode",              "OmniVoice speaks with one voice.",                  kAnchorText,   true,  28.3,  14.1,  25,  1.0f, 50  },
     { "omni-sampled-seed-zero",      "Sampling follows the seed.",                        kAnchorText,   true,  23.1,  14.1,  25,  1.0f, 46  },
     { "omni-sampled-seed-one",       "Sampling follows the seed.",                        kAnchorText,   true,  23.1,  14.1,  25,  1.0f, 46  },

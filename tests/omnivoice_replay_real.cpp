@@ -72,23 +72,68 @@ bool write_i32(const std::string & path, const std::vector<int32_t> & values) {
     return bool(output);
 }
 
+// A margin that is not finite would print as `nan` or `inf`, which is not JSON
+// and which Python's own parser rejects -- an unreadable report, minutes into a
+// sweep, instead of a visible anomaly. Emit the spellings that parser accepts.
+// Both values are reachable: +inf means a committed token had no rival at all,
+// and NaN means the scoring broke.
+std::string margin_value(float value) {
+    if (std::isnan(value)) {
+        return "NaN";
+    }
+    if (std::isinf(value)) {
+        return value > 0.0f ? "Infinity" : "-Infinity";
+    }
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "%.9g", double(value));
+    return buffer;
+}
+
+// The margin report as one JSON value: `null` when nothing measured it, so the
+// key's presence never depends on the flag and the validator can read it
+// unconditionally.
+std::string margin_json(const synth::omnivoice::MarginReport & margin) {
+    if (!margin.measured) {
+        return "null";
+    }
+    char buffer[256];
+    std::snprintf(buffer, sizeof(buffer),
+                  "{\"kind\": \"%s\", \"value\": %s, \"step\": %u, \"codebook\": %u, \"frame\": %llu}",
+                  margin.kind == synth::omnivoice::MarginReport::Kind::selection ? "selection" : "argmax",
+                  margin_value(margin.value).c_str(), margin.step, margin.codebook, (unsigned long long) margin.frame);
+    return buffer;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
-    if (argc < 8) {
+    // --margin-report may sit anywhere among the arguments: the probe layers
+    // are trailing positionals, so a flag pinned to a fixed slot would have to
+    // go before them and would renumber every caller's positional arguments.
+    std::vector<std::string> positional;
+    bool                     margin_report = false;
+    for (int index = 1; index < argc; ++index) {
+        const std::string argument(argv[index]);
+        if (argument == "--margin-report") {
+            margin_report = true;
+            continue;
+        }
+        positional.push_back(argument);
+    }
+    if (positional.size() < 7) {
         std::fprintf(stderr,
                      "usage: %s <model.gguf> <case-dir> <out-dir> <num-step> <run-greedy 0|1> "
-                     "<decode-replay 0|1> <volume peak|none> [probe-layers...]\n",
+                     "<decode-replay 0|1> <volume peak|none> [probe-layers...] [--margin-report]\n",
                      argv[0]);
         return 2;
     }
-    const std::string model_path(argv[1]);
-    const std::string case_dir(argv[2]);
-    const std::string out_dir(argv[3]);
-    const uint32_t    num_step   = uint32_t(std::atoi(argv[4]));
-    const bool        run_greedy = argv[5][0] == '1';
-    const bool        decode     = argv[6][0] == '1';
-    const std::string volume(argv[7]);
+    const std::string model_path(positional[0]);
+    const std::string case_dir(positional[1]);
+    const std::string out_dir(positional[2]);
+    const uint32_t    num_step   = uint32_t(std::atoi(positional[3].c_str()));
+    const bool        run_greedy = positional[4][0] == '1';
+    const bool        decode     = positional[5][0] == '1';
+    const std::string volume(positional[6]);
     if (volume != "peak" && volume != "none") {
         std::fprintf(stderr, "volume must be peak or none, got %s\n", volume.c_str());
         return 2;
@@ -149,9 +194,10 @@ int main(int argc, char ** argv) {
     request.target_frames    = frames;
     request.num_step         = num_step;
     request.probe_only       = !run_greedy;
+    request.margin_report    = margin_report;
     request.threads          = 0;
-    for (int index = 8; index < argc; ++index) {
-        request.probe_layers.push_back(uint32_t(std::atoi(argv[index])));
+    for (size_t index = 7; index < positional.size(); ++index) {
+        request.probe_layers.push_back(uint32_t(std::atoi(positional[index].c_str())));
     }
 
     synth::omnivoice::SynthesisOutput output;
@@ -226,11 +272,12 @@ int main(int argc, char ** argv) {
     std::printf(
         "{\"frames\": %llu, \"samples\": %zu, \"probe_layers\": %zu, "
         "\"generator_seconds\": %.4f, \"generator_setup_seconds\": %.4f, \"codec_seconds\": %.4f, "
-        "\"placement\": {\"generator\": [%llu, %llu], \"codec\": [%llu, %llu]}, \"wall_seconds\": %.4f}\n",
+        "\"placement\": {\"generator\": [%llu, %llu], \"codec\": [%llu, %llu]}, \"margin\": %s, "
+        "\"wall_seconds\": %.4f}\n",
         (unsigned long long) frames, samples, output.layer_hidden.size(), output.generator_seconds,
         output.generator_setup_seconds, output.codec_seconds, (unsigned long long) output.generator_placement.nodes,
         (unsigned long long) output.generator_placement.accelerator_nodes,
         (unsigned long long) output.codec_placement.nodes,
-        (unsigned long long) output.codec_placement.accelerator_nodes, wall);
+        (unsigned long long) output.codec_placement.accelerator_nodes, margin_json(output.margin).c_str(), wall);
     return 0;
 }

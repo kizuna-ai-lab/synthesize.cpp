@@ -5,6 +5,7 @@ These are family-independent contract checks: they run over whatever manifests
 exist under tests/golden/ so a new Model Family inherits them automatically.
 """
 
+import hashlib
 import json
 import pathlib
 import unittest
@@ -213,6 +214,32 @@ class GoldenManifestSchemaTest(unittest.TestCase):
                         case["oracle"]["stochastic_inputs"],
                         f"{case['id']} replays tensors but declares no stochastic inputs",
                     )
+
+    def test_alternate_grids_are_committed_and_match_their_digests(self):
+        """An admissible-grid witness is a contract only while its bytes are pinned.
+
+        `oracle.alternate_grids` widens what a case will accept as exact, so the
+        one thing that must not be possible is a witness whose content drifted
+        from the digest the manifest records -- that would silently admit an
+        output nobody enumerated. The file is committed (unlike the dumped
+        oracle payloads, which are deliberately absent from git), so this check
+        can run in the unit gate rather than only where models exist.
+        """
+        for path, manifest in self.manifests:
+            with self.subTest(manifest=path.name):
+                for case in manifest["cases"]:
+                    for entry in case["oracle"].get("alternate_grids", []):
+                        witness = path.parent / entry["file"]
+                        self.assertTrue(
+                            witness.is_file(),
+                            f"{case['id']}: alternate grid {entry['file']} is not committed",
+                        )
+                        digest = hashlib.sha256(witness.read_bytes()).hexdigest()
+                        self.assertEqual(
+                            entry["sha256"],
+                            digest,
+                            f"{case['id']}: {entry['file']} has sha256 {digest}",
+                        )
 
     def test_generated_artifact_paths_stay_inside_the_case_root(self):
         for path, manifest in self.manifests:

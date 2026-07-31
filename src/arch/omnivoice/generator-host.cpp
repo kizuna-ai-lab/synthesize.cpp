@@ -126,7 +126,8 @@ void choose_token(const float * cond,
                   uint32_t      mask_id,
                   float         guidance_scale,
                   int32_t &     token,
-                  float &       log_prob) {
+                  float &       log_prob,
+                  float *       runner_up_gap) {
     thread_local std::vector<float> cond_lp;
     thread_local std::vector<float> uncond_lp;
     thread_local std::vector<float> guided;
@@ -156,42 +157,55 @@ void choose_token(const float * cond,
         guided[mask_id] = -std::numeric_limits<float>::infinity();
     }
 
-    int32_t best       = 0;
-    float   best_value = -std::numeric_limits<float>::infinity();
+    int32_t best         = 0;
+    float   best_value   = -std::numeric_limits<float>::infinity();
+    float   second_value = -std::numeric_limits<float>::infinity();
     for (uint32_t index = 0; index < vocab_size; ++index) {
         if (guided[index] > best_value) {
-            best_value = guided[index];
-            best       = int32_t(index);
+            second_value = best_value;
+            best_value   = guided[index];
+            best         = int32_t(index);
+        } else if (guided[index] > second_value) {
+            second_value = guided[index];
         }
     }
     token    = best;
     log_prob = best_value;
+    if (runner_up_gap != nullptr) {
+        // Two -inf values subtract to NaN and a lone finite best has no rival
+        // to be close to; both mean "nothing contested this token", which reads
+        // as an infinite gap rather than as a zero one.
+        *runner_up_gap = (std::isfinite(best_value) && std::isfinite(second_value)) ?
+                             best_value - second_value :
+                             std::numeric_limits<float>::infinity();
+    }
+}
+
+bool commits_before(const MaskedCandidate & left, const MaskedCandidate & right) {
+    // A NaN score compares false against everything, including itself
+    // (`left.score != right.score` is true for a NaN vs. anything, even
+    // another NaN), so without this guard the plain score branch below
+    // makes this order non-transitive across a NaN candidate -- undefined
+    // behavior for std::partial_sort, not just a wrong order. Route NaN
+    // scores after every real one, and let two NaN-scored candidates fall
+    // through to the codebook/frame tie-break as if they were equal.
+    const bool left_nan  = left.score != left.score;
+    const bool right_nan = right.score != right.score;
+    if (left_nan != right_nan) {
+        return right_nan;
+    }
+    if (!left_nan && left.score != right.score) {
+        return left.score > right.score;
+    }
+    if (left.codebook != right.codebook) {
+        return left.codebook < right.codebook;
+    }
+    return left.frame < right.frame;
 }
 
 size_t select_commits(std::vector<MaskedCandidate> & candidates, uint64_t budget) {
-    const size_t keep   = size_t(std::min<uint64_t>(budget, candidates.size()));
-    const auto   before = [](const MaskedCandidate & left, const MaskedCandidate & right) {
-        // A NaN score compares false against everything, including itself
-        // (`left.score != right.score` is true for a NaN vs. anything, even
-        // another NaN), so without this guard the plain score branch below
-        // makes `before` non-transitive across a NaN candidate -- undefined
-        // behavior for std::partial_sort, not just a wrong order. Route NaN
-        // scores after every real one, and let two NaN-scored candidates fall
-        // through to the codebook/frame tie-break as if they were equal.
-        const bool left_nan  = left.score != left.score;
-        const bool right_nan = right.score != right.score;
-        if (left_nan != right_nan) {
-            return right_nan;
-        }
-        if (!left_nan && left.score != right.score) {
-            return left.score > right.score;
-        }
-        if (left.codebook != right.codebook) {
-            return left.codebook < right.codebook;
-        }
-        return left.frame < right.frame;
-    };
-    std::partial_sort(candidates.begin(), candidates.begin() + keep, candidates.end(), before);
+    const size_t keep = size_t(std::min<uint64_t>(budget, candidates.size()));
+    std::partial_sort(candidates.begin(), candidates.begin() + keep, candidates.end(), commits_before);
     return keep;
 }
 

@@ -176,9 +176,78 @@ int check_choose_token_unguided() {
     return 0;
 }
 
+// The runner-up gap the margin report screens on: the distance between the
+// argmax and the best entry that lost to it, over the POST-ban vocabulary.
+int check_choose_token_runner_up_gap() {
+    // Plain log-softmax (scale 0, no uncond), so the gap is a difference of two
+    // raw logits: the softmax's shared normalizer cancels exactly.
+    const float cond[kToyVocab] = { 1.0f, 2.0f, 0.5f, -1.0f };
+
+    int32_t token    = -1;
+    float   log_prob = 0.0f;
+    float   gap      = -1.0f;
+    synth::omnivoice::choose_token(cond, nullptr, kToyVocab, kToyMaskId, 0.0f, token, log_prob, &gap);
+    SYNTH_TEST_CHECK(token == 1);
+    SYNTH_TEST_CHECK(std::fabs(gap - (2.0f - 1.0f)) < 1e-6f);
+
+    // The banned mask id is the largest raw logit here. It must not be the
+    // runner-up: the gap is measured against index 0, not against the ban.
+    const float dominated[kToyVocab] = { 1.0f, 2.0f, 0.5f, 100.0f };
+    synth::omnivoice::choose_token(dominated, nullptr, kToyVocab, kToyMaskId, 0.0f, token, log_prob, &gap);
+    SYNTH_TEST_CHECK(token == 1);
+    SYNTH_TEST_CHECK(std::fabs(gap - 1.0f) < 1e-6f);
+
+    // An exact tie is a zero gap -- the coin flip the screen exists to catch,
+    // reported as such rather than rounded away.
+    const float tied[kToyVocab] = { 2.0f, 2.0f, 0.5f, -1.0f };
+    synth::omnivoice::choose_token(tied, nullptr, kToyVocab, kToyMaskId, 0.0f, token, log_prob, &gap);
+    SYNTH_TEST_CHECK(gap == 0.0f);
+
+    // No rival at all: a two-entry vocabulary whose second entry IS the mask.
+    // -inf leaves nothing to be close to, which reads as an infinite gap and
+    // must never read as a zero one.
+    const float alone[2] = { 1.0f, 5.0f };
+    synth::omnivoice::choose_token(alone, nullptr, /* vocab_size */ 2, /* mask_id */ 1, 0.0f, token, log_prob, &gap);
+    SYNTH_TEST_CHECK(token == 0);
+    SYNTH_TEST_CHECK(std::isinf(gap) && gap > 0.0f);
+    return 0;
+}
+
 // --------------------------------------------------------------------------
 // select_commits
 // --------------------------------------------------------------------------
+
+// commits_before is select_commits' own order, exported so the margin report
+// can name the best rejected candidate. Whatever it says must agree with where
+// select_commits actually puts things, or a reported margin is measured
+// against a candidate the selection never considered.
+int check_commits_before_matches_select_commits() {
+    std::vector<MaskedCandidate> candidates = {
+        { /* codebook */ 1, /* frame */ 0, /* token */ 0, /* score */ 5.0f },
+        { /* codebook */ 0, /* frame */ 5, /* token */ 0, /* score */ 4.0f },
+        { /* codebook */ 0, /* frame */ 2, /* token */ 0, /* score */ 4.0f },
+        { /* codebook */ 2, /* frame */ 1, /* token */ 0, /* score */ 1.0f },
+    };
+    // Score first.
+    SYNTH_TEST_CHECK(synth::omnivoice::commits_before(candidates[0], candidates[1]));
+    SYNTH_TEST_CHECK(!synth::omnivoice::commits_before(candidates[1], candidates[0]));
+    // Equal scores fall to the lower frame (same codebook).
+    SYNTH_TEST_CHECK(synth::omnivoice::commits_before(candidates[2], candidates[1]));
+    // A candidate never precedes itself.
+    SYNTH_TEST_CHECK(!synth::omnivoice::commits_before(candidates[0], candidates[0]));
+
+    // The rejected tail after a partial commit: its best under this order must
+    // be the very next candidate a larger budget would have taken.
+    std::vector<MaskedCandidate> partial = candidates;
+    const size_t                 kept    = synth::omnivoice::select_commits(partial, 2);
+    SYNTH_TEST_CHECK(kept == 2);
+    const auto rival = std::min_element(partial.begin() + 2, partial.end(), synth::omnivoice::commits_before);
+    std::vector<MaskedCandidate> one_more = candidates;
+    SYNTH_TEST_CHECK(synth::omnivoice::select_commits(one_more, 3) == 3);
+    SYNTH_TEST_CHECK(rival->codebook == one_more[2].codebook && rival->frame == one_more[2].frame);
+    SYNTH_TEST_CHECK(rival->score == one_more[2].score);
+    return 0;
+}
 
 int check_select_commits() {
     std::vector<MaskedCandidate> candidates = {
@@ -314,6 +383,8 @@ int main() {
     SYNTH_TEST_CHECK(check_choose_token_guided() == 0);
     SYNTH_TEST_CHECK(check_choose_token_bans_mask() == 0);
     SYNTH_TEST_CHECK(check_choose_token_unguided() == 0);
+    SYNTH_TEST_CHECK(check_choose_token_runner_up_gap() == 0);
+    SYNTH_TEST_CHECK(check_commits_before_matches_select_commits() == 0);
     SYNTH_TEST_CHECK(check_select_commits() == 0);
     SYNTH_TEST_CHECK(check_select_commits_nan_guard() == 0);
     SYNTH_TEST_CHECK(check_prompt_grid() == 0);

@@ -334,6 +334,24 @@
         }
       }
     },
+    "alternateGrid": {
+      "description": "A second reference-produced token grid this case's port output may equal. `file` is committed and resolved relative to the manifest, and its bytes are pinned by `sha256`: the admissible set is enumerated by digest and is never widened by a tolerance. `provenance` says which reference run produced it and under which decision it was admitted.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "sha256", "provenance"],
+      "properties": {
+        "file": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "provenance": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
     "caseInput": {
       "type": "object",
       "additionalProperties": false,
@@ -514,6 +532,14 @@
           "uniqueItems": true,
           "items": {
             "$ref": "#/$defs/generatedArtifact"
+          }
+        },
+        "alternate_grids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/alternateGrid"
           }
         }
       }

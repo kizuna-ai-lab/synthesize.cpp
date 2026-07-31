@@ -26,7 +26,10 @@
 #include "gguf-metadata.h"
 #include "gguf.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -47,6 +50,30 @@ constexpr size_t kSchedulerLeafAllowance = 4096;
 double now_seconds() {
     using clock = std::chrono::steady_clock;
     return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
+}
+
+// Keeps the narrowest margin seen so far. A NaN margin means the scoring broke,
+// so it wins the comparison rather than losing to every real number and leaving
+// the report reading like a healthy run; once recorded it is not displaced.
+void note_margin(MarginReport &     report,
+                 MarginReport::Kind kind,
+                 float              value,
+                 uint32_t           step,
+                 uint32_t           codebook,
+                 uint64_t           frame) {
+    if (report.measured) {
+        const bool already_broken = std::isnan(report.value);
+        const bool narrower       = std::isnan(value) || value < report.value;
+        if (already_broken || !narrower) {
+            return;
+        }
+    }
+    report.measured = true;
+    report.kind     = kind;
+    report.value    = value;
+    report.step     = step;
+    report.codebook = codebook;
+    report.frame    = frame;
 }
 
 // Duplicated from qwen3-tts rather than shared: the third copy is the signal
@@ -447,9 +474,10 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     std::vector<float>           uncond_logits;
     std::vector<int32_t>         uncond_shifted;
     std::vector<MaskedCandidate> candidates;
+    const bool                   track_margin = request.margin_report;
     // One position's logits in the read-back buffer: codebooks * vocab floats,
     // position-major (position s starts at s * row).
-    const uint64_t               row = uint64_t(codebooks) * vocab;
+    const uint64_t               row          = uint64_t(codebooks) * vocab;
     const ForwardProbeSinks      no_probes;
 
     for (uint32_t step = 0; step < num_step; ++step) {
@@ -507,7 +535,8 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
                 float log_prob     = 0.0f;
                 choose_token(cond_logits.data() + cond_offset,
                              guidance != 0.0f ? uncond_logits.data() + uncond_offset : nullptr, vocab,
-                             hparams.audio.mask_id, guidance, candidate.token, log_prob);
+                             hparams.audio.mask_id, guidance, candidate.token, log_prob,
+                             track_margin ? &candidate.argmax_gap : nullptr);
                 // The layer penalty biases commitment toward the coarse
                 // codebooks first. (audio_codebook_weights is training-loss
                 // weighting and plays NO part here -- see the family doc.)
@@ -516,6 +545,28 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
             }
         }
         const size_t committed = select_commits(candidates, budget);
+        if (track_margin) {
+            if (committed < candidates.size()) {
+                // A partial step. What could have gone the other way is the
+                // boundary between the last candidate kept and the best one
+                // rejected; partial_sort leaves the tail unordered, so the best
+                // rejected is whichever of it the commit order puts first.
+                const MaskedCandidate & kept = candidates[committed - 1];
+                const auto              rival =
+                    std::min_element(candidates.begin() + ptrdiff_t(committed), candidates.end(), commits_before);
+                note_margin(output.margin, MarginReport::Kind::selection, kept.score - rival->score, step,
+                            kept.codebook, kept.frame);
+            } else {
+                // Nothing was rejected, so no position was in contest and the
+                // only decision left to be narrow is each committed token
+                // against its own runner-up.
+                for (size_t index = 0; index < committed; ++index) {
+                    const MaskedCandidate & choice = candidates[index];
+                    note_margin(output.margin, MarginReport::Kind::argmax, choice.argmax_gap, step, choice.codebook,
+                                choice.frame);
+                }
+            }
+        }
         for (size_t index = 0; index < committed; ++index) {
             const MaskedCandidate & choice                          = candidates[index];
             canvas[size_t(choice.codebook) * frames + choice.frame] = choice.token;

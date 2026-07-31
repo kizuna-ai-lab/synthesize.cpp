@@ -55,8 +55,40 @@ struct SynthesisRequest {
     // Stop after the step-0 conditional forward with the probe buffers filled;
     // the sampled golden cases compare only that forward in Plan 2.
     bool                  probe_only    = false;
+    // Measure how narrowly the greedy loop's decisions were made and report the
+    // narrowest one (see MarginReport). Off by default: nothing in a synthesis
+    // needs it, and it is a screening instrument for golden-case selection.
+    bool                  margin_report = false;
     int                   threads       = 0;  // 0 = default_synthesis_threads()
     std::vector<uint32_t> probe_layers;       // layer indices probed at step 0
+};
+
+// The narrowest decision the greedy loop made, filled when
+// SynthesisRequest::margin_report is set.
+//
+// Two kinds of decision can be narrow, and this port's two knife-edge cases at
+// the slice-5 gate were one of each. A `selection` margin is the guided-score
+// gap between the last candidate a step committed and the best one it rejected:
+// close it and a different POSITION is committed, which changes every later
+// step's context. An `argmax` margin is the gap between a committed position's
+// token and its runner-up: close it and a different TOKEN lands in that slot.
+//
+// A step that commits everything still masked rejects nothing, so it can only
+// contribute argmax margins; a step that rejects something contributes its
+// selection margin. `value` is the smallest margin over the whole run and the
+// remaining fields name the position it was measured at. Note the scope: argmax
+// margins are collected on full-commit steps only, which is where the flip that
+// motivated this instrument happened -- a narrow argmax on a partially
+// committing step is not screened.
+struct MarginReport {
+    enum class Kind { selection, argmax };
+
+    bool     measured = false;
+    Kind     kind     = Kind::selection;
+    float    value    = 0.0f;
+    uint32_t step     = 0;
+    uint32_t codebook = 0;
+    uint64_t frame    = 0;
 };
 
 struct SynthesisOutput {
@@ -92,6 +124,10 @@ struct SynthesisOutput {
     double         codec_seconds           = 0.0;
     StagePlacement generator_placement;
     StagePlacement codec_placement;
+
+    // Left unmeasured unless the request asked for it, and on the probe-only
+    // path there is no greedy loop to measure.
+    MarginReport margin;
 };
 
 class Model {

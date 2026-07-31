@@ -981,3 +981,191 @@ Golden manifest rather than absorbed silently by the validator.
 - The `--require grid` path no longer has a not-built stage to name: the greedy
   loop's refusal string and its row in the validator's `NOT_BUILT_MARKERS` were
   deleted together, leaving only the codec's for Task 12.
+
+## 2026-07-31 — Ruling implemented: dual-admissible grids, and the gate is 17/17
+
+jiangzhuo's ruling on the slice-5 15/17 result, implemented. Neither of the two
+mismatches was a rule this port got wrong and neither was absorbed by a
+threshold: `omni-fast-mode` keeps its case under a **dual-admissible-grid
+contract** — byte-exact against an enumerated set of torch-produced grids, zero
+tolerance — and `omni-clone-zh` is **re-picked** under a documented
+margin-screening standard. The exact-token comparison is unchanged; what
+changed is how many enumerated answers count as exact, and which text one case
+asks the model to say.
+
+```
+token grids exact: 17/17
+narrowest margin: 9.53674e-06 (selection) in omni-rate-slow; 2 of 17 case(s) under the 0.0001 screen
+EXIT: 0
+```
+
+### The witness was rescued from `/tmp` first
+
+The slice-5 entry above records the decisive evidence for `omni-fast-mode`: the
+port's grid is byte-identical to the **ambient-torch dump T2 superseded**, and
+the one slot separating both from the pinned oracle is the same slot, the same
+two ids and the same direction that a torch thread-count change alone produced.
+That dump lived only in `/tmp/omnivoice_pre_redump_backup/`, and the slice-5
+entry said so — "`/tmp` is ephemeral and will not survive this machine, so
+these digests, not that directory, are the durable record."
+
+The ruling makes that grid a contract, so the bytes had to become durable too.
+Rescued and committed before anything else in this task, digest verified
+against the table above:
+
+| | sha256 |
+|---|---|
+| `/tmp/omnivoice_pre_redump_backup/omni-fast-mode/codes/grid.i32` | `ce41f5b2c83b87a927c9a8609b38445ad51ee07470b448a5fd467e9605c9ebc4` |
+| `tests/golden/omnivoice/omni-fast-mode.alternate-grid-1.i32` | `ce41f5b2c83b87a927c9a8609b38445ad51ee07470b448a5fd467e9605c9ebc4` |
+
+1600 bytes. This is a **contract witness**, not a golden payload, and the
+distinction is not a euphemism: the payload rule exists so that regenerable
+bulk artifacts stay out of git, and this grid is *not regenerable* — the
+ambient thread configuration that produced it was never pinned, and Task 2
+pinned the dumper precisely so that configuration can never recur. It is 1.6 KB,
+immutable, pinned by digest in the manifest, and it carries contract force: the
+validator will accept a port grid that equals it.
+
+### Dual admissibility, and why it is not a tolerance
+
+`oracle.alternate_grids` is now an optional per-case array in the Golden
+Manifest schema (additive; every other manifest validates unchanged): `file`
+manifest-relative and committed, `sha256`, and free-text `provenance`.
+`scripts/validate-omnivoice-replay.py` reads each witness, **verifies its
+digest against the manifest before comparing anything**, and passes the case if
+the port grid elementwise-equals the primary oracle grid *or* any alternate. It
+names the grid that matched, in the per-case line and in the report JSON:
+
+```
+omni-fast-mode: token grid exact against omni-fast-mode.alternate-grid-1.i32 of 2 admissible grids
+```
+
+No tolerance parameter exists anywhere on this path, and none was added. The
+target *set* widened by one enumerated, committed, provenance-carrying
+reference output; the *comparison* is still elementwise equality. The
+difference matters: a tolerance would admit outputs nobody has ever seen, and
+this admits exactly one output torch itself produced.
+
+`tests/python/test_golden_manifests.py` gains a family-independent check that
+every `alternate_grids` entry's file exists and still hashes to its recorded
+digest — the one failure mode an admissible *set* has that a single answer does
+not, and it runs in the unit gate because the witness is committed.
+
+### Margin instrumentation, now committed
+
+Task 10's forensics ran on a temporary instrumented build that was never
+committed (its method is in `task-10-report.md` §3). That is replaced by
+`--margin-report` on the replay runner, which discharges the corresponding part
+of Task 13's tooling debt.
+
+`SynthesisRequest::margin_report` asks the greedy loop to track its narrowest
+decision and report it in `SynthesisOutput::margin`; the runner emits it as a
+`"margin"` object in its JSON line (always present, `null` when unmeasured) and
+the validator surfaces it per case. Two kinds, because the two slice-5
+mismatches were one of each:
+
+- **selection** — the guided-score gap between the last candidate a step
+  committed and the best one it rejected. Close it and a different *position*
+  is committed, which changes every later step's context. This is
+  `omni-clone-zh`'s old failure.
+- **argmax** — the gap between a committed position's token and its runner-up,
+  from a new `runner_up_gap` out-parameter on `choose_token`. Close it and a
+  different *token* lands in that slot. This is `omni-fast-mode`'s.
+
+Argmax margins are collected on steps that commit everything still masked,
+which reject nothing and would otherwise report no margin at all; in practice
+that is the final step, the one the schedule hands the whole remainder. The
+scope limit is real and is stated in the family doc: a narrow argmax on a
+partially committing step is not screened.
+
+One structural change came with it. `select_commits`' ordering lambda is now
+the exported `commits_before`, because the margin code has to find the best
+*rejected* candidate after `std::partial_sort` has left the tail unordered — a
+second copy of that tie-break rule would eventually drift and report a margin
+against a candidate the selection never considered.
+
+### The whole suite, measured with the committed instrument
+
+`--require grid --margin-report`, all 17 greedy cases:
+
+| case | min margin | kind | at step | cb | frame |
+|---|---:|---|---:|---:|---:|
+| `omni-rate-slow` | **9.53674e-06** | selection | 28 | 4 | 80 |
+| `omni-fast-mode` | **6.86646e-05** | argmax | 15 | 7 | 8 |
+| `omni-short-en` | 1.15871e-04 | selection | 7 | 0 | 19 |
+| `omni-long-boundary` | 2.04682e-04 | selection | 11 | 0 | 237 |
+| `omni-rate-fast` | 2.44433e-04 | selection | 10 | 0 | 9 |
+| `omni-lang-none` | 6.03199e-04 | selection | 11 | 0 | 13 |
+| `omni-design-zh` | 6.40869e-04 | argmax | 31 | 7 | 46 |
+| `omni-medium-en` | 7.17163e-04 | argmax | 31 | 7 | 297 |
+| `omni-punctuation` | 8.39233e-04 | argmax | 31 | 7 | 32 |
+| `omni-upstream-readme` | 1.14441e-03 | argmax | 31 | 6 | 54 |
+| `omni-clone-en` | 1.19019e-03 | selection | 29 | 5 | 13 |
+| `omni-clone-zh` | **1.28174e-03** | selection | 25 | 2 | 53 |
+| `omni-digits` | 1.39546e-03 | argmax | 31 | 7 | 102 |
+| `omni-design-en` | 1.41111e-03 | selection | 3 | 0 | 47 |
+| `omni-nonverbal` | 1.89209e-03 | argmax | 31 | 7 | 28 |
+| `omni-short-zh` | 2.46429e-03 | selection | 29 | 5 | 36 |
+| `omni-short-ja` | 2.66457e-03 | selection | 25 | 2 | 33 |
+
+**A correction to the slice-5 reading.** That entry reported an empty band
+between 9.54e-06 and 1.16e-04 — a 12× gap — and the ruling was drafted against
+it. That band is *not* empty once argmax margins are measured: `omni-fast-mode`
+sits inside it at 6.87e-05, which is exactly the number the slice-5 forensics
+had already published for that case's token flip. The slice-5 table listed
+selection margins only, so `omni-fast-mode`'s ≥1.2e-03 selection margin put it
+among "the remaining 11" and its real knife edge did not appear. Nothing about
+the ruling changes; the *rationale* for the 1e-4 constant does, and the family
+doc states the corrected one: the screen separates the two cases that required
+a ruling (9.5e-06, 6.9e-05) from every case that did not (1.16e-04 and up).
+
+### `omni-clone-zh` re-picked — a case change, not oracle drift
+
+`omni-clone-zh` had the weaker of the two evidence tiers, and the slice-5 entry
+said so explicitly: no digest corroboration (its ambient and pinned dumps were
+the same file, and the port's grid matched neither) and no per-step oracle, so
+its whole case rested on a 4.05e-06 selection margin plus the inference that
+the rejected candidate carried the oracle's token. Rather than admit a grid on
+inference, the ruling re-picks the case.
+
+| | old | new |
+|---|---|---|
+| text | `克隆的声音读出这句话。` | `克隆的声音也要说中文的句子。` |
+| frames | 76 | 98 |
+| oracle grid sha256 | `64d2b0119f968b0428dcbaa7b9fc04e59d4603d6b453493e3a6f91556e6d0c16` | `44075f6cef0607f7dd1d257ae880cef10796d672c9332a7e3cc1989e007ce896` |
+| port grid | `e61a871132d399ec535072192af79bafc0724bbcb31ecca88605e47a4104c05e` (matched nothing) | equals the oracle, 784/784 |
+| min margin | 4.05e-06 (selection, step 1) | **1.28e-03** (selection, step 25) |
+
+The old grid digest `64d2b011…` is **superseded by a text change under this
+ruling — it is not oracle drift**, and it must not be read as one: the dumper,
+its pinned inputs, the weights, the thread pinning and every oracle parameter
+are byte-for-byte what Task 2 fixed. What changed is the sentence the case asks
+the model to say. Everything else about the case is unchanged: same seedtts
+reference audio and `ref_text`, same case id, same coverage tags
+(`voice-clone`, `cross-lingual-clone`, `greedy-exact`), same 32 steps.
+
+**Re-pick attempts.** The screen is part of the record, so every attempt is
+listed. There was one:
+
+| # | text | frames | min margin | verdict |
+|---:|---|---:|---:|---|
+| 1 | `克隆的声音也要说中文的句子。` | 98 | 1.28174e-03 | **accepted** — 12.8× the 1e-4 screen, and the grid is exact |
+
+Re-dump: 151.8 s of model wall, 307 s end to end, `[1/1] omni-clone-zh`,
+6 pinned inputs verified against the manifest before it ran.
+
+Manifest relations were re-checked and none moves: `omni-clone-zh` belongs to
+no `artifact_differs` relation. The same-text trio is
+`omni-short-en`/`omni-design-en`/`omni-clone-en`, all English; the zh design and
+clone texts were never required to match, which is why re-picking one of them
+is a local change.
+
+### Gates
+
+| gate | result |
+|---|---|
+| `--require grid`, 17 greedy cases, `--margin-report` | **17/17 exact**, exit 0 |
+| — `omni-fast-mode` | exact against `omni-fast-mode.alternate-grid-1.i32` (the alternate) |
+| — the other 16 | exact against the primary oracle grid |
+| `--require probes`, 20 cases | 20/20, exit 0; probe rows unchanged from slice 4 |
+| `synthesize-golden-manifest-contract` | passes, including the new digest check |

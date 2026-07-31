@@ -8,6 +8,13 @@ decoding makes no RNG call, docs/porting/families/omnivoice.md defines
 structural_exactness for this family as equality of the 8 x T grid, and no
 tolerance file entry exists or ever will for it.
 
+A case may pin more than one admissible grid. `oracle.alternate_grids` names
+committed, digest-pinned grids the reference itself produced under a different
+configuration; the port passes by equalling ANY of them, byte for byte. That
+widens the target SET by enumeration and never the comparison: there is still
+no tolerance anywhere on this path, and a grid enters the set only by being
+committed with its provenance recorded.
+
 Without --check this script measures; with --check it gates against
 tests/tolerances/omnivoice.json (profiles.<PROFILE>.stages.<STAGE>), refusing
 to run when the cell is absent -- a threshold the suite writes for itself
@@ -16,6 +23,7 @@ proves nothing.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
 import subprocess
@@ -24,6 +32,13 @@ import numpy as np
 
 PROBE_LAYERS = (0, 7, 14, 21, 27)
 VOLUME_BY_BRANCH = {"peak_normalise_to_0.5": "peak", "none": "none"}
+
+# The margin below which a candidate golden case is a coin flip rather than a
+# demonstration; docs/porting/families/omnivoice.md carries the derivation.
+# Reported, never enforced here: it screens cases being CHOSEN, and the two
+# cases already below it are retained under a recorded ruling. A validator that
+# failed on it would be re-litigating that ruling on every run.
+MARGIN_SCREEN = 1e-4
 
 # The refusals Plan 2's unbuilt stages print, and the stage each one names.
 # These strings are the contract between src/arch/omnivoice/model.cpp's
@@ -58,6 +73,9 @@ def parse_args(argv=None):
                         help="probes: step-0 forward only; grid: + the greedy free-run; "
                              "all: + the replayed-grid waveform")
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--margin-report", action="store_true",
+                        help="measure how narrowly each greedy case's decisions were made; "
+                             "the screen for new golden cases (see the family doc)")
     parser.add_argument("--tolerances", type=pathlib.Path,
                         default=pathlib.Path("tests/tolerances/omnivoice.json"))
     parser.add_argument("--profile", default="F32")
@@ -97,6 +115,46 @@ def is_greedy(case: dict) -> bool:
     return float(case["oracle"]["parameters"]["position_temperature"]) == 0.0
 
 
+def admissible_grids(manifest_path: pathlib.Path, case: dict,
+                     oracle: pathlib.Path) -> list[tuple[str, np.ndarray]]:
+    """Every grid this case's port output may equal, the dumped one first.
+
+    An alternate is read from the committed file and checked against the digest
+    the manifest pins before a single element is compared. Skipping that check
+    would let an edited or truncated witness silently widen the target -- the
+    one failure mode a set of admissible answers has that a single answer does
+    not.
+    """
+    grids = [("primary", read_i32(oracle / "codes/grid.i32"))]
+    for entry in case["oracle"].get("alternate_grids", []):
+        path = manifest_path.parent / entry["file"]
+        if not path.is_file():
+            raise SystemExit(f"{case['id']}: alternate grid {path} is not committed")
+        payload = path.read_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+        if digest != entry["sha256"]:
+            raise SystemExit(f"{case['id']}: alternate grid {path} has sha256 {digest}, "
+                             f"but the manifest pins {entry['sha256']}")
+        grids.append((entry["file"], np.frombuffer(payload, dtype=np.int32)))
+    return grids
+
+
+def compare_grid(admissible: list[tuple[str, np.ndarray]], actual: np.ndarray) -> dict:
+    """Exact equality against the admissible set, naming which one matched."""
+    matched, closest, fewest = None, None, None
+    for name, expected in admissible:
+        count = (int((expected != actual).sum()) if expected.shape == actual.shape
+                 else int(expected.size))
+        if fewest is None or count < fewest:
+            fewest, closest = count, name
+        if count == 0:
+            matched = name
+            break
+    return {"elements": int(admissible[0][1].size), "mismatches": fewest,
+            "exact": matched is not None, "matched": matched, "closest": closest,
+            "admissible": [name for name, _ in admissible]}
+
+
 def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
     case_id = case["id"]
     oracle = oracle_root / case_id
@@ -125,6 +183,8 @@ def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
                str(case["oracle"]["parameters"]["num_step"]),
                "1" if run_greedy else "0", "1" if decode else "0",
                VOLUME_BY_BRANCH[branch]] + [str(layer) for layer in PROBE_LAYERS]
+    if arguments.margin_report:
+        command.append("--margin-report")
     finished = subprocess.run(command, capture_output=True)
     if finished.returncode != 0:
         stderr = finished.stderr.decode("utf-8", "replace")
@@ -152,11 +212,8 @@ def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
                                                      read_f32(work / "logits_step0.f32"))
     grid = None
     if run_greedy:
-        expected = read_i32(oracle / "codes/grid.i32")
-        actual = read_i32(work / "grid.i32")
-        mismatches = (int((expected != actual).sum()) if expected.shape == actual.shape
-                      else int(expected.size))
-        grid = {"elements": int(expected.size), "mismatches": mismatches, "exact": mismatches == 0}
+        grid = compare_grid(admissible_grids(arguments.manifest, case, oracle),
+                            read_i32(work / "grid.i32"))
     finite = None
     if decode:
         pcm = read_f32(work / "pcm.f32")
@@ -164,7 +221,8 @@ def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
         finite = bool(np.isfinite(pcm).all())
 
     return {"case": case_id, "status": "ok", "greedy": greedy, "stats": stats,
-            "measurements": measurements, "grid": grid, "finite_pcm": finite}
+            "measurements": measurements, "grid": grid, "finite_pcm": finite,
+            "margin": stats.get("margin")}
 
 
 def main(argv=None) -> int:
@@ -209,7 +267,20 @@ def main(argv=None) -> int:
         if result["grid"] is not None and not result["grid"]["exact"]:
             structural_failures += 1
             print(f"{result['case']}: token grid differs at {result['grid']['mismatches']} "
-                  f"of {result['grid']['elements']} positions")
+                  f"of {result['grid']['elements']} positions "
+                  f"(closest of {len(result['grid']['admissible'])} admissible: "
+                  f"{result['grid']['closest']})")
+        # Which grid a case matched is a fact about the contract, not a detail:
+        # a case that starts passing only via its alternate has changed what it
+        # demonstrates, and that must be visible without opening the report.
+        elif result["grid"] is not None and len(result["grid"]["admissible"]) > 1:
+            print(f"{result['case']}: token grid exact against {result['grid']['matched']} "
+                  f"of {len(result['grid']['admissible'])} admissible grids")
+        if result["margin"] is not None:
+            margin = result["margin"]
+            print(f"{result['case']}: min {margin['kind']} margin {margin['value']:.6g} "
+                  f"at step {margin['step']}, codebook {margin['codebook']}, "
+                  f"frame {margin['frame']}")
         if result["finite_pcm"] is False:
             failures += 1
             print(f"{result['case']}: non-finite PCM")
@@ -227,6 +298,13 @@ def main(argv=None) -> int:
     if exact:
         good = sum(1 for r in exact if r["grid"]["exact"])
         print(f"token grids exact: {good}/{len(exact)}")
+    measured = [r for r in compared if r.get("margin") is not None]
+    if measured:
+        narrowest = min(measured, key=lambda r: r["margin"]["value"])
+        below = sum(1 for r in measured if r["margin"]["value"] < MARGIN_SCREEN)
+        print(f"narrowest margin: {narrowest['margin']['value']:.6g} "
+              f"({narrowest['margin']['kind']}) in {narrowest['case']}; "
+              f"{below} of {len(measured)} case(s) under the {MARGIN_SCREEN:g} screen")
 
     if arguments.report:
         arguments.report.parent.mkdir(parents=True, exist_ok=True)
@@ -235,6 +313,7 @@ def main(argv=None) -> int:
             "variant": manifest["variant"], "suite_version": manifest["suite_version"],
             "phase": "oracle_replay", "profile": arguments.profile,
             "backend": arguments.backend.upper(), "require": arguments.require,
+            "margin_screen": MARGIN_SCREEN if arguments.margin_report else None,
             "cases": results, "worst": worst,
         }, indent=2) + "\n", encoding="utf-8")
 

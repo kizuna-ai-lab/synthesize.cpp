@@ -4,9 +4,11 @@ Status: Confirmed 2026-07-31. Intake, oracle materialization (20/20 cases
 dumped locally), source-dtype conversion (798-tensor F32 GGUF produced
 locally), and the stage-4 load slice (real-package smoke passing) are done.
 Of the synthesis graphs, the generator (bidirectional block, canvas embedding
-merge, full-canvas audio heads) is built and unit-checked against the real
-Qwen3 class; the decode loop, the codec graphs, and port validation against the
-oracle have not started.
+merge, full-canvas audio heads) and the free-running mask-predict decode loop
+are built: the port reproduces the oracle's 8 × T token grid exactly on
+**17 of 17** greedy golden cases, one of them through the dual-admissibility
+contract recorded under Port Validation Fit. The codec graphs and the waveform
+half of port validation have not started.
 
 ## Decision
 
@@ -238,6 +240,96 @@ seed is reported — never by reproducing PyTorch's generator.
 The validation-only family seam that replays a Gumbel noise stream is a
 fallback, not the mechanism. It gets implemented only if a sampled-path parity
 case proves it necessary.
+
+### The knife edge: dual-admissible grids and margin screening
+
+Ruling by jiangzhuo, 2026-07-31, on the slice-5 result. Greedy decoding is
+deterministic but it is not *unconditioned*: the loop's every decision is an
+argmax or a top-k over F32 scores, and slice 4 measured this port's step-0
+logits against the oracle's at **6.1e-04 worst max_abs**. When two candidates
+sit closer together than that, which one wins is not a fact about either
+implementation being right. It is below the resolution of the arithmetic, and
+both sides are equally entitled to their answer. Two mechanisms handle that,
+and neither is a tolerance.
+
+**Dual admissibility.** A case may pin more than one grid the reference itself
+produced, via `oracle.alternate_grids` in the Golden Manifest: a committed
+file, its sha256, and free-text provenance. The port passes by equalling ANY
+admissible grid **byte for byte**; `scripts/validate-omnivoice-replay.py`
+verifies each witness against its recorded digest before comparing, and names
+the grid that matched in the per-case line and the report JSON. The target set
+is widened only by *enumeration* — one more reference-produced output,
+committed with its provenance — never by loosening the comparison. There is
+still no tolerance anywhere on this path and there will not be one: a tolerance
+on a token id is meaningless.
+
+Currently one case uses it. `omni-fast-mode` has two admissible grids: the
+pinned oracle (`70ebe309…`) and `omni-fast-mode.alternate-grid-1.i32`
+(`ce41f5b2…`), which is the dump this case carried before Task 2 pinned the
+dumper's thread pool. Pinning moved exactly one of the 400 slots — flat index
+358, codebook 7, frame 8 — from `1004` to `237`, and the port's free run
+reproduces the pre-pinning grid on all 400. The two tokens' guided
+log-probabilities differ by **6.87e-05**. So the port did not miss the oracle;
+it landed on the side of a boundary that one torch configuration takes while
+the oracle records the side another takes. The witness is committed rather than
+described because it is **not regenerable** — the ambient thread configuration
+that produced it was never pinned — which is also why it is a contract witness
+(1.6 KB, immutable, digest-pinned) and not a golden payload under the
+commit-contracts-not-payloads rule.
+
+**Margin screening for new cases.** A candidate golden case is screened before
+it is adopted, using `--margin-report` on the replay runner (surfaced per case
+by the validator). The runner tracks the narrowest decision of the whole run:
+the *selection* margin, the guided-score gap between the last candidate a step
+committed and the best one it rejected; and on steps that commit everything
+still masked — which reject nothing — the *argmax* margin between a committed
+position's token and its runner-up. **A minimum margin below 1e-4 disqualifies
+the case.**
+
+The derivation is the F32 logit divergence between the two implementations,
+6.1e-04 max_abs at step 0, which CFG at `guidance_scale = 2.0` amplifies rather
+than damps: a decision made by less than that is not one this arithmetic
+resolves, and margins near 1e-5 are coin flips outright. What fixes the
+constant at 1e-4 rather than anywhere else is where the measured suite splits.
+Over the 17 greedy cases the two smallest margins are **9.5e-06**
+(`omni-rate-slow`) and **6.9e-05** (`omni-fast-mode`) — precisely the two cases
+this ruling had to be written for — and the third smallest is **1.16e-04**
+(`omni-short-en`), with every remaining case above it. A screen at 1e-4
+separates the cases that needed a ruling from the cases that did not, on the
+evidence rather than on a round number.
+
+Two scope limits, stated so the screen is not read as stronger than it is.
+Argmax margins are collected on full-commit steps only — in practice the final
+step, the one the schedule gives the whole remainder — so a narrow argmax on a
+partially committing step is not screened. And the screen measures how narrow a
+decision was, not whether it was decided correctly; it predicts fragility, and
+only the exact-token comparison establishes parity.
+
+**Watch note.** Both sub-threshold cases are retained, because screening
+governs the selection of NEW cases and not the retirement of ones already
+demonstrating parity. `omni-fast-mode` is covered by dual admissibility above.
+`omni-rate-slow`, at **9.5e-06**, is not: it has one admissible grid and
+currently lands the oracle's answer exactly, on a decision sixty-four times
+narrower than the measured logit divergence. That is luck rather than
+correctness, and it is recorded as such rather than presented as a
+demonstration. If a legitimate
+torch-side re-dump ever flips it, the remedy is the dual-admissibility
+mechanism — enumerate the second grid with its provenance — and never a
+threshold.
+
+**`omni-clone-zh` supersession.** The case's target text changed from
+`克隆的声音读出这句话。` to `克隆的声音也要说中文的句子。` on 2026-07-31 under this
+ruling, and the case was re-dumped (76 frames → 98). This is a deliberate case
+re-pick, **not** oracle drift: the old text put the case on the same knife edge
+without the evidence that admits `omni-fast-mode`'s. Its port grid matched no
+torch run — the ambient and pinned dumps were the same file
+(`64d2b011…`) and the port produced a third (`e61a8711…`) — so its whole case
+rested on a 4.05e-06 selection margin at step 1 and on the rejected candidate
+carrying the oracle's token, which is inference rather than byte identity. On
+the new text the minimum margin is **1.28e-03**, 12.8× the screen, and the port
+reproduces the oracle grid exactly. The reference audio, `ref_text`, coverage
+tags, case id and every oracle parameter are unchanged; the zh design and clone
+texts were never required to match, so no manifest relation moves.
 
 ## Text Frontend
 

@@ -2068,7 +2068,7 @@
       "input": {
         "kind": "text_utf8",
         "language_tag": "zh",
-        "text": "克隆的声音读出这句话。",
+        "text": "克隆的声音也要说中文的句子。",
         "reference": {
           "artifact": "https://zhu-han.github.io/omnivoice/audios/seedtts/prompt/seedtts_ref_en_1.wav",
           "transcript": "Some call me nature. Others call me Mother Nature. I've been here for over four point and five billion years, twenty-two thousand five hundred times longer than you.",
@@ -2251,6 +2251,13 @@
             "name": "codes.grid",
             "path": "codes/grid.i32",
             "format": "i32le"
+          }
+        ],
+        "alternate_grids": [
+          {
+            "file": "omni-fast-mode.alternate-grid-1.i32",
+            "sha256": "ce41f5b2c83b87a927c9a8609b38445ad51ee07470b448a5fd467e9605c9ebc4",
+            "provenance": "The torch dump this case carried before Task 2 pinned the dumper's thread pool and demanded deterministic algorithms. Pinning moved exactly one of the grid's 400 int32 slots -- flat index 358, codebook 7 of 8, frame 8 of 50 -- from 1004 to 237; this port's free run reproduces the pre-pinning grid on all 400 slots. Two reference configurations therefore straddle one decision whose guided log-probabilities differ by 6.87e-05, about 9x below the 6.1e-04 F32 logit divergence slice 4 measured between port and oracle, so which side is taken is not a quantity this arithmetic resolves. Admitted as a second exact target by jiangzhuo's ruling of 2026-07-31. Not regenerable: the ambient thread configuration that produced it was never pinned, which is why the bytes are committed rather than a recipe for them."
           }
         ]
       },

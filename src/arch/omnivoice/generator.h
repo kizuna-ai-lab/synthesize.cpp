@@ -55,6 +55,12 @@ ggml_tensor * generator_layer(ggml_context *                context,
 // `text_ids` is I32 [text_count] or nullptr (the unconditional branch has no
 // text region); `audio_ids` is I32 [audio_count, num_codebooks], codebook-major
 // rows, or nullptr. At least one must be non-null. Returns [hidden, total].
+//
+// PRECONDITION, unchecked because no shape reveals it: the audio region must be
+// a contiguous SUFFIX of the canvas, with the text region ahead of it. That is
+// what lets a per-position select be built as one concatenation. A caller that
+// needed audio and text interleaved, or audio ahead of text, would get a canvas
+// silently ordered wrong rather than an error.
 ggml_tensor * build_canvas_embedding(ggml_context *           context,
                                      const GeneratorWeights & weights,
                                      ggml_tensor *            text_ids,
@@ -70,6 +76,9 @@ ggml_tensor * build_canvas_embedding(ggml_context *           context,
 // `out_layers`, when non-null, receives each layer's output; `out_final`, when
 // non-null, receives the hidden state after the final norm. Port validation
 // compares them against the oracle's step-0 probes; nothing else reads them.
+// Both are meaningful ONLY when this returns non-null: a failure part-way
+// through leaves whatever it had already written behind, so gate on the return
+// value rather than on `*out_final != nullptr`.
 ggml_tensor * build_generator_forward(ggml_context *               context,
                                       ggml_tensor *                embeddings,
                                       ggml_tensor *                position_ids,

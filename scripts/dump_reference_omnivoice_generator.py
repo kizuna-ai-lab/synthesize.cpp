@@ -26,6 +26,10 @@ HEADS = 4
 KV_HEADS = 2
 HEAD_DIM = 8
 INTERMEDIATE = 16
+# Two layers, not one. At depth 1 a stack that fed the embeddings to every layer
+# instead of the running hidden state would be indistinguishable from a correct
+# one, and so would a probe list that pushed the wrong tensor.
+LAYERS = 2
 EPS = 1e-6
 THETA = 1e6
 TEXT_VOCAB = 20
@@ -71,7 +75,7 @@ def main():
     config = Qwen3Config(
         hidden_size=HIDDEN, num_attention_heads=HEADS, num_key_value_heads=KV_HEADS,
         head_dim=HEAD_DIM, intermediate_size=INTERMEDIATE, rms_norm_eps=EPS,
-        rope_theta=THETA, vocab_size=TEXT_VOCAB, num_hidden_layers=1,
+        rope_theta=THETA, vocab_size=TEXT_VOCAB, num_hidden_layers=LAYERS,
         attention_dropout=0.0, attn_implementation="eager",
     )
     model = Qwen3Model(config).eval()
@@ -86,21 +90,23 @@ def main():
         CODEBOOKS * AUDIO_VOCAB, HIDDEN)
     heads_table = stream.fill(CODEBOOKS * AUDIO_VOCAB * HIDDEN, 0.5, 0.0).view(
         CODEBOOKS * AUDIO_VOCAB, HIDDEN)
-    layer = model.layers[0]
-    assignments = [
-        (model.norm.weight, 0.25, 1.0),
-        (layer.input_layernorm.weight, 0.25, 1.0),
-        (layer.self_attn.q_proj.weight, 0.5, 0.0),
-        (layer.self_attn.k_proj.weight, 0.5, 0.0),
-        (layer.self_attn.v_proj.weight, 0.5, 0.0),
-        (layer.self_attn.o_proj.weight, 0.5, 0.0),
-        (layer.self_attn.q_norm.weight, 0.25, 1.0),
-        (layer.self_attn.k_norm.weight, 0.25, 1.0),
-        (layer.post_attention_layernorm.weight, 0.25, 1.0),
-        (layer.mlp.gate_proj.weight, 0.5, 0.0),
-        (layer.mlp.up_proj.weight, 0.5, 0.0),
-        (layer.mlp.down_proj.weight, 0.5, 0.0),
-    ]
+    # The final norm first, then every layer's eleven in order -- so layer 1's
+    # weights differ from layer 0's and the two blocks cannot be confused.
+    assignments = [(model.norm.weight, 0.25, 1.0)]
+    for layer in model.layers:
+        assignments += [
+            (layer.input_layernorm.weight, 0.25, 1.0),
+            (layer.self_attn.q_proj.weight, 0.5, 0.0),
+            (layer.self_attn.k_proj.weight, 0.5, 0.0),
+            (layer.self_attn.v_proj.weight, 0.5, 0.0),
+            (layer.self_attn.o_proj.weight, 0.5, 0.0),
+            (layer.self_attn.q_norm.weight, 0.25, 1.0),
+            (layer.self_attn.k_norm.weight, 0.25, 1.0),
+            (layer.post_attention_layernorm.weight, 0.25, 1.0),
+            (layer.mlp.gate_proj.weight, 0.5, 0.0),
+            (layer.mlp.up_proj.weight, 0.5, 0.0),
+            (layer.mlp.down_proj.weight, 0.5, 0.0),
+        ]
     with torch.no_grad():
         for parameter, scale, offset in assignments:
             parameter.copy_(stream.fill(parameter.numel(), scale, offset).view_as(parameter))
@@ -118,26 +124,36 @@ def main():
     mask = torch.ones(1, 1, POSITIONS, POSITIONS, dtype=torch.bool)
     position_ids = torch.arange(POSITIONS).unsqueeze(0)
 
-    # The pre-norm layer output comes off a hook, NOT off `output_hidden_states`.
+    # Per-layer outputs come off hooks, NOT off `output_hidden_states`.
     # transformers 5.x records hidden states through the generic output-recorder
-    # decorator, and with one layer the recorded entry at index 1 is the state
-    # AFTER `model.norm` -- identical to `last_hidden_state`, which would silently
-    # turn the layer probe into a second copy of the final probe.
+    # decorator, and its last recorded entry is the state AFTER `model.norm` --
+    # identical to `last_hidden_state`, which would silently turn the deepest
+    # layer probe into a second copy of the final probe.
     captured = {}
-    handle = model.layers[0].register_forward_hook(
-        lambda module, args, output: captured.__setitem__("layer", output))
+
+    def record(index):
+        return lambda module, args, output: captured.__setitem__(index, output)
+
+    handles = [layer.register_forward_hook(record(index))
+               for index, layer in enumerate(model.layers)]
     with torch.no_grad():
         outputs = model(inputs_embeds=merged.unsqueeze(0), attention_mask=mask,
                         position_ids=position_ids)
-    handle.remove()
+    for handle in handles:
+        handle.remove()
 
-    layer_out = captured["layer"][0]             # after layer 0, before the norm
+    layer_outs = [captured[index][0] for index in range(LAYERS)]  # pre-norm, per layer
     final = outputs.last_hidden_state[0]         # after the final norm
     logits = F.linear(final, heads_table)        # [POSITIONS, CODEBOOKS * AUDIO_VOCAB]
 
-    # The final norm has a learned gain drawn around 1.0, so it must move the
-    # state. Equality here means the layer probe was captured after the norm.
-    assert not torch.equal(layer_out, final), "layer probe was captured post-norm"
+    # Every probe must be distinguishable from every other. If two layers agreed,
+    # a stack that fed the embeddings to both instead of chaining them would pass;
+    # if the deepest layer agreed with `final`, the probe was captured after the
+    # norm and the final norm would go unchecked.
+    for index in range(LAYERS - 1):
+        assert not torch.equal(layer_outs[index], layer_outs[index + 1]), \
+            f"layer {index} and {index + 1} probes are identical"
+    assert not torch.equal(layer_outs[-1], final), "layer probe was captured post-norm"
 
     # The mask must actually be bidirectional: perturbing the LAST position has
     # to move the FIRST one. A transformers release that quietly re-imposed a
@@ -151,10 +167,14 @@ def main():
     moved = (other[0] - final[0]).abs().max().item()
     assert moved > 1e-3, f"attention is not bidirectional: position 0 moved {moved}"
 
+    spread = min((layer_outs[i] - layer_outs[i + 1]).abs().max().item()
+                 for i in range(LAYERS - 1))
     print(f"// transformers {transformers.__version__}, torch {torch.__version__};"
-          f" bidirectionality probe moved position 0 by {moved:.4g}")
+          f" bidirectionality probe moved position 0 by {moved:.4g};"
+          f" closest two layer probes differ by {spread:.4g}")
     dump("kExpectedMerged", merged)
-    dump("kExpectedLayerOutput", layer_out)
+    for index, layer_out in enumerate(layer_outs):
+        dump(f"kExpectedLayer{index}Output", layer_out)
     dump("kExpectedFinal", final)
     dump("kExpectedLogits", logits)
 

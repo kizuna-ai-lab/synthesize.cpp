@@ -46,6 +46,10 @@ constexpr uint32_t kHeads          = 4;
 constexpr uint32_t kKvHeads        = 2;
 constexpr uint32_t kHeadDim        = 8;
 constexpr uint32_t kIntermediate   = 16;
+// Two layers, not one. At depth 1 a stack that fed the embeddings to every layer
+// instead of the running hidden state would be indistinguishable from a correct
+// one, and so would a probe list that pushed the wrong tensor.
+constexpr uint32_t kLayers         = 2;
 constexpr uint32_t kTextVocab      = 20;
 constexpr uint32_t kAudioVocab     = 6;  // toy canvas vocabulary; mask id 5
 constexpr uint32_t kCodebooks      = 3;
@@ -68,8 +72,10 @@ constexpr int32_t kAudioIds[kCodebooks * kAudioPositions] = {
     16, 17, 15,  // codebook 2: {4, 5, 3} + 12
 };
 
-// values from scripts/dump_reference_omnivoice_generator.py at transformers
-// 5.14.1 / torch 2.13.0. Its bidirectionality probe moved position 0 by 0.4752.
+// values from scripts/dump_reference_omnivoice_generator.py, pasted verbatim, at
+// transformers 5.14.1, torch 2.13.0+cu130. That run's two self-checks: the
+// bidirectionality probe moved position 0 by 0.4756, and the closest two layer
+// probes differ by 1.962.
 
 // 5 positions x 8 hidden, position-major: text rows 0-1, audio rows 2-4.
 constexpr float kExpectedMerged[] = {
@@ -81,9 +87,13 @@ constexpr float kExpectedMerged[] = {
     0.0584337711f, 0.337857962f,  0.396249712f,  -0.17385006f,   0.646888793f,
 };
 
-// After the single block, before the final norm. Captured off a forward hook:
-// with one layer, `output_hidden_states`' entry 1 is already post-norm.
-constexpr float kExpectedLayerOutput[] = {
+// After each block, before the final norm. Captured off per-layer forward
+// hooks: transformers 5.x records hidden states through a generic decorator
+// whose last entry is already post-norm. The two layers' weights are drawn
+// from different stretches of the stream, so these arrays differ by 1.962 at
+// their closest -- which is what makes a stack that skipped the chaining
+// (feeding the embeddings to both layers) visible here.
+constexpr float kExpectedLayer0Output[] = {
     -0.106362939f, 0.977852643f,   0.277025819f,  -0.475410461f, 0.655190587f, -0.216368973f, -0.118029535f,
     -1.42813838f,  0.277654916f,   0.642834425f,  -0.498886913f, 0.449305534f, 0.208927676f,  1.10728037f,
     -0.785657644f, -0.555486739f,  1.52539599f,   1.0017277f,    -0.27838552f, 1.10587621f,   0.171068281f,
@@ -92,32 +102,39 @@ constexpr float kExpectedLayerOutput[] = {
     0.581606388f,  0.157043219f,   0.928154171f,  -0.948468864f, -1.46784914f,
 };
 
+constexpr float kExpectedLayer1Output[] = {
+    -1.60530567f,  1.12391877f, 2.13784313f, -0.45530507f,   2.37038589f, 0.193897069f, -0.643466175f, -1.45853758f,
+    -1.62266505f,  1.09111381f, 1.22014666f, 0.00430706143f, 2.02704525f, 1.37434733f,  -1.68405962f,  -0.729590416f,
+    -0.373707175f, 1.48569536f, 1.34590876f, 0.767348051f,   1.88991702f, 1.24342012f,  -1.71673071f,  -0.602498293f,
+    -0.219197989f, 1.60885024f, 2.18288803f, 1.19218206f,    2.18411565f, 0.153822243f, -2.06274557f,  -2.27419066f,
+    -0.491003901f, 1.13955045f, 1.93190134f, 0.151296973f,   2.11946511f, 1.05000317f,  -2.03405929f,  -1.14486718f,
+};
+
 // After the final norm.
 constexpr float kExpectedFinal[] = {
-    -0.167809799f, 1.31581199f,    0.396197647f,  -0.708930731f, 0.922905803f,  -0.345245481f, -0.206586182f,
-    -1.73205316f,  0.482152462f,   0.952075958f,  -0.785318434f, 0.737443805f,  0.323919982f,  1.94465554f,
-    -1.51354718f,  -0.741509497f,  1.83115792f,   1.02561975f,   -0.302938551f, 1.25475192f,   0.183347702f,
-    1.02758467f,   -0.818083584f,  -0.830406427f, 1.2967273f,    0.67020905f,   0.638255835f,  1.23861647f,
-    0.346271664f,  -0.0203440506f, -0.80583483f,  -1.58808994f,  1.43663275f,   0.666776419f,  0.484616607f,
-    0.677430272f,  0.172786281f,   1.15678716f,   -1.29668355f,  -1.39050543f,
+    -1.20396352f,  0.718925655f, 1.45343661f,  -0.322750002f,  1.58722103f, 0.147072986f,  -0.535383403f, -0.840886116f,
+    -1.30256772f,  0.747024715f, 0.887867451f, 0.00326783909f, 1.45277262f, 1.11576831f,   -1.49972808f,  -0.450209379f,
+    -0.316637844f, 1.07362998f,  1.03374088f,  0.614514232f,   1.42967367f, 1.06550467f,   -1.61367917f,  -0.392420083f,
+    -0.140434146f, 0.879114032f, 1.26774609f,  0.721916318f,   1.2493223f,  0.0996692851f, -1.46610618f,  -1.12002313f,
+    -0.373596668f, 0.739511728f, 1.33250141f,  0.108806908f,   1.43981636f, 0.808006287f,  -1.71698022f,  -0.669633448f,
 };
 
 // The heads over every position, flat order s * 18 + c * 6 + v -- which is what
 // a contiguous ggml [vocab, codebooks, positions] tensor reads back as.
 constexpr float kExpectedLogits[] = {
-    -0.68075335f,  0.0720446631f,  -0.11150533f,   -0.467147708f, 0.0469974913f, -0.405406743f,  -1.08368099f,
-    -1.0209738f,   0.213752225f,   -0.372301549f,  0.0497142859f, -0.8852126f,   -0.156267226f,  -0.386077523f,
-    -0.567148328f, -0.341537774f,  1.03388274f,    -0.284726977f, -0.583524823f, -0.331202894f,  0.353646994f,
-    -0.695946038f, 0.390465111f,   0.428896129f,   -0.749388218f, -0.838769436f, 0.64024061f,    -0.708886802f,
-    -1.37624872f,  -0.307858735f,  0.340076923f,   1.36839223f,   0.406613559f,  -0.29917711f,   1.05492818f,
-    1.28455687f,   -0.104538701f,  0.0357781202f,  -0.410610884f, -0.233657807f, 0.317626148f,   0.727237284f,
-    -1.67366457f,  -0.0100305406f, 0.492277414f,   -0.198302239f, -1.46913612f,  0.251364768f,   0.33319211f,
-    0.881991982f,  0.397620291f,   -0.57347405f,   0.909452379f,  1.23592377f,   0.714185655f,   0.104692839f,
-    -0.253039479f, -0.206227675f,  0.359187037f,   1.03211057f,   -2.04059815f,  0.450806051f,   0.564055562f,
-    -0.438308597f, -1.54649925f,   -0.0773055255f, -0.407339931f, 0.743142188f,  -0.0342324413f, -0.696979821f,
-    1.34949648f,   0.631273627f,   0.284893304f,   -0.407770723f, -0.213583916f, -0.462480992f,  0.540824473f,
-    0.752540112f,  -1.33728755f,   0.316737533f,   0.525370777f,  -1.08911073f,  -1.98487675f,   -0.125791699f,
-    -0.351742566f, 1.23138618f,    -0.125915244f,  -0.592858851f, 0.981453061f,  1.07254052f,
+    0.144517273f,  -0.0795090348f, 1.31958592f,   -0.545370758f, 0.787238657f,  -0.931361079f,  -0.494994193f,
+    -1.00499439f,  -0.253023237f,  -0.964516103f, 0.0650293306f, -1.51765871f,  0.0506015122f,  0.0337602608f,
+    -0.530017138f, -0.688528299f,  1.25869465f,   -0.387598664f, 0.08630009f,   -0.459124386f,  1.64854658f,
+    -0.586081624f, 1.04914212f,    -0.692183673f, -0.334894449f, -1.09573174f,  -0.0799395591f, -1.23264885f,
+    -0.397595704f, -1.66165411f,   0.165087417f,  0.810793281f,  -0.271938533f, -0.627276897f,  1.46544588f,
+    0.339684904f,  0.348380446f,   -0.393690765f, 1.33714986f,   -0.27128312f,  1.22666299f,    -0.4371517f,
+    -1.11150241f,  -0.673130512f,  -0.085050486f, -1.07363641f,  -0.762144029f, -1.49048626f,   0.319258332f,
+    0.931585371f,  -0.164946675f,  -0.911064327f, 1.64098787f,   0.809039652f,  0.805777311f,   -0.242239952f,
+    0.902696013f,  -0.176884651f,  1.01119781f,   0.139548406f,  -1.68398726f,  -0.15999043f,   0.119909354f,
+    -0.9156968f,   -0.907952964f,  -1.32181001f,  -0.271737576f, 0.711509109f,  -0.361992627f,  -0.890426397f,
+    1.86110198f,   0.463737905f,   0.543822229f,  -0.626145899f, 1.20666742f,   -0.366357803f,  1.31072283f,
+    -0.400758982f, -0.99860549f,   -0.366008431f, -0.2035117f,   -1.353912f,    -0.849338531f,  -1.53872657f,
+    -0.13943027f,  0.781410336f,   -0.470202208f, -0.847447217f, 1.57156777f,   0.52707094f,
 };
 
 // The twin of LcgStream in the reference script. Every value is a 24-bit
@@ -246,19 +263,23 @@ bool build_fixture(ggml_backend_dev_t device, Fixture & fixture) {
     w.audio_heads      = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kAudioRows), 0.5f, 0.0f);
     w.norm             = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.25f, 1.0f);
 
-    w.layers.resize(1);
-    synth::omnivoice::GeneratorLayerWeights & layer = w.layers[0];
-    layer.input_layernorm = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.25f, 1.0f);
-    layer.q_proj          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kHeads * kHeadDim), 0.5f, 0.0f);
-    layer.k_proj          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kKvHeads * kHeadDim), 0.5f, 0.0f);
-    layer.v_proj          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kKvHeads * kHeadDim), 0.5f, 0.0f);
-    layer.o_proj          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHeads * kHeadDim, kHidden), 0.5f, 0.0f);
-    layer.q_norm          = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHeadDim), 0.25f, 1.0f);
-    layer.k_norm          = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHeadDim), 0.25f, 1.0f);
-    layer.post_attention_layernorm = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.25f, 1.0f);
-    layer.gate_proj                = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kIntermediate), 0.5f, 0.0f);
-    layer.up_proj                  = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kIntermediate), 0.5f, 0.0f);
-    layer.down_proj                = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kIntermediate, kHidden), 0.5f, 0.0f);
+    // Every layer's eleven, in the script's order, so layer 1 draws a different
+    // stretch of the stream than layer 0 and the two blocks cannot be confused.
+    w.layers.resize(kLayers);
+    for (uint32_t index = 0; index < kLayers; ++index) {
+        synth::omnivoice::GeneratorLayerWeights & layer = w.layers[index];
+        layer.input_layernorm = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.25f, 1.0f);
+        layer.q_proj          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kHeads * kHeadDim), 0.5f, 0.0f);
+        layer.k_proj          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kKvHeads * kHeadDim), 0.5f, 0.0f);
+        layer.v_proj          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kKvHeads * kHeadDim), 0.5f, 0.0f);
+        layer.o_proj          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHeads * kHeadDim, kHidden), 0.5f, 0.0f);
+        layer.q_norm          = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHeadDim), 0.25f, 1.0f);
+        layer.k_norm          = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHeadDim), 0.25f, 1.0f);
+        layer.post_attention_layernorm = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.25f, 1.0f);
+        layer.gate_proj = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kIntermediate), 0.5f, 0.0f);
+        layer.up_proj   = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kIntermediate), 0.5f, 0.0f);
+        layer.down_proj = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kIntermediate, kHidden), 0.5f, 0.0f);
+    }
 
     fixture.text_ids   = ggml_new_tensor_1d(pctx, GGML_TYPE_I32, kTextPositions);
     fixture.audio_ids  = ggml_new_tensor_2d(pctx, GGML_TYPE_I32, kAudioPositions, kCodebooks);
@@ -369,21 +390,26 @@ bool check_merge_and_forward(Fixture & fixture, float & worst) {
     ggml_tensor *              logits =
         synth::omnivoice::build_generator_forward(graph_ctx.get(), merged, fixture.positions, nullptr, fixture.weights,
                                                   make_shape(), make_canvas(), &layers, &final);
-    if (logits == nullptr || final == nullptr || layers.size() != 1 || logits->ne[0] != int64_t(kAudioVocab) ||
+    if (logits == nullptr || final == nullptr || layers.size() != kLayers || logits->ne[0] != int64_t(kAudioVocab) ||
         logits->ne[1] != int64_t(kCodebooks) || logits->ne[2] != int64_t(kPositions)) {
         return false;
     }
 
     std::vector<std::vector<float>> values;
-    if (!compute(fixture, graph, { merged, layers[0], final, logits }, values)) {
+    if (!compute(fixture, graph, { merged, layers[0], layers[1], final, logits }, values)) {
         return false;
     }
     const float d0 = deviation(values[0], kExpectedMerged, std::size(kExpectedMerged));
-    const float d1 = deviation(values[1], kExpectedLayerOutput, std::size(kExpectedLayerOutput));
-    const float d2 = deviation(values[2], kExpectedFinal, std::size(kExpectedFinal));
-    const float d3 = deviation(values[3], kExpectedLogits, std::size(kExpectedLogits));
-    std::printf("  merged %.3g  layer %.3g  final %.3g  logits %.3g\n", double(d0), double(d1), double(d2), double(d3));
-    worst = std::fmax(std::fmax(d0, d1), std::fmax(d2, d3));
+    // Both layers, separately. Layer 1's expected values are what a stack that
+    // fed `embeddings` to every block instead of the running hidden state would
+    // miss -- at depth 1 that defect has nothing to disagree with.
+    const float d1 = deviation(values[1], kExpectedLayer0Output, std::size(kExpectedLayer0Output));
+    const float d2 = deviation(values[2], kExpectedLayer1Output, std::size(kExpectedLayer1Output));
+    const float d3 = deviation(values[3], kExpectedFinal, std::size(kExpectedFinal));
+    const float d4 = deviation(values[4], kExpectedLogits, std::size(kExpectedLogits));
+    std::printf("  merged %.3g  layer0 %.3g  layer1 %.3g  final %.3g  logits %.3g\n", double(d0), double(d1),
+                double(d2), double(d3), double(d4));
+    worst = std::fmax(std::fmax(std::fmax(d0, d1), std::fmax(d2, d3)), d4);
     return true;
 }
 
@@ -477,9 +503,8 @@ int check_rejections() {
     weights.audio_embeddings = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kHidden, kAudioRows);
     weights.audio_heads      = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kHidden, kAudioRows);
     weights.norm             = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, kHidden);
-    weights.layers.resize(1);
-    synth::omnivoice::GeneratorLayerWeights & layer = weights.layers[0];
-    layer.input_layernorm                           = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, kHidden);
+    synth::omnivoice::GeneratorLayerWeights layer;
+    layer.input_layernorm          = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, kHidden);
     layer.q_proj                   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kHidden, kHeads * kHeadDim);
     layer.k_proj                   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kHidden, kKvHeads * kHeadDim);
     layer.v_proj                   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kHidden, kKvHeads * kHeadDim);
@@ -490,6 +515,9 @@ int check_rejections() {
     layer.gate_proj                = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kHidden, kIntermediate);
     layer.up_proj                  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kHidden, kIntermediate);
     layer.down_proj                = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kIntermediate, kHidden);
+    // The rejected forwards run the same depth the numeric checks do; sharing one
+    // block's tensors across both slots is enough, since nothing here computes.
+    weights.layers.assign(kLayers, layer);
 
     ggml_tensor * input     = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kHidden, kPositions);
     ggml_tensor * positions = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, kPositions);
@@ -548,10 +576,25 @@ int check_rejections() {
     return 0;
 }
 
+// The layer probes only have power if they disagree with each other. Were the
+// two reference arrays ever re-dumped from a one-layer model, or the second one
+// pasted over the first, the depth-2 chaining check would silently go back to
+// proving nothing -- so the fixture asserts its own spread before using it.
+int check_probes_are_distinct() {
+    SYNTH_TEST_CHECK(std::size(kExpectedLayer0Output) == std::size(kExpectedLayer1Output));
+    const float spread =
+        deviation(std::vector<float>(std::begin(kExpectedLayer0Output), std::end(kExpectedLayer0Output)),
+                  kExpectedLayer1Output, std::size(kExpectedLayer1Output));
+    std::printf("omnivoice-generator: layer probes differ by %.3g\n", double(spread));
+    SYNTH_TEST_CHECK(spread > 1e-2f);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
     SYNTH_TEST_CHECK(check_rejections() == 0);
+    SYNTH_TEST_CHECK(check_probes_are_distinct() == 0);
 
     // Every registered device. This block is the family's whole hot path, so a
     // backend that disagrees is worth catching here rather than in a golden.

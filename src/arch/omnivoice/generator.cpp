@@ -125,10 +125,11 @@ ggml_tensor * build_canvas_embedding(ggml_context *           context,
 
     ggml_tensor * audio = nullptr;
     if (audio_ids != nullptr) {
-        // Residual of nothing: the eight codebook embeddings are summed, one
-        // get_rows per codebook over the host-shifted ids, mirroring
-        // codec_quantizer_decode's level loop. Ascending order matters: float
-        // addition is not associative and the reference sums 0..7.
+        // One get_rows per codebook over the host-shifted ids, summed across all
+        // `num_codebooks` of them. The reference reduces with `.sum(dim=1)`,
+        // which fixes no summation order, so ascending is this graph's own
+        // choice -- made so the node order is reproducible run to run, not to
+        // satisfy any constraint upstream imposes.
         const int64_t count = audio_ids->ne[0];
         for (uint32_t codebook = 0; codebook < num_codebooks; ++codebook) {
             ggml_tensor * ids  = ggml_view_1d(context, audio_ids, count, size_t(codebook) * audio_ids->nb[1]);

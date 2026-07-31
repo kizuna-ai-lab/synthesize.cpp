@@ -8,12 +8,15 @@
 //
 // Placement: everything is CPU. This family's canvas is a table of sampled
 // codes, so docs/backends.md's discrete-output rule holds the generator and its
-// whole input path on the CPU; the codec could move, but there is no codec graph
-// yet and no measurement to move it on. The weights therefore live in one CPU
-// buffer with no accelerator twin — the seam qwen3-tts carries for its codec
-// half arrives with the stage that can use it.
+// whole input path on the CPU; the codec reads a committed grid and could move,
+// but Plan 2 has no measurement to move it on, so it runs on the CPU scheduler
+// like everything else. The weights therefore live in one CPU buffer with no
+// accelerator twin — the seam qwen3-tts carries for its codec half arrives with
+// the stage that can use it.
 
 #include "arch/omnivoice/catalog.h"
+#include "arch/omnivoice/codec-host.h"
+#include "arch/omnivoice/codec.h"
 #include "arch/omnivoice/generator-host.h"
 #include "arch/omnivoice/generator.h"
 #include "arch/omnivoice/omnivoice.h"
@@ -44,6 +47,16 @@ namespace {
 // Headroom in the scheduler's hash set for the weights a graph reads, which
 // enter as leaves rather than nodes.
 constexpr size_t kSchedulerLeafAllowance = 4096;
+
+// The replay seam calls decode_codes free-standing, so there is no output
+// object in scope to write its timing and placement into; run_synthesis copies
+// them out of this scratch straight after its own call. The qwen3-tts pattern
+// (src/arch/qwen3-tts/model.cpp), sited above run_synthesis here because this
+// file defines the two members the other way round -- a measurement, not state
+// the model carries between calls.
+thread_local double   codec_seconds_           = 0.0;
+thread_local uint64_t codec_placed_nodes_      = 0;
+thread_local uint64_t codec_accelerator_nodes_ = 0;
 
 // A wall clock for the placement measurement. Monotonic, because the question is
 // how long a stage took and not what time it was.
@@ -396,6 +409,11 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     const uint64_t frames    = prompt.target_frames;
     const uint32_t codebooks = hparams.audio.num_codebooks;
     const uint32_t vocab     = hparams.audio.vocab_size;
+    // Set before the probe-only return rather than beside `codes` at the end:
+    // the canvas length is settled here, and a probe-only run that reported
+    // zero frames while holding a full canvas of probes was reading as an empty
+    // synthesis.
+    output.frame_count       = frames;
 
     // Every reusable input lives in one persistent buffer; the per-step
     // refills touch only the audio-id tensors.
@@ -579,10 +597,24 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
             return SYNTH_ERR_INTERNAL;
         }
     }
-    output.frame_count = frames;
-    output.codes       = std::move(canvas);
-    // Task 12 attaches the codec decode and the volume branch here; until then
-    // the committed grid is the product and output.audio stays empty.
+    output.codes = std::move(canvas);
+
+    status = decode_codes(output.codes, frames, threads, output.audio);
+    if (status != SYNTH_OK) {
+        return status;
+    }
+    output.codec_seconds                     = codec_seconds_;
+    output.codec_placement.nodes             = codec_placed_nodes_;
+    output.codec_placement.accelerator_nodes = codec_accelerator_nodes_;
+    // Decision 3 of the plan: the residual output scaling lives HERE, inside
+    // the family's synthesis path, faithful to the oracle. Auto-voice and
+    // voice-design requests take the no-reference branch; the clone branches
+    // arrive with Plan 3's reference handling, which is the only thing that can
+    // supply the reference RMS the other two arms key off -- so a Plan 2
+    // request carrying reference TOKENS still takes this branch, and the replay
+    // seam applies the oracle's own branch separately rather than reading this
+    // one.
+    apply_no_reference_volume(output.audio);
     return SYNTH_OK;
 }
 
@@ -590,12 +622,54 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> & codes,
                                    uint64_t                     frame_count,
                                    int                          threads,
                                    std::vector<float> &         audio) {
-    (void) codes;
-    (void) frame_count;
-    (void) threads;
     audio.clear();
-    std::fprintf(stderr, "omnivoice: codec decode is slice 6 and not built yet\n");
-    return SYNTH_ERR_INTERNAL;
+    Impl &          impl    = *implementation_;
+    const HParams & hparams = impl.hparams;
+    const uint32_t  groups  = hparams.audio.num_codebooks;
+
+    synth_status_t status = validate_code_grid(codes, frame_count, groups, hparams.codec.codebook_size);
+    if (status != SYNTH_OK) {
+        return status;
+    }
+
+    Persistent inputs;
+    if (!inputs.open(2)) {
+        return SYNTH_ERR_OOM;
+    }
+    ggml_tensor * t_codes = ggml_new_tensor_2d(inputs.context(), GGML_TYPE_I32, int64_t(frame_count), int64_t(groups));
+    if (!inputs.commit(impl.backend_plan->cpu_backend())) {
+        return SYNTH_ERR_OOM;
+    }
+    // The committed grid is codebook-major [c * frames + t], which IS the
+    // level-major row layout the quantizer's per-level views read -- no
+    // transpose, unlike qwen3-tts's frame-major stream.
+    ggml_backend_tensor_set(t_codes, codes.data(), 0, ggml_nbytes(t_codes));
+
+    // One pass over the whole stream; the node count does not grow with the
+    // frame count (the qwen3-tts codec budget).
+    GraphRun run(*impl.backend_plan, 8192);
+    if (!run.ok()) {
+        return SYNTH_ERR_OOM;
+    }
+    ggml_tensor * wave = build_codec_decoder(run.context(), t_codes, impl.weights, hparams);
+    if (wave == nullptr) {
+        return SYNTH_ERR_INTERNAL;
+    }
+    const double started = now_seconds();
+    status               = run.run(wave, "omnivoice.codec", threads > 0 ? threads : default_synthesis_threads());
+    if (status != SYNTH_OK) {
+        return status;
+    }
+    codec_seconds_           = now_seconds() - started;
+    codec_placed_nodes_      = run.placed_nodes;
+    codec_accelerator_nodes_ = run.accelerator_nodes;
+    read_floats(wave, audio);
+    if (audio.size() != size_t(frame_count) * hparams.codec.hop_length) {
+        std::fprintf(stderr, "omnivoice: the codec produced %zu samples for %llu frames\n", audio.size(),
+                     (unsigned long long) frame_count);
+        return SYNTH_ERR_INTERNAL;
+    }
+    return SYNTH_OK;
 }
 
 synth_status_t Model::load_cpu(const std::string & path, std::unique_ptr<Model> & output) {

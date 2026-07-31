@@ -1198,3 +1198,186 @@ is a local change.
 | — the other 16 | exact against the primary oracle grid |
 | `--require probes`, 20 cases | 20/20, exit 0; probe rows unchanged from slice 4 |
 | `synthesize-golden-manifest-contract` | passes, including the new digest check |
+
+## 2026-07-31 — slice 6 — end-to-end greedy waveform: 20/20 cases, 17/17 grids
+
+`Model::decode_codes` is wired to Task 11's `build_codec_decoder`, and
+`run_synthesis` now ends where a caller expects it to: committed grid → codec →
+no-reference volume branch → `output.audio`. The slice-6 gate passes on the
+whole suite.
+
+```
+uv run --project scripts/envs/omnivoice --locked python scripts/validate-omnivoice-replay.py \
+  --model models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
+  --runner build/bin/synthesize-omnivoice-replay-real \
+  --require all --margin-report --report build/goldens/omnivoice-replay/full-report.json
+```
+
+**20/20 ok, 17/17 grids exact, no node off the CPU, no non-finite sample,
+exit 0.** 7 min 33 s wall (411 s of it inside the runner), 901 % CPU on this
+20-CPU machine.
+
+| probe | max_abs | min_cosine |
+|---|---:|---:|
+| `audio.pcm` | 1.68812e-05 | 0.99999986 |
+| `audio.pcm_freerun` | 1.68812e-05 | 0.99999986 |
+| `generator.final` | 0.0010376 | 0.99999983 |
+| `generator.hidden_l0` | 5.72205e-05 | 0.99999987 |
+| `generator.hidden_l7` | 0.000411987 | 0.99999980 |
+| `generator.hidden_l14` | 0.000701904 | 0.99999991 |
+| `generator.hidden_l21` | 0.00415039 | 0.99999986 |
+| `generator.hidden_l27` | 0.0800781 | 0.99999979 |
+| `generator.logits_step0` | 0.000610352 | 0.99999991 |
+
+The generator rows are slice 4's to the digit; the two new rows are the
+waveform. `1.7e-05` on a signal whose peak is exactly `0.5` is 3.4e-5 relative —
+F32 against F32, which is what the tolerance file's
+`source-f32-oracle-vs-f32-cpu` reference stage was chosen to make possible.
+Measured as an error SNR rather than as a bound, three cases: **102.2 dB**
+(`omni-short-en`), **104.9 dB** (`omni-medium-en`), **118.8 dB**
+(`omni-short-zh`).
+
+### Two waveform channels, and they are not the same claim
+
+`audio.pcm` replays the **oracle's** grid through the port's codec, which
+isolates the codec from the decode loop. `audio.pcm_freerun` is what
+`run_synthesis` returned for the grid **the port itself chose** — the only
+artifact that can tell a wired-up codec from a codec that merely exists. Both
+now ride the one runner (`pcm.f32`, `pcm_freerun.f32`).
+
+The free-run channel needed two rulings the slice-6 brief predates:
+
+1. **The clone cases.** Plan 2's `run_synthesis` applies the no-reference branch
+   unconditionally — decision 3 of the plan, and the other two arms key off a
+   reference RMS only Plan 3's cloning path can supply. The two clone cases'
+   oracle waveforms carry **no** scaling (`ref_rms` 0.1229 > 0.1 → branch
+   `none`), so the port's free-run waveform is the oracle's times `0.5/peak`.
+   The validator therefore compares the free-run waveform against
+   `peak_normalise(oracle pcm)`. For the 14 no-reference cases that transform is
+   the identity to the bit — `x / 0.5 * 0.5` is exact in binary floating point —
+   so one rule covers both. It is not a weakened comparison for the clones
+   either: their `audio.pcm` row is the gain-sensitive one, compared raw against
+   the unscaled oracle, and it passes at 3.5e-06 / 4.3e-06.
+2. **`omni-fast-mode`, the dual-admissible case.** Its free-run grid is the
+   committed *alternate*, and no oracle waveform exists for that grid — the
+   oracle's `audio/pcm.f32` was produced from the primary. Comparing the two
+   would report a difference the case does not claim. So this one case is
+   **exempt from oracle parity on the free-run channel**, and gets a
+   decode-determinism comparison instead: the runner's new `--alt-grid` decodes
+   the same committed alternate through the same seam, and the two must be
+   **byte-identical**. Measured: identical, `max_abs` exactly 0. That is a
+   weaker claim, deliberately, and the validator prints it as such
+   (`free-run waveforms: 16 against the oracle, 1 exempt (decode determinism)`)
+   rather than folding it into the parity count. `omni-fast-mode`'s *replay*
+   channel is unaffected and still carries full oracle parity at 2.87e-06.
+
+### Per-case
+
+| case | frames | `pcm` max_abs | `pcm` cosine | free-run max_abs / cosine | grid matched | runner wall (s) | codec (s) |
+|---|---:|---:|---:|---|---|---:|---:|
+| `omni-upstream-readme` | 67 | 4.96e-06 | 1.00000007 | 4.96e-06 / 1.00000007 | primary | 11.0 | 0.263 |
+| `omni-short-en` | 50 | 1.17e-05 | 0.99999993 | 1.17e-05 / 0.99999993 | primary | 8.7 | 0.184 |
+| `omni-short-zh` | 54 | 1.07e-06 | 0.99999993 | 1.07e-06 / 0.99999993 | primary | 9.3 | 0.202 |
+| `omni-short-ja` | 47 | 2.81e-06 | 1.00000000 | 2.81e-06 / 1.00000000 | primary | 8.2 | 0.209 |
+| `omni-lang-none` | 49 | 1.36e-05 | 1.00000006 | 1.36e-05 / 1.00000006 | primary | 8.5 | 0.209 |
+| `omni-punctuation` | 67 | 7.00e-06 | 1.00000021 | 7.00e-06 / 1.00000021 | primary | 11.6 | 0.254 |
+| `omni-digits` | 132 | 1.12e-05 | 0.99999995 | 1.12e-05 / 0.99999995 | primary | 20.8 | 0.563 |
+| `omni-nonverbal` | 61 | **1.69e-05** | 0.99999990 | 1.69e-05 / 0.99999990 | primary | 20.4 | 0.249 |
+| `omni-medium-en` | 307 | 6.68e-06 | **0.99999986** | 6.68e-06 / 0.99999986 | primary | 48.6 | 1.538 |
+| `omni-long-boundary` | 719 | 8.38e-06 | 0.99999991 | 8.38e-06 / 0.99999991 | primary | 129.5 | 3.690 |
+| `omni-rate-slow` | 100 | 2.83e-06 | 0.99999999 | 2.83e-06 / 0.99999999 | primary | 15.9 | 0.451 |
+| `omni-rate-fast` | 25 | 3.25e-06 | 1.00000004 | 3.25e-06 / 1.00000004 | primary | 5.3 | 0.080 |
+| `omni-design-en` | 50 | 2.06e-06 | 0.99999995 | 2.06e-06 / 0.99999995 | primary | 8.9 | 0.188 |
+| `omni-design-zh` | 49 | 2.99e-06 | 1.00000001 | 2.99e-06 / 1.00000001 | primary | 8.7 | 0.193 |
+| `omni-clone-en` | 70 | 3.54e-06 | 0.99999990 | 2.83e-06 / 0.99999994 | primary | 38.6 | 0.273 |
+| `omni-clone-zh` | 98 | 4.34e-06 | 1.00000005 | 2.69e-06 / 1.00000004 | primary | 51.2 | 0.414 |
+| `omni-fast-mode` | 50 | 2.87e-06 | 1.00000004 | exempt — identical (max_abs 0) | `omni-fast-mode.alternate-grid-1.i32` | 4.7 | 0.182 |
+| `omni-sampled-seed-zero` | 46 | 1.30e-06 | 0.99999995 | — (sampled: nothing free-runs) | — | 0.3 | 0.000 |
+| `omni-sampled-seed-one` | 46 | 2.64e-06 | 0.99999992 | — | — | 0.3 | 0.000 |
+| `omni-sampled-seed-forty-two` | 46 | 1.88e-06 | 0.99999997 | — | — | 0.3 | 0.000 |
+
+The clone rows are the only ones where the two waveform columns differ, and they
+differ downward (3.54 → 2.83, 4.34 → 2.69): both cases' oracle peak exceeds 0.5,
+so normalising shrinks the error along with the signal. Cosines above 1.0 are
+the comparison's own float rounding on near-identical vectors, not a
+measurement.
+
+### The codec's cost, measured
+
+`codec_seconds` is a flat **0.0027 s per frame** across the whole range —
+0.080 s at 25 frames, 3.690 s at 719 — and the placed node count is **422 for
+every case**, 25 frames and 719 alike. That is the qwen3-tts codec budget
+holding: one pass over the whole stream, node count independent of length. The
+codec is **2.9 % of a case's wall time** at 719 frames and under 4 % everywhere;
+the generator's 64 forwards remain the whole cost of this family.
+
+The three sampled cases report `codec_seconds` 0.000 and codec placement 0 while
+their `audio.pcm` compares fine. That is not a hole in the decode — the replay
+decode ran, it is what `pcm.f32` holds — it is that `decode_codes` reports its
+timing through file-local scratch that only `run_synthesis` reads, and a
+probe-only request returns before reaching it. The validator's CPU-only rule is
+correspondingly vacuous for those three; the same codec graph reports CPU-only
+on the other 17, so nothing is actually unwatched. Left for the T13 harness
+batch.
+
+### Listening
+
+Not done by the implementer — an agent cannot listen, and
+`docs/porting/families/omnivoice.md`'s standard is a human A/B, not a number.
+What can be said numerically is that the port has nothing of its own to hear:
+port and oracle agree to 102–119 dB SNR, and the waveform's shape statistics are
+**identical to four decimals** — `omni-short-en` max sample step 0.3274 and DC
++5.91e-03 on both, `omni-medium-en` 0.5064 / +1.38e-04 on both, `omni-short-zh`
+0.2309 / +2.14e-04 on both, with the largest step at the *same sample index* in
+each pair. Any click or offset a listener finds is the model's, not this port's.
+WAV pairs for the listening pass can be regenerated from
+`build/goldens/omnivoice-replay/<case>/pcm.f32` against
+`build/goldens/omnivoice/<case>/audio/pcm.f32`.
+
+### The unbuilt-stage markers are retired
+
+`scripts/validate-omnivoice-replay.py`'s `NOT_BUILT_MARKERS` table and
+`model.cpp`'s `"codec decode is slice 6 and not built yet"` are deleted
+together, as that table's own rule required. Every stage the three `--require`
+levels name is now built, so a runner failure under any of them is a real
+failure and there is no third answer. `git log -S "NOT_BUILT_MARKERS"` has the
+mechanism if a later plan wants it back.
+
+### What the unit gate now covers, and what it cannot
+
+`tests/omnivoice_decode_loop_test.cpp` gains the codec: it is the only execution
+of `Model::decode_codes` that ASan/UBSan ever sees, since the real package is
+not committed. It asserts one hop of samples per frame, every sample finite, the
+volume branch's fixed point (an exact peak of 0.5 — reached because the sample
+that attained the peak becomes `peak / peak * 0.5`), codec placement on the CPU,
+the refusals (mask id, negative, past-the-table, three wrong element counts,
+zero frames), decode determinism across two calls, and the **wiring as an
+identity**: `run_synthesis`'s audio IS its own grid put back through
+`decode_codes` and the shared volume helper.
+
+Two mutations, applied to `model.cpp`, built, run, reverted:
+
+| mutation | caught by | signal |
+|---|---|---|
+| `apply_no_reference_volume` dropped from `run_synthesis` | `check_waveform` | peak 0.114649877, not 0.5 — on all three synthesis cases |
+| `validate_code_grid` dropped from `decode_codes` | the refusal cases | `GGML_ASSERT(i01 >= 0 && i01 < ne01) failed` in `ggml-cpu/ops.cpp:4902` |
+
+The second one is worth keeping: without the host guard an out-of-range code
+does not return an error, it **aborts inside ggml**. That is the house rule
+`validate_code_grid` exists to uphold, now demonstrated rather than asserted.
+
+What this fixture cannot catch: its weights are one repeated constant, so the
+committed grid is all zeros, and a mutation that decoded a *permuted* grid would
+produce the same waveform. Only the real-package `audio.pcm_freerun` channel
+catches that, and it does — the orientation trap would show as cosine ≈ 0.
+
+### Gates
+
+| gate | result |
+|---|---|
+| `--require all`, 20 cases, `--margin-report` | **20/20 ok, 17/17 grids exact**, exit 0, 7:33 wall |
+| — free-run waveform | 16 against the oracle, 1 exempt (decode determinism), 3 sampled (no free-run) |
+| — placement | every case CPU-only; codec 422 nodes, 0 accelerator |
+| `cmake --build build --target synthesize-check-unit` | 78/78 passed |
+| `cmake --build build-sanitize --target synthesize-check-unit` (ASan/UBSan) | 78/78 passed |
+| real package (3.0 GiB F32 GGUF) | loaded and synthesised 20 times in the sweep |

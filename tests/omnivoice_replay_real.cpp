@@ -5,11 +5,24 @@
 // it produced. The comparison and its thresholds live in
 // scripts/validate-omnivoice-replay.py and tests/tolerances/omnivoice.json.
 //
-// Two parity channels ride one binary. The step-0 conditional forward's probes
-// and the replayed-grid waveform are threshold comparisons; the free-running
-// greedy grid is this family's structural_exactness and is compared exactly,
-// never under a tolerance.
+// Three parity channels ride one binary. The step-0 conditional forward's
+// probes and the replayed-grid waveform are threshold comparisons; the
+// free-running greedy grid is this family's structural_exactness and is
+// compared exactly, never under a tolerance.
+//
+// The third channel is the free-running path's OWN waveform (`pcm_freerun`),
+// which is what run_synthesis hands a caller: it is the only artifact that can
+// tell a wired-up codec from a codec that merely exists. It is not the same
+// comparison as `pcm`. `pcm` replays the ORACLE's grid, so it isolates the
+// codec; `pcm_freerun` decodes the grid this port chose, so it is only
+// comparable to the oracle's waveform when the two grids agree. When they do
+// not -- the dual-admissible case, where the port matches a committed
+// ALTERNATE grid -- `--alt-grid` decodes that same alternate through the same
+// seam, and the pair is compared for decode determinism instead of for oracle
+// parity. Which comparison a case gets is the validator's call, from which
+// grid the exact comparison matched.
 
+#include "arch/omnivoice/codec-host.h"
 #include "arch/omnivoice/generator-host.h"
 #include "arch/omnivoice/omnivoice.h"
 
@@ -112,10 +125,21 @@ int main(int argc, char ** argv) {
     // go before them and would renumber every caller's positional arguments.
     std::vector<std::string> positional;
     bool                     margin_report = false;
+    std::string              alt_grid_path;
     for (int index = 1; index < argc; ++index) {
         const std::string argument(argv[index]);
         if (argument == "--margin-report") {
             margin_report = true;
+            continue;
+        }
+        // Takes a value, so a missing one is refused rather than swallowing the
+        // next argument -- which for this runner would be a probe layer.
+        if (argument == "--alt-grid") {
+            if (index + 1 >= argc) {
+                std::fprintf(stderr, "--alt-grid needs a path\n");
+                return 2;
+            }
+            alt_grid_path = argv[++index];
             continue;
         }
         // An unrecognized flag is refused rather than parsed as a positional.
@@ -132,7 +156,8 @@ int main(int argc, char ** argv) {
     if (positional.size() < 7) {
         std::fprintf(stderr,
                      "usage: %s <model.gguf> <case-dir> <out-dir> <num-step> <run-greedy 0|1> "
-                     "<decode-replay 0|1> <volume peak|none> [probe-layers...] [--margin-report]\n",
+                     "<decode-replay 0|1> <volume peak|none> [probe-layers...] [--margin-report] "
+                     "[--alt-grid <grid.i32>]\n",
                      argv[0]);
         return 2;
     }
@@ -248,7 +273,9 @@ int main(int argc, char ** argv) {
         ok = write_i32(out_dir + "/grid.i32", output.codes);
     }
 
-    size_t samples = 0;
+    size_t samples           = 0;
+    size_t freerun_samples   = 0;
+    size_t alternate_samples = 0;
     if (ok && decode) {
         std::vector<float> audio;
         status = model->decode_codes(oracle_grid, frames, 0, audio);
@@ -257,20 +284,41 @@ int main(int argc, char ** argv) {
             return 1;
         }
         if (volume == "peak") {
-            // The oracle's ungated no-reference branch: audio / peak * 0.5,
-            // two float operations per element in numpy's order.
-            float peak = 0.0f;
-            for (float value : audio) {
-                peak = std::fmax(peak, std::fabs(value));
-            }
-            if (peak > 1e-6f) {
-                for (float & value : audio) {
-                    value = value / peak * 0.5f;
-                }
-            }
+            // One formula, one home: the same helper run_synthesis applies, so
+            // the replay path cannot drift from the shipped branch.
+            synth::omnivoice::apply_no_reference_volume(audio);
         }
         samples = audio.size();
         ok      = write_f32(out_dir + "/pcm.f32", audio);
+
+        // What run_synthesis itself produced, volume branch already applied
+        // inside it. Written only alongside the replay decode so the two are
+        // always comparable, and only when the greedy path actually ran --
+        // a probe-only request returns before there is any audio.
+        if (ok && run_greedy) {
+            freerun_samples = output.audio.size();
+            ok              = write_f32(out_dir + "/pcm_freerun.f32", output.audio);
+        }
+        if (ok && !alt_grid_path.empty()) {
+            std::vector<int32_t> alternate_grid;
+            if (!read_i32(alt_grid_path, alternate_grid)) {
+                std::fprintf(stderr, "cannot read the alternate grid %s\n", alt_grid_path.c_str());
+                return 2;
+            }
+            std::vector<float> alternate;
+            status = model->decode_codes(alternate_grid, alternate_grid.size() / kCodebooks, 0, alternate);
+            if (status != SYNTH_OK) {
+                std::fprintf(stderr, "decode_codes(--alt-grid) -> %d\n", int(status));
+                return 1;
+            }
+            // The no-reference branch unconditionally, because that is what
+            // run_synthesis applied to the waveform this one is compared with.
+            // The case's own `volume` argument belongs to the oracle's waveform
+            // and says nothing about the port's.
+            synth::omnivoice::apply_no_reference_volume(alternate);
+            alternate_samples = alternate.size();
+            ok                = write_f32(out_dir + "/pcm_alt.f32", alternate);
+        }
     }
     if (!ok) {
         std::fprintf(stderr, "cannot write under %s\n", out_dir.c_str());
@@ -279,12 +327,14 @@ int main(int argc, char ** argv) {
 
     const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     std::printf(
-        "{\"frames\": %llu, \"samples\": %zu, \"probe_layers\": %zu, "
+        "{\"frames\": %llu, \"samples\": %zu, \"freerun_samples\": %zu, \"alternate_samples\": %zu, "
+        "\"probe_layers\": %zu, "
         "\"generator_seconds\": %.4f, \"generator_setup_seconds\": %.4f, \"codec_seconds\": %.4f, "
         "\"placement\": {\"generator\": [%llu, %llu], \"codec\": [%llu, %llu]}, \"margin\": %s, "
         "\"wall_seconds\": %.4f}\n",
-        (unsigned long long) frames, samples, output.layer_hidden.size(), output.generator_seconds,
-        output.generator_setup_seconds, output.codec_seconds, (unsigned long long) output.generator_placement.nodes,
+        (unsigned long long) frames, samples, freerun_samples, alternate_samples, output.layer_hidden.size(),
+        output.generator_seconds, output.generator_setup_seconds, output.codec_seconds,
+        (unsigned long long) output.generator_placement.nodes,
         (unsigned long long) output.generator_placement.accelerator_nodes,
         (unsigned long long) output.codec_placement.nodes,
         (unsigned long long) output.codec_placement.accelerator_nodes, margin_json(output.margin).c_str(), wall);

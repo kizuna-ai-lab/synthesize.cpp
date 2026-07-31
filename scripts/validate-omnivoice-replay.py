@@ -15,6 +15,18 @@ widens the target SET by enumeration and never the comparison: there is still
 no tolerance anywhere on this path, and a grid enters the set only by being
 committed with its provenance recorded.
 
+Two waveforms are compared, and they are not the same claim. `audio.pcm`
+replays the ORACLE's grid through the port's codec, which isolates the codec
+from the decode loop; `audio.pcm_freerun` is what run_synthesis returned for
+the grid the port itself chose, which is the only artifact that proves the
+codec is wired into the synthesis path at all. The free-run waveform is
+comparable to the oracle's only when the port matched the PRIMARY grid. When it
+matched an alternate, no oracle waveform for that grid exists, so the case is
+exempt from oracle parity on this channel and gets a decode-determinism
+comparison instead: the port's own decode of the same committed alternate must
+equal it exactly. That is a weaker claim, deliberately, and it is labelled as
+such in the report rather than folded into the parity numbers.
+
 Without --check this script measures; with --check it gates against
 tests/tolerances/omnivoice.json (profiles.<PROFILE>.stages.<STAGE>), refusing
 to run when the cell is absent -- a threshold the suite writes for itself
@@ -40,22 +52,15 @@ VOLUME_BY_BRANCH = {"peak_normalise_to_0.5": "peak", "none": "none"}
 # failed on it would be re-litigating that ruling on every run.
 MARGIN_SCREEN = 1e-4
 
-# The refusals Plan 2's unbuilt stages print, and the stage each one names.
-# These strings are the contract between src/arch/omnivoice/model.cpp's
-# not-built-yet message and this script: without it `--require all` before
-# Task 12 lands reports a generic `runner-failed` on all 20 cases, which is
-# indistinguishable from a parity regression. A slice deletes its message and
-# its row here together -- Task 10 took the greedy loop's, so only the codec's
-# remains, and `--require grid` now has no not-built stage left to name.
-NOT_BUILT_MARKERS = (("omnivoice: codec decode is slice 6 and not built yet", "decode_codes"),)
-
-
-def unbuilt_stage(stderr: str) -> str | None:
-    """The stage a runner failure blames on an unbuilt slice, or None."""
-    for marker, stage in NOT_BUILT_MARKERS:
-        if marker in stderr:
-            return stage
-    return None
+# This script used to carry a table of the refusals Plan 2's unbuilt stages
+# printed, so that `--require all` before the codec landed said "stage not built
+# yet" rather than a generic `runner-failed` on all 20 cases. Every stage the
+# three --require levels name is now built -- Task 10 took the greedy loop's row
+# and Task 12 the codec's -- so the table would be empty and the branch reading
+# it unreachable. It is deleted rather than left empty: a runner failure under
+# any --require level is now a real failure, and there is no third answer.
+# (`git log -S "NOT_BUILT_MARKERS"` has the mechanism if a later plan's unbuilt
+# stage wants it back.)
 
 
 def parse_args(argv=None):
@@ -71,7 +76,7 @@ def parse_args(argv=None):
     parser.add_argument("--cases", nargs="*", default=None)
     parser.add_argument("--require", choices=("probes", "grid", "all"), default="all",
                         help="probes: step-0 forward only; grid: + the greedy free-run; "
-                             "all: + the replayed-grid waveform")
+                             "all: + the replayed-grid waveform and the free-run path's own")
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--margin-report", action="store_true",
                         help="measure how narrowly each greedy case's decisions were made; "
@@ -109,6 +114,24 @@ def compare(expected: np.ndarray, actual: np.ndarray) -> dict:
         "mean_abs": float(difference.mean()) if expected.size else 0.0,
         "cosine": cosine(expected, actual),
     }
+
+
+def peak_normalise(audio: np.ndarray) -> np.ndarray:
+    """The no-reference volume branch, in float32, as the port applies it.
+
+    Needed because Plan 2's run_synthesis applies this branch unconditionally
+    (the other two arms key off a reference RMS that only Plan 3's cloning path
+    can supply), while the oracle applied it only to its no-reference cases. So
+    the free-run waveform's expected value is the oracle's waveform put through
+    the same branch: for a case the oracle already normalised this is the
+    identity to the bit -- x / 0.5 * 0.5 is exact in binary floating point --
+    and for the clone cases it is the one transform that makes the two
+    comparable at all.
+    """
+    peak = np.float32(np.abs(audio).max(initial=np.float32(0.0)))
+    if peak <= np.float32(1e-6):
+        return audio
+    return audio / peak * np.float32(0.5)
 
 
 def is_greedy(case: dict) -> bool:
@@ -177,6 +200,7 @@ def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
     if branch not in VOLUME_BY_BRANCH:
         raise SystemExit(f"{case_id}: unsupported volume branch {branch!r}")
 
+    admissible = admissible_grids(arguments.manifest, case, oracle) if run_greedy else []
     work = arguments.work / case_id
     work.mkdir(parents=True, exist_ok=True)
     command = [str(arguments.runner), str(arguments.model), str(oracle), str(work),
@@ -185,14 +209,19 @@ def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
                VOLUME_BY_BRANCH[branch]] + [str(layer) for layer in PROBE_LAYERS]
     if arguments.margin_report:
         command.append("--margin-report")
+    # Asked for whenever the case pins one, not only when the port turns out to
+    # need it: which grid the port matches is not known until it has run, and a
+    # second full greedy run to find out would cost minutes to save one codec
+    # pass. Unused when the port matches the primary.
+    alternates = case["oracle"].get("alternate_grids", [])
+    if decode and run_greedy and alternates:
+        if len(alternates) > 1:
+            raise SystemExit(f"{case_id}: {len(alternates)} alternate grids, but the runner "
+                             f"takes one --alt-grid; the free-run waveform channel needs widening")
+        command += ["--alt-grid", str(arguments.manifest.parent / alternates[0]["file"])]
     finished = subprocess.run(command, capture_output=True)
     if finished.returncode != 0:
         stderr = finished.stderr.decode("utf-8", "replace")
-        # A stage this plan has not built yet is not a parity regression, and
-        # saying "runner-failed" for it would read as one.
-        stage = unbuilt_stage(stderr)
-        if stage is not None:
-            return {"case": case_id, "status": "stage-not-built", "stage": stage}
         return {"case": case_id, "status": "runner-failed", "stderr": stderr[:400]}
     stats = None
     for line in reversed(finished.stdout.decode("utf-8", "replace").splitlines()):
@@ -212,17 +241,43 @@ def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
                                                      read_f32(work / "logits_step0.f32"))
     grid = None
     if run_greedy:
-        grid = compare_grid(admissible_grids(arguments.manifest, case, oracle),
-                            read_i32(work / "grid.i32"))
+        grid = compare_grid(admissible, read_i32(work / "grid.i32"))
     finite = None
+    freerun = None
     if decode:
         pcm = read_f32(work / "pcm.f32")
         measurements["audio.pcm"] = compare(read_f32(oracle / "audio/pcm.f32"), pcm)
         finite = bool(np.isfinite(pcm).all())
+    if decode and run_greedy:
+        produced = read_f32(work / "pcm_freerun.f32")
+        finite = finite and bool(np.isfinite(produced).all())
+        if grid["matched"] == "primary":
+            # The port chose the oracle's grid, so its own waveform is owed the
+            # oracle's, under the branch run_synthesis applied.
+            freerun = {"mode": "oracle-parity", "grid": "primary"}
+            measurements["audio.pcm_freerun"] = compare(
+                peak_normalise(read_f32(oracle / "audio/pcm.f32")), produced)
+        elif grid["matched"] is not None:
+            # An alternate: no oracle waveform exists for the grid the port
+            # produced, and comparing against the primary's would report a
+            # difference the case does not claim. What is still owed is that
+            # decoding that same committed alternate reproduces it.
+            reference = read_f32(work / "pcm_alt.f32") if (work / "pcm_alt.f32").is_file() else None
+            comparable = reference is not None and reference.shape == produced.shape
+            freerun = {
+                "mode": "decode-determinism", "grid": grid["matched"],
+                "max_abs": float(np.abs(reference - produced).max(initial=0.0)) if comparable else None,
+                "identical": comparable and bool(np.array_equal(reference, produced)),
+            }
+        else:
+            # The grid matched nothing, which is already a structural failure;
+            # the waveform it decoded to is a consequence, not a second finding.
+            freerun = {"mode": "not-compared", "grid": None,
+                       "reason": "the free-run grid matched no admissible grid"}
 
     return {"case": case_id, "status": "ok", "greedy": greedy, "stats": stats,
             "measurements": measurements, "grid": grid, "finite_pcm": finite,
-            "margin": stats.get("margin")}
+            "freerun": freerun, "margin": stats.get("margin")}
 
 
 def main(argv=None) -> int:
@@ -241,17 +296,12 @@ def main(argv=None) -> int:
              if arguments.cases is None or case["id"] in arguments.cases]
 
     results, failures, structural_failures = [], 0, 0
-    not_built: dict[str, int] = {}
     worst: dict[str, dict] = {}
     for case in cases:
         result = run_case(arguments, case, oracle_root)
         if result is None:
             continue
         results.append(result)
-        if result["status"] == "stage-not-built":
-            not_built[result["stage"]] = not_built.get(result["stage"], 0) + 1
-            print(f"{result['case']}: stage not built yet: {result['stage']}")
-            continue
         if result["status"] != "ok":
             failures += 1
             print(f"{result['case']}: {result['status']}")
@@ -284,6 +334,20 @@ def main(argv=None) -> int:
         if result["finite_pcm"] is False:
             failures += 1
             print(f"{result['case']}: non-finite PCM")
+        # The exempt half of the free-run waveform channel. Its claim is
+        # exactness, so it is counted with the structural failures rather than
+        # measured into the worst-table, and it is printed either way -- a case
+        # quietly dropping out of oracle parity is exactly what needs saying.
+        freerun = result.get("freerun")
+        if freerun is not None and freerun["mode"] == "decode-determinism":
+            if freerun["identical"]:
+                print(f"{result['case']}: free-run waveform exempt from oracle parity "
+                      f"(port matched {freerun['grid']}); identical to this port's own "
+                      f"decode of that grid")
+            else:
+                structural_failures += 1
+                print(f"{result['case']}: free-run waveform differs from this port's own "
+                      f"decode of {freerun['grid']} (max_abs {freerun['max_abs']})")
         # Plan 2 is CPU-only: a node on an accelerator is a placement bug.
         placement = result["stats"]["placement"]
         if placement["generator"][1] != 0 or placement["codec"][1] != 0:
@@ -298,6 +362,15 @@ def main(argv=None) -> int:
     if exact:
         good = sum(1 for r in exact if r["grid"]["exact"])
         print(f"token grids exact: {good}/{len(exact)}")
+    # The free-run waveform channel's own headline: how many cases carried it as
+    # oracle parity, and how many only as decode determinism. The split is the
+    # number a reader has to see, because the second kind is the weaker claim.
+    walked = [r for r in compared if r.get("freerun") is not None]
+    if walked:
+        parity = sum(1 for r in walked if r["freerun"]["mode"] == "oracle-parity")
+        determinism = sum(1 for r in walked if r["freerun"]["mode"] == "decode-determinism")
+        print(f"free-run waveforms: {parity} against the oracle, "
+              f"{determinism} exempt (decode determinism), {len(walked) - parity - determinism} not compared")
     measured = [r for r in compared if r.get("margin") is not None]
     if measured:
         narrowest = min(measured, key=lambda r: r["margin"]["value"])
@@ -317,11 +390,6 @@ def main(argv=None) -> int:
             "cases": results, "worst": worst,
         }, indent=2) + "\n", encoding="utf-8")
 
-    if not_built:
-        named = ", ".join(f"{stage} ({count} case(s))" for stage, count in sorted(not_built.items()))
-        print(f"\nstage not built yet: {named} -- this plan has not reached it, "
-              f"which is not a parity result. Re-run with --require probes for what slice 4 gates.")
-        return 1
     # Comparing nothing is not passing. Both shapes of "nothing" reach here: a
     # --cases filter that selected no case, and a case_artifact_root whose
     # payload was never materialized, in which case every case was skipped.

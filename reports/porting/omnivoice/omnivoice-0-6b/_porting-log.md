@@ -1491,7 +1491,8 @@ There is a second and better reason not to cut finer, found while reviewing the
 report rather than assumed: **the cosine estimator's own arithmetic is the
 noise floor here.** `cosine()` accumulates in float32 over 24k–6.7M element
 arrays, and on these same runs it returns values *above* 1.0 by up to
-**2.08e-07** — larger than every deviation in the table above. A gate at 5×
+**2.08e-07** — the same scale as every deviation in the table above, and larger
+than all but one of them (only `hidden_l27`'s 2.14e-07 exceeds it). A gate at 5×
 (≈5e-07) would sit inside that noise and could fail on a thread-count change
 with nothing wrong in the port. The waveform's max-abs is the channel that
 keeps real resolution: it is a subtraction, not an accumulation, and 9e-05
@@ -1536,8 +1537,12 @@ A `ctest -V` re-run (419.70 s, exit 0) captured what the validator actually
 printed under the gate, since a passing CTest prints nothing: 17/17 grids
 exact, `omni-fast-mode` exact against its alternate, 16 free-run waveforms
 against the oracle and 1 exempt, and the closing line **`all probes within the
-F32/CPU/replay tolerances`**. Four hours of timeout against seven minutes of
-measured wall clock is headroom for a slower machine, not an estimate.
+F32/CPU/replay tolerances`**. One wall-clock story, since three files now quote
+it: about seven minutes for the twenty-case sweep on this 20-CPU host —
+**417.3 s** for the measurement sweep above, **420.2 s** and **419.7 s** for the
+two gate runs, and **453 s** at slice 6, which stands as the worst observed.
+Four hours of timeout against that is headroom for a slower machine, not an
+estimate.
 
 **Negative controls, because a gate that cannot fail is not a gate.** Both ran
 `--cases omni-short-en --check` against a doctored `--tolerances` file in

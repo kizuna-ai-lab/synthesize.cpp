@@ -129,8 +129,9 @@ case's 8 x T token grid must equal the oracle's byte for byte (or a committed
 alternate grid's), and that arm fails independently of the tolerance file. It
 needs the oracle payload under `build/goldens/omnivoice/` as well as the
 package and is not registered without it. Budget a few minutes of wall clock:
-the 17 greedy free-runs re-run the whole decode loop, 7 min 33 s for the
-twenty-case sweep on a 20-CPU machine against a `TIMEOUT` of four hours.
+the 17 greedy free-runs re-run the whole decode loop, about seven minutes for
+the twenty-case sweep on a 20-CPU machine (417-420 s measured, 453 s worst
+observed) against a `TIMEOUT` of four hours.
 
 Run the DGX Spark CUDA 13.3 Update 1 gate in a separate build tree. CUDA F32
 matrix multiplies compute at TF32 precision and there is no build option to

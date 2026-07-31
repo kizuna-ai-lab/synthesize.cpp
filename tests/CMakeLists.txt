@@ -613,10 +613,11 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     #
     # TIMEOUT 14400: this gate re-runs 17 greedy free-runs, each 32 denoising
     # steps at two forwards per step over the whole canvas -- omni-long-boundary
-    # alone is 719 frames and 126 s. The twenty-case sweep measured 7 min 33 s
-    # wall on a 20-CPU development machine, so four hours is headroom for a
-    # slower or busier one rather than an estimate: a gate that times out
-    # reports a failure it did not find.
+    # alone is 719 frames and 126 s. The twenty-case sweep takes about seven
+    # minutes on the 20-CPU development host (417-420 s across this gate's own
+    # runs; 453 s is the worst observed), so four hours is headroom for a slower
+    # or busier machine rather than an estimate: a gate that times out reports a
+    # failure it did not find.
     set(_synth_omnivoice_golden_sentinel
         "${CMAKE_SOURCE_DIR}/build/goldens/omnivoice/omni-short-en/codes/grid.i32")
     if(EXISTS "${SYNTH_OMNIVOICE_TEST_MODEL}" AND EXISTS "${_synth_omnivoice_golden_sentinel}")

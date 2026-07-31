@@ -295,11 +295,20 @@ target_link_libraries(synthesize-omnivoice-model-errors-test PRIVATE synthesize 
 add_test(NAME synthesize-omnivoice-model-errors-test
     COMMAND synthesize-omnivoice-model-errors-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
 synth_register_unit_target(synthesize-omnivoice-model-errors-test)
+add_executable(synthesize-omnivoice-load-synthetic-test omnivoice_load_synthetic_test.cpp)
+target_include_directories(synthesize-omnivoice-load-synthetic-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(synthesize-omnivoice-load-synthetic-test PRIVATE synthesize ggml)
+add_test(NAME synthesize-omnivoice-load-synthetic-test
+    COMMAND synthesize-omnivoice-load-synthetic-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-synthetic)
+synth_register_unit_target(synthesize-omnivoice-load-synthetic-test)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-synthetic)
 set_tests_properties(
     synthesize-omnivoice-metadata-test
     synthesize-omnivoice-catalog-test
     synthesize-omnivoice-frontend-test
     synthesize-omnivoice-model-errors-test
+    synthesize-omnivoice-load-synthetic-test
     PROPERTIES LABELS "unit;omnivoice")
 set_tests_properties(
     synthesize-vits-text-encoder-host-test

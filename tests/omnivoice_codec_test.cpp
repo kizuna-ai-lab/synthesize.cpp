@@ -480,12 +480,63 @@ int check_rejections() {
     // was never assigned above.
     SYNTH_TEST_CHECK(synth::omnivoice::build_codec_decoder(ctx, codes, weights, make_hparams()) == nullptr);
 
-    // The NON-empty half of that same condition: a resolved block count that
-    // disagrees with the ratio list without being zero. make_hparams() pins
-    // two ratios; one resolved block is neither empty nor two.
-    synth::omnivoice::ModelWeights mismatched_blocks = weights;
-    mismatched_blocks.acoustic_decoder.blocks.resize(1);
-    SYNTH_TEST_CHECK(synth::omnivoice::build_codec_decoder(ctx, codes, mismatched_blocks, make_hparams()) == nullptr);
+    // The NON-empty half of that same condition, in the direction the guard's
+    // own comment names: MORE resolved blocks than the package declares
+    // ratios, which reads PAST hparams.codec.upsampling_ratios rather than
+    // merely producing a different-length output. Blocks 0 and 1 are built
+    // fully valid -- real chained widths, every shape a working two-ratio
+    // decoder would have -- so that if the guard clause under test were ever
+    // deleted, execution would actually reach block index 2's out-of-bounds
+    // ratio read rather than failing earlier for an unrelated reason. An
+    // easier fixture (one under-populated block, as this test used to do)
+    // is vacuous: its single default-constructed block has EMPTY res_units,
+    // which trips the per-block `res_units.size() != kDacUnits` guard first
+    // regardless of whether the block-count clause exists at all.
+    // Two fully-built blocks worth of graph nodes do not fit the small
+    // shape-only pool the rest of this function shares (codec_snake alone
+    // allocates several intermediate tensors per call), so this fixture gets
+    // its own generously-sized context rather than inflating the shared one.
+    Context        overflow_context = make_graph_context();
+    ggml_context * overflow_ctx     = overflow_context.get();
+    SYNTH_TEST_CHECK(overflow_ctx != nullptr);
+
+    synth::omnivoice::HParams      overflow_hparams = make_hparams();  // two ratios: {2, 3}
+    synth::omnivoice::ModelWeights overflow_weights;
+    overflow_weights.quantizers = quantizers;
+    overflow_weights.fc2.weight = ggml_new_tensor_2d(overflow_ctx, GGML_TYPE_F32, kConcat, kAcoustic);
+    overflow_weights.fc2.bias   = ggml_new_tensor_1d(overflow_ctx, GGML_TYPE_F32, kAcoustic);
+    overflow_weights.acoustic_decoder.conv1.weight =
+        ggml_new_tensor_3d(overflow_ctx, GGML_TYPE_F32, 7, kAcoustic, kDecoderHidden);
+    overflow_weights.acoustic_decoder.conv1.bias = ggml_new_tensor_1d(overflow_ctx, GGML_TYPE_F32, kDecoderHidden);
+    overflow_weights.acoustic_decoder.blocks.resize(3);  // one more than upsampling_ratios has
+
+    int64_t width = kDecoderHidden;
+    for (size_t index = 0; index < 2; ++index) {  // blocks 0 and 1 chain the real two ratios
+        synth::omnivoice::AcousticDecoderBlock & block    = overflow_weights.acoustic_decoder.blocks[index];
+        const int64_t                            narrower = width / 2;
+        const int64_t                            kernel   = 2 * int64_t(kRatios[index]);
+        block.snake1.alpha   = ggml_new_tensor_3d(overflow_ctx, GGML_TYPE_F32, 1, width, 1);
+        block.conv_t1.weight = ggml_new_tensor_3d(overflow_ctx, GGML_TYPE_F32, kernel, narrower, width);
+        block.conv_t1.bias   = ggml_new_tensor_1d(overflow_ctx, GGML_TYPE_F32, narrower);
+        block.res_units.resize(kDacUnits);
+        for (synth::omnivoice::DacResidualUnit & unit : block.res_units) {
+            unit.snake1.alpha = ggml_new_tensor_3d(overflow_ctx, GGML_TYPE_F32, 1, narrower, 1);
+            unit.conv1.weight = ggml_new_tensor_3d(overflow_ctx, GGML_TYPE_F32, 7, narrower, narrower);
+            unit.conv1.bias   = ggml_new_tensor_1d(overflow_ctx, GGML_TYPE_F32, narrower);
+            unit.snake2.alpha = ggml_new_tensor_3d(overflow_ctx, GGML_TYPE_F32, 1, narrower, 1);
+            unit.conv2.weight = ggml_new_tensor_3d(overflow_ctx, GGML_TYPE_F32, 1, narrower, narrower);
+            unit.conv2.bias   = ggml_new_tensor_1d(overflow_ctx, GGML_TYPE_F32, narrower);
+        }
+        width = narrower;
+    }
+    // Block 2 is the extra, un-declared one: left default-constructed on
+    // purpose. Even with the guard clause deleted, the loop's own OOB read of
+    // upsampling_ratios[2] happens before block 2's fields are ever touched,
+    // so it needs no weights of its own. `codes` is still the shared pool's
+    // leaf tensor -- an input a builder reads is not restricted to living in
+    // the same context as the graph nodes it allocates.
+    SYNTH_TEST_CHECK(synth::omnivoice::build_codec_decoder(overflow_ctx, codes, overflow_weights, overflow_hparams) ==
+                     nullptr);
 
     // The residual-length guard: DacResidualUnit's own conv1 is kernel 7 with
     // padding 3*dilation, which is exactly length-preserving (2*padding ==

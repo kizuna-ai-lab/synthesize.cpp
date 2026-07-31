@@ -24,6 +24,7 @@ add_library(synthesize
     arch/omnivoice/catalog.cpp
     arch/omnivoice/frontend-host.cpp
     arch/omnivoice/generator.cpp
+    arch/omnivoice/generator-host.cpp
     arch/omnivoice/model.cpp
     arch/omnivoice/weights.cpp
     arch/kokoro/catalog.cpp

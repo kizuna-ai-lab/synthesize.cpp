@@ -543,16 +543,28 @@ closing the two carry-over items from Plan 1's final review:
 (greedy).** `codes/grid.i32` is byte-identical to the pre-change dump
 (`60473d82…`): the committed token grid does not move under thread pinning, as
 expected for a family whose greedy decode makes no RNG draw. `audio/pcm.f32`
-**did move** — `2710bbd2…` (unpinned, ambient thread count) to `7a063dac…`
-(pinned to one thread, deterministic algorithms required) — so the DAC
-decoder's floating-point reduction order was in fact sensitive to thread count,
-which is exactly the failure mode the pinning exists to close. Per the task
-brief this is not reverted: the pinned configuration supersedes the unpinned
-one that produced every baseline dumped so far. The twenty existing case
-directories under `build/goldens/omnivoice/` (git-ignored, not committed) are
-stale for their audio artifact until Task 2's full re-dump regenerates all of
-them consistently under this configuration; no comparison or tolerance work
-has been built against them yet, so nothing downstream depended on the old
-digests. `metadata.json`'s `environment` block for the re-dumped case reads
+**did move** — `2710bbd2…` (unpinned, ambient configuration) to `7a063dac…`
+(all three settings pinned together: one thread, one interop thread,
+deterministic algorithms required). What was measured is exactly those two
+digests with three settings changed at once, plus one negative result (the
+grid did not move); that is not enough to say which of the three settings
+moved the bytes, nor which pipeline stage. The unchanged grid only clears the
+discrete argmax/Gumbel boundary — it says nothing about the continuous
+backbone hidden states upstream of it. So the honest claim is: some float32
+stage downstream of the stable discrete grid is sensitive to one or more of
+the three pinned settings. The DAC decoder is the leading hypothesis, since
+floating-point output first reaches the caller there, but it is not isolated
+by this run. Task 2 should confirm by comparing the intermediate generator
+artifacts (`generator/hidden_l*.f32`, `generator/logits_step0.f32`) before and
+after in its full re-dump — a move there would localise the sensitivity to the
+backbone rather than the codec. Per the task brief this move is not reverted
+regardless of where it turns out to live: the pinned configuration supersedes
+the unpinned one that produced every baseline dumped so far. The twenty
+existing case directories under `build/goldens/omnivoice/` (git-ignored, not
+committed) are stale for their audio artifact until Task 2's full re-dump
+regenerates all of them consistently under this configuration; no comparison
+or tolerance work has been built against them yet, so nothing downstream
+depended on the old digests. `metadata.json`'s `environment` block for the
+re-dumped case reads
 `num_threads: 1, num_interop_threads: 1, deterministic_algorithms: True,
 torch_version: 2.13.0+cu130, cpu_capability: SVE128`.

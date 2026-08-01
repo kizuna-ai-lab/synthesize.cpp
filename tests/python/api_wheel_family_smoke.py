@@ -19,7 +19,15 @@ import synthesize_cpp
 def parse_arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, required=True)
-    parser.add_argument("--tokens", required=True, help="comma-separated token IDs")
+    parser.add_argument("--tokens", default=None, help="comma-separated token IDs")
+    parser.add_argument(
+        "--text",
+        default=None,
+        help=(
+            "UTF-8 text input, for a package whose only supported input kind "
+            "is text_utf8 (mutually exclusive with --tokens)"
+        ),
+    )
     parser.add_argument("--sample-rate", type=int, required=True)
     parser.add_argument("--samples-per-frame", type=int, required=True)
     parser.add_argument(
@@ -40,8 +48,12 @@ def parse_arguments():
 
 def main():
     arguments = parse_arguments()
-    tokens = [int(value) for value in arguments.tokens.split(",") if value.strip()]
-    assert tokens, "no token IDs were supplied"
+    if (arguments.tokens is None) == (arguments.text is None):
+        raise SystemExit("exactly one of --tokens or --text is required")
+    tokens = None
+    if arguments.tokens is not None:
+        tokens = [int(value) for value in arguments.tokens.split(",") if value.strip()]
+        assert tokens, "no token IDs were supplied"
 
     with synthesize_cpp.Model(arguments.model) as model:
         capabilities = model.capabilities
@@ -58,7 +70,13 @@ def main():
             )
 
         with model.create_context() as context:
-            result = context.synthesize_tokens(tokens, voice=arguments.voice, seed=7)
+
+            def synthesize(*, voice, seed):
+                if tokens is not None:
+                    return context.synthesize_tokens(tokens, voice=voice, seed=seed)
+                return context.synthesize_text(arguments.text, voice=voice, seed=seed)
+
+            result = synthesize(voice=arguments.voice, seed=7)
             audio = result.audio
             assert audio.sample_rate == arguments.sample_rate
             assert audio.channel_count == 1
@@ -75,21 +93,29 @@ def main():
             # The seed contract has to survive the binding, not only the C
             # interface: the same seed repeats and a different one does not.
             baseline = bytes(memoryview(audio.samples))
-            repeat = context.synthesize_tokens(tokens, voice=arguments.voice, seed=7)
+            repeat = synthesize(voice=arguments.voice, seed=7)
             assert bytes(memoryview(repeat.audio.samples)) == baseline
-            other = context.synthesize_tokens(tokens, voice=arguments.voice, seed=8)
+            other = synthesize(voice=arguments.voice, seed=8)
             assert bytes(memoryview(other.audio.samples)) != baseline
             # Whether the length moves with the seed is a family property, not
             # a universal one. VITS seeds its duration predictor, so its output
             # length legitimately varies; Kokoro draws only after the durations
-            # are resolved, so its length must not.
+            # are resolved, and OmniVoice's length comes from a deterministic
+            # text-length estimate rather than the draw at all, so neither's
+            # length must move.
             if arguments.seed_changes_length:
                 assert other.audio.frame_count % arguments.samples_per_frame == 0
             else:
                 assert other.audio.frame_count == audio.frame_count
 
             # A catalog with no default must refuse a request that names no
-            # Voice; one with a default must accept it.
+            # Voice; one with a default must accept it. Only a package that
+            # was given a Voice to request here (Kokoro) exercises the
+            # refusal side: a package with a package default and nothing to
+            # name (VITS, OmniVoice) never reaches this block, because every
+            # call above already ran with voice=None and had to succeed for
+            # the script to get this far -- that success IS the
+            # unnamed-default-accepted proof for those families.
             if arguments.voice is not None:
                 try:
                     context.synthesize_tokens(tokens, seed=7)

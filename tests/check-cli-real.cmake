@@ -1,15 +1,41 @@
-# One check for every Model Family. What differs between them is the token IDs
-# a package accepts and whether it needs a Voice named, so those are inputs
-# rather than a second copy of this file.
-foreach(variable SYNTH_CLI SYNTH_MODEL SYNTH_OUTPUT_DIR SYNTH_TOKEN_IDS)
+# One check for every Model Family. What differs between them is the
+# linguistic input a package accepts, whether it needs a Voice named, and
+# which input kind its package rejects, so those are inputs rather than a
+# second copy of this file.
+foreach(variable SYNTH_CLI SYNTH_MODEL SYNTH_OUTPUT_DIR)
     if(NOT DEFINED ${variable})
         message(FATAL_ERROR "${variable} is required")
     endif()
 endforeach()
+if(NOT DEFINED SYNTH_TOKEN_IDS AND NOT DEFINED SYNTH_TEXT)
+    message(FATAL_ERROR "one of SYNTH_TOKEN_IDS or SYNTH_TEXT is required")
+endif()
 
 set(voice_arguments "")
 if(DEFINED SYNTH_VOICE AND NOT SYNTH_VOICE STREQUAL "")
     set(voice_arguments --voice "${SYNTH_VOICE}")
+endif()
+
+# VITS and Kokoro only accept token ids (their frontend is a symbol map).
+# OmniVoice's package declares text_utf8 as its only supported input kind, so
+# it drives the CLI's --text path instead of --token-ids.
+set(input_arguments "")
+if(DEFINED SYNTH_TEXT)
+    set(input_arguments --text "${SYNTH_TEXT}")
+else()
+    set(input_arguments --token-ids "${SYNTH_TOKEN_IDS}")
+endif()
+
+# The unsupported-input arm below exercises whatever linguistic input kind
+# this package's input_flags does NOT declare: text for VITS/Kokoro (which
+# declare phonemes + token-ids only), phonemes for a text-only package like
+# OmniVoice. Defaults to the flag every family used before this became a
+# parameter, so a call that does not set it is unchanged.
+if(NOT DEFINED SYNTH_UNSUPPORTED_FLAG)
+    set(SYNTH_UNSUPPORTED_FLAG "--text")
+endif()
+if(NOT DEFINED SYNTH_UNSUPPORTED_VALUE)
+    set(SYNTH_UNSUPPORTED_VALUE "Hello")
 endif()
 
 file(MAKE_DIRECTORY "${SYNTH_OUTPUT_DIR}")
@@ -24,7 +50,7 @@ function(run_synthesis output seed)
         COMMAND "${SYNTH_CLI}"
             --model "${SYNTH_MODEL}"
             --output "${output}"
-            --token-ids "${SYNTH_TOKEN_IDS}"
+            ${input_arguments}
             ${voice_arguments}
             --seed "${seed}"
             --backend cpu
@@ -65,14 +91,14 @@ execute_process(
     COMMAND "${SYNTH_CLI}"
         --model "${SYNTH_MODEL}"
         --output "${unsupported}"
-        --text "Hello"
+        "${SYNTH_UNSUPPORTED_FLAG}" "${SYNTH_UNSUPPORTED_VALUE}"
         ${voice_arguments}
         --backend cpu
     RESULT_VARIABLE unsupported_result
     OUTPUT_VARIABLE unsupported_stdout
     ERROR_VARIABLE unsupported_stderr)
 if(unsupported_result EQUAL 0)
-    message(FATAL_ERROR "unsupported text input unexpectedly succeeded")
+    message(FATAL_ERROR "unsupported input unexpectedly succeeded")
 endif()
 if(EXISTS "${unsupported}")
     message(FATAL_ERROR "failed CLI synthesis left an output file")

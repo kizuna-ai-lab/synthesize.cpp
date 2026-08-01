@@ -526,6 +526,33 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                 LABELS "integration;cli;kokoro"
                 TIMEOUT 600)
         endif()
+        if(EXISTS "${SYNTH_OMNIVOICE_TEST_MODEL}")
+            # OmniVoice's catalog is empty but carries an unnamed package
+            # default (voices.mode "profile-sources", has_package_default
+            # true, zero preset ids), so unlike Kokoro above the CLI runs with
+            # NO --voice flag. Its package also declares text_utf8 as the
+            # only supported input kind -- no token-ids, no phonemes -- so
+            # SYNTH_TEXT drives --text instead of SYNTH_TOKEN_IDS driving
+            # --token-ids, and the unsupported-input arm is pointed at
+            # --phonemes (the kind this package's input_flags lacks) rather
+            # than the --text VITS/Kokoro use for the same purpose (the kind
+            # their own input_flags lack).
+            add_test(NAME synthesize-omnivoice-cli
+                COMMAND ${CMAKE_COMMAND}
+                    -DSYNTH_CLI=$<TARGET_FILE:synthesize-cli>
+                    -DSYNTH_MODEL=${SYNTH_OMNIVOICE_TEST_MODEL}
+                    -DSYNTH_TEXT="Sampling follows the seed."
+                    -DSYNTH_UNSUPPORTED_FLAG=--phonemes
+                    -DSYNTH_UNSUPPORTED_VALUE="HH EH L OW"
+                    -DSYNTH_OUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/fixtures/cli-real-omnivoice
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/check-cli-real.cmake)
+            set_tests_properties(synthesize-omnivoice-cli PROPERTIES
+                LABELS "integration;cli;omnivoice"
+                # Three real forward passes (mask-predict denoising plus codec
+                # decode) measured at ~31s total on the 20-CPU development
+                # host; 1200s is headroom for a slower or busier machine.
+                TIMEOUT 1200)
+        endif()
     endif()
     # The repeated-run and resource-cleanup gate docs/backends.md requires of a
     # claimed backend, which no family had in code: every manifest declares
@@ -553,21 +580,40 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         if(NOT EXISTS "${model}")
             return()
         endif()
+        # An empty optional trailing argument (OmniVoice's voice: its catalog
+        # has no preset to name) cannot survive an unquoted ${ARGN} expansion
+        # -- CMake's argument splitter silently drops empty list elements
+        # there, which would shift a language tag into the voice slot
+        # instead. foreach(IN LISTS ...) does not lose it, so the two
+        # optional slots are read out positionally and re-quoted individually
+        # below, which does preserve an empty one.
+        set(voice "")
+        set(language "")
+        set(_synth_cleanup_optional_index 0)
+        foreach(_synth_cleanup_optional IN LISTS ARGN)
+            if(_synth_cleanup_optional_index EQUAL 0)
+                set(voice "${_synth_cleanup_optional}")
+            elseif(_synth_cleanup_optional_index EQUAL 1)
+                set(language "${_synth_cleanup_optional}")
+            endif()
+            math(EXPR _synth_cleanup_optional_index "${_synth_cleanup_optional_index} + 1")
+        endforeach()
         add_test(NAME synthesize-${family}-public-cleanup
             COMMAND synthesize-public-cleanup-test
-                ${model} ${_synth_cleanup_cycles} ${frames} ${input} ${ARGN})
+                "${model}" "${_synth_cleanup_cycles}" "${frames}" "${input}" "${voice}" "${language}")
         set_tests_properties(synthesize-${family}-public-cleanup PROPERTIES
             LABELS "integration;abi;${family}"
             TIMEOUT 900)
     endfunction()
 
     # `max_output_frames` does not mean the same thing to each family: VITS and
-    # Kokoro compare it against the PCM frame count, Qwen3-TTS against its own
-    # codec frames. So these numbers are not comparable and none is a default.
-    # VITS reads its tokens from the Golden payload rather than a literal: its
-    # frontend is a symbol map, and an arbitrary id sequence makes the duration
-    # predictor ask for more frames than any limit allows. Kokoro's come from the
-    # sequence its own lifecycle test already synthesizes.
+    # Kokoro compare it against the PCM frame count, Qwen3-TTS and OmniVoice
+    # against their own codec frames. So these numbers are not comparable and
+    # none is a default. VITS reads its tokens from the Golden payload rather
+    # than a literal: its frontend is a symbol map, and an arbitrary id
+    # sequence makes the duration predictor ask for more frames than any limit
+    # allows. Kokoro's come from the sequence its own lifecycle test already
+    # synthesizes.
     set(_synth_vits_cleanup_tokens
         "${CMAKE_SOURCE_DIR}/build/goldens/vits/vits-ljspeech/ljs-minimal/input/token_ids.i32")
     if(EXISTS "${_synth_vits_cleanup_tokens}")
@@ -577,6 +623,18 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     synth_add_cleanup_test(kokoro "${SYNTH_KOKORO_TEST_MODEL}" 131072
         "tokens:32,0,81,83,16,61,53,156,25,16,83,44,156,138,64,16,81,83,16,58" "af_heart")
     synth_add_cleanup_test(qwen3-tts "${SYNTH_QWEN3_TTS_TEST_MODEL}" 46080 "text:Hi." "aiden" "en")
+    # This `frames` argument becomes `synth_request_t.max_output_frames`,
+    # which the C interface always counts in output PCM samples -- src/
+    # synthesize.cpp divides it by samples_per_frame (960 here) before
+    # comparing it against this family's own codec-frame cap. 720000 is that
+    # same division undone: the package's declared max_output_frames (750
+    # codec frames, tests/golden/omnivoice/omnivoice-0-6b.manifest.json)
+    # times 960, so it reproduces the package's own ceiling exactly rather
+    # than accidentally clamping tighter than it, and is comfortably above
+    # what the duration estimator settles on for "Hi.". The voice stays
+    # empty: OmniVoice's catalog is empty with an unnamed package default, so
+    # an unset voice_id must succeed rather than refuse.
+    synth_add_cleanup_test(omnivoice "${SYNTH_OMNIVOICE_TEST_MODEL}" 720000 "text:Hi." "" "en")
 
     # What a limit stop reports back. Registered because it needs the package:
     # docs/c-interface.md makes an output limit one of four cases that must fill

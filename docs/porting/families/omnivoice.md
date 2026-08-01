@@ -1,9 +1,12 @@
 # OmniVoice Family Selection and Port Plan
 
-Status: Confirmed 2026-07-31. Intake through the greedy synthesis core
+Status: Confirmed 2026-08-02. Intake through the greedy synthesis core
 (slices 4–6) done: single-forward parity, exact token grids 17/17, replay
 waveform under committed tolerances (tests/tolerances/omnivoice.json). Public
-sampling, cloning, and the full validation suite have not started.
+sampling and cloning (Plan 3: Reference Audio and Description Text Voice
+Profiles, and their Serialized Profile GGUF round-trip) are done as of Tasks
+14–16. The Port Validation Suite, Quantization Profiles, Execution Backends,
+Adapter registration, and ship (Plan 4) have not started.
 
 ## Decision
 

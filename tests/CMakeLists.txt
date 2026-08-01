@@ -735,12 +735,31 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             # calls through the 0.6B-parameter generator (original and
             # reloaded, ClonePrompt and DesignInstruct, each a real
             # denoising-loop decode, not just an encode). 600s covered the
-            # pre-Task-16 shape comfortably; under the sanitizer build
-            # (docs/testing.md's required gate for any C/C++ inference
-            # change) the combined ASan/UBSan instrumentation on this much
-            # real generator work needs meaningfully more headroom than a
-            # plain build does.
-            TIMEOUT 1800)
+            # pre-Task-16 shape comfortably.
+            #
+            # Fix round 1 (reviewer FINDING 3): the round-trip text was
+            # originally a full sentence per call; measured wall time (this
+            # binary run directly, unconstrained, uncontended) was
+            # 134-246s on a plain build and ~2700s under the sanitizer
+            # build (docs/testing.md's required gate for any C/C++
+            # inference change -- ASan/UBSan instrumentation on this much
+            # real generator work is substantially slower, not just
+            # differently-behaved). ~2700s would already have exceeded the
+            # 1800s ceiling this task's own first round chose, so the
+            # round-trip text was shortened to "Hi." (the same minimal text
+            # this file's own cleanup-test invocation already exercises
+            # successfully against this real package) to cut real,
+            # unnecessary cost rather than only widen the ceiling: the
+            # byte-identity claim under test needs matching output, not a
+            # long one. Re-measured after that change: 93.87s plain,
+            # ~1808s (30:07.97) sanitizer -- a real reduction, but not
+            # enough on its own to fit inside 1800s with any margin, so the
+            # ceiling below still needs raising. 3600s leaves roughly 2x
+            # headroom over the slower, sanitizer-build measurement,
+            # consistent with this project's own convention for other
+            # real-model integration gates in this same file (several
+            # already sit at 1800/3600/7200/14400s).
+            TIMEOUT 3600)
     endif()
 
     # The resampler's real-signal gate: the same

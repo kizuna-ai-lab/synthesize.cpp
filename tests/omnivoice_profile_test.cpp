@@ -505,7 +505,16 @@ int main(int argc, char ** argv) {
         SYNTH_TEST_CHECK(reloaded->model == model);
         SYNTH_TEST_CHECK(reloaded->family_tag == synth::ProfileFamilyTag::OmnivoiceClone);
 
-        const char *       text = "The reloaded clone speaks the same way it always has.";
+        // Short on purpose (fix round 1, reviewer FINDING 3): the identity
+        // claim ("original and reloaded produce the same PCM") does not
+        // need a long sentence to be meaningful, and a short one keeps this
+        // real forward pass affordable under the sanitizer build -- see
+        // this test's own TIMEOUT comment in tests/CMakeLists.txt for the
+        // measurements this shortening was based on. "Hi." is the same
+        // minimal text tests/CMakeLists.txt's own cleanup-test invocation
+        // for this family already exercises successfully against the real
+        // package.
+        const char *       text = "Hi.";
         std::vector<float> pcm_original;
         std::vector<float> pcm_reloaded;
         uint32_t           channels_original = 0;
@@ -547,7 +556,9 @@ int main(int argc, char ** argv) {
         SYNTH_TEST_CHECK(reloaded != nullptr);
         SYNTH_TEST_CHECK(reloaded->family_tag == synth::ProfileFamilyTag::OmnivoiceDesign);
 
-        const char *       text = "OmniVoice speaks with one voice, loaded or not.";
+        // Short on purpose -- same reasoning as the ClonePrompt round
+        // trip's own comment above.
+        const char *       text = "Hi.";
         std::vector<float> pcm_original;
         std::vector<float> pcm_reloaded;
         uint32_t           channels_original = 0;

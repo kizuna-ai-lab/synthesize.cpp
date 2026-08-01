@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstring>
 #include <unordered_map>
 #include <unordered_set>
@@ -675,6 +676,215 @@ bool find_u8_32_value_offset(const uint8_t * data, size_t data_size, const std::
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Untrusted-buffer pre-scan: a defect in ggml's own parser that this loader
+// cannot fix downstream of calling it, only guard against beforehand.
+//
+// ggml/src/gguf.cpp's gguf_init_from_reader (lines 451-894, read end to end
+// for this guard) reads exactly ONE metadata key EAGERLY, before returning
+// control to any caller: GGUF_KEY_GENERAL_ALIGNMENT ("general.alignment"),
+// via `gguf_get_val_u32(ctx, alignment_idx)` at gguf.cpp:610. That getter
+// calls `gguf_kv::get_val<uint32_t>()`, which asserts the key's STORED type
+// is exactly UINT32 (`GGML_ASSERT(type_to_gguf_type<T>::value == type)` at
+// gguf.cpp:194) and, in `gguf_get_val_u32` itself, that it holds exactly one
+// element (`GGML_ASSERT(get_ne() == 1)` at gguf.cpp:1102). GGML_ASSERT
+// aborts the WHOLE PROCESS (SIGABRT) rather than returning an error, so a
+// buffer that declares "general.alignment" as, say, a STRING instead of a
+// UINT32 crashes the host process inside gguf_init_from_buffer -- before
+// this file's own (already type-guarded, via GgufMetadata and
+// read_u8_32_array above) validation ever runs. Grepping the entirety of
+// gguf_init_from_reader confirms "general.alignment" is the ONLY reserved
+// key the parser reads this way during construction: every other
+// gguf_get_val_* call in gguf.cpp belongs either to this project's own
+// already-type-guarded reads, or to ggml's tensor-info loop, which fails
+// closed (logs and returns nullptr) on every malformed shape rather than
+// asserting.
+//
+// ggml is a submodule that "cannot carry a local change" (CLAUDE.md), so
+// the fix lives entirely on this side: a hand-written, bounds-checked walk
+// of the RAW bytes -- independent of gguf_init_from_buffer, run before it
+// -- that confirms every reserved key the parser will later read eagerly
+// has a type that read will accept. This mirrors gguf_init_from_reader's
+// own header and KV layout (magic/version/n_tensors/n_kv at gguf.cpp:456-535,
+// then per KV a length-prefixed key, a type tag, and -- for GGUF_TYPE_ARRAY
+// -- an element type and count, per gguf_reader::read at gguf.cpp:266-360)
+// closely enough to reject anything that section would also reject, but it
+// is not a general-purpose parser: it stops once every KV entry has been
+// walked (skipping over each value's bytes without decoding it) and hands
+// the buffer to the real, hardened gguf_init_from_buffer for everything
+// else (tensor info and data), which this file's own earlier review already
+// established fails closed rather than aborting on every malformed shape it
+// can encounter there.
+
+// This schema (profile.h's own header comment) never has more than one
+// tensor and writes 8 required metadata keys for a ClonePrompt (9 for
+// DesignInstruct); these ceilings leave generous room for "unknown optional
+// namespaced metadata" (docs/c-interface.md) a future writer might add,
+// while still refusing an obviously-adversarial count before ever counting
+// past it.
+constexpr int64_t  kPrescanMaxTensors       = 8;
+constexpr int64_t  kPrescanMaxKv            = 64;
+constexpr uint64_t kPrescanMaxKeyLength     = 256;
+constexpr uint64_t kPrescanMaxStringLength  = 1u << 20;  // 1 MiB: far past any reasonable transcript/instruct text
+constexpr uint64_t kPrescanMaxArrayElements = 256;
+
+bool prescan_has_remaining(size_t offset, size_t size, size_t need) {
+    return offset <= size && need <= size - offset;
+}
+
+bool prescan_skip(size_t & offset, size_t size, size_t amount) {
+    if (!prescan_has_remaining(offset, size, amount)) {
+        return false;
+    }
+    offset += amount;
+    return true;
+}
+
+bool prescan_read_bytes(const uint8_t * data, size_t size, size_t & offset, void * out, size_t amount) {
+    if (!prescan_has_remaining(offset, size, amount)) {
+        return false;
+    }
+    std::memcpy(out, data + offset, amount);
+    offset += amount;
+    return true;
+}
+
+template <typename T> bool prescan_read(const uint8_t * data, size_t size, size_t & offset, T & out) {
+    return prescan_read_bytes(data, size, offset, &out, sizeof(out));
+}
+
+// The fixed byte width of every scalar GGUF type this walk can skip without
+// decoding it (everything except STRING, which is itself length-prefixed
+// and handled separately in prescan_skip_value).
+bool prescan_fixed_type_size(gguf_type type, size_t & out_size) {
+    switch (type) {
+        case GGUF_TYPE_UINT8:
+        case GGUF_TYPE_INT8:
+        case GGUF_TYPE_BOOL:
+            out_size = 1;
+            return true;
+        case GGUF_TYPE_UINT16:
+        case GGUF_TYPE_INT16:
+            out_size = 2;
+            return true;
+        case GGUF_TYPE_UINT32:
+        case GGUF_TYPE_INT32:
+        case GGUF_TYPE_FLOAT32:
+            out_size = 4;
+            return true;
+        case GGUF_TYPE_UINT64:
+        case GGUF_TYPE_INT64:
+        case GGUF_TYPE_FLOAT64:
+            out_size = 8;
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Skips over one value's bytes (a single scalar, or `count` elements of an
+// array) without decoding it. `count` is 1 for a scalar (the caller's own
+// convention, matching gguf_init_from_reader's own `uint64_t n = 1` default).
+bool prescan_skip_value(const uint8_t * data, size_t size, size_t & offset, gguf_type type, uint64_t count) {
+    if (type == GGUF_TYPE_STRING) {
+        for (uint64_t index = 0; index < count; ++index) {
+            uint64_t length = 0;
+            if (!prescan_read(data, size, offset, length) || length > kPrescanMaxStringLength) {
+                return false;
+            }
+            if (!prescan_skip(offset, size, size_t(length))) {
+                return false;
+            }
+        }
+        return true;
+    }
+    size_t element_size = 0;
+    if (!prescan_fixed_type_size(type, element_size)) {
+        return false;  // GGUF_TYPE_ARRAY-of-ARRAY or any other unrecognized type tag
+    }
+    if (count > SIZE_MAX / element_size) {
+        return false;  // overflow guard on count * element_size
+    }
+    return prescan_skip(offset, size, size_t(count) * element_size);
+}
+
+// The full walk. Returns false for anything gguf_init_from_buffer would
+// also refuse (malformed/truncated/out-of-bound) OR for a reserved key
+// whose declared type/count would make the parser's own eager read abort
+// -- either way, the caller maps `false` to SYNTH_ERR_INVALID_ARG without
+// ever calling gguf_init_from_buffer on these bytes.
+bool prescan_buffer(const uint8_t * data, size_t size) {
+    size_t offset = 0;
+
+    char magic[4];
+    if (!prescan_read_bytes(data, size, offset, magic, sizeof(magic)) ||
+        std::memcmp(magic, GGUF_MAGIC, sizeof(magic)) != 0) {
+        return false;
+    }
+
+    uint32_t version = 0;
+    if (!prescan_read(data, size, offset, version) || version != GGUF_VERSION) {
+        // This project only ever WRITES GGUF_VERSION (3); a different
+        // version is either an old writer this loader never claimed to
+        // support or corrupt data -- both malformed for a v1 Serialized
+        // Profile's own contract.
+        return false;
+    }
+
+    int64_t n_tensors = 0;
+    int64_t n_kv      = 0;
+    if (!prescan_read(data, size, offset, n_tensors) || n_tensors < 0 || n_tensors > kPrescanMaxTensors) {
+        return false;
+    }
+    if (!prescan_read(data, size, offset, n_kv) || n_kv < 0 || n_kv > kPrescanMaxKv) {
+        return false;
+    }
+
+    for (int64_t index = 0; index < n_kv; ++index) {
+        uint64_t key_length = 0;
+        if (!prescan_read(data, size, offset, key_length) || key_length > kPrescanMaxKeyLength) {
+            return false;
+        }
+        if (!prescan_has_remaining(offset, size, size_t(key_length))) {
+            return false;
+        }
+        const std::string key(reinterpret_cast<const char *>(data + offset), size_t(key_length));
+        offset += size_t(key_length);
+
+        int32_t type_raw = 0;
+        if (!prescan_read(data, size, offset, type_raw)) {
+            return false;
+        }
+        gguf_type type  = gguf_type(type_raw);
+        uint64_t  count = 1;
+        if (type == GGUF_TYPE_ARRAY) {
+            int32_t element_type_raw = 0;
+            if (!prescan_read(data, size, offset, element_type_raw)) {
+                return false;
+            }
+            type = gguf_type(element_type_raw);
+            if (!prescan_read(data, size, offset, count) || count > kPrescanMaxArrayElements) {
+                return false;
+            }
+        }
+
+        // The one reserved key ggml's own parser reads eagerly (this
+        // section's own header comment): a type or element count it would
+        // not accept aborts the process inside gguf_init_from_buffer rather
+        // than failing gracefully, so this loader refuses it BEFORE that
+        // call rather than after.
+        if (key == GGUF_KEY_GENERAL_ALIGNMENT && (type != GGUF_TYPE_UINT32 || count != 1)) {
+            return false;
+        }
+
+        if (!prescan_skip_value(data, size, offset, type, count)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 }  // namespace
 
 synth_status_t serialize_clone_prompt(const ClonePrompt & prompt,
@@ -723,6 +933,16 @@ synth_status_t load_profile_from_memory(Model &         model,
     out_diagnostic_message = nullptr;
 
     if (data == nullptr || data_size == 0) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // Independent raw-byte hardening BEFORE gguf_init_from_buffer ever
+    // touches these bytes -- see prescan_buffer's own header comment for
+    // why: ggml's parser aborts the process on a reserved key (at minimum
+    // "general.alignment") declared with a type its own eager read does not
+    // accept, and that call happens inside gguf_init_from_buffer itself,
+    // before any line below this one runs.
+    if (!prescan_buffer(data, data_size)) {
         return SYNTH_ERR_INVALID_ARG;
     }
 

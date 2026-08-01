@@ -102,6 +102,46 @@ bool find_string_value(const std::vector<uint8_t> & bytes,
     return true;
 }
 
+void put_gguf_string(std::vector<uint8_t> & out, const std::string & value) {
+    put<uint64_t>(out, uint64_t(value.size()));
+    put_bytes(out, value.data(), value.size());
+}
+
+// A minimal, hand-built raw GGUF buffer declaring exactly one metadata key,
+// "general.alignment", with an arbitrary caller-chosen type tag and raw
+// value bytes -- everything arch/omnivoice/profile.cpp's prescan_buffer
+// exists to catch before gguf_init_from_buffer ever sees it (ggml's own
+// gguf_get_val_u32, called eagerly during construction to resolve
+// alignment, aborts the process if this key's stored type is not exactly
+// UINT32 with one element -- gguf.cpp:610, asserted at gguf.cpp:194/:1102).
+// Deliberately NOT built through synth::omnivoice::serialize_clone_prompt:
+// this project's own writer never emits "general.alignment" at all, so the
+// crash reproduction has to be hand-assembled the same way an adversarial
+// buffer would be.
+std::vector<uint8_t> make_alignment_buffer(int32_t type, const std::vector<uint8_t> & value_bytes) {
+    std::vector<uint8_t> bytes;
+    put_bytes(bytes, GGUF_MAGIC, 4);
+    put<uint32_t>(bytes, uint32_t(GGUF_VERSION));
+    put<int64_t>(bytes, int64_t(0));  // n_tensors
+    put<int64_t>(bytes, int64_t(1));  // n_kv
+    put_gguf_string(bytes, "general.alignment");
+    put<int32_t>(bytes, type);
+    put_bytes(bytes, value_bytes.data(), value_bytes.size());
+    return bytes;
+}
+
+std::vector<uint8_t> u32_value_bytes(uint32_t value) {
+    std::vector<uint8_t> bytes;
+    put<uint32_t>(bytes, value);
+    return bytes;
+}
+
+std::vector<uint8_t> string_value_bytes(const std::string & value) {
+    std::vector<uint8_t> bytes;
+    put_gguf_string(bytes, value);
+    return bytes;
+}
+
 std::shared_ptr<ClonePrompt> make_clone_prompt(uint64_t frames, int32_t fill_token, const std::string & transcript) {
     auto prompt = std::make_shared<ClonePrompt>();
     prompt->reference_tokens.assign(size_t(frames) * 8, fill_token);
@@ -386,6 +426,91 @@ int main(int argc, char ** argv) {
         fake_model.info.family         = synth::ModelFamily::Vits;
         synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
         SYNTH_TEST_CHECK(load_bytes(&fake_model, base_bytes, &loaded) == SYNTH_ERR_UNSUPPORTED_VOICE);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+    }
+
+    // =========================================================================
+    // Untrusted-buffer pre-scan (fix round 1, reviewer FINDING 1): a raw
+    // GGUF buffer that declares GGML's own reserved key "general.alignment"
+    // with the wrong type used to abort the WHOLE PROCESS inside
+    // gguf_init_from_buffer (ggml/src/gguf.cpp:610's eager
+    // gguf_get_val_u32, asserted at :194/:1102) -- before
+    // load_profile_from_memory's own validation ever ran.
+    // arch/omnivoice/profile.cpp's prescan_buffer now catches this, and
+    // every arm below, independently of gguf_init_from_buffer, and reaching
+    // the SYNTH_TEST_CHECK after each `load_bytes` call is itself part of
+    // the proof: a still-aborting guard would take the whole test process
+    // down before ever reaching it, not just fail an assertion.
+    // =========================================================================
+
+    // --- (a) The exact wrong-typed-alignment buffer that aborted the
+    // process before this fix: "general.alignment" declared as a STRING
+    // instead of a UINT32.
+    {
+        const std::vector<uint8_t> bytes  = make_alignment_buffer(GGUF_TYPE_STRING, string_value_bytes("x"));
+        synth_voice_profile_t *    loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+        // Reaching this line at all -- rather than the process having
+        // already died to SIGABRT -- IS the "process survives" proof.
+    }
+
+    // --- (b) Wrong magic.
+    {
+        std::vector<uint8_t> bytes     = make_alignment_buffer(GGUF_TYPE_UINT32, u32_value_bytes(32));
+        bytes[0]                       = uint8_t('X');
+        synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+    }
+
+    // --- (c) Wrong version (this project only ever writes GGUF_VERSION==3;
+    // an old v1/v2 writer or corrupt data is refused the same way).
+    {
+        std::vector<uint8_t> bytes         = make_alignment_buffer(GGUF_TYPE_UINT32, u32_value_bytes(32));
+        const uint32_t       wrong_version = 2;
+        std::memcpy(bytes.data() + 4, &wrong_version, sizeof(wrong_version));
+        synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+    }
+
+    // --- (d) Truncated header: fewer than the 24 bytes
+    // (magic+version+n_tensors+n_kv) prescan_buffer needs before it can
+    // even look at a single KV entry.
+    {
+        const std::vector<uint8_t> bytes  = { 'G', 'G', 'U', 'F', 3, 0, 0, 0, 1, 2, 3 };
+        synth_voice_profile_t *    loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+    }
+
+    // --- (e) A KV walk that runs past the buffer end: a well-formed header
+    // declaring one KV entry, truncated partway through that entry's key
+    // bytes.
+    {
+        std::vector<uint8_t> bytes = make_alignment_buffer(GGUF_TYPE_UINT32, u32_value_bytes(32));
+        // Header (24 bytes) + the key's own 8-byte length prefix + a few
+        // key bytes, then stop -- well short of "general.alignment"'s full
+        // 18 bytes, let alone the type tag and value that would follow.
+        bytes.resize(24 + 8 + 4);
+        synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+    }
+
+    // --- (f) Absurd kv_count: declares far more KV entries than
+    // prescan_buffer's own kPrescanMaxKv ceiling (64) admits, with no
+    // actual entries following -- rejected from the header alone, before
+    // the walk ever starts.
+    {
+        std::vector<uint8_t> bytes;
+        put_bytes(bytes, GGUF_MAGIC, 4);
+        put<uint32_t>(bytes, uint32_t(GGUF_VERSION));
+        put<int64_t>(bytes, int64_t(0));        // n_tensors
+        put<int64_t>(bytes, int64_t(1) << 40);  // n_kv: absurd
+        synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_INVALID_ARG);
         SYNTH_TEST_CHECK(loaded == nullptr);
     }
 

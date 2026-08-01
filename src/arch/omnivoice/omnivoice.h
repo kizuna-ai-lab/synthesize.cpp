@@ -224,15 +224,25 @@ class Model {
     // resample_24k_to_16k) and runs the HuBERT semantic branch plus the
     // codec's own SemanticEncoder over it (reference-encoder.h's
     // build_semantic_branch, orchestrated by reference-encoder-host.h's
-    // run_semantic_branch). `semantic_mean` receives the mean over all
-    // hidden states BEFORE the stride-2 downsample -- the oracle's own
-    // `ref/semantic_mean.f32` probe; `out_semantic_encoder`, when non-null,
-    // additionally receives the SemanticEncoder's own output, reported for
-    // debugging since no committed oracle probe isolates it yet. Both are
-    // cleared and meaningful ONLY when this returns SYNTH_OK.
+    // run_semantic_branch), THEN (Task 12) the DAC acoustic encoder over the
+    // ORIGINAL `pcm_24k` plus the reference fusion Linear
+    // (reference-encoder.h's build_acoustic_encoder/build_reference_fusion,
+    // orchestrated by reference-encoder-host.h's run_acoustic_and_fuse).
+    // `semantic_mean` receives the mean over all hidden states BEFORE the
+    // stride-2 downsample -- the oracle's own `ref/semantic_mean.f32` probe.
+    // `fused_latent` receives the fused acoustic+semantic latent -- the
+    // oracle's own `ref/fused_latent.f32` probe, and the RVQ quantizer's own
+    // input (Task 13). `out_semantic_encoder`, when non-null, additionally
+    // receives the SemanticEncoder's own output (build_semantic_branch's
+    // primary return value, the fusion's own semantic-side input); no
+    // committed oracle probe isolates it in its own right, so it is exposed
+    // for debugging the same way `out_semantic_encoder` always has been.
+    // Every output is cleared up front and meaningful ONLY when this returns
+    // SYNTH_OK.
     synth_status_t encode_reference(const std::vector<float> & pcm_24k,
                                     int                        threads,
                                     std::vector<float> &       semantic_mean,
+                                    std::vector<float> &       fused_latent,
                                     std::vector<float> *       out_semantic_encoder = nullptr);
 
   private:

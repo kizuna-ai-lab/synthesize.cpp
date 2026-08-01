@@ -257,4 +257,111 @@ synth_status_t run_semantic_branch(const BackendPlan &        plan,
     return status;
 }
 
+// This graph (the acoustic branch plus the fusion Linear) is built once per
+// cloning request too, matching kSemanticGraphNodeBudget's own reasoning;
+// smaller because there is no attention stack here.
+constexpr size_t kAcousticGraphNodeBudget = 4096;
+
+synth_status_t run_acoustic_and_fuse(const BackendPlan &        plan,
+                                     const ModelWeights &       weights,
+                                     const HParams &            hparams,
+                                     const std::vector<float> & pcm_24k,
+                                     const std::vector<float> & semantic_encoder_output,
+                                     int                        threads,
+                                     std::vector<float> &       fused_latent,
+                                     std::vector<float> *       out_acoustic) {
+    fused_latent.clear();
+    if (out_acoustic != nullptr) {
+        out_acoustic->clear();
+    }
+    const uint32_t semantic_hidden = hparams.semantic.hidden_size;
+    if (pcm_24k.empty() || semantic_hidden == 0 || semantic_encoder_output.empty() ||
+        semantic_encoder_output.size() % semantic_hidden != 0) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    const int64_t semantic_frames = int64_t(semantic_encoder_output.size() / semantic_hidden);
+
+    // Two persistent inputs this time -- the raw waveform and the
+    // already-computed semantic tensor -- sharing the same "graph allocator
+    // must not own it" rule run_semantic_branch's own single input follows.
+    ggml_init_params input_params{};
+    input_params.mem_size        = ggml_tensor_overhead() * 4;
+    input_params.no_alloc        = true;
+    ggml_context * input_context = ggml_init(input_params);
+    if (input_context == nullptr) {
+        return SYNTH_ERR_OOM;
+    }
+    ggml_tensor * pcm_tensor = ggml_new_tensor_1d(input_context, GGML_TYPE_F32, int64_t(pcm_24k.size()));
+    ggml_tensor * semantic_tensor =
+        ggml_new_tensor_2d(input_context, GGML_TYPE_F32, int64_t(semantic_hidden), semantic_frames);
+    ggml_backend_buffer_t input_buffer = ggml_backend_alloc_ctx_tensors(input_context, plan.cpu_backend());
+    if (input_buffer == nullptr) {
+        ggml_free(input_context);
+        return SYNTH_ERR_OOM;
+    }
+    ggml_backend_tensor_set(pcm_tensor, pcm_24k.data(), 0, ggml_nbytes(pcm_tensor));
+    ggml_backend_tensor_set(semantic_tensor, semantic_encoder_output.data(), 0, ggml_nbytes(semantic_tensor));
+
+    ggml_init_params graph_params{};
+    graph_params.mem_size        = ggml_tensor_overhead() * (kAcousticGraphNodeBudget + 256) +
+                                   ggml_graph_overhead_custom(kAcousticGraphNodeBudget, false);
+    graph_params.no_alloc        = true;
+    ggml_context * graph_context = ggml_init(graph_params);
+    if (graph_context == nullptr) {
+        ggml_backend_buffer_free(input_buffer);
+        ggml_free(input_context);
+        return SYNTH_ERR_OOM;
+    }
+    ggml_cgraph * graph = ggml_new_graph_custom(graph_context, kAcousticGraphNodeBudget, false);
+
+    ggml_tensor *  acoustic_tensor = build_acoustic_encoder(graph_context, pcm_tensor, weights, hparams);
+    ggml_tensor *  fused_tensor = acoustic_tensor != nullptr ?
+                                      build_reference_fusion(graph_context, acoustic_tensor, semantic_tensor, weights) :
+                                      nullptr;
+    synth_status_t status       = SYNTH_OK;
+    if (fused_tensor == nullptr) {
+        // Either builder refusing -- including build_reference_fusion's own
+        // frame-count check -- means the acoustic branch's length disagreed
+        // with the semantic branch's, which build_acoustic_encoder's own
+        // header comment names as a wiring defect upstream of this file.
+        status = SYNTH_ERR_INTERNAL;
+    } else {
+        if (out_acoustic != nullptr) {
+            // A side tap, not the graph's own output: marked and expanded
+            // before allocation, run_semantic_branch's own rule for
+            // `mean_tensor`.
+            ggml_set_output(acoustic_tensor);
+            ggml_build_forward_expand(graph, acoustic_tensor);
+        }
+        ggml_build_forward_expand(graph, fused_tensor);
+
+        const size_t         hash_size = size_t(ggml_graph_size(graph)) + 4096;
+        ggml_backend_sched_t scheduler = plan.create_cpu_scheduler(hash_size);
+        if (scheduler == nullptr) {
+            status = SYNTH_ERR_BACKEND;
+        } else {
+            if (!ggml_backend_sched_alloc_graph(scheduler, graph)) {
+                status = SYNTH_ERR_OOM;
+            } else {
+                plan.set_threads(threads > 0 ? threads : default_synthesis_threads());
+                status = ggml_backend_sched_graph_compute(scheduler, graph) == GGML_STATUS_SUCCESS ? SYNTH_OK :
+                                                                                                     SYNTH_ERR_BACKEND;
+                if (status == SYNTH_OK) {
+                    fused_latent.resize(size_t(ggml_nelements(fused_tensor)));
+                    ggml_backend_tensor_get(fused_tensor, fused_latent.data(), 0, ggml_nbytes(fused_tensor));
+                    if (out_acoustic != nullptr) {
+                        out_acoustic->resize(size_t(ggml_nelements(acoustic_tensor)));
+                        ggml_backend_tensor_get(acoustic_tensor, out_acoustic->data(), 0, ggml_nbytes(acoustic_tensor));
+                    }
+                }
+            }
+            ggml_backend_sched_free(scheduler);
+        }
+    }
+    ggml_free(graph_context);
+    ggml_backend_buffer_free(input_buffer);
+    ggml_free(input_context);
+    return status;
+}
+
 }  // namespace synth::omnivoice

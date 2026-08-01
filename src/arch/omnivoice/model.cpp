@@ -797,8 +797,10 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> &      codes,
 synth_status_t Model::encode_reference(const std::vector<float> & pcm_24k,
                                        int                        threads,
                                        std::vector<float> &       semantic_mean,
+                                       std::vector<float> &       fused_latent,
                                        std::vector<float> *       out_semantic_encoder) {
     semantic_mean.clear();
+    fused_latent.clear();
     if (out_semantic_encoder != nullptr) {
         out_semantic_encoder->clear();
     }
@@ -808,9 +810,26 @@ synth_status_t Model::encode_reference(const std::vector<float> & pcm_24k,
     if (!resample_24k_to_16k(pcm_24k, pcm_16k)) {
         return SYNTH_ERR_INVALID_ARG;
     }
-    return run_semantic_branch(*impl.backend_plan, impl.weights, impl.hparams, pcm_16k,
-                               threads > 0 ? threads : default_synthesis_threads(), semantic_mean,
-                               out_semantic_encoder);
+    const int          resolved_threads = threads > 0 ? threads : default_synthesis_threads();
+    // The fusion's own semantic-side input is build_semantic_branch's PRIMARY
+    // return value (out_semantic_encoder), not semantic_mean -- this local
+    // always asks for it regardless of whether the caller wants it reported
+    // back, since run_acoustic_and_fuse below cannot run without it.
+    std::vector<float> semantic_encoder_output;
+    synth_status_t     status = run_semantic_branch(*impl.backend_plan, impl.weights, impl.hparams, pcm_16k,
+                                                    resolved_threads, semantic_mean, &semantic_encoder_output);
+    if (status != SYNTH_OK) {
+        return status;
+    }
+    if (out_semantic_encoder != nullptr) {
+        *out_semantic_encoder = semantic_encoder_output;
+    }
+    // The acoustic branch reads the ORIGINAL 24 kHz waveform, not the
+    // resampled one run_semantic_branch consumed -- the two branches sample
+    // the same reference audio at different rates by design (24 kHz for the
+    // codec's own hop, 16 kHz for HuBERT).
+    return run_acoustic_and_fuse(*impl.backend_plan, impl.weights, impl.hparams, pcm_24k, semantic_encoder_output,
+                                 resolved_threads, fused_latent);
 }
 
 synth_status_t Model::load_cpu(const std::string & path, std::unique_ptr<Model> & output) {

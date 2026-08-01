@@ -73,8 +73,9 @@ ggml_tensor * codec_conv1d(ggml_context *        context,
                            ggml_tensor *         input,
                            const Conv1dWeights & weights,
                            int                   dilation,
-                           int                   padding) {
-    if (context == nullptr || input == nullptr || !bound(weights) || dilation <= 0 || padding < 0) {
+                           int                   padding,
+                           int                   stride) {
+    if (context == nullptr || input == nullptr || !bound(weights) || dilation <= 0 || padding < 0 || stride <= 0) {
         return nullptr;
     }
     const int64_t kernel       = weights.weight->ne[0];
@@ -86,8 +87,8 @@ ggml_tensor * codec_conv1d(ggml_context *        context,
         return nullptr;
     }
     ggml_tensor * time_major = ggml_cont(context, ggml_transpose(context, input));
-    ggml_tensor * columns =
-        ggml_im2col(context, weights.weight, time_major, 1, 0, padding, 0, dilation, 0, false, weights.weight->type);
+    ggml_tensor * columns = ggml_im2col(context, weights.weight, time_major, stride, 0, padding, 0, dilation, 0, false,
+                                        weights.weight->type);
     ggml_tensor * kernel_2d = ggml_reshape_2d(context, weights.weight, kernel * in_channels, out_channels);
     ggml_tensor * signal =
         ggml_mul_mat(context, kernel_2d, ggml_reshape_2d(context, columns, columns->ne[0], columns->ne[1]));

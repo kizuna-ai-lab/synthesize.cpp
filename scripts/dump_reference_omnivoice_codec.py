@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Reference values for tests/omnivoice_codec_test.cpp.
+"""Reference values for tests/omnivoice_codec_test.cpp and (--encoder)
+tests/omnivoice_reference_encoder_test.cpp.
 
-Composes the Higgs decode path at toy dimensions from the REAL classes: the
-transformers DacDecoder with HiggsAudioV2TokenizerModel._adjust_dac_decoder
-applied (output_padding = stride % 2, tanh removed), and the RVQ/fc2 stages as
-the exact F.embedding / F.linear arithmetic the reference modules perform.
+Default mode composes the Higgs DECODE path at toy dimensions from the REAL
+classes: the transformers DacDecoder with
+HiggsAudioV2TokenizerModel._adjust_dac_decoder applied (output_padding =
+stride % 2, tanh removed), and the RVQ/fc2 stages as the exact F.embedding /
+F.linear arithmetic the reference modules perform.
 
 The upstream decode path this mirrors is HiggsAudioV2TokenizerModel.decode:
 the RVQ sum over levels, fc2 across the channel axis, then the adjusted
@@ -12,10 +14,27 @@ acoustic decoder. The two Higgs adjustments are applied by the upstream
 staticmethod rather than restated here, so a transformers release that changes
 either of them changes these numbers instead of hiding the drift.
 
+`--encoder` mode (Task 12) instead composes the ENCODE half's DAC-only stage:
+a real transformers DacEncoder at toy dimensions, mirroring this file's own
+decoder fixture widths (ENCODER_HIDDEN doubles through the SAME RATIOS list
+the decoder halves through, landing back on ACOUSTIC -- this checkpoint's own
+config states downsampling_ratios and upsampling_ratios as the literal same
+array, [8, 5, 4, 2, 3], and DacEncoder/DacDecoder both walk their own ratio
+list in plain enumeration order (modeling_dac.py's DacEncoder.__init__ /
+DacDecoder.__init__), confirmed directly against the real checkpoint's own
+instantiated block shapes -- see reference-encoder.h's own citation of this
+evidence), plus a synthetic (not-HuBERT) semantic tensor and a plain
+F.linear standing in for codec.fc, pinning build_reference_fusion's
+concat+per-frame-Linear arithmetic independently of Task 11's own HuBERT
+fixture (this mode never touches HuBERT or the RVQ -- no codes, no
+quantizer -- both belong to a different task).
+
 Usage:
     uv run --project scripts/envs/omnivoice --locked python \
-        scripts/dump_reference_omnivoice_codec.py
+        scripts/dump_reference_omnivoice_codec.py [--encoder]
 """
+
+import argparse
 
 import torch
 import torch.nn.functional as F
@@ -46,6 +65,20 @@ WEIGHT_SCALE = 0.5
 BIAS_SCALE = 0.1
 ALPHA_SCALE, ALPHA_OFFSET = 0.25, 1.0
 
+# --encoder mode only (Task 12): the acoustic encoder mirrors the decoder's own
+# toy widths in reverse -- ENCODER_HIDDEN doubles through RATIOS (the SAME
+# list, in the SAME order the decoder halves through) and lands back on
+# ACOUSTIC, the decoder's own input width, so the two toy fixtures describe
+# the two ends of one consistent bottleneck. SEM_WIDTH is a synthetic stand-in
+# for Task 11's HuBERT output (no HuBERT here -- this mode only exercises
+# build_reference_fusion's concat+Linear arithmetic) and is deliberately a
+# DIFFERENT width from ACOUSTIC so a fusion bug that mixed up which half goes
+# where could not hide behind equal widths.
+ENCODER_HIDDEN = 2
+SEM_WIDTH = 3
+FUSED_WIDTH = ACOUSTIC + SEM_WIDTH  # codec.fc is square: concat width -> itself
+PCM_SCALE, PCM_OFFSET = 0.5, 0.0
+
 
 class LcgStream:
     """The 64-bit LCG the C++ fixture mirrors; every draw is a 24-bit ratio."""
@@ -72,7 +105,7 @@ def dump(name, tensor):
     print("};")
 
 
-def main():
+def main_decoder():
     from transformers.models.dac.configuration_dac import DacConfig
     from transformers.models.dac.modeling_dac import DacDecoder
     from transformers.models.higgs_audio_v2_tokenizer.modeling_higgs_audio_v2_tokenizer import (
@@ -186,6 +219,153 @@ def main():
     dump("kExpectedLatent", latent.T)
     dump("kExpectedAcoustic", acoustic.T)
     dump("kExpectedWave", wave)
+
+
+def main_encoder():
+    from transformers.models.dac.configuration_dac import DacConfig
+    from transformers.models.dac.modeling_dac import DacEncoder
+
+    # hidden_size is not a declared DacConfig dataclass field, but the same
+    # override-after-__post_init__ mechanism main_decoder() already relies on
+    # for `hidden_size`/`upsampling_ratios` applies here too (confirmed
+    # directly against the real checkpoint: DacConfig.__post_init__
+    # unconditionally derives hidden_size = encoder_hidden_size * 2**len(
+    # ratios), but the real acoustic_model_config's own hidden_size=256 wins
+    # over that derivation's 64*2**5=2048, because the raw config dict's
+    # hidden_size is applied as a plain kwarg AFTER __post_init__ runs) --
+    # this is what lets ENCODER_HIDDEN double through RATIOS and land on the
+    # SAME ACOUSTIC width main_decoder()'s DECODER_HIDDEN halves down to,
+    # rather than whatever ENCODER_HIDDEN * 2**len(RATIOS) happens to be.
+    config = DacConfig(
+        encoder_hidden_size=ENCODER_HIDDEN,
+        hidden_size=ACOUSTIC,
+        downsampling_ratios=RATIOS,
+    )
+    encoder = DacEncoder(config).eval()
+    assert config.downsampling_ratios == RATIOS and config.hidden_size == ACOUSTIC, (
+        f"DacConfig resolved downsampling_ratios={config.downsampling_ratios}, "
+        f"hidden_size={config.hidden_size}; the override did not take"
+    )
+
+    stream = LcgStream(SEED)
+    weight = (WEIGHT_SCALE, 0.0)
+    bias = (BIAS_SCALE, 0.0)
+    alpha = (ALPHA_SCALE, ALPHA_OFFSET)
+
+    # The encoder's own forward order: entry conv, then per block the three
+    # residual units (dilations 1/3/9) FIRST and the block's own Snake +
+    # strided conv LAST (DacEncoderBlock.forward: res_unit1, res_unit2,
+    # snake1(res_unit3(...)), conv1) -- the mirror image of the decoder's
+    # snake-then-conv_t-then-residual-units order, not the same order
+    # repeated. The C++ fixture's fill order below must match this exactly.
+    assignments = [(encoder.conv1.weight, *weight), (encoder.conv1.bias, *bias)]
+    for block in encoder.block:
+        for unit in (block.res_unit1, block.res_unit2, block.res_unit3):
+            assignments += [
+                (unit.snake1.alpha, *alpha),
+                (unit.conv1.weight, *weight),
+                (unit.conv1.bias, *bias),
+                (unit.snake2.alpha, *alpha),
+                (unit.conv2.weight, *weight),
+                (unit.conv2.bias, *bias),
+            ]
+        assignments += [
+            (block.snake1.alpha, *alpha),
+            (block.conv1.weight, *weight),
+            (block.conv1.bias, *bias),
+        ]
+    assignments += [
+        (encoder.snake1.alpha, *alpha),
+        (encoder.conv2.weight, *weight),
+        (encoder.conv2.bias, *bias),
+    ]
+    # Same parameter-coverage assert as main_decoder(), hardened against a
+    # transformers release that grows DacEncoder leaving a fresh parameter at
+    # its unseeded random initialization.
+    assigned = {id(parameter) for parameter, _scale, _offset in assignments}
+    missed = [
+        name
+        for name, parameter in encoder.named_parameters()
+        if id(parameter) not in assigned
+    ]
+    assert not missed, (
+        f"encoder parameters keeping their random initialization: {missed}; "
+        "the dump would not be reproducible"
+    )
+    with torch.no_grad():
+        for parameter, scale, offset in assignments:
+            parameter.copy_(
+                stream.fill(parameter.numel(), scale, offset).view_as(parameter)
+            )
+
+    # A fixed, code-free (no RVQ, no HuBERT) raw waveform: FRAMES * HOP
+    # samples, hop-aligned by construction exactly like every input this
+    # port's own build_acoustic_encoder ever sees.
+    pcm = stream.fill(FRAMES * HOP, PCM_SCALE, PCM_OFFSET)
+    with torch.no_grad():
+        acoustic = encoder(pcm.view(1, 1, -1))[0]  # [ACOUSTIC, FRAMES]
+    assert acoustic.shape == (ACOUSTIC, FRAMES), f"acoustic shape {tuple(acoustic.shape)}"
+
+    # A synthetic semantic tensor (no HuBERT here -- see this file's module
+    # docstring) and a plain nn.Linear-equivalent (F.linear over explicit
+    # weight/bias tensors, the same technique main_decoder() already uses for
+    # fc2) standing in for codec.fc, continuing the SAME LCG stream.
+    #
+    # UNLIKE every other tensor in this function, `semantic` is not a native
+    # torch module parameter (Conv1d.weight, Snake1d.alpha, ...), so there is
+    # no torch-native shape dictating its .view() -- the C++ side must match
+    # whatever choice is made here exactly. It is drawn POSITION-MAJOR,
+    # FEATURE-MINOR (.view(FRAMES, SEM_WIDTH): each contiguous SEM_WIDTH-run
+    # is one frame's full channel vector) and then transposed, which is what
+    # makes the SAME flat draw sequence, read straight into a ggml
+    # ne=[SEM_WIDTH, FRAMES] tensor (channel-fastest, so ALSO a contiguous
+    # SEM_WIDTH-run per frame), represent the identical matrix -- the same
+    # "position-major, feature-minor" rule this file's sibling semantic
+    # dumper documents for its own kExpectedMean. Drawing it channel-major
+    # instead (.view(SEM_WIDTH, FRAMES) with no transpose) would flip which
+    # axis is contiguous and silently draw a DIFFERENT matrix on each side
+    # whenever SEM_WIDTH != FRAMES.
+    semantic = stream.fill(FRAMES * SEM_WIDTH, *weight).view(FRAMES, SEM_WIDTH).T
+    fc_weight = stream.fill(FUSED_WIDTH * FUSED_WIDTH, *weight).view(FUSED_WIDTH, FUSED_WIDTH)
+    fc_bias = stream.fill(FUSED_WIDTH, *bias)
+
+    # HiggsAudioV2TokenizerModel.encode: torch.cat([e_acoustic, e_semantic],
+    # dim=1) (the channel axis in torch's [B, C, T] layout, dim=0 here since
+    # there is no batch axis) then
+    # self.fc(embeddings.transpose(1, 2)).transpose(1, 2) -- Linear applied
+    # per frame over the channel axis.
+    embeddings = torch.cat([acoustic, semantic], dim=0)  # [FUSED_WIDTH, FRAMES]
+    fused = F.linear(embeddings.T, fc_weight, fc_bias).T  # [FUSED_WIDTH, FRAMES]
+
+    for name, tensor in (("acoustic", acoustic), ("semantic", semantic), ("fused", fused)):
+        assert torch.isfinite(tensor).all(), f"{name} is not finite"
+
+    print(
+        f"// --encoder: acoustic {tuple(acoustic.shape)}, semantic {tuple(semantic.shape)}, "
+        f"fused {tuple(fused.shape)}"
+    )
+    # Weights are not carried in either file, same as main_decoder()'s own
+    # dump: pcm/semantic/fc_weight/fc_bias are all plain LCG draws (no
+    # weight-norm folding or other transform, unlike the semantic dumper's
+    # kPosConvWeight), so the C++ fixture draws them from the identical
+    # stream instead of pasting them -- only the OUTPUT arrays are pinned.
+    dump("kExpectedAcoustic", acoustic.T)
+    dump("kExpectedFused", fused.T)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
+    parser.add_argument(
+        "--encoder", action="store_true",
+        help="dump the acoustic encoder + reference fusion miniature fixture "
+             "(tests/omnivoice_reference_encoder_test.cpp) instead of the "
+             "decoder's (tests/omnivoice_codec_test.cpp)",
+    )
+    arguments = parser.parse_args()
+    if arguments.encoder:
+        main_encoder()
+    else:
+        main_decoder()
 
 
 if __name__ == "__main__":

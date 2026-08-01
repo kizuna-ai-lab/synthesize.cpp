@@ -173,4 +173,51 @@ synth_status_t run_semantic_branch(const BackendPlan &        plan,
                                    std::vector<float> &       semantic_mean,
                                    std::vector<float> *       out_semantic_encoder = nullptr);
 
+// Runs reference-encoder.h's build_acoustic_encoder once over a 24 kHz mono
+// PCM buffer, then build_reference_fusion against an ALREADY-COMPUTED
+// semantic branch output -- `semantic_encoder_output`, the flat
+// [semantic.hidden_size, T] buffer run_semantic_branch's own
+// `out_semantic_encoder` tap produced (build_semantic_branch's PRIMARY
+// return value, NOT semantic_mean) -- one graph, one scheduler pass, the
+// same allocate/compute/read-back shape run_semantic_branch itself uses.
+// Re-injecting an already-computed host buffer as a second graph input
+// rather than rebuilding the semantic branch here keeps this function
+// independent of run_semantic_branch's own tested contract (Task 11's), at
+// the cost of one host-side round trip for a tensor this family only builds
+// once per cloning request.
+//
+// Placement is CPU-only, unconditionally, matching run_semantic_branch's own
+// "no measurement to move it" rule.
+//
+// `semantic_encoder_output.size()` must be an exact multiple of
+// `hparams.semantic.hidden_size` (the frame count is inferred from that
+// division); a mismatch, or a frame count that disagrees with the acoustic
+// branch's own output length, is SYNTH_ERR_INVALID_ARG or
+// SYNTH_ERR_INTERNAL respectively -- see build_acoustic_encoder's own
+// comment for why a disagreeing pair of lengths is a wiring defect this
+// refuses rather than a runtime case to pad around.
+//
+// `fused_latent` receives build_reference_fusion's own output, [
+// hparams.codec.hidden_size + hparams.semantic.hidden_size, T] flattened
+// frame-major. `out_acoustic`, when non-null, additionally receives
+// build_acoustic_encoder's own output (a debugging tap, mirroring
+// run_semantic_branch's `out_semantic_encoder`: no committed oracle probe
+// isolates the acoustic-only stage today).
+//
+// Returns SYNTH_ERR_INVALID_ARG for an empty `pcm_24k`/`semantic_encoder_output`
+// or a `semantic_encoder_output` size not divisible by the semantic hidden
+// width, SYNTH_ERR_OOM/SYNTH_ERR_BACKEND on allocation or scheduling
+// failure, and SYNTH_ERR_INTERNAL when either builder refuses the package's
+// shapes (including a length disagreement between the two branches).
+// `fused_latent` (and `out_acoustic`, if requested) are cleared up front and
+// left empty on any non-OK return.
+synth_status_t run_acoustic_and_fuse(const BackendPlan &        plan,
+                                     const ModelWeights &       weights,
+                                     const HParams &            hparams,
+                                     const std::vector<float> & pcm_24k,
+                                     const std::vector<float> & semantic_encoder_output,
+                                     int                        threads,
+                                     std::vector<float> &       fused_latent,
+                                     std::vector<float> *       out_acoustic = nullptr);
+
 }  // namespace synth::omnivoice

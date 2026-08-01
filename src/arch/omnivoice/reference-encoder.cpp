@@ -36,6 +36,7 @@
 #include "arch/omnivoice/reference-encoder.h"
 
 #include "arch/omnivoice/catalog.h"
+#include "arch/omnivoice/codec.h"
 #include "ggml.h"
 
 #include <cmath>
@@ -51,6 +52,13 @@ namespace {
 // See reference-encoder.h's top comment for why this is a literal rather than
 // something derived from HParams.
 constexpr int kSemanticPadSamples = 160;
+
+// The DAC residual stack's fixed dilations, three units per block -- the
+// same {1, 3, 9} codec.cpp's own kDacDilations names for the decoder side.
+// Duplicated rather than exported: this is a 3-element architectural
+// literal, not logic, and codec.cpp's own array is file-local for the same
+// reason add_channel_bias below is.
+constexpr int kAcousticEncoderDilations[3] = { 1, 3, 9 };
 
 // torch.nn.GroupNorm's own default (HubertGroupNormConvLayer passes no `eps`
 // keyword), distinct from `semantic.layer_norm_eps` (config.layer_norm_eps,
@@ -522,6 +530,110 @@ ggml_tensor * build_semantic_branch(ggml_context *               context,
         encoded = semantic_encoder_block(context, encoded, block);
     }
     return encoded;
+}
+
+ggml_tensor * build_acoustic_encoder(ggml_context *       context,
+                                     ggml_tensor *        pcm_24k,
+                                     const ModelWeights & weights,
+                                     const HParams &      hparams) {
+    if (context == nullptr || pcm_24k == nullptr || pcm_24k->type != GGML_TYPE_F32 || pcm_24k->ne[1] != 1 ||
+        pcm_24k->ne[2] != 1 || pcm_24k->ne[3] != 1 || pcm_24k->ne[0] <= 0) {
+        return nullptr;
+    }
+
+    const AcousticEncoderWeights & encoder = weights.acoustic_encoder;
+    const std::vector<uint32_t> &  ratios  = hparams.codec.upsampling_ratios;
+    // The per-tensor null/shape checks live inside codec_conv1d/codec_snake
+    // themselves (build_codec_decoder's own precedent); what those functions
+    // cannot see is a block whose resolved unit count disagrees with the
+    // architecture's fixed three, or a block count that disagrees with the
+    // package's own declared ratio list -- a catalog that resolved
+    // inconsistently, refused here rather than read past the list.
+    if (ratios.empty() || encoder.blocks.size() != ratios.size()) {
+        return nullptr;
+    }
+
+    // DacEncoder.forward: conv1 over the raw waveform as a single input
+    // channel, kernel 7 pad 3 stride 1.
+    ggml_tensor * hidden = ggml_reshape_2d(context, pcm_24k, 1, pcm_24k->ne[0]);
+    hidden               = codec_conv1d(context, hidden, encoder.conv1, 1, 3);
+    if (hidden == nullptr) {
+        return nullptr;
+    }
+
+    for (size_t index = 0; index < encoder.blocks.size(); ++index) {
+        const AcousticEncoderBlock & block  = encoder.blocks[index];
+        const int                    stride = int(ratios[index]);
+        if (stride <= 0 || block.res_units.size() != std::size(kAcousticEncoderDilations)) {
+            return nullptr;
+        }
+        // DacEncoderBlock.forward: res_unit1, res_unit2, res_unit3, THEN
+        // snake1 on res_unit3's own output, THEN the strided conv1 -- the
+        // decoder's own AcousticDecoderBlock in reverse (there, snake1 and
+        // the resampling step come BEFORE the residual units).
+        for (size_t unit_index = 0; unit_index < block.res_units.size(); ++unit_index) {
+            const DacResidualUnit & unit     = block.res_units[unit_index];
+            const int               dilation = kAcousticEncoderDilations[unit_index];
+            ggml_tensor *           branch   = codec_snake(context, hidden, unit.snake1);
+            branch = codec_conv1d(context, branch, unit.conv1, dilation, 3 * dilation);  // kernel 7
+            if (branch == nullptr) {
+                return nullptr;
+            }
+            branch = codec_snake(context, branch, unit.snake2);
+            branch = codec_conv1d(context, branch, unit.conv2, 1, 0);  // kernel 1
+            // The residual units are length-preserving by construction (see
+            // reference-encoder.h's closed-form length argument); a branch
+            // that came back a different length means the padding is wrong,
+            // matching build_codec_decoder's own guard for the identical
+            // shape.
+            if (branch == nullptr || branch->ne[0] != hidden->ne[0] || branch->ne[1] != hidden->ne[1]) {
+                return nullptr;
+            }
+            hidden = ggml_add(context, hidden, branch);
+        }
+        hidden = codec_snake(context, hidden, block.snake1);
+        if (hidden == nullptr) {
+            return nullptr;
+        }
+        // The block's own resampling convolution: kernel 2*ratio, stride
+        // ratio, padding ceil(ratio/2) -- DacEncoderBlock's own conv1,
+        // mirroring codec.cpp's own `(stride + 1) / 2` padding formula for
+        // the decoder's transposed convolution (both are
+        // `math.ceil(stride / 2)` in the reference).
+        hidden = codec_conv1d(context, hidden, block.conv1, 1, (stride + 1) / 2, stride);
+        if (hidden == nullptr) {
+            return nullptr;
+        }
+    }
+
+    hidden = codec_snake(context, hidden, encoder.snake1);
+    if (hidden == nullptr) {
+        return nullptr;
+    }
+    // The exit convolution, kernel 3 pad 1, down to hparams.codec.hidden_size.
+    ggml_tensor * output = codec_conv1d(context, hidden, encoder.conv2, 1, 1);
+    if (output == nullptr || output->ne[0] != int64_t(hparams.codec.hidden_size)) {
+        return nullptr;
+    }
+    return output;
+}
+
+ggml_tensor * build_reference_fusion(ggml_context *       context,
+                                     ggml_tensor *        acoustic,
+                                     ggml_tensor *        semantic,
+                                     const ModelWeights & weights) {
+    if (context == nullptr || acoustic == nullptr || semantic == nullptr || acoustic->ne[2] != 1 ||
+        acoustic->ne[3] != 1 || semantic->ne[2] != 1 || semantic->ne[3] != 1 || acoustic->ne[1] != semantic->ne[1] ||
+        !bound(weights.fc)) {
+        return nullptr;
+    }
+    // HiggsAudioV2TokenizerModel.encode: torch.cat([e_acoustic, e_semantic],
+    // dim=1) -- the channel axis, ne0 in this file's [channels, length]
+    // convention.
+    ggml_tensor * concat = ggml_concat(context, acoustic, semantic, 0);
+    // codec.fc applied per frame; see reference-encoder.h for why this needs
+    // no transpose in ggml's own layout.
+    return linear(context, concat, weights.fc);
 }
 
 }  // namespace synth::omnivoice

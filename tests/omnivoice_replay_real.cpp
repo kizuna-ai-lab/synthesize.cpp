@@ -24,12 +24,15 @@
 //
 // A fourth, independent channel: `--encode-reference <pcm_24k.f32>` runs the
 // CLONING path's encode half (Model::encode_reference -- resample to 16 kHz,
-// then the HuBERT semantic branch plus the codec's own SemanticEncoder,
-// reference-encoder.h's build_semantic_branch) over the given file and writes
-// `semantic_mean.f32`. It is unrelated to the greedy grid/decode machinery
-// above -- it runs whenever the flag is given, independent of --require --
-// and Task 11 leaves its comparison REPORTED, not gated: the validator prints
-// max_abs/cosine against the oracle's own `ref/semantic_mean.f32` but never
+// the HuBERT semantic branch plus the codec's own SemanticEncoder
+// (reference-encoder.h's build_semantic_branch), THEN (Task 12) the DAC
+// acoustic encoder over the ORIGINAL 24 kHz file plus the reference fusion
+// Linear (build_acoustic_encoder/build_reference_fusion)) over the given file
+// and writes `semantic_mean.f32` and `fused_latent.f32`. It is unrelated to
+// the greedy grid/decode machinery above -- it runs whenever the flag is
+// given, independent of --require -- and Tasks 11/12 leave both comparisons
+// REPORTED, not gated: the validator prints max_abs/cosine against the
+// oracle's own `ref/semantic_mean.f32` and `ref/fused_latent.f32` but never
 // fails on them (thresholds are Task 13's). A failure inside this channel is
 // caught and reported on stderr rather than aborting the process, so a defect
 // here cannot regress the three channels above it that already gate.
@@ -239,25 +242,37 @@ int main(int argc, char ** argv) {
 
     // The encode-reference channel: independent of the greedy grid/decode
     // machinery below, so it runs before that request is even assembled.
-    // Task 11 leaves its comparison to the validator, REPORTED rather than
-    // gated -- see this file's top comment -- so a failure here is printed
-    // and left as a missing semantic_mean.f32 rather than aborting the run:
-    // the three channels below still owe their own pass/fail regardless of
-    // whether this fourth one worked.
+    // Task 11/12 leave its comparisons to the validator, REPORTED rather
+    // than gated -- see this file's top comment -- so a failure here is
+    // printed and left as missing semantic_mean.f32/fused_latent.f32 rather
+    // than aborting the run: the three channels below still owe their own
+    // pass/fail regardless of whether this fourth one worked.
     size_t encode_reference_elements = 0;
+    size_t fused_latent_elements     = 0;
     if (!encode_reference_path.empty()) {
         std::vector<float> pcm_24k;
         std::vector<float> semantic_mean;
+        std::vector<float> fused_latent;
         if (!read_f32(encode_reference_path, pcm_24k)) {
             std::fprintf(stderr, "cannot read --encode-reference %s\n", encode_reference_path.c_str());
         } else {
-            const synth_status_t encode_status = model->encode_reference(pcm_24k, 0, semantic_mean);
+            const synth_status_t encode_status = model->encode_reference(pcm_24k, 0, semantic_mean, fused_latent);
             if (encode_status != SYNTH_OK) {
                 std::fprintf(stderr, "encode_reference -> %d\n", int(encode_status));
             } else if (!write_f32(out_dir + "/semantic_mean.f32", semantic_mean)) {
                 std::fprintf(stderr, "cannot write %s/semantic_mean.f32\n", out_dir.c_str());
             } else {
                 encode_reference_elements = semantic_mean.size();
+                // fused_latent.f32 is written independently of
+                // semantic_mean.f32's own success/failure bookkeeping above:
+                // encode_reference already returned SYNTH_OK for the whole
+                // call, so a write failure here is its own report rather
+                // than folded into the semantic-only count.
+                if (!write_f32(out_dir + "/fused_latent.f32", fused_latent)) {
+                    std::fprintf(stderr, "cannot write %s/fused_latent.f32\n", out_dir.c_str());
+                } else {
+                    fused_latent_elements = fused_latent.size();
+                }
             }
         }
     }
@@ -394,7 +409,7 @@ int main(int argc, char ** argv) {
         "\"probe_layers\": %zu, "
         "\"generator_seconds\": %.4f, \"generator_setup_seconds\": %.4f, \"codec_seconds\": %.4f, "
         "\"placement\": {\"generator\": [%llu, %llu], \"codec\": [%llu, %llu]}, \"margin\": %s, "
-        "\"encode_reference_elements\": %zu, "
+        "\"encode_reference_elements\": %zu, \"fused_latent_elements\": %zu, "
         "\"wall_seconds\": %.4f}\n",
         (unsigned long long) frames, samples, freerun_samples, alternate_samples, output.layer_hidden.size(),
         output.generator_seconds, output.generator_setup_seconds, output.codec_seconds,
@@ -402,6 +417,6 @@ int main(int argc, char ** argv) {
         (unsigned long long) output.generator_placement.accelerator_nodes,
         (unsigned long long) output.codec_placement.nodes,
         (unsigned long long) output.codec_placement.accelerator_nodes, margin_json(output.margin).c_str(),
-        encode_reference_elements, wall);
+        encode_reference_elements, fused_latent_elements, wall);
     return 0;
 }

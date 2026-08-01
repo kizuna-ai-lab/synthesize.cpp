@@ -27,11 +27,20 @@ ggml_tensor * codec_snake(ggml_context * context, ggml_tensor * input, const Sna
 // Symmetric-padding convolution via im2col + matmul (ggml_conv_1d's CPU path
 // asserts an F16 kernel and this family's are F32). With DAC's odd kernels and
 // pad = dilation * (kernel - 1) / 2 the output length equals the input length.
+//
+// `stride` defaults to 1 -- every decoder call site is stride-1 (DAC's own
+// convolutions all are; only its ConvTranspose1d resamples, and that is
+// codec_transpose_conv1d's own stride parameter below) -- and is Task 12's
+// addition for the acoustic ENCODER's own resampling convolutions, DAC's
+// mirror of the decoder's transposed one: a plain strided forward Conv1d
+// rather than a transposed one, since the encoder downsamples going forward
+// through time instead of scattering backward into it.
 ggml_tensor * codec_conv1d(ggml_context *        context,
                            ggml_tensor *         input,
                            const Conv1dWeights & weights,
                            int                   dilation,
-                           int                   padding);
+                           int                   padding,
+                           int                   stride = 1);
 
 // Transposed convolution via mul_mat + ggml_col2im_1d (the VITS recipe). Torch
 // semantics: out = (L-1)*stride - 2*padding + kernel + output_padding. The

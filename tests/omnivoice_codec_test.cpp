@@ -458,6 +458,17 @@ int check_rejections() {
     SYNTH_TEST_CHECK(synth::omnivoice::codec_conv1d(ctx, signal, sound, 0, 3) == nullptr);
     SYNTH_TEST_CHECK(synth::omnivoice::codec_conv1d(ctx, signal, sound, 1, -1) == nullptr);
 
+    // Task 12's stride parameter, defaulting to 1 (the three calls above never
+    // name it, and still pass): a non-positive stride has no well-defined
+    // im2col output, the same "wiring defect, not a runtime case" this file's
+    // other rejections stand for, while a genuinely positive stride other than
+    // the default is a sound forward convolution -- the acoustic ENCODER's own
+    // resampling convolution, in contrast to codec_transpose_conv1d's scatter
+    // below.
+    SYNTH_TEST_CHECK(synth::omnivoice::codec_conv1d(ctx, signal, sound, 1, 3, 2) != nullptr);
+    SYNTH_TEST_CHECK(synth::omnivoice::codec_conv1d(ctx, signal, sound, 1, 3, 0) == nullptr);
+    SYNTH_TEST_CHECK(synth::omnivoice::codec_conv1d(ctx, signal, sound, 1, 3, -1) == nullptr);
+
     // A non-positive stride has no scatter at all, and a kernel narrower than
     // the stride leaves gaps col2im cannot fill; conv_t accepts stride 2 above,
     // so these two rejections are the stride parameter's doing.

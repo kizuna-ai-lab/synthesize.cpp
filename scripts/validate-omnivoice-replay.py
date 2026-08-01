@@ -32,13 +32,15 @@ tests/tolerances/omnivoice.json (profiles.<PROFILE>.stages.<STAGE>), refusing
 to run when the cell is absent -- a threshold the suite writes for itself
 proves nothing.
 
-The two clone cases additionally carry an encode-reference channel (Task 11):
-the runner's `--encode-reference` resamples and runs the HuBERT semantic
-branch plus the codec's own SemanticEncoder over `ref/pcm_24k.f32`, and this
-script compares the result against the oracle's own `ref/semantic_mean.f32`
-probe. That comparison is REPORTED here (max_abs and cosine, printed and
-carried into --report's JSON) but not folded into `measurements`/`worst`, so
-it never participates in --check's gate: thresholds for it are Task 13's.
+The two clone cases additionally carry an encode-reference channel (Task 11)
+and, on top of it, a fused-reference channel (Task 12): the runner's
+`--encode-reference` resamples and runs the HuBERT semantic branch plus the
+codec's own SemanticEncoder over `ref/pcm_24k.f32` (compared against
+`ref/semantic_mean.f32`), THEN the DAC acoustic encoder over the same file
+plus the reference fusion Linear (compared against `ref/fused_latent.f32`).
+Both comparisons are REPORTED here (max_abs and cosine, printed and carried
+into --report's JSON) but not folded into `measurements`/`worst`, so neither
+participates in --check's gate: thresholds for both are Task 13's.
 """
 from __future__ import annotations
 
@@ -328,9 +330,23 @@ def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
         else:
             encode_reference = compare(read_f32(oracle / "ref/semantic_mean.f32"), read_f32(produced_path))
 
+    # Task 12's channel, wired identically to encode_reference just above
+    # (same manifest-presence gate, same REPORT-not-GATE rule, same missing/
+    # shape_mismatch/ok shapes) but comparing the fused acoustic+semantic
+    # latent instead of the semantic-only mean.
+    has_fused_reference = has_encode_reference and "ref.fused_latent" in names
+    fused_reference = None
+    if has_fused_reference:
+        produced_path = work / "fused_latent.f32"
+        if int(stats.get("fused_latent_elements", 0)) == 0 or not produced_path.is_file():
+            fused_reference = {"status": "missing"}
+        else:
+            fused_reference = compare(read_f32(oracle / "ref/fused_latent.f32"), read_f32(produced_path))
+
     return {"case": case_id, "status": "ok", "greedy": greedy, "stats": stats,
             "measurements": measurements, "grid": grid, "finite_pcm": finite,
-            "freerun": freerun, "margin": stats.get("margin"), "encode_reference": encode_reference}
+            "freerun": freerun, "margin": stats.get("margin"), "encode_reference": encode_reference,
+            "fused_reference": fused_reference}
 
 
 def main(argv=None) -> int:
@@ -424,6 +440,19 @@ def main(argv=None) -> int:
             else:
                 print(f"{result['case']}: ref.semantic_mean max_abs {encode_reference['max_abs']:.6g} "
                       f"cosine {encode_reference['cosine']:.8f} (reported, not gated -- Task 13)")
+        # Task 12's channel, printed identically to encode_reference just
+        # above.
+        fused_reference = result.get("fused_reference")
+        if fused_reference is not None:
+            if "shape_mismatch" in fused_reference:
+                print(f"{result['case']}: ref.fused_latent shape mismatch "
+                      f"{fused_reference['shape_mismatch']} (reported, not gated -- Task 13)")
+            elif fused_reference.get("status") == "missing":
+                print(f"{result['case']}: ref.fused_latent requested but fused_latent.f32 "
+                      f"is missing or empty (reported, not gated -- Task 13)")
+            else:
+                print(f"{result['case']}: ref.fused_latent max_abs {fused_reference['max_abs']:.6g} "
+                      f"cosine {fused_reference['cosine']:.8f} (reported, not gated -- Task 13)")
 
     compared = [result for result in results if result["status"] == "ok"]
     print(f"\n{'probe':32} {'max_abs':>12} {'min_cosine':>12}")

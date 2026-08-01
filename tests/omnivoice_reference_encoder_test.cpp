@@ -447,7 +447,11 @@ bool build_fixture(ggml_backend_dev_t device, Fixture & fixture) {
     return true;
 }
 
-bool compute(Fixture &                          fixture,
+// Takes the backend directly rather than a Fixture: Task 12's own
+// AcousticFixture below needs the identical allocate/compute/read-back
+// sequence, and the only field either fixture type contributes here is its
+// backend handle.
+bool compute(ggml_backend_t                     backend,
              ggml_cgraph *                      graph,
              const std::vector<ggml_tensor *> & outputs,
              std::vector<std::vector<float>> &  values) {
@@ -455,10 +459,10 @@ bool compute(Fixture &                          fixture,
         ggml_set_output(output);
         ggml_build_forward_expand(graph, output);
     }
-    ggml_gallocr_t allocator = ggml_gallocr_new(ggml_backend_get_default_buffer_type(fixture.backend));
+    ggml_gallocr_t allocator = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
     bool           ok        = allocator != nullptr && ggml_gallocr_alloc_graph(allocator, graph);
     if (ok) {
-        ok = ggml_backend_graph_compute(fixture.backend, graph) == GGML_STATUS_SUCCESS;
+        ok = ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS;
     }
     if (ok) {
         values.clear();
@@ -513,7 +517,7 @@ bool run_case(ggml_backend_dev_t device, float & max_diff) {
     }
 
     std::vector<std::vector<float>> values;
-    if (!compute(fixture, graph, { mean, downsampled, final_out }, values)) {
+    if (!compute(fixture.backend, graph, { mean, downsampled, final_out }, values)) {
         return false;
     }
     const float d_mean        = deviation(values[0], kExpectedMean, std::size(kExpectedMean));
@@ -621,10 +625,349 @@ int check_rejections() {
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Task 12: the DAC acoustic encoder + reference fusion, compared at a
+// synthetic miniature scale against the REAL transformers DacEncoder plus a
+// synthetic (not-HuBERT) semantic tensor and a plain F.linear standing in for
+// codec.fc -- scripts/dump_reference_omnivoice_codec.py's `--encoder` mode.
+// That mode never touches HuBERT or the RVQ (no codes, no quantizer), so this
+// section is self-contained from the semantic section above: it draws its
+// own LCG stream from its own seed and builds its own ModelWeights subset
+// (acoustic_encoder and fc only).
+//
+// ACOUSTIC_HIDDEN mirrors omnivoice_codec_test.cpp's own toy DAC widths in
+// reverse: ENCODER_HIDDEN doubles through kAcousticRatios (the SAME list, in
+// the SAME order, that a decoder would halve through -- see
+// reference-encoder.h's own citation of why the ratio order is not reversed
+// between the two halves) and lands on kAcousticWidth, the SAME width that
+// toy decoder's own ACOUSTIC input uses.
+
+// Two ratios, one even and one odd -- exercises both branches of the
+// ceil(ratio/2) padding formula, the same reason omnivoice_codec_test.cpp's
+// own kRatios pairs an even and an odd ratio.
+constexpr uint32_t kAcousticRatios[2] = { 2, 3 };
+constexpr uint32_t kAcousticFrames    = 4;
+constexpr uint32_t kAcousticHop       = kAcousticRatios[0] * kAcousticRatios[1];
+constexpr uint32_t kAcousticRawLength = kAcousticFrames * kAcousticHop;  // hop-aligned by construction
+constexpr uint32_t kEncoderHidden     = 2;                               // doubles to 2*2*2=8 through the two blocks
+constexpr uint32_t kAcousticWidth     = 4;                               // encoder.conv2's own output width
+constexpr uint32_t kSemWidth          = 3;  // deliberately != kAcousticWidth -- see the dumper's own note
+constexpr uint32_t kFusedWidth        = kAcousticWidth + kSemWidth;
+
+constexpr float    kAcousticWeightScale = 0.5f, kAcousticWeightOffset = 0.0f;
+constexpr float    kAcousticBiasScale = 0.1f, kAcousticBiasOffset = 0.0f;
+constexpr float    kAcousticAlphaScale = 0.25f, kAcousticAlphaOffset = 1.0f;
+constexpr float    kAcousticPcmScale = 0.5f, kAcousticPcmOffset = 0.0f;
+constexpr uint64_t kAcousticSeed = 20260732u;
+
+// Measured worst case on CPU: 8.94e-8 (acoustic), 5.96e-8 (fused) --
+// tightened to observed x5 (4.47e-7 rounds up to 5e-7), the same discipline
+// the semantic section's own kCpuTolerance follows, rather than a loose round
+// number that would hide a regression an order of magnitude away from the
+// FP32 noise floor.
+constexpr float kAcousticCpuTolerance = 5e-7f;
+
+// values from scripts/dump_reference_omnivoice_codec.py --encoder, pasted
+// verbatim. Weights are not carried here: pcm/semantic/fc weight/bias are
+// all plain LCG draws (no weight-norm folding), so build_acoustic_fixture
+// below draws them from the identical stream instead -- only the OUTPUT
+// arrays are pinned, the same convention omnivoice_codec_test.cpp's own
+// kExpectedLatent/kExpectedAcoustic/kExpectedWave follow.
+constexpr float kExpectedAcoustic[] = {
+    -0.232835069f, -0.144747511f, 0.230766192f,  -0.0718584806f, -0.165914223f, 0.390947551f,
+    -0.192799225f, -0.14978689f,  0.0504428372f, -0.328466028f,  0.181136623f,  0.103543214f,
+    0.254998654f,  -0.231503755f, -0.143125832f, 0.0212896317f,
+};
+constexpr float kExpectedFused[] = {
+    0.0615792349f,  0.0623373613f, 0.037180163f,   0.117748924f,  -0.0521015823f, 0.00707319379f, 0.141474187f,
+    0.0205050558f,  0.0536478385f, -0.0226220526f, -0.229105443f, -0.0019159466f, -0.281676203f,  0.367392749f,
+    -0.18751511f,   -0.113102019f, -0.126962796f,  0.118716978f,  -0.187016696f,  0.165783793f,   -0.102404535f,
+    -0.0178353451f, 0.153154805f,  -0.116814144f,  -0.365322441f, -0.120523885f,  -0.0622239187f, -0.135247558f,
+};
+
+struct AcousticFixture {
+    ggml_backend_t                 backend = nullptr;
+    Context                        persistent;
+    ggml_backend_buffer_t          buffer = nullptr;
+    synth::omnivoice::ModelWeights weights;
+    ggml_tensor *                  pcm      = nullptr;
+    ggml_tensor *                  semantic = nullptr;
+
+    AcousticFixture()                                    = default;
+    AcousticFixture(const AcousticFixture &)             = delete;
+    AcousticFixture & operator=(const AcousticFixture &) = delete;
+
+    ~AcousticFixture() {
+        if (buffer != nullptr) {
+            ggml_backend_buffer_free(buffer);
+        }
+        if (backend != nullptr) {
+            ggml_backend_free(backend);
+        }
+    }
+};
+
+synth::omnivoice::HParams make_acoustic_hparams() {
+    synth::omnivoice::HParams hparams;
+    hparams.codec.encoder_hidden_size = kEncoderHidden;
+    hparams.codec.hidden_size         = kAcousticWidth;
+    hparams.codec.upsampling_ratios.assign(std::begin(kAcousticRatios), std::end(kAcousticRatios));
+    hparams.semantic.hidden_size = kSemWidth;
+    return hparams;
+}
+
+// Draw order mirrors scripts/dump_reference_omnivoice_codec.py's
+// main_encoder() line for line: encoder.conv1, then per block every residual
+// unit (dilations 1/3/9, though the draw order does not depend on the
+// dilation value itself) followed by the block's own snake1/conv1, then the
+// encoder's own snake1/conv2, then pcm, then the synthetic semantic tensor,
+// then fc's weight and bias. Reordering any line desynchronizes every value
+// after it, the same warning the semantic section's own build_fixture
+// carries.
+bool build_acoustic_fixture(ggml_backend_dev_t device, AcousticFixture & fixture) {
+    fixture.backend = ggml_backend_dev_init(device, nullptr);
+    if (fixture.backend == nullptr) {
+        return false;
+    }
+    fixture.persistent  = make_context(ggml_tensor_overhead() * 128);
+    ggml_context * pctx = fixture.persistent.get();
+    if (pctx == nullptr) {
+        return false;
+    }
+
+    std::vector<ggml_tensor *> ordered;
+    std::vector<float>         scales;
+    std::vector<float>         offsets;
+    auto                       add = [&](ggml_tensor * tensor, float scale, float offset) {
+        ordered.push_back(tensor);
+        scales.push_back(scale);
+        offsets.push_back(offset);
+        return tensor;
+    };
+    auto weight = [&](ggml_tensor * tensor) {
+        return add(tensor, kAcousticWeightScale, kAcousticWeightOffset);
+    };
+    auto bias = [&](ggml_tensor * tensor) {
+        return add(tensor, kAcousticBiasScale, kAcousticBiasOffset);
+    };
+    auto alpha = [&](ggml_tensor * tensor) {
+        return add(tensor, kAcousticAlphaScale, kAcousticAlphaOffset);
+    };
+
+    auto biased_conv = [&](synth::omnivoice::Conv1dWeights & target, int64_t kernel, int64_t in, int64_t out) {
+        target.weight = weight(ggml_new_tensor_3d(pctx, GGML_TYPE_F32, kernel, in, out));
+        target.bias   = bias(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, out));
+    };
+    auto snake = [&](synth::omnivoice::SnakeWeights & target, int64_t width) {
+        target.alpha = alpha(ggml_new_tensor_3d(pctx, GGML_TYPE_F32, 1, width, 1));
+    };
+    auto res_unit = [&](synth::omnivoice::DacResidualUnit & unit, int64_t width) {
+        snake(unit.snake1, width);
+        biased_conv(unit.conv1, 7, width, width);
+        snake(unit.snake2, width);
+        biased_conv(unit.conv2, 1, width, width);
+    };
+
+    synth::omnivoice::AcousticEncoderWeights & encoder = fixture.weights.acoustic_encoder;
+    biased_conv(encoder.conv1, 7, 1, kEncoderHidden);
+
+    int64_t width = kEncoderHidden;
+    encoder.blocks.resize(std::size(kAcousticRatios));
+    for (size_t index = 0; index < encoder.blocks.size(); ++index) {
+        synth::omnivoice::AcousticEncoderBlock & block = encoder.blocks[index];
+        const int64_t                            ratio = kAcousticRatios[index];
+        const int64_t                            wider = width * 2;
+        block.res_units.resize(3);
+        for (synth::omnivoice::DacResidualUnit & unit : block.res_units) {
+            res_unit(unit, width);
+        }
+        snake(block.snake1, width);
+        biased_conv(block.conv1, 2 * ratio, width, wider);
+        width = wider;
+    }
+    snake(encoder.snake1, width);
+    biased_conv(encoder.conv2, 3, width, kAcousticWidth);
+
+    fixture.pcm      = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kAcousticRawLength);
+    // Channel-fastest, matching the dumper's own "position-major,
+    // feature-minor" draw for this tensor (see its comment): a contiguous
+    // kSemWidth run per frame, exactly what filling this tensor's flat
+    // buffer straight from the LCG produces.
+    fixture.semantic = ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kSemWidth, kAcousticFrames);
+
+    synth::omnivoice::LinearWeights & fc = fixture.weights.fc;
+    fc.weight = ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kFusedWidth, kFusedWidth);  // square: no axis ambiguity
+    fc.bias   = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kFusedWidth);
+
+    fixture.buffer = ggml_backend_alloc_ctx_tensors(pctx, fixture.backend);
+    if (fixture.buffer == nullptr) {
+        return false;
+    }
+
+    LcgStream stream(kAcousticSeed);
+    for (size_t index = 0; index < ordered.size(); ++index) {
+        const std::vector<float> values =
+            stream.fill(size_t(ggml_nelements(ordered[index])), scales[index], offsets[index]);
+        ggml_backend_tensor_set(ordered[index], values.data(), 0, ggml_nbytes(ordered[index]));
+    }
+
+    const std::vector<float> pcm_values = stream.fill(kAcousticRawLength, kAcousticPcmScale, kAcousticPcmOffset);
+    ggml_backend_tensor_set(fixture.pcm, pcm_values.data(), 0, ggml_nbytes(fixture.pcm));
+    const std::vector<float> semantic_values =
+        stream.fill(size_t(kSemWidth) * kAcousticFrames, kAcousticWeightScale, kAcousticWeightOffset);
+    ggml_backend_tensor_set(fixture.semantic, semantic_values.data(), 0, ggml_nbytes(fixture.semantic));
+    const std::vector<float> fc_weight_values =
+        stream.fill(size_t(kFusedWidth) * kFusedWidth, kAcousticWeightScale, kAcousticWeightOffset);
+    ggml_backend_tensor_set(fc.weight, fc_weight_values.data(), 0, ggml_nbytes(fc.weight));
+    const std::vector<float> fc_bias_values = stream.fill(kFusedWidth, kAcousticBiasScale, kAcousticBiasOffset);
+    ggml_backend_tensor_set(fc.bias, fc_bias_values.data(), 0, ggml_nbytes(fc.bias));
+    return true;
+}
+
+// The whole acoustic branch plus the fusion, with the acoustic output probed
+// alongside the fused one so a failure names which of the two builders is
+// wrong.
+bool run_acoustic_case(ggml_backend_dev_t device, float & max_diff) {
+    AcousticFixture fixture;
+    if (!build_acoustic_fixture(device, fixture)) {
+        return false;
+    }
+
+    Context                         graph_ctx = make_graph_context();
+    ggml_cgraph *                   graph     = ggml_new_graph_custom(graph_ctx.get(), kNodeBudget, false);
+    const synth::omnivoice::HParams hparams   = make_acoustic_hparams();
+
+    ggml_tensor * acoustic =
+        synth::omnivoice::build_acoustic_encoder(graph_ctx.get(), fixture.pcm, fixture.weights, hparams);
+    if (acoustic == nullptr) {
+        std::printf("  build_acoustic_encoder refused to build\n");
+        return false;
+    }
+    ggml_tensor * fused =
+        synth::omnivoice::build_reference_fusion(graph_ctx.get(), acoustic, fixture.semantic, fixture.weights);
+    if (fused == nullptr) {
+        std::printf("  build_reference_fusion refused to build\n");
+        return false;
+    }
+    if (acoustic->ne[0] != int64_t(kAcousticWidth) || fused->ne[0] != int64_t(kFusedWidth)) {
+        std::printf("  unexpected width: acoustic %lld, fused %lld\n", (long long) acoustic->ne[0],
+                    (long long) fused->ne[0]);
+        return false;
+    }
+
+    std::vector<std::vector<float>> values;
+    if (!compute(fixture.backend, graph, { acoustic, fused }, values)) {
+        return false;
+    }
+    const float d_acoustic = deviation(values[0], kExpectedAcoustic, std::size(kExpectedAcoustic));
+    const float d_fused    = deviation(values[1], kExpectedFused, std::size(kExpectedFused));
+    std::printf("  acoustic %.3g  fused %.3g\n", double(d_acoustic), double(d_fused));
+    max_diff = std::fmax(d_acoustic, d_fused);
+    return true;
+}
+
+// A shape the acoustic/fusion builders cannot serve is a wiring defect, so
+// they return nullptr rather than aborting inside ggml on an assertion the
+// caller cannot catch -- the same rule check_rejections() enforces for the
+// semantic branch above. No backend and no LCG-drawn values are needed here
+// (unlike run_acoustic_case): every check below is a shape/structure
+// question ggml can answer without ever computing a value, the same
+// no-real-buffer style check_rejections() itself uses.
+int check_acoustic_rejections() {
+    Context        context = make_graph_context();
+    ggml_context * ctx     = context.get();
+    SYNTH_TEST_CHECK(ctx != nullptr);
+
+    const synth::omnivoice::HParams hparams = make_acoustic_hparams();
+
+    auto biased_conv = [&](int64_t kernel, int64_t in, int64_t out) {
+        synth::omnivoice::Conv1dWeights target;
+        target.weight = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, kernel, in, out);
+        target.bias   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, out);
+        return target;
+    };
+    auto snake = [&](int64_t width) {
+        synth::omnivoice::SnakeWeights target;
+        target.alpha = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, width, 1);
+        return target;
+    };
+    auto res_unit = [&](int64_t width) {
+        synth::omnivoice::DacResidualUnit unit;
+        unit.snake1 = snake(width);
+        unit.conv1  = biased_conv(7, width, width);
+        unit.snake2 = snake(width);
+        unit.conv2  = biased_conv(1, width, width);
+        return unit;
+    };
+
+    synth::omnivoice::ModelWeights             weights;
+    synth::omnivoice::AcousticEncoderWeights & encoder = weights.acoustic_encoder;
+    encoder.conv1                                      = biased_conv(7, 1, kEncoderHidden);
+    int64_t width                                      = kEncoderHidden;
+    encoder.blocks.resize(std::size(kAcousticRatios));
+    for (size_t index = 0; index < encoder.blocks.size(); ++index) {
+        synth::omnivoice::AcousticEncoderBlock & block = encoder.blocks[index];
+        const int64_t                            wider = width * 2;
+        block.res_units                                = { res_unit(width), res_unit(width), res_unit(width) };
+        block.snake1                                   = snake(width);
+        block.conv1                                    = biased_conv(2 * int64_t(kAcousticRatios[index]), width, wider);
+        width                                          = wider;
+    }
+    encoder.snake1 = snake(width);
+    encoder.conv2  = biased_conv(3, width, kAcousticWidth);
+
+    weights.fc.weight = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kFusedWidth, kFusedWidth);
+    weights.fc.bias   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, kFusedWidth);
+
+    ggml_tensor * pcm      = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, kAcousticRawLength);
+    ggml_tensor * semantic = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kSemWidth, kAcousticFrames);
+
+    ggml_tensor * good = synth::omnivoice::build_acoustic_encoder(ctx, pcm, weights, hparams);
+    SYNTH_TEST_CHECK(good != nullptr);
+
+    // A 2-D "pcm" is not the 1-D waveform this builder documents.
+    ggml_tensor * pcm_2d = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kAcousticRawLength, 2);
+    SYNTH_TEST_CHECK(synth::omnivoice::build_acoustic_encoder(ctx, pcm_2d, weights, hparams) == nullptr);
+
+    // A ratio list shorter than the resolved block count is a catalog that
+    // resolved inconsistently -- read past the list rather than a shape
+    // error, which is exactly why build_acoustic_encoder checks the sizes
+    // agree before ever building a node.
+    synth::omnivoice::HParams short_ratios = hparams;
+    short_ratios.codec.upsampling_ratios.pop_back();
+    SYNTH_TEST_CHECK(synth::omnivoice::build_acoustic_encoder(ctx, pcm, weights, short_ratios) == nullptr);
+
+    // A block whose resolved unit count disagrees with the architecture's
+    // fixed three residual units.
+    synth::omnivoice::ModelWeights short_units = weights;
+    short_units.acoustic_encoder.blocks[0].res_units.pop_back();
+    SYNTH_TEST_CHECK(synth::omnivoice::build_acoustic_encoder(ctx, pcm, short_units, hparams) == nullptr);
+
+    // An unresolved entry convolution.
+    synth::omnivoice::ModelWeights unbound_conv1 = weights;
+    unbound_conv1.acoustic_encoder.conv1.bias    = nullptr;
+    SYNTH_TEST_CHECK(synth::omnivoice::build_acoustic_encoder(ctx, pcm, unbound_conv1, hparams) == nullptr);
+
+    // build_reference_fusion: acoustic and semantic frame counts must agree
+    // -- a caller that built the two branches from a genuinely
+    // non-hop-aligned input reaches exactly this refusal (see
+    // build_acoustic_encoder's own header comment).
+    SYNTH_TEST_CHECK(synth::omnivoice::build_reference_fusion(ctx, good, semantic, weights) != nullptr);
+    ggml_tensor * short_semantic = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kSemWidth, kAcousticFrames - 1);
+    SYNTH_TEST_CHECK(synth::omnivoice::build_reference_fusion(ctx, good, short_semantic, weights) == nullptr);
+
+    // An unresolved codec.fc.
+    synth::omnivoice::ModelWeights unbound_fc = weights;
+    unbound_fc.fc.bias                        = nullptr;
+    SYNTH_TEST_CHECK(synth::omnivoice::build_reference_fusion(ctx, good, semantic, unbound_fc) == nullptr);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
     SYNTH_TEST_CHECK(check_rejections() == 0);
+    SYNTH_TEST_CHECK(check_acoustic_rejections() == 0);
 
     const size_t device_count = ggml_backend_dev_count();
     SYNTH_TEST_CHECK(device_count > 0);
@@ -648,6 +991,14 @@ int main() {
         const float tolerance = type == GGML_BACKEND_DEVICE_TYPE_CPU ? kCpuTolerance : kAcceleratorTolerance;
         std::printf("  max_diff %.3g (tolerance %.3g)\n", double(max_diff), double(tolerance));
         SYNTH_TEST_CHECK(max_diff < tolerance);
+
+        float acoustic_max_diff = 0.0f;
+        SYNTH_TEST_CHECK(run_acoustic_case(device, acoustic_max_diff));
+        const float acoustic_tolerance =
+            type == GGML_BACKEND_DEVICE_TYPE_CPU ? kAcousticCpuTolerance : kAcceleratorTolerance;
+        std::printf("  acoustic max_diff %.3g (tolerance %.3g)\n", double(acoustic_max_diff),
+                    double(acoustic_tolerance));
+        SYNTH_TEST_CHECK(acoustic_max_diff < acoustic_tolerance);
         ++exercised;
     }
     SYNTH_TEST_CHECK(exercised > 0);

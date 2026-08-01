@@ -1,4 +1,5 @@
-#include "arch/omnivoice/catalog.h"
+#include "arch/omnivoice/weights.h"
+
 #include "gguf-metadata.h"
 #include "gguf.h"
 
@@ -18,6 +19,11 @@ constexpr uint32_t kFrontendContractVersion    = 1;
 // A Profile Compatibility ID is a sha256 over the family compatibility
 // manifest, so it is exactly 32 bytes written as hex.
 constexpr size_t kCompatibilityIdChars = 64;
+
+// Ceiling on any derived tensor dimension. Far past every real model in this
+// family's class, and small enough that any product of two guarded values
+// stays inside int64_t everywhere the catalog multiplies.
+constexpr uint64_t kMaxDimensionProduct = uint64_t(1) << 24;
 
 GgufMetadata metadata(const gguf_context * gguf) {
     return GgufMetadata(gguf, "omnivoice");
@@ -210,6 +216,33 @@ bool read_generator(const GgufMetadata & meta, HParams & hparams) {
                      generator.attention_head_count, generator.key_value_head_count);
         return false;
     }
+    // Products of these fields feed int64 shape arithmetic in the catalog;
+    // guarding the products here means no consumer has to prove overflow
+    // freedom case by case. Checked one at a time and named in the message --
+    // a single combined condition can only ever report the first field of the
+    // five, which is a wrong diagnosis whenever a different one is the actual
+    // offender.
+    const uint64_t attention_inner = uint64_t(generator.attention_head_count) * generator.head_dim;
+    const uint64_t kv_inner        = uint64_t(generator.key_value_head_count) * generator.head_dim;
+
+    const struct {
+        const char * field;
+        uint64_t     value;
+    } guarded_products[] = {
+        { "attention_head_count * head_dim", attention_inner                       },
+        { "key_value_head_count * head_dim", kv_inner                              },
+        { "hidden_size",                     uint64_t(generator.hidden_size)       },
+        { "intermediate_size",               uint64_t(generator.intermediate_size) },
+        { "text_vocab_size",                 uint64_t(generator.text_vocab_size)   },
+    };
+
+    for (const auto & product : guarded_products) {
+        if (product.value > kMaxDimensionProduct) {
+            std::fprintf(stderr, "omnivoice: generator geometry is implausibly large (%s is %llu)\n", product.field,
+                         static_cast<unsigned long long>(product.value));
+            return false;
+        }
+    }
     if (generator.rms_norm_eps <= 0.0f || generator.rope_theta <= 0.0f) {
         std::fprintf(stderr, "omnivoice: non-positive rms_norm_eps or rope_theta\n");
         return false;
@@ -242,6 +275,13 @@ bool read_audio_canvas(const GgufMetadata & meta, HParams & hparams) {
     if (audio.mask_id != audio.vocab_size - 1) {
         std::fprintf(stderr, "omnivoice: mask id %u is not the last entry of a %u-entry canvas vocabulary\n",
                      audio.mask_id, audio.vocab_size);
+        return false;
+    }
+    // The stacked audio tables are [num_codebooks * vocab_size] rows; the
+    // catalog multiplies these in int64, so bound the product here.
+    if (uint64_t(audio.num_codebooks) * audio.vocab_size > kMaxDimensionProduct) {
+        std::fprintf(stderr, "omnivoice: a %u x %u canvas table exceeds any real package\n", audio.num_codebooks,
+                     audio.vocab_size);
         return false;
     }
     return true;
@@ -291,6 +331,12 @@ bool read_codec(const GgufMetadata & meta, HParams & hparams) {
     uint64_t total = 1;
     for (uint32_t ratio : codec.upsampling_ratios) {
         total *= ratio;
+        // Each ratio is a positive i32, so one multiply can raise `total` by at
+        // most 2^31: once it exceeds the hop it can never come back, and
+        // stopping here is also what keeps the product from wrapping uint64_t.
+        if (total > codec.hop_length) {
+            break;
+        }
     }
     if (total != codec.hop_length) {
         std::fprintf(stderr, "omnivoice: the upsampling ratios multiply to %llu, not the hop %u\n",

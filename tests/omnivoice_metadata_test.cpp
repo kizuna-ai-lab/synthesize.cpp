@@ -11,7 +11,7 @@
 // schema, compatibility id, clip limits -- has to be whole from the first cut
 // even though nothing consumes it before Plan 3.
 
-#include "arch/omnivoice/catalog.h"
+#include "arch/omnivoice/weights.h"
 #include "gguf.h"
 #include "test-assert.h"
 
@@ -387,6 +387,58 @@ int run_generator_rejections() {
         expect_rejected(
             [](gguf_context * g) { gguf_set_val_str(g, "synthesize.omnivoice.generator.attention", "causal"); },
             "this family's generator is bidirectional") == 0);
+
+    // Products of these fields feed int64 shape arithmetic in the catalog; a
+    // package this large is not a model, it is an overflow attempt.
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.attention_head_count", 65536);
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.key_value_head_count", 65536);
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.head_dim", 65536);
+                         },
+                         "attention geometry whose products leave shape arithmetic") == 0);
+
+    // The five guarded products are now checked one at a time so the
+    // diagnostic names the actual offender; a combined condition could only
+    // ever report attention_inner regardless of which field broke the
+    // ceiling (T5 review). Each case below pushes exactly one field over it
+    // while the other four stay small, which the mutation above -- all three
+    // attention fields huge at once -- cannot distinguish.
+    //
+    // key_value_head_count has no isolated case: the GQA divisibility rule
+    // above requires key_value_head_count <= attention_head_count whenever
+    // attention_head_count > 0, and both multiply the SAME head_dim, so
+    // kv_inner can never exceed the ceiling while attention_inner does not.
+    //
+    // Each value sits one past kMaxDimensionProduct in weights.cpp (1 << 24),
+    // so what these cases pin is the boundary itself: if the ceiling ever
+    // moves, every case here goes stale together and loudly, rather than one
+    // at a time as values chosen above the old ceiling happen to straddle the
+    // new one.
+    constexpr uint32_t kOverCeiling = (1u << 24) + 1;
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             // (2^22 + 1) * 4 = 2^24 + 4; odd, so only kv 1
+                             // divides it, and kv_inner stays at 4.
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.attention_head_count", (1u << 22) + 1);
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.key_value_head_count", 1);
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.head_dim", 4);
+                         },
+                         "attention_head_count * head_dim alone over the ceiling") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.omnivoice.generator.hidden_size", kOverCeiling); },
+            "hidden_size alone over the ceiling") == 0);
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.intermediate_size", kOverCeiling);
+                         },
+                         "intermediate_size alone over the ceiling") == 0);
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.text_vocab_size", kOverCeiling);
+                         },
+                         "text_vocab_size alone over the ceiling") == 0);
     return 0;
 }
 
@@ -399,6 +451,18 @@ int run_canvas_and_codec_rejections() {
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.omnivoice.audio.num_codebooks", 0); },
                         "a canvas of no codebooks") == 0);
+    // Products of these fields feed int64 shape arithmetic in the catalog; a
+    // canvas this large is not a model, it is an overflow attempt. Keeps
+    // mask_id == vocab_size - 1 and vocab_size == codebook_size + 1 satisfied
+    // so only the new size rule can fire.
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_u32(g, "synthesize.omnivoice.audio.num_codebooks", 1u << 16);
+                             gguf_set_val_u32(g, "synthesize.omnivoice.audio.vocab_size", (1u << 16) + 1);
+                             gguf_set_val_u32(g, "synthesize.omnivoice.audio.mask_id", 1u << 16);
+                             gguf_set_val_u32(g, "synthesize.omnivoice.codec.codebook_size", 1u << 16);
+                         },
+                         "a canvas whose embedding table exceeds any real package") == 0);
 
     SYNTH_TEST_CHECK(expect_rejected(
                          [](gguf_context * g) {
@@ -408,9 +472,23 @@ int run_canvas_and_codec_rejections() {
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { set_i32_array(g, "synthesize.omnivoice.codec.upsampling_ratios", {}); },
                         "an empty ratio stack upsamples nothing") == 0);
+    // Before the early-exceed check this product could wrap uint64_t; whether
+    // it then collided with the hop was luck, not a rule.
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             set_i32_array(g, "synthesize.omnivoice.codec.upsampling_ratios",
+                                           { 2147483647, 2147483647, 2147483647 });
+                         },
+                         "upsampling ratios that would wrap the hop product") == 0);
+    // One rule per mutation: each of these breaks exactly one reader check, so
+    // a reordering of read_codec cannot silently change which rule a test
+    // exercises.
     SYNTH_TEST_CHECK(
-        expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.omnivoice.codec.hop_length", 1024); },
-                        "hop and frame rate must agree with the sample rate") == 0);
+        expect_rejected(
+            [](gguf_context * g) { gguf_set_val_f32(g, "synthesize.omnivoice.codec.frame_rate_hz", 30.0f); },
+            "hop and frame rate must agree with the sample rate") == 0);
+    // Fires the codec-vs-declared-output rule; the frame relation is checked
+    // later and never reached.
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.omnivoice.codec.sample_rate", 16000); },
                         "codec rate must match the declared output rate") == 0);

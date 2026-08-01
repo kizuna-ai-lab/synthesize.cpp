@@ -251,6 +251,13 @@ class WeightNormFoldTests(unittest.TestCase):
             )
         self.assertIn("weight norm", str(caught.exception))
 
+    def test_a_fold_that_would_overwrite_a_plain_weight_is_an_error(self) -> None:
+        tensors, _ = weight_norm_pair()
+        tensors["semantic_model.encoder.pos_conv_embed.conv.weight"] = torch.ones(4)
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.fold_weight_norm(tensors, convert.Conversion(), "codec.")
+        self.assertIn("overwrite", str(caught.exception))
+
 
 class NameLengthTests(unittest.TestCase):
     """GGML stores a tensor name in a fixed 64-byte field and truncates past it.
@@ -267,12 +274,25 @@ class NameLengthTests(unittest.TestCase):
         names = list(data["generator"])
         names.remove("codebook_layer_offsets")
         for name in data["codec"]:
+            if any(name.startswith(prefix) for prefix in convert.DROP_PREFIXES):
+                continue
+            if name.endswith((".embed_avg", ".cluster_size", ".inited")):
+                continue  # RVQ training buffers the converter skips
             if convert.PARAMETRIZATION_INFIX in name:
                 if name.endswith(".original1"):
                     continue
                 name = convert.folded_weight_name(name)
             names.append("codec." + name)
         return names
+
+    def test_emitted_names_match_the_report_count(self) -> None:
+        # 798 is output.emitted_tensor_count (312 generator + 486 codec) in
+        # the conversion report reports/convert/omnivoice/omnivoice-0-6b-F32
+        # .json -- a local artifact, not committed -- from the conversion
+        # that produced the pinned package (GGUF sha256 3ecaa5e2..., recorded
+        # in full in the porting log).
+        self.assertEqual(len(self.emitted_names()), 798,
+                         "the helper no longer models what the converter emits")
 
     def test_every_inventory_name_fits_after_prefixing(self) -> None:
         for name in self.emitted_names():
@@ -351,6 +371,26 @@ class DtypeTests(unittest.TestCase):
             if entry["dtype"] != "F32"
         }
         self.assertEqual(non_f32, {"codebook_layer_offsets": "I64"})
+
+    def test_non_finite_values_are_refused(self) -> None:
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.convert_file_from_tensors(  # use the module's existing test seam;
+                {"x": torch.tensor([float("nan")])}, "", convert.Conversion())
+        self.assertIn("non-finite", str(caught.exception))
+
+
+class ConfigGuardTests(unittest.TestCase):
+    """A config whose layout moved must fail with a diagnosis, not a bare KeyError."""
+
+    def test_a_present_key_is_returned(self) -> None:
+        self.assertEqual(convert.require_config({"llm_config": 1}, "llm_config", "config.json"), 1)
+
+    def test_a_missing_key_names_the_key_and_where(self) -> None:
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.require_config({}, "llm_config", "config.json")
+        message = str(caught.exception)
+        self.assertIn("llm_config", message)
+        self.assertIn("config.json", message)
 
 
 class CodecGeometryTests(unittest.TestCase):
@@ -457,7 +497,7 @@ class GenerationDefaultsTests(unittest.TestCase):
     def test_an_absent_package_is_an_error_not_a_fallback_table(self) -> None:
         with self.assertRaises(convert.ConverterError) as caught:
             convert.read_generation_defaults(module_name="omnivoice_not_installed_anywhere")
-        self.assertIn("omnivoice", str(caught.exception))
+        self.assertIn("omnivoice_not_installed_anywhere", str(caught.exception))
 
     def test_zero_num_step_is_refused(self) -> None:
         defaults = {

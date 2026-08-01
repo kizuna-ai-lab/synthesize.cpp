@@ -172,6 +172,9 @@ synth_add_unit_test(synthesize-qwen3-tts-sampling-test qwen3_tts_sampling_test.c
 synth_add_unit_test(synthesize-omnivoice-metadata-test omnivoice_metadata_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-catalog-test omnivoice_catalog_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-frontend-test omnivoice_frontend_test.cpp)
+synth_add_unit_test(synthesize-omnivoice-generator-test omnivoice_generator_test.cpp)
+synth_add_unit_test(synthesize-omnivoice-generator-host-test omnivoice_generator_host_test.cpp)
+synth_add_unit_test(synthesize-omnivoice-codec-test omnivoice_codec_test.cpp)
 synth_add_unit_test(synthesize-kokoro-lstm-test kokoro_lstm_test.cpp)
 synth_add_unit_test(synthesize-kokoro-catalog-test kokoro_catalog_test.cpp)
 synth_add_unit_test(synthesize-kokoro-plbert-test kokoro_plbert_test.cpp)
@@ -295,11 +298,31 @@ target_link_libraries(synthesize-omnivoice-model-errors-test PRIVATE synthesize 
 add_test(NAME synthesize-omnivoice-model-errors-test
     COMMAND synthesize-omnivoice-model-errors-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
 synth_register_unit_target(synthesize-omnivoice-model-errors-test)
+add_executable(synthesize-omnivoice-load-synthetic-test omnivoice_load_synthetic_test.cpp)
+target_include_directories(synthesize-omnivoice-load-synthetic-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(synthesize-omnivoice-load-synthetic-test PRIVATE synthesize ggml)
+add_test(NAME synthesize-omnivoice-load-synthetic-test
+    COMMAND synthesize-omnivoice-load-synthetic-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-synthetic)
+synth_register_unit_target(synthesize-omnivoice-load-synthetic-test)
+add_executable(synthesize-omnivoice-decode-loop-test omnivoice_decode_loop_test.cpp)
+target_include_directories(synthesize-omnivoice-decode-loop-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(synthesize-omnivoice-decode-loop-test PRIVATE synthesize ggml)
+add_test(NAME synthesize-omnivoice-decode-loop-test
+    COMMAND synthesize-omnivoice-decode-loop-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-synthetic)
+synth_register_unit_target(synthesize-omnivoice-decode-loop-test)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-synthetic)
 set_tests_properties(
     synthesize-omnivoice-metadata-test
     synthesize-omnivoice-catalog-test
     synthesize-omnivoice-frontend-test
+    synthesize-omnivoice-generator-test
+    synthesize-omnivoice-generator-host-test
+    synthesize-omnivoice-codec-test
     synthesize-omnivoice-model-errors-test
+    synthesize-omnivoice-load-synthetic-test
+    synthesize-omnivoice-decode-loop-test
     PROPERTIES LABELS "unit;omnivoice")
 set_tests_properties(
     synthesize-vits-text-encoder-host-test
@@ -339,6 +362,9 @@ if(SYNTH_BUILD_PYTHON_TESTS)
     # plus the VITS and Kokoro converter contracts. The VITS environment owns
     # the repository's locked tooling; a family whose tests need environment
     # specific dependencies gets its own registration.
+    # The OmniVoice converter tests ride this same discovery; their one
+    # package-dependent case skips here and runs for real under
+    # synthesize-omnivoice-python-unit below.
     add_test(
         NAME synthesize-vits-python-unit
         COMMAND ${SYNTH_UV_EXECUTABLE} run
@@ -350,6 +376,21 @@ if(SYNTH_BUILD_PYTHON_TESTS)
         LABELS "unit;python;vits;kokoro"
         TIMEOUT 180
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    # The OmniVoice converter's positive generation-defaults test needs the
+    # upstream package, which exists only in this family's locked environment;
+    # under the VITS discovery above it skips forever. Running the module where
+    # the import resolves enforces the "defaults come from the pinned package"
+    # rule instead of permanently skipping it.
+    add_test(
+        NAME synthesize-omnivoice-python-unit
+        COMMAND ${SYNTH_UV_EXECUTABLE} run
+            --project ${CMAKE_SOURCE_DIR}/scripts/envs/omnivoice
+            --locked python -m unittest -v
+            tests.python.test_convert_omnivoice)
+    set_tests_properties(synthesize-omnivoice-python-unit PROPERTIES
+        LABELS "unit;python;omnivoice"
+        TIMEOUT 600
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 
 add_executable(synthesize-qwen3-tts-public-real qwen3_tts_public_real.c)
@@ -360,6 +401,11 @@ add_executable(synthesize-qwen3-tts-replay-real qwen3_tts_replay_real.cpp)
 target_include_directories(synthesize-qwen3-tts-replay-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(synthesize-qwen3-tts-replay-real PRIVATE synthesize ggml)
 synth_register_integration_target(synthesize-qwen3-tts-replay-real)
+
+add_executable(synthesize-omnivoice-replay-real omnivoice_replay_real.cpp)
+target_include_directories(synthesize-omnivoice-replay-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(synthesize-omnivoice-replay-real PRIVATE synthesize ggml)
+synth_register_integration_target(synthesize-omnivoice-replay-real)
 
 # The runners are thin adapters shared by the Python Golden validators and
 # manual diagnostics. They are intentionally not themselves tests.
@@ -557,6 +603,37 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         set_tests_properties(synthesize-omnivoice-load-real PROPERTIES
             LABELS "integration;omnivoice;abi"
             TIMEOUT 600)
+    endif()
+
+    # OmniVoice's replay validator runs with --check, so it is a gate against
+    # the committed tolerances rather than a measurement -- and its exact-token
+    # arm fails any greedy case whose grid is not the oracle's, tolerance file
+    # or no. The golden sentinel is the oracle payload, deliberately not
+    # committed.
+    #
+    # TIMEOUT 14400: this gate re-runs 17 greedy free-runs, each 32 denoising
+    # steps at two forwards per step over the whole canvas -- omni-long-boundary
+    # alone is 719 frames and 126 s. The twenty-case sweep takes about seven
+    # minutes on the 20-CPU development host (417-420 s across this gate's own
+    # runs; 453 s is the worst observed), so four hours is headroom for a slower
+    # or busier machine rather than an estimate: a gate that times out reports a
+    # failure it did not find.
+    set(_synth_omnivoice_golden_sentinel
+        "${CMAKE_SOURCE_DIR}/build/goldens/omnivoice/omni-short-en/codes/grid.i32")
+    if(EXISTS "${SYNTH_OMNIVOICE_TEST_MODEL}" AND EXISTS "${_synth_omnivoice_golden_sentinel}")
+        add_test(
+            NAME synthesize-omnivoice-replay-golden
+            COMMAND ${SYNTH_UV_EXECUTABLE} run
+                --project ${CMAKE_SOURCE_DIR}/scripts/envs/omnivoice
+                --locked python ${CMAKE_SOURCE_DIR}/scripts/validate-omnivoice-replay.py
+                --manifest ${CMAKE_SOURCE_DIR}/tests/golden/omnivoice/omnivoice-0-6b.manifest.json
+                --model ${SYNTH_OMNIVOICE_TEST_MODEL}
+                --runner $<TARGET_FILE:synthesize-omnivoice-replay-real>
+                --check --profile F32 --backend CPU --stage replay)
+        set_tests_properties(synthesize-omnivoice-replay-golden PROPERTIES
+            LABELS "integration;omnivoice;golden"
+            TIMEOUT 14400
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
     endif()
 
     # Qwen3-TTS's two validators. Both need the package, which is why they sat

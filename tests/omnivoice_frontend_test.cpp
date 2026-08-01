@@ -109,10 +109,10 @@ constexpr CombineCase kCombineCases[] = {
      "Some call me nature. Others call me Mother Nature. I've been here for over four point and "
       "five billion years, twenty-two thousand five hundred times longer than you. OmniVoice "
       "speaks with one voice."                                                                                                     },
-    { kCloneRefText,          "克隆的声音读出这句话。",
+    { kCloneRefText,          "克隆的声音也要说中文的句子。",
      "Some call me nature. Others call me Mother Nature. I've been here for over four point and "
       "five billion years, twenty-two thousand five hundred times longer than you."
-      "克隆的声音读出这句话。"                                                                                                     },
+      "克隆的声音也要说中文的句子。"                                                                                               },
 };
 
 int check_combine_text() {
@@ -327,6 +327,9 @@ constexpr WeightCase kWeightCases[] = {
     { "я",          1.0, "Cyrillic"                                              },
     { "ई",          1.8, "Devanagari"                                            },
     { "\U00021000", 3.0, "above U+20000 and past the range table: CJK"           },
+    // The Ext-B boundary is exclusive upstream: U+20000 itself is `default`.
+    { "\U00020000", 1.0, "U+20000 itself: not > 0x20000, so default"             },
+    { "\U00020001", 3.0, "U+20001: one past the boundary, so CJK"                },
     // The two that look like whitespace and are not. Neither is category Z, so
     // both fall through to the range table's first entry and weigh as Latin.
     { "\t",         1.0, "U+0009 is category Cc, not Z"                          },
@@ -388,7 +391,7 @@ constexpr DurationCase kDurationCases[] = {
     { "omni-design-en",              "OmniVoice speaks with one voice.",                  kAnchorText,   true,  28.3,  14.1,  25,  1.0f, 50  },
     { "omni-design-zh",              "语音设计决定说话人。",                              kAnchorText,   true,  27.5,  14.1,  25,  1.0f, 49  },
     { "omni-clone-en",               "OmniVoice speaks with one voice.",                  kCloneRefText, false, 28.3,  140.4, 351, 1.0f, 70  },
-    { "omni-clone-zh",               "克隆的声音读出这句话。",                            kCloneRefText, false, 30.5,  140.4, 351, 1.0f, 76  },
+    { "omni-clone-zh",               "克隆的声音也要说中文的句子。",                      kCloneRefText, false, 39.5,  140.4, 351, 1.0f, 98  },
     { "omni-fast-mode",              "OmniVoice speaks with one voice.",                  kAnchorText,   true,  28.3,  14.1,  25,  1.0f, 50  },
     { "omni-sampled-seed-zero",      "Sampling follows the seed.",                        kAnchorText,   true,  23.1,  14.1,  25,  1.0f, 46  },
     { "omni-sampled-seed-one",       "Sampling follows the seed.",                        kAnchorText,   true,  23.1,  14.1,  25,  1.0f, 46  },
@@ -408,6 +411,12 @@ int check_estimates_match_oracle() {
         SYNTH_TEST_CHECK(estimator.estimate_target_frames(item.text, item.ref_text, item.ref_frames, item.speed) ==
                          item.expected_frames);
 
+        // Deliberate divergence, recorded in docs/porting/families/omnivoice.md:
+        // upstream's estimator divides by zero reference tokens and its max(1, int(...))
+        // returns 1; this port treats zero reference frames as "no reference" and
+        // uses the anchor pair instead, because a reference with no audio behind it
+        // is refused at load and can only mean a caller bug.
+        //
         // A row the oracle marked as anchored must reach the same answer from
         // a request that carries no reference at all.
         if (item.ref_is_anchor) {

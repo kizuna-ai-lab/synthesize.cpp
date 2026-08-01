@@ -30,11 +30,11 @@ struct BpeFrontendConfig {
     // Each carries its own id because these are *added* tokens: `<|im_start|>` is
     // 151644 against a vocabulary of 151643, so it cannot be looked up there.
     std::vector<std::pair<std::string, int32_t>> special_tokens;
-    // Wrapped around the input before tokenizing. The reference puts every
-    // request inside an assistant turn, and the talker's prompt layout then
-    // slices the result at two fixed token counts -- so the wrapping is part of
-    // turning text into the ids this model consumes, not something the caller
-    // does. See qwen_assistant_turn.
+    // Wrapped around the input before tokenizing, when a family's reference
+    // does that as part of turning text into ids. qwen3-tts wraps every
+    // request in a fixed assistant turn (see synth::qwen3tts::qwen_assistant_turn);
+    // omnivoice leaves both empty, because its prompt is assembled by the
+    // synthesis path rather than at tokenize time.
     std::string                                  prefix;
     std::string                                  suffix;
 };

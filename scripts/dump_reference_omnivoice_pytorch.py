@@ -70,6 +70,9 @@ PROBE_ARTIFACT_PREFIX = "generator.hidden_l"
 # 24 kHz mono at a 25 Hz frame rate: one codec frame is exactly 960 samples.
 SAMPLES_PER_FRAME = 960
 NATIVE_SAMPLE_RATE = 24000
+# Derived, not restated: the frame rate feeds the audio_chunk_threshold gate,
+# and a restated value would drift silently if a revision ever moved the hop.
+FRAME_RATE_HZ = NATIVE_SAMPLE_RATE / SAMPLES_PER_FRAME
 AUDIO_MASK_ID = 1024
 NUM_CODEBOOKS = 8
 
@@ -203,9 +206,29 @@ def load_manifest(path: pathlib.Path) -> dict:
             require(request, key, f"{where}.request")
 
         parameters = require(require(case, "oracle", where), "parameters", f"{where}.oracle")
+        if reference_input is not None:
+            # Resolving the digest HERE turns an unpinned reference into an
+            # `error:` + exit 1 before any model loads, instead of a
+            # ManifestError escaping mid-dump with three cases already written.
+            reference_digest(manifest, reference_input["artifact"])
+            if parameters.get("preprocess_prompt") is not False:
+                raise ManifestError(
+                    f"{where}: a clone case must pin preprocess_prompt=false; anything else "
+                    "lets silence stripping into a parity baseline"
+                )
+
         for key in ("num_step", "position_temperature", "class_temperature", "language",
-                    "instruct", "postprocess_output"):
+                    "instruct", "postprocess_output",
+                    "audio_chunk_duration", "audio_chunk_threshold"):
             require(parameters, key, f"{where}.oracle.parameters")
+        threshold_frames = float(parameters["audio_chunk_threshold"]) * FRAME_RATE_HZ
+        if threshold_frames < float(contract["max_output_frames"]):
+            raise ManifestError(
+                f"{where}: audio_chunk_threshold {parameters['audio_chunk_threshold']} s is "
+                f"{threshold_frames:.0f} frames, below max_output_frames "
+                f"{contract['max_output_frames']}; a golden case could silently take the "
+                "chunked long-form path, which is out of scope"
+            )
         unknown = set(parameters) - GEN_CONFIG_KEYS - GENERATE_ARGUMENT_KEYS - DUMPER_ONLY_KEYS
         if unknown:
             raise ManifestError(
@@ -531,6 +554,48 @@ class SemanticProbe:
 # ---------------------------------------------------------------------------
 
 
+def verify_pinned_inputs(manifest: dict, weights_dir: pathlib.Path) -> list[str]:
+    """sha256-verify every weights-repository input the manifest pins.
+
+    Until now only the clone reference audio was checked; the weights, configs
+    and tokenizer the dump actually reads were trusted. A parity baseline dumped
+    from silently different inputs would be wrong in a way no later gate could
+    localise, so a mismatch stops the dump.
+    """
+    marker = "/resolve/"
+    verified = []
+    for artifact in manifest["source"]["artifacts"]:
+        locator = artifact["locator"]
+        if marker not in locator:
+            # Source-repository files (the Apache LICENSE) and the clone
+            # reference (checked by materialise_reference) are not dump inputs.
+            continue
+        relative = locator.split(marker, 1)[1].split("/", 1)[1]
+        local = weights_dir / relative
+        if not local.is_file():
+            raise SystemExit(f"{local}: the manifest pins this input and it is missing")
+        # Chunked: model.safetensors is multi-gigabyte and this runs before
+        # the model loads, so a whole-file read_bytes() would add a transient
+        # allocation of the same size on top of the dump's own peak.
+        digest = hashlib.sha256()
+        with local.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        actual = digest.hexdigest()
+        if actual != artifact["sha256"]:
+            raise SystemExit(
+                f"{local}: sha256 {actual} does not match the manifest's "
+                f"{artifact['sha256']}; refusing to dump against unpinned inputs"
+            )
+        verified.append(relative)
+    required = {"model.safetensors", "audio_tokenizer/model.safetensors",
+                "config.json", "audio_tokenizer/config.json", "tokenizer.json"}
+    missing = required - set(verified)
+    if missing:
+        raise SystemExit(f"the manifest pins no digest for dump inputs: {sorted(missing)}")
+    return verified
+
+
 def reference_digest(manifest: dict, locator: str) -> str:
     for artifact in manifest.get("source", {}).get("artifacts", []):
         if artifact.get("locator") == locator:
@@ -552,13 +617,14 @@ def materialise_reference(locator: str, digest: str, directory: pathlib.Path) ->
     destination = directory / locator.rsplit("/", 1)[-1]
     if not destination.exists():
         print(f"fetching {locator}", flush=True)
-        with urllib.request.urlopen(locator) as response:  # noqa: S310 - pinned https locator
+        with urllib.request.urlopen(locator, timeout=60) as response:  # noqa: S310 - pinned https locator
             destination.write_bytes(response.read())
     actual = hashlib.sha256(destination.read_bytes()).hexdigest()
     if actual != digest:
         raise SystemExit(
             f"{destination}: sha256 {actual} does not match the manifest's {digest}. "
-            "Refusing to dump a clone case against an unpinned reference."
+            "Refusing to dump a clone case against an unpinned reference. "
+            "If a stale cached file is the cause, delete it and re-run to re-fetch."
         )
     return destination
 
@@ -615,6 +681,17 @@ def build_clone_prompt(model, path: pathlib.Path, ref_text: str, preprocess_prom
 # ---------------------------------------------------------------------------
 # The dump
 # ---------------------------------------------------------------------------
+
+
+def torch_environment(torch) -> dict:
+    """The execution configuration a baseline depends on, recorded per dump."""
+    return {
+        "torch_version": torch.__version__,
+        "num_threads": torch.get_num_threads(),
+        "num_interop_threads": torch.get_num_interop_threads(),
+        "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+        "cpu_capability": torch.backends.cpu.get_cpu_capability(),
+    }
 
 
 def volume_branch(ref_rms) -> str:
@@ -858,6 +935,18 @@ def write_case(case: dict, case_dir: pathlib.Path, produced: dict) -> dict:
             f"does not expect, and is missing {unproduced or 'nothing'}"
         )
 
+    # The manifest declares each artifact's format independently of which
+    # writer produces it; a mismatch here means the two drifted and the dump
+    # would write bytes the comparison script reads under the wrong dtype.
+    writer_formats = {write_i32: "i32le", write_f32: "f32le", write_json: "json"}
+    for name, (writer, _payload) in produced.items():
+        declared = expected[name]["format"]
+        if writer_formats[writer] != declared:
+            raise SystemExit(
+                f"{case_id}: {name} is declared {declared!r} but the dump would write "
+                f"{writer_formats[writer]!r}; the manifest and the writer registry drifted"
+            )
+
     # Clear the case directory first. A re-run after the artifact set changed
     # would otherwise leave the previous run's files beside the new ones, and
     # the exactness check below would report a stale file as an extra product.
@@ -1000,6 +1089,7 @@ def run_case(model, case: dict, output_root: pathlib.Path, clones: dict,
             "step": 0,
             "batch_row": "conditional (row 0 of the CFG pair)",
         },
+        "environment": torch_environment(torch),
         "shapes": {
             "prompt_grid": [NUM_CODEBOOKS, conditional_length],
             "token_ids": [prompt["text_region"]],
@@ -1078,7 +1168,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: no weights directory at {arguments.weights_dir}", file=sys.stderr)
         return 1
 
+    verified_inputs = verify_pinned_inputs(manifest, arguments.weights_dir)
+    print(f"verified {len(verified_inputs)} pinned inputs against the manifest", flush=True)
+
     import torch
+
+    # Exact-token baselines must be reproducible off this machine, not merely on
+    # it. The thread pool is pinned because oneDNN/MKL reduction order can move
+    # with pool size, and deterministic algorithms are demanded rather than
+    # hoped for: an op with no deterministic CPU path aborts the dump instead of
+    # quietly varying. set_num_interop_threads must run before any parallel op,
+    # which is why this sits directly under the import.
+    torch.set_num_interop_threads(1)
+    torch.set_num_threads(1)
+    torch.use_deterministic_algorithms(True)
 
     from omnivoice.models.omnivoice import OmniVoice
 
@@ -1132,6 +1235,8 @@ def main(argv: list[str] | None = None) -> int:
             "norm": discovery.norm_path,
             "semantic": type(model.audio_tokenizer.semantic_model).__name__,
         },
+        "environment": torch_environment(torch),
+        "verified_inputs": verified_inputs,
         "case_count": 0,
         "cases": [],
     }

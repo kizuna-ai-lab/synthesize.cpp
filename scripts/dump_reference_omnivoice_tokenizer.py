@@ -382,6 +382,11 @@ def main(argv: list[str] | None = None) -> int:
         language = parameters["language"]
         instruct = parameters["instruct"]
         reference = case["input"].get("reference")
+        if reference is not None and parameters.get("preprocess_prompt") is not False:
+            raise SystemExit(
+                f"{case_id}: a clone case must pin preprocess_prompt=false; the tokenizer "
+                "cases would otherwise describe a prompt the oracle never builds"
+            )
 
         resolved_language = _resolve_language(language)
         if resolved_language != language:

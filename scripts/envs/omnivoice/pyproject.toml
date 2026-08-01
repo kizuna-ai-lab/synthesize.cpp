@@ -8,6 +8,9 @@ dependencies = [
     "numpy==1.26.4",
     "omnivoice @ git+https://github.com/k2-fsa/OmniVoice@468e927ba3716cd8dd86421148dfb3046e9f9d7b",
     "soundfile==0.13.1",
+    # Re-lock this environment with `uv lock --no-sources`: the pinned upstream
+    # package's own pyproject routes torch to a CUDA wheel index that a plain
+    # `uv lock` honors, and the oracle contract is CPU F32.
     "torch>=2.7,<3",
     "torchaudio",
 ]

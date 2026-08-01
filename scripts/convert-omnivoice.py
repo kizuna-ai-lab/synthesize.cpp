@@ -247,6 +247,12 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def require_config(mapping: dict[str, Any], key: str, where: str) -> Any:
+    if key not in mapping:
+        raise ConverterError(f"{where} carries no {key!r}; the checkpoint layout moved")
+    return mapping[key]
+
+
 def pinned_digest(manifest: dict[str, Any], role: str, locator_suffix: str,
                   *, excluding: str | None = None) -> str:
     matches = [
@@ -519,6 +525,11 @@ def fold_weight_norm(tensors: dict[str, torch.Tensor], conversion: Conversion,
         magnitude = tensors[magnitude_name]
         direction = tensors[direction_name]
         dim = _weight_norm_dim(magnitude, direction, target)
+        if target in tensors:
+            raise ConverterError(
+                f"{target} already exists as a plain tensor; folding the parametrized pair "
+                "would silently overwrite it"
+            )
         folded[target] = torch._weight_norm(direction, magnitude, dim)
         consumed.update({magnitude_name, direction_name})
         conversion.transformed.append({
@@ -704,12 +715,19 @@ def load_tensors(path: Path) -> dict[str, torch.Tensor]:
         return {key: handle.get_tensor(key) for key in handle.keys()}
 
 
-def convert_file(path: Path, prefix: str, conversion: Conversion, *,
-                 drop_offsets: bool = False,
-                 drop_prefixes: Iterable[str] = (),
-                 skip_codebook_buffers: bool = False,
-                 fold: bool = False) -> dict[str, torch.Tensor]:
-    tensors = load_tensors(path)
+def convert_file_from_tensors(tensors: dict[str, torch.Tensor], prefix: str, conversion: Conversion, *,
+                              origin: str = "",
+                              drop_offsets: bool = False,
+                              drop_prefixes: Iterable[str] = (),
+                              skip_codebook_buffers: bool = False,
+                              fold: bool = False) -> dict[str, torch.Tensor]:
+    """The drop/skip/fold/emit core of `convert_file`, seamed on an in-memory dict.
+
+    Tests drive the drop and fold rules directly against constructed tensors
+    dicts rather than a real safetensors file; this is the same seam extended
+    to the emission path so the finiteness check below is testable the same
+    way.
+    """
     if drop_offsets:
         tensors = drop_derivable_offsets(tensors, conversion)
     if drop_prefixes:
@@ -719,9 +737,10 @@ def convert_file(path: Path, prefix: str, conversion: Conversion, *,
     if fold:
         tensors = fold_weight_norm(tensors, conversion, prefix)
 
-    origin = project_relative(path, Path.cwd())
     for name in sorted(tensors):
         array, dtype = numpy_of(tensors[name])
+        if not np.isfinite(array).all():
+            raise ConverterError(f"{name}: the checkpoint carries non-finite values")
         conversion.outputs.append(OutputTensor(
             name=shorten_name(f"{prefix}{name}", conversion), array=array, dtype=dtype,
             origin=origin,
@@ -729,11 +748,25 @@ def convert_file(path: Path, prefix: str, conversion: Conversion, *,
     return tensors
 
 
+def convert_file(path: Path, prefix: str, conversion: Conversion, *,
+                 drop_offsets: bool = False,
+                 drop_prefixes: Iterable[str] = (),
+                 skip_codebook_buffers: bool = False,
+                 fold: bool = False) -> dict[str, torch.Tensor]:
+    tensors = load_tensors(path)
+    origin = project_relative(path, Path.cwd())
+    return convert_file_from_tensors(
+        tensors, prefix, conversion, origin=origin,
+        drop_offsets=drop_offsets, drop_prefixes=drop_prefixes,
+        skip_codebook_buffers=skip_codebook_buffers, fold=fold,
+    )
+
+
 def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str, Any],
                  codec_config: dict[str, Any], tokenizer_json: dict[str, Any],
                  gen_defaults: dict[str, Any], digests: dict[str, str],
                  geometry: CodecGeometry) -> None:
-    llm = config["llm_config"]
+    llm = require_config(config, "llm_config", "config.json")
     add_general_identity(
         writer,
         name="OmniVoice 0.6B",
@@ -813,7 +846,10 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
     ):
         writer.add_uint32(f"synthesize.omnivoice.generator.{key}", int(value))
     writer.add_float32("synthesize.omnivoice.generator.rms_norm_eps", float(llm["rms_norm_eps"]))
-    writer.add_float32("synthesize.omnivoice.generator.rope_theta", float(llm["rope_parameters"]["rope_theta"]))
+    writer.add_float32(
+        "synthesize.omnivoice.generator.rope_theta",
+        float(require_config(require_config(llm, "rope_parameters", "llm_config"),
+                             "rope_theta", "rope_parameters")))
     if any(t != "full_attention" for t in llm["layer_types"]):
         raise ConverterError("a layer_type is not full_attention; this port builds bidirectional graphs only")
     writer.add_string("synthesize.omnivoice.generator.attention", "bidirectional")
@@ -845,7 +881,7 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
         raise ConverterError("codec sample rate moved")
     if abs(SAMPLE_RATE / HOP_LENGTH - FRAME_RATE_HZ) > 1e-9:
         raise ConverterError(f"{SAMPLE_RATE} Hz over hop {HOP_LENGTH} is not {FRAME_RATE_HZ} Hz")
-    acoustic = codec_config["acoustic_model_config"]
+    acoustic = require_config(codec_config, "acoustic_model_config", "audio_tokenizer/config.json")
     ratios = [int(r) for r in acoustic["upsampling_ratios"]]
     total = 1
     for r in ratios:
@@ -938,8 +974,12 @@ def verify_gguf(path: Path, outputs: list[OutputTensor]) -> None:
                 f"{output.name}: wrote {output.dtype.name}, read "
                 f"{GGMLQuantizationType(tensor.tensor_type).name}"
             )
-        if int(np.prod(tensor.shape)) != output.array.size:
-            raise ConverterError(f"{output.name}: element count changed on write")
+        expected_shape = tuple(reversed(output.array.shape))
+        if tuple(int(d) for d in tensor.shape) != expected_shape:
+            raise ConverterError(
+                f"{output.name}: wrote shape {expected_shape}, read back "
+                f"{tuple(int(d) for d in tensor.shape)}"
+            )
 
 
 def main() -> int:
@@ -990,8 +1030,8 @@ def main() -> int:
         writer.write_tensors_to_file()
         writer.close()
 
-    verify_gguf(args.output, conversion.outputs)
     licenses = carry_licenses(weights, args.output, project_root, digests["codec_license"])
+    verify_gguf(args.output, conversion.outputs)
 
     by_dtype: dict[str, int] = {}
     for output in conversion.outputs:

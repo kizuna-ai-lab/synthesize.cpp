@@ -1,6 +1,6 @@
 # Port Validation Contract
 
-Status: Confirmed, last updated on 2026-07-30.
+Status: Confirmed, last updated on 2026-07-31.
 
 ## Purpose and Boundary
 
@@ -58,6 +58,22 @@ path shape, channel count, sample rate, and output frame count must match exactl
 Floating-point probes and PCM use the stage-specific tolerance file. NaN, infinity,
 missing probes, unexpected fallback, and undeclared CPU placement are always hard
 failures regardless of numerical tolerance.
+
+A discrete result may have more than one admissible value, and the manifest says
+so by enumeration rather than by relaxing the comparison. `oracle.alternate_grids`
+lists further outputs the *reference itself* produced under a different
+configuration: each a committed file, pinned by `sha256`, carrying free-text
+provenance. The port passes by equalling any one of them byte for byte, and the
+validator names which. This exists for decisions the reference makes at a
+precision neither implementation resolves — a top-k or argmax whose two
+candidates sit closer together than the measured F32 divergence between oracle
+and port, where two runs of the reference under different thread counts already
+disagree. Two rules keep it from becoming a tolerance in disguise: an entry is
+admissible only because a reference run produced it, never because it is close;
+and its digest is verified before the comparison, so an edited witness cannot
+silently widen the target. First used by omnivoice — see
+`docs/porting/families/omnivoice.md` for the worked case and for the margin
+screen that keeps new golden cases off that edge in the first place.
 
 ## Choosing the Oracle's dtype and Device
 

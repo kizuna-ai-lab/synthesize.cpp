@@ -207,13 +207,16 @@ int main(int argc, char ** argv) {
     }
 
     synth::omnivoice::SynthesisRequest request;
-    request.prompt_text_ids  = text_ids;
-    request.reference_tokens = reference_tokens;
-    request.target_frames    = frames;
-    request.num_step         = num_step;
-    request.probe_only       = !run_greedy;
-    request.margin_report    = margin_report;
-    request.threads          = 0;
+    request.prompt_text_ids      = text_ids;
+    request.reference_tokens     = reference_tokens;
+    request.target_frames        = frames;
+    request.num_step             = num_step;
+    request.probe_only           = !run_greedy;
+    request.margin_report        = margin_report;
+    request.threads              = 0;
+    // the replay contract is greedy; the package's own defaults sample
+    request.position_temperature = 0.0f;
+    request.class_temperature    = 0.0f;
     for (size_t index = 7; index < positional.size(); ++index) {
         request.probe_layers.push_back(uint32_t(std::atoi(positional[index].c_str())));
     }

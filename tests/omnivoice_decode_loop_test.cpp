@@ -31,6 +31,7 @@
 #include "arch/omnivoice/codec-host.h"
 #include "arch/omnivoice/omnivoice.h"
 #include "omnivoice_synthetic_package.h"
+#include "random-stream.h"
 #include "test-assert.h"
 
 #include <cmath>
@@ -145,9 +146,14 @@ int check_no_reference_run(synth::omnivoice::Model & model, uint64_t one_forward
     // makes two per step, so it must exceed the one-forward probe run's count
     // by a wide margin rather than equal it. (The two branches' graphs differ
     // in node count -- the unconditional one has no text embedding to merge --
-    // so the total is not a clean multiple of anything.)
+    // so the total is not a clean multiple of anything.) Tightened into a
+    // WINDOW rather than a bare floor: at most kPackageStep forwards of each
+    // kind run, and the unconditional graph is strictly smaller than the
+    // conditional one, so the true total sits below "every forward were
+    // conditional-sized" -- the ceiling below -- as well as above the floor.
     SYNTH_TEST_CHECK(one_forward_nodes > 0);
     SYNTH_TEST_CHECK(output.generator_placement.nodes > one_forward_nodes * kPackageStep);
+    SYNTH_TEST_CHECK(output.generator_placement.nodes < one_forward_nodes * kPackageStep * 2);
     SYNTH_TEST_CHECK(output.generator_placement.accelerator_nodes == 0);
     if (check_waveform(output.audio, 5, /*normalised=*/true, "no-reference run") != 0) {
         return 1;
@@ -171,10 +177,15 @@ int check_no_reference_run(synth::omnivoice::Model & model, uint64_t one_forward
     synth::omnivoice::apply_no_reference_volume(rebuilt);
     SYNTH_TEST_CHECK(rebuilt == output.audio);
 
-    // Greedy decoding draws no random number, so a second run of the same
-    // request is the same grid -- and therefore the same waveform. This is the
-    // property the exact-token gate rests on, asserted where it can be asserted
-    // cheaply.
+    // This request leaves the new temperature fields at their default -1.0f,
+    // which resolves to the PACKAGE's own position_temperature (5.0, see the
+    // metadata above) -- so the loop DOES draw random numbers here. But
+    // `request.seed` also defaults (to 0), and a fixed seed draws the same
+    // sequence every time, so two runs of the same request are still the same
+    // grid -- and therefore the same waveform. This is the reproducibility
+    // property the exact-token gate rests on (a real package is not
+    // degenerate the way this fixture is, so its grid WOULD move if the seed
+    // moved), asserted here where it can be asserted cheaply.
     synth::omnivoice::SynthesisOutput again;
     SYNTH_TEST_CHECK(model.run_synthesis(request, again) == SYNTH_OK);
     SYNTH_TEST_CHECK(again.codes == output.codes);
@@ -316,6 +327,165 @@ int check_requests_the_loop_refuses(synth::omnivoice::Model & model) {
     return 0;
 }
 
+// Same seed, twice: two run_synthesis calls with the same request (seed 7,
+// position_temperature 5.0f -- so the per-candidate position draw actually
+// fires -- class_temperature 0.0f, so token CHOICE itself stays plain-greedy)
+// commit the same grid. This is the reproducibility property the replay
+// runner's pinned-zero contract and a real caller's expectations both rest
+// on: fixing the seed reproduces the output, whatever the resolved
+// temperatures are.
+int check_sampled_same_seed_identical_grid(synth::omnivoice::Model & model) {
+    synth::omnivoice::SynthesisRequest request = base_request(5);
+    request.seed                               = 7;
+    request.position_temperature               = 5.0f;
+    request.class_temperature                  = 0.0f;
+
+    synth::omnivoice::SynthesisOutput first;
+    SYNTH_TEST_CHECK(model.run_synthesis(request, first) == SYNTH_OK);
+    if (check_grid(first, 5, "sampled seed-7 run (first)") != 0) {
+        return 1;
+    }
+
+    synth::omnivoice::SynthesisOutput second;
+    SYNTH_TEST_CHECK(model.run_synthesis(request, second) == SYNTH_OK);
+    SYNTH_TEST_CHECK(second.codes == first.codes);
+    return 0;
+}
+
+// Different seed: seed 7 vs seed 8, otherwise identical requests. This
+// fixture's `output.codes` CANNOT show the difference: its whole point (see
+// the file header) is constant weights, which make every candidate's guided
+// log-prob tie across the entire vocabulary at every position, so
+// choose_token's argmax always lands on token 0 regardless of which candidate
+// a Gumbel-perturbed score commits first -- widening `frames` does not change
+// this, because the degeneracy is in the WEIGHTS, not the canvas size. So
+// this checks the actual mechanism the loop's draw-order contract describes
+// (see the stream construction comment in run_synthesis) directly: two
+// NormalRandomStreams seeded 7 and 8 draw different uniforms, which is the
+// reason a non-degenerate package's grid WOULD differ. The two full runs are
+// still made (and still asserted equal) so this fixture's degeneracy is
+// pinned as understood behaviour rather than left as an unexplained gap.
+int check_sampled_different_seed_different_draws(synth::omnivoice::Model & model) {
+    synth::omnivoice::SynthesisRequest seed7 = base_request(5);
+    seed7.seed                               = 7;
+    seed7.position_temperature               = 5.0f;
+    seed7.class_temperature                  = 0.0f;
+    synth::omnivoice::SynthesisRequest seed8 = seed7;
+    seed8.seed                               = 8;
+
+    synth::omnivoice::SynthesisOutput output7;
+    synth::omnivoice::SynthesisOutput output8;
+    SYNTH_TEST_CHECK(model.run_synthesis(seed7, output7) == SYNTH_OK);
+    SYNTH_TEST_CHECK(model.run_synthesis(seed8, output8) == SYNTH_OK);
+    // Confirmed identical for the reason in the comment above -- a property of
+    // this fixture's degeneracy, not a regression.
+    SYNTH_TEST_CHECK(output7.codes == output8.codes);
+
+    synth::NormalRandomStream stream7(7);
+    synth::NormalRandomStream stream8(8);
+    SYNTH_TEST_CHECK(stream7.next_uniform() != stream8.next_uniform());
+    return 0;
+}
+
+// The request struct's new temperature fields DEFAULT to sampling
+// (position_temperature resolves to this package's 5.0 unless overridden), so
+// a caller wanting the old Plan-2 greedy behaviour back has to ask for it
+// explicitly. This pins that asking explicitly reproduces exactly what an
+// implicit (field-less) request produces on THIS fixture -- which is why
+// tests/omnivoice_replay_real.cpp's pin to explicit 0.0f matters on a
+// non-degenerate real package, even though the two are indistinguishable
+// here.
+int check_sampled_explicit_greedy_matches_defaulted_request(synth::omnivoice::Model & model) {
+    synth::omnivoice::SynthesisRequest explicit_greedy = base_request(5);
+    explicit_greedy.position_temperature               = 0.0f;
+    explicit_greedy.class_temperature                  = 0.0f;
+
+    synth::omnivoice::SynthesisOutput explicit_output;
+    SYNTH_TEST_CHECK(model.run_synthesis(explicit_greedy, explicit_output) == SYNTH_OK);
+    if (check_grid(explicit_output, 5, "explicit greedy run") != 0) {
+        return 1;
+    }
+
+    // The plain field-less request: both new fields sit at -1.0f, so
+    // position_temperature resolves to the package's 5.0 and the loop DOES
+    // sample -- but this fixture's constant weights make every committed
+    // token argmax-0 regardless (see the file header), so the grid is
+    // unaffected. A real package is not degenerate this way, which is exactly
+    // why the replay runner pins both fields rather than relying on this
+    // equivalence.
+    synth::omnivoice::SynthesisRequest defaulted = base_request(5);
+    synth::omnivoice::SynthesisOutput  defaulted_output;
+    SYNTH_TEST_CHECK(model.run_synthesis(defaulted, defaulted_output) == SYNTH_OK);
+    SYNTH_TEST_CHECK(defaulted_output.codes == explicit_output.codes);
+    return 0;
+}
+
+// margin_report demands a resolved temperature of exactly 0 in BOTH
+// dimensions: a Gumbel-perturbed margin measures nothing meaningful, since
+// "narrow" and "random" are not the same axis. The package's own default
+// position_temperature (5.0) means even a field-less request already
+// triggers the refusal.
+int check_margin_report_refuses_positive_temperature(synth::omnivoice::Model & model) {
+    synth::omnivoice::SynthesisOutput output;
+
+    synth::omnivoice::SynthesisRequest defaulted = base_request(5);
+    defaulted.margin_report                      = true;
+    SYNTH_TEST_CHECK(model.run_synthesis(defaulted, output) == SYNTH_ERR_INVALID_ARG);
+
+    // An explicit positive class_temperature refuses too, independent of
+    // position_temperature.
+    synth::omnivoice::SynthesisRequest class_positive = base_request(5);
+    class_positive.margin_report                      = true;
+    class_positive.position_temperature               = 0.0f;
+    class_positive.class_temperature                  = 1.0f;
+    SYNTH_TEST_CHECK(model.run_synthesis(class_positive, output) == SYNTH_ERR_INVALID_ARG);
+
+    // Both temperatures explicitly zero: margin_report is legal again, and
+    // actually measures something over this request's schedule.
+    synth::omnivoice::SynthesisRequest explicit_greedy = base_request(5);
+    explicit_greedy.margin_report                      = true;
+    explicit_greedy.position_temperature               = 0.0f;
+    explicit_greedy.class_temperature                  = 0.0f;
+    SYNTH_TEST_CHECK(model.run_synthesis(explicit_greedy, output) == SYNTH_OK);
+    SYNTH_TEST_CHECK(output.margin.measured);
+    return 0;
+}
+
+// Carryover item 2: the guidance == 0 branch (the reference's own
+// `guidance_scale != 0` split) skips the unconditional forward ENTIRELY --
+// every step makes one forward instead of two. The default synthetic package
+// pins guidance_scale to 2.0 (so guidance != 0 is what every other case in
+// this file exercises), so this builds its own package with guidance_scale
+// overridden to 0.0 via the harness's new option and compares its
+// generator_placement.nodes against an identical-shape request on the
+// ordinary (guidance != 0) package: fewer forwards is directly fewer placed
+// nodes, the same counter the other checks in this file already read.
+int check_guidance_zero_skips_uncond_forward(synth::omnivoice::Model & guided_model, const std::string & scratch_dir) {
+    const std::string zero_guidance_path = scratch_dir + "/synthetic-decode-loop-zero-guidance.gguf";
+    synth::omnivoice::testing::SyntheticPackageOptions options;
+    options.guidance_scale = 0.0f;
+    SYNTH_TEST_CHECK(synth::omnivoice::testing::write_synthetic_package(zero_guidance_path, options));
+    std::unique_ptr<synth::omnivoice::Model> zero_guidance_model;
+    SYNTH_TEST_CHECK(synth::omnivoice::Model::load_cpu(zero_guidance_path, zero_guidance_model) == SYNTH_OK);
+    SYNTH_TEST_CHECK(zero_guidance_model != nullptr);
+
+    synth::omnivoice::SynthesisOutput guided_output;
+    SYNTH_TEST_CHECK(guided_model.run_synthesis(base_request(5), guided_output) == SYNTH_OK);
+
+    synth::omnivoice::SynthesisOutput zero_guidance_output;
+    SYNTH_TEST_CHECK(zero_guidance_model->run_synthesis(base_request(5), zero_guidance_output) == SYNTH_OK);
+    if (check_grid(zero_guidance_output, 5, "guidance == 0 run") != 0) {
+        return 1;
+    }
+
+    // Half the forwards (conditional only, no unconditional) means
+    // meaningfully fewer placed nodes -- not just "not more", which a broken
+    // zero-node run would also satisfy.
+    SYNTH_TEST_CHECK(zero_guidance_output.generator_placement.nodes > 0);
+    SYNTH_TEST_CHECK(zero_guidance_output.generator_placement.nodes < guided_output.generator_placement.nodes);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
@@ -337,5 +507,10 @@ int main(int argc, char ** argv) {
     failures += check_single_step_commits_everything(*model);
     failures += check_requests_the_loop_refuses(*model);
     failures += check_decode_codes_refuses(*model);
+    failures += check_sampled_same_seed_identical_grid(*model);
+    failures += check_sampled_different_seed_different_draws(*model);
+    failures += check_sampled_explicit_greedy_matches_defaulted_request(*model);
+    failures += check_margin_report_refuses_positive_temperature(*model);
+    failures += check_guidance_zero_skips_uncond_forward(*model, std::string(argv[1]));
     return failures == 0 ? 0 : 1;
 }

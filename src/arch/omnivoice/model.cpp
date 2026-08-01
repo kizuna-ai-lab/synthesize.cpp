@@ -28,6 +28,7 @@
 #include "ggml.h"
 #include "gguf-metadata.h"
 #include "gguf.h"
+#include "random-stream.h"
 
 #include <algorithm>
 #include <chrono>
@@ -35,6 +36,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <new>
 #include <utility>
 #include <vector>
@@ -382,6 +384,19 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     const uint32_t num_step = request.num_step != 0 ? request.num_step : hparams.generation.num_step;
     const float    guidance = hparams.generation.guidance_scale;
     const int      threads  = request.threads > 0 ? request.threads : default_synthesis_threads();
+    // Negative means "the package's own default governs"; 0.0f is a
+    // meaningful value (greedy), not an unset one. See SynthesisRequest's own
+    // comment in omnivoice.h.
+    const float    pos_t =
+        request.position_temperature < 0.0f ? hparams.generation.position_temperature : request.position_temperature;
+    const float class_t =
+        request.class_temperature < 0.0f ? hparams.generation.class_temperature : request.class_temperature;
+    // A Gumbel-perturbed margin measures nothing meaningful: the report exists
+    // to screen the greedy loop's narrowest decisions, and sampling replaces
+    // "narrow" with "randomly won or lost" -- a different axis entirely.
+    if (request.margin_report && (pos_t > 0.0f || class_t > 0.0f)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
 
     PromptLayout   prompt;
     synth_status_t status = build_prompt_grid(request.prompt_text_ids, request.reference_tokens, request.target_frames,
@@ -482,6 +497,27 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     const uint64_t               row          = uint64_t(codebooks) * vocab;
     const ForwardProbeSinks      no_probes;
 
+    // ONE stream drives every draw this synthesis makes, constructed HERE --
+    // before the step loop -- iff either resolved temperature above is
+    // positive. A fully greedy synthesis (both temperatures 0) constructs no
+    // stream at all and therefore draws nothing: the family's recorded
+    // zero-RNG property.
+    //
+    // Draw-order contract: per step, still-masked candidates are visited in
+    // the scan order the nested loop below builds them in (codebook-major,
+    // frame-minor). For each candidate: the class draws happen FIRST, inside
+    // choose_token_sampled (only when class_t > 0) -- as many uniforms as
+    // survive its top-k filter, in ascending class-id order -- then, iff
+    // pos_t > 0, exactly ONE further draw perturbs that same candidate's
+    // score. A step whose budget is zero skips this whole per-candidate loop,
+    // INCLUDING every draw it would have made: upstream's `k <= 0: continue`
+    // consumes no randomness for that step either, and the `continue` below
+    // already sits above every draw site.
+    std::unique_ptr<NormalRandomStream> stream;
+    if (pos_t > 0.0f || class_t > 0.0f) {
+        stream = std::make_unique<NormalRandomStream>(request.seed);
+    }
+
     for (uint32_t step = 0; step < num_step; ++step) {
         if (step > 0) {
             // The reference tokens never move; only the target region follows
@@ -535,14 +571,34 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
                 candidate.codebook = codebook;
                 candidate.frame    = frame;
                 float log_prob     = 0.0f;
-                choose_token(cond_logits.data() + cond_offset,
-                             guidance != 0.0f ? uncond_logits.data() + uncond_offset : nullptr, vocab,
-                             hparams.audio.mask_id, guidance, candidate.token, log_prob,
-                             track_margin ? &candidate.argmax_gap : nullptr);
+                if (class_t > 0.0f) {
+                    // The class draws for this candidate: as many uniforms as
+                    // survive choose_token_sampled's own top-k filter,
+                    // consumed BEFORE this candidate's position draw below
+                    // (the draw-order contract documented where `stream` is
+                    // constructed).
+                    status = choose_token_sampled(cond_logits.data() + cond_offset,
+                                                  guidance != 0.0f ? uncond_logits.data() + uncond_offset : nullptr,
+                                                  vocab, hparams.audio.mask_id, guidance, class_t, *stream,
+                                                  candidate.token, log_prob);
+                    if (status != SYNTH_OK) {
+                        return status;
+                    }
+                } else {
+                    choose_token(cond_logits.data() + cond_offset,
+                                 guidance != 0.0f ? uncond_logits.data() + uncond_offset : nullptr, vocab,
+                                 hparams.audio.mask_id, guidance, candidate.token, log_prob,
+                                 track_margin ? &candidate.argmax_gap : nullptr);
+                }
                 // The layer penalty biases commitment toward the coarse
                 // codebooks first. (audio_codebook_weights is training-loss
                 // weighting and plays NO part here -- see the family doc.)
                 candidate.score = log_prob - float(codebook) * hparams.generation.layer_penalty_factor;
+                if (pos_t > 0.0f) {
+                    // This candidate's own position draw, consumed AFTER any
+                    // class draws above.
+                    candidate.score = gumbel_perturb(candidate.score, pos_t, stream->next_uniform());
+                }
                 candidates.push_back(candidate);
             }
         }

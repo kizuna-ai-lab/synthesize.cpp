@@ -51,17 +51,31 @@ struct SynthesisRequest {
     // for auto-voice and voice-design requests. Plan 3's cloning encoder
     // produces these from audio; Plan 2's runner replays the oracle's.
     std::vector<int32_t>  reference_tokens;
-    uint64_t              target_frames = 0;
-    uint32_t              num_step      = 0;  // 0 = the package's embedded default
+    uint64_t              target_frames        = 0;
+    uint32_t              num_step             = 0;  // 0 = the package's embedded default
+    // The seed for this synthesis' one NormalRandomStream. Consumed only when
+    // a resolved temperature below is positive; a fully greedy synthesis
+    // (both temperatures resolve to 0) constructs no stream at all and never
+    // reads this field -- the family's recorded zero-RNG property.
+    uint64_t              seed                 = 0;
+    // Temperature overrides for the mask-predict loop's two Gumbel draws
+    // (generator-host.h's gumbel_perturb / choose_token_sampled). Negative
+    // means "the package's own default governs" (HParams::generation);
+    // 0.0f is a meaningful value -- greedy, not "unset". The replay runner
+    // (tests/omnivoice_replay_real.cpp) pins both to 0.0f, which is what
+    // keeps every Plan 2 golden grid exact; the public path Plan 3 adds
+    // leaves both at -1.0f so the package's own sampling defaults govern.
+    float                 position_temperature = -1.0f;
+    float                 class_temperature    = -1.0f;
     // Stop after the step-0 conditional forward with the probe buffers filled;
     // the sampled golden cases compare only that forward in Plan 2.
-    bool                  probe_only    = false;
+    bool                  probe_only           = false;
     // Measure how narrowly the greedy loop's decisions were made and report the
     // narrowest one (see MarginReport). Off by default: nothing in a synthesis
     // needs it, and it is a screening instrument for golden-case selection.
-    bool                  margin_report = false;
-    int                   threads       = 0;  // 0 = default_synthesis_threads()
-    std::vector<uint32_t> probe_layers;       // layer indices probed at step 0
+    bool                  margin_report        = false;
+    int                   threads              = 0;  // 0 = default_synthesis_threads()
+    std::vector<uint32_t> probe_layers;              // layer indices probed at step 0
 };
 
 // MarginReport is declared in generator-host.h: filled when

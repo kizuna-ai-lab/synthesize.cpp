@@ -17,8 +17,14 @@
 namespace synth::omnivoice::testing {
 
 struct SyntheticPackageOptions {
-    bool omit_frontend_vocab  = false;
-    bool omit_frontend_merges = false;
+    bool  omit_frontend_vocab  = false;
+    bool  omit_frontend_merges = false;
+    // 2.0 matches the small layout's transcribed default (see
+    // omnivoice_decode_loop_test.cpp's file header): non-zero, so the
+    // unconditional branch runs by default, matching every existing caller.
+    // Override to 0.0f to exercise the loop's `guidance == 0` branch, which
+    // skips the unconditional forward entirely.
+    float guidance_scale       = 2.0f;
 };
 
 inline void set_string_array(gguf_context * g, const char * key, const std::vector<std::string> & values) {
@@ -78,7 +84,7 @@ inline bool write_synthetic_package(const std::string & path, const SyntheticPac
     gguf_set_val_u32(gguf, "synthesize.voice.preset_count", 0);
 
     gguf_set_val_u32(gguf, "synthesize.omnivoice.generation.num_step", 4);
-    gguf_set_val_f32(gguf, "synthesize.omnivoice.generation.guidance_scale", 2.0f);
+    gguf_set_val_f32(gguf, "synthesize.omnivoice.generation.guidance_scale", options.guidance_scale);
     gguf_set_val_f32(gguf, "synthesize.omnivoice.generation.t_shift", 0.1f);
     gguf_set_val_f32(gguf, "synthesize.omnivoice.generation.layer_penalty_factor", 5.0f);
     gguf_set_val_f32(gguf, "synthesize.omnivoice.generation.position_temperature", 5.0f);

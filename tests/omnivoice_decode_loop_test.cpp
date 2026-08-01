@@ -547,6 +547,62 @@ int check_guidance_zero_skips_uncond_forward(synth::omnivoice::Model & guided_mo
     return 0;
 }
 
+// Model::synthesize (Task 5's public seam entry): the only path in this file
+// that goes from raw UTF-8 text to a delivered waveform through
+// assemble_prompt_ids and DurationEstimator, rather than driving
+// run_synthesis directly with pre-tokenized ids and a fixed frame count.
+// Needs its own package: the default synthetic vocabulary ("tok0".."tok39")
+// cannot tokenize real text at all (see SyntheticPackageOptions::
+// ascii_text_vocab), which is also why none of this file's other checks
+// exercise the frontend for real.
+int check_public_synthesize(synth::omnivoice::Model & text_model) {
+    // "a" alone is the frontend test's own boosted-floor example
+    // (omnivoice_frontend_test.cpp's check_frame_truncation): weight 1.0
+    // against the no-reference anchor's 14.1 lands the estimate at exactly
+    // 16 frames -- this package's own ceiling (kMaxFrames) -- which doubles
+    // as the boundary case: an estimate EQUAL to the limit is not a limit
+    // violation.
+    synth::omnivoice::PublicSynthesisParams request;
+    request.text = "a";
+    synth::omnivoice::SynthesisOutput output;
+    SYNTH_TEST_CHECK(text_model.synthesize(request, output) == SYNTH_OK);
+    SYNTH_TEST_CHECK(output.frame_count == kMaxFrames);
+    if (check_waveform(output.audio, kMaxFrames, /*normalised=*/true, "public synthesize") != 0) {
+        return 1;
+    }
+
+    // Same seed, same text: two independent Model::synthesize calls commit
+    // the same grid. This is the public seam's own reproducibility contract
+    // (a real package is not degenerate the way this fixture's constant
+    // weights are, so its grid would move with the seed; here it is the
+    // WIRING -- that the seed reaches run_synthesis at all -- Task 4 already
+    // proved on the varied-weights package).
+    synth::omnivoice::SynthesisOutput again;
+    SYNTH_TEST_CHECK(text_model.synthesize(request, again) == SYNTH_OK);
+    SYNTH_TEST_CHECK(again.codes == output.codes);
+    SYNTH_TEST_CHECK(again.audio == output.audio);
+
+    // "aa" doubles the weight and pushes the boosted estimate to 20 frames,
+    // past this same package's 16-frame ceiling: the limit caps the
+    // ESTIMATE before run_synthesis ever sees a request, rather than letting
+    // the loop fall short of one.
+    synth::omnivoice::PublicSynthesisParams too_long;
+    too_long.text = "aa";
+    synth::omnivoice::SynthesisOutput unused;
+    SYNTH_TEST_CHECK(text_model.synthesize(too_long, unused) == SYNTH_ERR_OUTPUT_LIMIT);
+
+    // Empty and whitespace-only text are refused before any estimate is
+    // made: DurationEstimator's own floor (`max(1, int(...))`) would
+    // otherwise hand back a one-frame canvas for a request that named no
+    // Linguistic Input at all.
+    synth::omnivoice::PublicSynthesisParams empty_text;
+    SYNTH_TEST_CHECK(text_model.synthesize(empty_text, unused) == SYNTH_ERR_INVALID_ARG);
+    synth::omnivoice::PublicSynthesisParams blank_text;
+    blank_text.text = "   ";
+    SYNTH_TEST_CHECK(text_model.synthesize(blank_text, unused) == SYNTH_ERR_INVALID_ARG);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
@@ -572,6 +628,18 @@ int main(int argc, char ** argv) {
     SYNTH_TEST_CHECK(synth::omnivoice::Model::load_cpu(varied_weights_path, varied_model) == SYNTH_OK);
     SYNTH_TEST_CHECK(varied_model != nullptr);
 
+    // A third package whose vocabulary can actually tokenize text: see
+    // SyntheticPackageOptions::ascii_text_vocab. Only check_public_synthesize
+    // needs it -- every other check in this file drives run_synthesis
+    // directly with pre-tokenized ids.
+    const std::string text_capable_path = std::string(argv[1]) + "/synthetic-decode-loop-text-capable.gguf";
+    synth::omnivoice::testing::SyntheticPackageOptions text_options;
+    text_options.ascii_text_vocab = true;
+    SYNTH_TEST_CHECK(synth::omnivoice::testing::write_synthetic_package(text_capable_path, text_options));
+    std::unique_ptr<synth::omnivoice::Model> text_model;
+    SYNTH_TEST_CHECK(synth::omnivoice::Model::load_cpu(text_capable_path, text_model) == SYNTH_OK);
+    SYNTH_TEST_CHECK(text_model != nullptr);
+
     int      failures          = 0;
     uint64_t one_forward_nodes = 0;
     failures += check_probe_only_skips_the_loop(*model, one_forward_nodes);
@@ -586,5 +654,6 @@ int main(int argc, char ** argv) {
     failures += check_sampled_explicit_greedy_matches_defaulted_request(*model);
     failures += check_margin_report_refuses_positive_temperature(*model);
     failures += check_guidance_zero_skips_uncond_forward(*model, std::string(argv[1]));
+    failures += check_public_synthesize(*text_model);
     return failures == 0 ? 0 : 1;
 }

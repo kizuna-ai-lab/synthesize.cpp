@@ -835,12 +835,81 @@ synth_status_t synth_synthesize(synth_context_t *          context,
     }
 
     if (context->model->info.family == synth::ModelFamily::Omnivoice) {
-        // Plan 2 lands the diffusion loop; a loadable-but-unsynthesizable
-        // family must fail loudly rather than fall through to another
-        // family's branch.
-        emit_diagnostic(prepared.diagnostics, SYNTH_ERR_INTERNAL, "synthesis.not_implemented",
-                        "omnivoice synthesis is not implemented yet");
-        return SYNTH_ERR_INTERNAL;
+        try {
+            synth::omnivoice::PublicSynthesisParams family_request;
+            // input_kind is guaranteed SYNTH_INPUT_TEXT_UTF8 by this point:
+            // this family declares no other input_flags bit (see
+            // scripts/convert-omnivoice.py), and prepare_synthesis_request
+            // above already refused any request kind the package does not
+            // declare -- so the raw bytes behind `prepared.token_ids` (this
+            // family's frontend has no prefix/suffix, so that generic
+            // tokenization is unused here; see model.cpp's registration
+            // comment) are read straight from the request instead.
+            family_request.text.assign(static_cast<const char *>(request->input_data),
+                                       static_cast<size_t>(request->input_count));
+            family_request.language_tag.assign(
+                prepared.resolved_language_tag != nullptr ? prepared.resolved_language_tag : "",
+                size_t(prepared.resolved_language_size));
+            // `clone` and `instruct` stay null: Tasks 14 and 15 thread the
+            // Reference Audio and the free-text instruction through here.
+            // Voice profile pointer: prepare_synthesis_request above already
+            // refuses any non-null one for every family, so `prepared` never
+            // carries one to relax here before Task 14.
+            family_request.speaking_rate = double(prepared.speaking_rate);
+            family_request.seed          = actual_seed;
+            family_request.threads       = context->threads;
+
+            // Same PCM-vs-native conversion qwen3-tts needs and for the same
+            // reason: the core's limit counts output PCM frames, and this
+            // family's own limit counts codec frames of `samples_per_frame`
+            // each.
+            const uint32_t samples_per_frame = context->model->info.samples_per_frame;
+            if (prepared.requested_frame_limit != 0 && samples_per_frame != 0) {
+                family_request.max_output_frames = prepared.requested_frame_limit / samples_per_frame;
+                if (family_request.max_output_frames == 0) {
+                    // A limit smaller than one frame cannot be met by
+                    // emitting anything, and asking for zero frames would be
+                    // read as unset.
+                    return report_output_limit(delivery_info, sink, out_result);
+                }
+            } else {
+                family_request.max_output_frames = 0;  // the family applies its own package cap
+            }
+
+            synth::omnivoice::SynthesisOutput synthesis;
+            status = context->model->omnivoice->synthesize(family_request, synthesis);
+            // This family estimates and clamps its own canvas length before
+            // ever reaching run_synthesis, so -- like qwen3-tts -- its limit
+            // stop arrives here rather than at the delivering check further
+            // down.
+            if (status == SYNTH_ERR_OUTPUT_LIMIT) {
+                return report_output_limit(delivery_info, sink, out_result);
+            }
+            if (status != SYNTH_OK) {
+                emit_diagnostic(prepared.diagnostics, status, "synthesis.graph_failed", synth_status_string(status));
+                return status;
+            }
+            // The limit is in native frames, and this family's frame is the
+            // codec's hop rather than one sample.
+            if (synthesis.frame_count > prepared.effective_frame_limit) {
+                (void) synth::deliver_complete_audio(nullptr, 0, delivery_info, sink, out_result);
+                return SYNTH_ERR_OUTPUT_LIMIT;
+            }
+            if (cancellation_requested(prepared)) {
+                (void) synth::deliver_complete_audio(nullptr, 0, delivery_info, sink, out_result);
+                return SYNTH_ERR_CANCELLED;
+            }
+            return synth::deliver_complete_audio(synthesis.audio.data(), synthesis.audio.size(), delivery_info, sink,
+                                                 out_result);
+        } catch (const std::bad_alloc &) {
+            emit_diagnostic(prepared.diagnostics, SYNTH_ERR_OOM, "allocation.failed",
+                            "synthesis temporary allocation failed");
+            return SYNTH_ERR_OOM;
+        } catch (...) {
+            emit_diagnostic(prepared.diagnostics, SYNTH_ERR_INTERNAL, "internal.exception",
+                            "unexpected exception during synthesis");
+            return SYNTH_ERR_INTERNAL;
+        }
     }
 
     if (context->model->info.family == synth::ModelFamily::Qwen3Tts) {

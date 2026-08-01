@@ -37,12 +37,12 @@ struct ModelInfo {
     std::string frontend_provider;
 };
 
-// A family-internal synthesis request. Plan 2 reaches this through the replay
-// runner only: the public seam stays on the synthesis.not_implemented stub
-// until Plan 3 lands the sampled path the public defaults select. The prompt
-// arrives as ids (the oracle's input/token_ids.i32, or Plan 3's own frontend
-// output) and the canvas length arrives fixed -- the duration estimator's
-// output, or the oracle grid's frame count under replay.
+// A family-internal synthesis request. Plan 2 reached this through the
+// replay runner only; Plan 3's Task 5 adds the public path Model::synthesize
+// builds one from, below. The prompt arrives as ids (the oracle's
+// input/token_ids.i32 under replay, or assemble_prompt_ids's output on the
+// public path) and the canvas length arrives fixed -- the duration
+// estimator's output, or the oracle grid's frame count under replay.
 struct SynthesisRequest {
     // Row 0's text region: style markers, language/instruct slots and the
     // wrapped text, already tokenized. Every codebook row repeats these ids.
@@ -81,6 +81,38 @@ struct SynthesisRequest {
 // MarginReport is declared in generator-host.h: filled when
 // SynthesisRequest::margin_report is set, and its NaN-wins update rule
 // (note_margin) lives there too, where it is unit-testable without a Model.
+
+// The Reference Audio and Serialized Profile payload a cloning request
+// carries. Defined in profile.h from Plan 3's Task 14 on; forward-declared
+// here so this task's PublicSynthesisParams can carry the pointer this
+// family's own request eventually threads through, without this file
+// depending on a header that does not exist yet.
+struct ClonePrompt;
+
+// The public seam's own request shape: everything `src/synthesize.cpp`'s
+// omnivoice branch collects from a `synth_request_t` before it ever touches
+// a tensor. Distinct from SynthesisRequest -- that one already carries
+// tokenized ids and a settled canvas length; this one carries the raw
+// strings and rates Model::synthesize turns into those by calling
+// assemble_prompt_ids and DurationEstimator itself.
+//
+// `clone` and `instruct` are pointers rather than values so "absent" and
+// "empty string" stay distinguishable: an instruction of "" is a legal,
+// meaningful request (the language-agnostic, instruction-free style), while
+// a null pointer means the caller supplied neither. Both stay null through
+// this task -- Task 14 threads Reference Audio through `clone`, Task 15
+// threads the free-text instruction through `instruct` -- so the struct's
+// shape does not change again when those land.
+struct PublicSynthesisParams {
+    std::string         text;                         // Linguistic Input, UTF-8
+    std::string         language_tag;                 // resolved by core; may be empty
+    const ClonePrompt * clone             = nullptr;  // Task 14 threads this; null now
+    const std::string * instruct          = nullptr;  // Task 15 threads this; null now
+    double              speaking_rate     = 1.0;
+    uint64_t            seed              = 0;
+    uint64_t            max_output_frames = 0;  // native frames; 0 = package cap
+    int32_t             threads           = 0;
+};
 
 struct SynthesisOutput {
     // The canvas length, set from the request rather than from the loop, so the
@@ -156,6 +188,18 @@ class Model {
     // parameters it makes no random draw at all, which is what the exact-token
     // gate stands on. The sampled path is Plan 3.
     synth_status_t run_synthesis(const SynthesisRequest & request, SynthesisOutput & output);
+
+    // The public seam's family entry: raw text and rates in, delivered PCM
+    // out. Assembles the row-0 prompt (assemble_prompt_ids), estimates the
+    // canvas length (DurationEstimator, against the no-reference anchor pair
+    // until Task 14 threads a real reference through `clone`), clamps it to
+    // the effective frame limit -- an estimate past the limit is
+    // SYNTH_ERR_OUTPUT_LIMIT, the limit being a cap on the canvas rather than
+    // a target for it -- and then calls run_synthesis, which already
+    // performs decode_codes and the no-reference volume branch. Auto-voice
+    // and voice-design only this task: `params.clone` is unread until Task
+    // 14, `params.instruct` until Task 15.
+    synth_status_t synthesize(const PublicSynthesisParams & params, SynthesisOutput & output);
 
     // Decodes a committed grid (codebook-major [num_codebooks * frame_count],
     // values in [0, codebook_size)) to the RAW waveform -- no volume branch,

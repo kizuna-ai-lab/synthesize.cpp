@@ -28,6 +28,7 @@
 #include "bpe-frontend.h"
 #include "test-assert.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -298,6 +299,111 @@ int check_nonverbal_split() {
 }
 
 // --------------------------------------------------------------------------
+// assemble_prompt_ids
+// --------------------------------------------------------------------------
+
+// Composition, not tokenization: check_nonverbal_split already proves the
+// frontend tokenizes a wrapped string correctly, so this fixture exists only
+// to let style_text/combine_text/tokenize_wrapped_text run for real, each
+// character mapping to exactly one id and no merge rule to muddy which ids
+// the hand-built expectation and the call under test share.
+int check_assemble_prompt_ids() {
+    synth::BpeFrontendConfig config;
+    config.provider_id      = "synthesize.qwen_bpe";
+    config.contract_version = 1;
+    config.vocab            = { "H", "i", ".", "N", "o", "n", "e", "S", "m", "c", "a", "l", "t", "u", "r", kSpace };
+    config.special_tokens   = {
+        { "<|denoise|>",        100 },
+        { "<|lang_start|>",     101 },
+        { "<|lang_end|>",       102 },
+        { "<|instruct_start|>", 103 },
+        { "<|instruct_end|>",   104 },
+        { "<|text_start|>",     105 },
+        { "<|text_end|>",       106 },
+    };
+    std::unique_ptr<synth::TextFrontend> frontend;
+    SYNTH_TEST_CHECK(synth::make_bpe_frontend(config, frontend) == SYNTH_OK);
+    SYNTH_TEST_CHECK(frontend != nullptr);
+
+    synth::omnivoice::SpecialTokens tokens;
+    tokens.denoise        = 100;
+    tokens.lang_start     = 101;
+    tokens.lang_end       = 102;
+    tokens.instruct_start = 103;
+    tokens.instruct_end   = 104;
+    tokens.text_start     = 105;
+    tokens.text_end       = 106;
+
+    // Plain request: style_text ids + text_start + tokenize("Hi.") + text_end,
+    // built from the same three helpers this file already exercises on their
+    // own, concatenated by hand rather than re-derived from scratch.
+    std::vector<int32_t> expected;
+    std::vector<int32_t> piece;
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, synth::omnivoice::style_text(false, "en", ""),
+                                                             piece) == SYNTH_OK);
+    expected = piece;
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, "<|text_start|>", piece) == SYNTH_OK);
+    expected.insert(expected.end(), piece.begin(), piece.end());
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, synth::omnivoice::combine_text("", "Hi."),
+                                                             piece) == SYNTH_OK);
+    expected.insert(expected.end(), piece.begin(), piece.end());
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, "<|text_end|>", piece) == SYNTH_OK);
+    expected.insert(expected.end(), piece.begin(), piece.end());
+
+    std::vector<int32_t> actual;
+    SYNTH_TEST_CHECK(
+        synth::omnivoice::assemble_prompt_ids(*frontend, tokens, /*denoise=*/false, "en", "", "", "Hi.", actual));
+    SYNTH_TEST_CHECK(actual == expected);
+
+    // Clone-shaped call: the denoise marker leads, and the combined
+    // (space-joined) reference-plus-text follows the text_start marker.
+    std::vector<int32_t> clone_expected;
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, synth::omnivoice::style_text(true, "en", ""),
+                                                             piece) == SYNTH_OK);
+    clone_expected = piece;
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, "<|text_start|>", piece) == SYNTH_OK);
+    clone_expected.insert(clone_expected.end(), piece.begin(), piece.end());
+    const std::string combined = synth::omnivoice::combine_text("Some call me nature.", "Hi.");
+    SYNTH_TEST_CHECK(combined == "Some call me nature. Hi.");
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, combined, piece) == SYNTH_OK);
+    clone_expected.insert(clone_expected.end(), piece.begin(), piece.end());
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, "<|text_end|>", piece) == SYNTH_OK);
+    clone_expected.insert(clone_expected.end(), piece.begin(), piece.end());
+
+    std::vector<int32_t> clone_actual;
+    SYNTH_TEST_CHECK(synth::omnivoice::assemble_prompt_ids(*frontend, tokens, /*denoise=*/true, "en", "",
+                                                           "Some call me nature.", "Hi.", clone_actual));
+    SYNTH_TEST_CHECK(clone_actual == clone_expected);
+
+    // The denoise marker is the composed string's very first token: style_text
+    // places it before the language slot whenever `denoise` is set.
+    std::vector<int32_t> denoise_marker;
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, "<|denoise|>", denoise_marker) == SYNTH_OK);
+    SYNTH_TEST_CHECK(clone_actual.size() >= denoise_marker.size());
+    SYNTH_TEST_CHECK(std::equal(denoise_marker.begin(), denoise_marker.end(), clone_actual.begin()));
+
+    // Empty language and empty instruct both fall to the literal "None": the
+    // resulting ids start with exactly what style_text("", "") tokenizes to,
+    // rather than a hand-rederived guess at what "None" spells.
+    std::vector<int32_t> none_style;
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, synth::omnivoice::style_text(false, "", ""),
+                                                             none_style) == SYNTH_OK);
+    std::vector<int32_t> none_actual;
+    SYNTH_TEST_CHECK(
+        synth::omnivoice::assemble_prompt_ids(*frontend, tokens, /*denoise=*/false, "", "", "", "Hi.", none_actual));
+    SYNTH_TEST_CHECK(none_actual.size() >= none_style.size());
+    SYNTH_TEST_CHECK(std::equal(none_style.begin(), none_style.end(), none_actual.begin()));
+
+    // Tokenizer failure (an out-of-vocabulary byte in the text) is the only
+    // way this function reports false.
+    std::vector<int32_t> rejected = { 999 };
+    SYNTH_TEST_CHECK(
+        !synth::omnivoice::assemble_prompt_ids(*frontend, tokens, false, "en", "", "", "zzz not in vocab", rejected));
+    SYNTH_TEST_CHECK(rejected.empty());
+    return 0;
+}
+
+// --------------------------------------------------------------------------
 // Character weights
 // --------------------------------------------------------------------------
 
@@ -498,6 +604,7 @@ int main() {
     SYNTH_TEST_CHECK(check_combine_text() == 0);
     SYNTH_TEST_CHECK(check_style_text() == 0);
     SYNTH_TEST_CHECK(check_nonverbal_split() == 0);
+    SYNTH_TEST_CHECK(check_assemble_prompt_ids() == 0);
     SYNTH_TEST_CHECK(check_char_weights() == 0);
     SYNTH_TEST_CHECK(check_estimates_match_oracle() == 0);
     SYNTH_TEST_CHECK(check_boost_curve() == 0);

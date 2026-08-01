@@ -1,5 +1,6 @@
 #pragma once
 
+#include "arch/omnivoice/weights.h"
 #include "synthesize.h"
 #include "text-frontend.h"
 
@@ -83,5 +84,29 @@ class DurationEstimator {
                                     uint64_t            ref_frames,
                                     float               speaking_rate) const;
 };
+
+// One call from raw request strings to the row-0 text-region ids.
+//
+// Composes: style_text(denoise, language_tag_or_empty, instruct_or_empty)
+//   + "<|text_start|>" + combine_text(ref_text, text) + "<|text_end|>"
+// tokenized via tokenize_wrapped_text, whose special-token table is this
+// family's SpecialTokens baked into the frontend at load time (model.cpp's
+// registration) -- `tokens` is not consulted to build the wrapped string
+// itself, only to check on the way out that the composition's own contract
+// held: the assembled string always closes on the text-end marker.
+//
+// `language_tag`: the core's resolved BCP-47 tag verbatim (en/zh/ja are the
+// ISO codes upstream expects; empty -> literal "None" inside style_text).
+//
+// Returns false only on tokenizer failure (empty text was rejected upstream
+// of here).
+bool assemble_prompt_ids(const TextFrontend &   frontend,
+                         const SpecialTokens &  tokens,
+                         bool                   denoise,
+                         const std::string &    language_tag,
+                         const std::string &    instruct,
+                         const std::string &    ref_text,
+                         const std::string &    text,
+                         std::vector<int32_t> & output);
 
 }  // namespace synth::omnivoice

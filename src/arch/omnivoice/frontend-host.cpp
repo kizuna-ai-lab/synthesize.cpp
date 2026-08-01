@@ -4,6 +4,7 @@
 #include "unicode-ranges.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <iterator>
@@ -581,6 +582,43 @@ uint64_t DurationEstimator::estimate_target_frames(const std::string & text,
         return static_cast<uint64_t>(kConvertible);
     }
     return static_cast<uint64_t>(truncated);
+}
+
+// --------------------------------------------------------------------------
+// assemble_prompt_ids
+// --------------------------------------------------------------------------
+
+bool assemble_prompt_ids(const TextFrontend &   frontend,
+                         const SpecialTokens &  tokens,
+                         bool                   denoise,
+                         const std::string &    language_tag,
+                         const std::string &    instruct,
+                         const std::string &    ref_text,
+                         const std::string &    text,
+                         std::vector<int32_t> & output) {
+    std::string wrapped = style_text(denoise, language_tag, instruct);
+    wrapped += "<|text_start|>";
+    wrapped += combine_text(ref_text, text);
+    wrapped += "<|text_end|>";
+
+    if (tokenize_wrapped_text(frontend, wrapped, output) != SYNTH_OK) {
+        output.clear();
+        return false;
+    }
+    // The composed string always closes on the text-end marker, and nothing
+    // in `wrapped` follows it, so tokenize_wrapped_text -- which matches it
+    // literally -- always emits its id last. build_prompt_grid (model.cpp)
+    // finds the target region by LENGTH alone; a frontend that silently
+    // dropped or reordered the closing marker would corrupt every row
+    // without tripping a status, which is exactly the failure mode this
+    // family's docs warn produces different, still-plausible speech rather
+    // than an error. Debug-only, like the sibling contract assert in
+    // generator-host.cpp: it costs nothing in a release build and documents
+    // the invariant where the concrete id is in scope.
+    assert(!output.empty() && output.back() == int32_t(tokens.text_end) &&
+           "assemble_prompt_ids contract: the wrapped prompt always ends on <|text_end|>");
+    (void) tokens;
+    return true;
 }
 
 }  // namespace synth::omnivoice

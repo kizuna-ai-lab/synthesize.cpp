@@ -17,6 +17,7 @@
 #include "arch/omnivoice/catalog.h"
 #include "arch/omnivoice/codec-host.h"
 #include "arch/omnivoice/codec.h"
+#include "arch/omnivoice/frontend-host.h"
 #include "arch/omnivoice/generator-host.h"
 #include "arch/omnivoice/generator.h"
 #include "arch/omnivoice/omnivoice.h"
@@ -653,6 +654,71 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     // one.
     apply_no_reference_volume(output.audio);
     return SYNTH_OK;
+}
+
+synth_status_t Model::synthesize(const PublicSynthesisParams & params, SynthesisOutput & output) {
+    output                  = SynthesisOutput{};
+    Impl &          impl    = *implementation_;
+    const HParams & hparams = impl.hparams;
+
+    // Auto-voice and voice-design only this task: no Reference Audio and no
+    // free-text instruction until Tasks 14 and 15 thread `params.clone` and
+    // `params.instruct` through here. `ref_text` stays empty throughout --
+    // assemble_prompt_ids's combine_text and DurationEstimator both read an
+    // empty reference as "no reference" and take their own no-reference
+    // branches (auto-voice/voice-design anchors and the no-reference volume
+    // arm respectively).
+    const std::string ref_text;
+    const std::string instruct   = params.instruct != nullptr ? *params.instruct : std::string();
+    const bool        denoise    = false;  // the clone-only marker; Task 14 sets it when cloning
+    const uint64_t    ref_frames = 0;      // Task 14 supplies the reference's own frame count
+
+    // Empty or whitespace-only text is refused before any estimate is made:
+    // upstream never runs a synthesis for a request that names no Linguistic
+    // Input, and DurationEstimator's own floor (`max(1, int(...))`) would
+    // otherwise hand back a one-frame canvas instead of a refusal. Reusing
+    // combine_text's own stripping keeps this check's idea of "empty" the
+    // exact one assemble_prompt_ids is about to apply, rather than a second,
+    // possibly divergent, whitespace classifier.
+    if (combine_text(ref_text, params.text).empty()) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    std::vector<int32_t> prompt_ids;
+    if (!assemble_prompt_ids(*impl.frontend, hparams.tokens, denoise, params.language_tag, instruct, ref_text,
+                             params.text, prompt_ids)) {
+        // The only way assemble_prompt_ids reports false: an input byte the
+        // package's frontend has no id for.
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    const DurationEstimator estimator;
+    const uint64_t          estimated =
+        estimator.estimate_target_frames(params.text, ref_text, ref_frames, float(params.speaking_rate));
+
+    // The request's own limit if it named one, else the package's declared
+    // ceiling -- the same "request limit if nonzero, else package cap" rule
+    // the core applies to `effective_frame_limit`, restated here because this
+    // family settles its canvas length itself rather than being handed one.
+    const uint64_t effective_limit = params.max_output_frames != 0 ?
+                                         std::min(params.max_output_frames, hparams.max_output_frames) :
+                                         hparams.max_output_frames;
+    if (estimated > effective_limit) {
+        // A cap on the estimate, not a target for it: mirrors upstream's
+        // estimator-fixes-canvas semantics rather than silently truncating a
+        // request to whatever the limit allows.
+        return SYNTH_ERR_OUTPUT_LIMIT;
+    }
+
+    SynthesisRequest request;
+    request.prompt_text_ids = std::move(prompt_ids);
+    request.target_frames   = estimated;
+    request.seed            = params.seed;
+    request.threads         = params.threads;
+    // position_temperature and class_temperature stay at SynthesisRequest's
+    // own -1.0f default: the package's own defaults govern, which for the
+    // public path is what makes it sample rather than decode greedily.
+    return run_synthesis(request, output);
 }
 
 synth_status_t Model::decode_codes(const std::vector<int32_t> &      codes,

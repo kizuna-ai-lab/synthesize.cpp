@@ -11,6 +11,7 @@
 #include "omnivoice_small_layout.h"
 
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,18 @@ struct SyntheticPackageOptions {
     // tensor with a fixed, non-constant, reproducible LCG walk instead, so
     // logits genuinely vary across positions and vocabulary entries.
     bool  varied_weights       = false;
+    // The default vocabulary ("tok0".."tok39") is fine for every existing
+    // test: they all drive run_synthesis with pre-tokenized ids and never
+    // ask the frontend to tokenize actual text. Model::synthesize (Task 5)
+    // does ask that -- it assembles a prompt from raw UTF-8 -- and this
+    // family's byte-level frontend can only name a byte the vocabulary
+    // spells out (see bpe-frontend.cpp's byte_to_codepoint: printable ASCII
+    // remaps to itself). Set this to true to spell ids [0, 5) as the literal
+    // characters "N", "o", "n", "e", "a" instead: enough to tokenize the
+    // "None" style_text substitutes for an empty language or instruction,
+    // plus "a"/"aa" test text, without touching the marker ids at [30, 39]
+    // those tests never look up by character.
+    bool  ascii_text_vocab     = false;
 };
 
 // A tiny deterministic LCG -- not synth::NormalRandomStream, which is
@@ -181,10 +194,17 @@ inline bool write_synthetic_package(const std::string & path, const SyntheticPac
     gguf_set_val_u32(gguf, "synthesize.frontend.contract_version", 1);
     if (!options.omit_frontend_vocab) {
         // make_bpe_frontend requires only a non-empty dense table; loading does
-        // not tokenize, so token text is arbitrary here.
-        std::vector<std::string> vocab;
+        // not tokenize, so token text is arbitrary here -- except when
+        // ascii_text_vocab asks for ids that a real tokenize call can
+        // actually resolve (see the option's own comment).
+        static const char * const kAsciiPrefix[] = { "N", "o", "n", "e", "a" };
+        std::vector<std::string>  vocab;
         for (uint32_t index = 0; index < h.generator.text_vocab_size; ++index) {
-            vocab.push_back("tok" + std::to_string(index));
+            if (options.ascii_text_vocab && index < std::size(kAsciiPrefix)) {
+                vocab.emplace_back(kAsciiPrefix[index]);
+            } else {
+                vocab.push_back("tok" + std::to_string(index));
+            }
         }
         set_string_array(gguf, "synthesize.omnivoice.frontend.vocab", vocab);
     }

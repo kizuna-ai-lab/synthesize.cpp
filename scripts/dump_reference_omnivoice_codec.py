@@ -26,8 +26,32 @@ instantiated block shapes -- see reference-encoder.h's own citation of this
 evidence), plus a synthetic (not-HuBERT) semantic tensor and a plain
 F.linear standing in for codec.fc, pinning build_reference_fusion's
 concat+per-frame-Linear arithmetic independently of Task 11's own HuBERT
-fixture (this mode never touches HuBERT or the RVQ -- no codes, no
-quantizer -- both belong to a different task).
+fixture.
+
+`--encoder` mode ALSO now prints two RVQ-encode fixtures (Task 13),
+independent of the DAC-encoder/fusion fixture above (their own LCG streams,
+their own toy widths -- no codes, no quantizer flows through the DAC/fusion
+half at all): the REAL HiggsAudioV2TokenizerResidualVectorQuantization /
+VectorQuantization / EuclideanCodebook classes, run against a
+`types.SimpleNamespace` standing in for HiggsAudioV2TokenizerConfig (that
+config's own `hidden_size`/`num_quantizers` are COMPUTED PROPERTIES derived
+from acoustic+semantic sub-configs and target_bandwidths/frame_rate, not
+plain settable fields, so a stand-in exposing just the four attributes these
+three classes actually read -- hidden_size, codebook_dim, codebook_size,
+num_quantizers, plus frame_rate for ResidualVectorQuantization.__init__'s own
+unconditional read of it -- is the direct way to pin a toy num_quantizers=2
+without fighting the real config's property graph). `main_rvq()`'s first
+fixture is the general-correctness case (2 levels, residual chaining, no
+crafted geometry) with one codebook row pair placed a KNOWN small distance
+apart at a specific (level, frame) to give `narrowest_gap` a real, non-zero,
+non-trivial value to report; its second fixture crafts an EXACT tie (two
+codebook rows equidistant from every frame's projected point, verified
+bit-exact via `torch.equal` before a single value is printed) to pin the
+tie-break rule -- lower id wins. Every weight, not just the expected outputs,
+is printed verbatim rather than LCG-mirrored on the C++ side: unlike the
+DAC/fusion fixture above, part of each RVQ fixture's codebook is hand-placed
+geometry, not a LCG draw, so keeping the whole fixture in one printed,
+verifiable place beats splitting it across a partially-replayed stream.
 
 Usage:
     uv run --project scripts/envs/omnivoice --locked python \
@@ -35,6 +59,7 @@ Usage:
 """
 
 import argparse
+import types
 
 import torch
 import torch.nn.functional as F
@@ -96,13 +121,42 @@ class LcgStream:
         )
 
 
+def format_float(value):
+    """`{value:.9g}f`, guaranteed to contain a decimal point or exponent.
+
+    `f"{10.0:.9g}"` is `"10"` -- a bare integer -- and `"10f"` is not a valid
+    C++ floating literal (no decimal point, no exponent, so the compiler reads
+    it as the integer `10` followed by a stray identifier `f`). Every OTHER
+    fixture in this file draws from an LCG, whose outputs are irrational-
+    looking floats that never hit this edge; `main_rvq`'s hand-placed "far
+    away" codebook rows are deliberately round numbers and would trip it.
+    """
+    text = f"{value:.9g}"
+    if "." not in text and "e" not in text and "E" not in text:
+        text += ".0"
+    return f"{text}f"
+
+
 def dump(name, tensor):
     flat = tensor.reshape(-1).tolist()
     print(f"constexpr float {name}[] = {{")
     for start in range(0, len(flat), 4):
-        row = ", ".join(f"{value:.9g}f" for value in flat[start : start + 4])
+        row = ", ".join(format_float(value) for value in flat[start : start + 4])
         print(f"    {row},")
     print("};")
+
+
+def dump_i32(name, tensor):
+    flat = [int(value) for value in tensor.reshape(-1).tolist()]
+    print(f"constexpr int32_t {name}[] = {{")
+    for start in range(0, len(flat), 4):
+        row = ", ".join(str(value) for value in flat[start : start + 4])
+        print(f"    {row},")
+    print("};")
+
+
+def dump_scalar(name, value):
+    print(f"constexpr float {name} = {format_float(value)};")
 
 
 def main_decoder():
@@ -353,17 +407,222 @@ def main_encoder():
     dump("kExpectedFused", fused.T)
 
 
+# --encoder mode, continued (Task 13): two independent RVQ-encode fixtures.
+# See this file's module docstring for why the real transformers classes run
+# against a `types.SimpleNamespace` stand-in config, and why every weight
+# (not just the expected outputs) is printed verbatim.
+RVQ_CONCAT        = 4
+RVQ_DIM           = 2
+RVQ_CODEBOOK_SIZE = 4
+RVQ_LEVELS        = 2
+RVQ_FRAMES        = 4
+RVQ_SEED          = 20260813
+RVQ_WEIGHT_SCALE, RVQ_WEIGHT_OFFSET = 0.4, 0.0
+RVQ_BIAS_SCALE, RVQ_BIAS_OFFSET     = 0.1, 0.0
+RVQ_CODE_SCALE, RVQ_CODE_OFFSET     = 0.5, 0.0
+
+# The near-tie geometry: level 1's codebook rows 0 and 1 are placed at radii
+# R1 < R2 from frame TARGET_FRAME's own projected point (z1[TARGET_FRAME]),
+# in a direction (+x) orthogonal to nothing in particular -- just a fixed,
+# reproducible offset. For e = z + delta, the EuclideanCodebook dist formula
+# reduces algebraically to exactly -||delta||^2 regardless of z (the z terms
+# cancel), so the two rows' dist values differ by exactly R2^2 - R1^2 up to
+# floating-point rounding in computing z+delta and the dot products -- a
+# real, controllable, non-zero gap, not the accidental ~1e-9 rounding noise a
+# SYMMETRIC z+/-delta placement around the same base would give (verified
+# empirically while building this fixture: a symmetric placement's true
+# mathematical gap is EXACTLY zero for any delta, since the z terms cancel
+# identically for +delta and -delta too -- that construction is fixture 2's
+# job, not this one's).
+RVQ_TARGET_FRAME = 2
+RVQ_NEAR_R1, RVQ_NEAR_R2 = 0.1, 0.11
+
+
+def main_rvq():
+    from transformers.models.higgs_audio_v2_tokenizer.modeling_higgs_audio_v2_tokenizer import (
+        HiggsAudioV2TokenizerResidualVectorQuantization,
+    )
+
+    # --- Fixture 1: general correctness (2 levels, residual chaining) plus a
+    # crafted near-tie at (level 1, frame RVQ_TARGET_FRAME) that ends up the
+    # narrowest gap over the whole grid (asserted below, not assumed). ---
+    config = types.SimpleNamespace(
+        hidden_size=RVQ_CONCAT, codebook_dim=RVQ_DIM, codebook_size=RVQ_CODEBOOK_SIZE,
+        num_quantizers=RVQ_LEVELS, frame_rate=25.0,
+    )
+    rvq = HiggsAudioV2TokenizerResidualVectorQuantization(config).eval()
+    stream = LcgStream(RVQ_SEED)
+    weight = (RVQ_WEIGHT_SCALE, RVQ_WEIGHT_OFFSET)
+    bias = (RVQ_BIAS_SCALE, RVQ_BIAS_OFFSET)
+    code = (RVQ_CODE_SCALE, RVQ_CODE_OFFSET)
+
+    with torch.no_grad():
+        for level in range(RVQ_LEVELS):
+            q = rvq.quantizers[level]
+            q.project_in.weight.copy_(stream.fill(RVQ_DIM * RVQ_CONCAT, *weight).view(RVQ_DIM, RVQ_CONCAT))
+            q.project_in.bias.copy_(stream.fill(RVQ_DIM, *bias))
+            q.project_out.weight.copy_(stream.fill(RVQ_CONCAT * RVQ_DIM, *weight).view(RVQ_CONCAT, RVQ_DIM))
+            q.project_out.bias.copy_(stream.fill(RVQ_CONCAT, *bias))
+            q.codebook.embed.copy_(stream.fill(RVQ_CODEBOOK_SIZE * RVQ_DIM, *code).view(RVQ_CODEBOOK_SIZE, RVQ_DIM))
+
+        # Position-major, feature-minor -- the same convention main_encoder's
+        # own `semantic` draw documents, and what a ggml ne=[RVQ_CONCAT,
+        # RVQ_FRAMES] tensor (channel-fastest) reads as without a transpose.
+        latent_pm = stream.fill(RVQ_FRAMES * RVQ_CONCAT, *weight).view(RVQ_FRAMES, RVQ_CONCAT)
+        embeddings = latent_pm.T.unsqueeze(0)  # [1, RVQ_CONCAT, RVQ_FRAMES]
+
+        # Run level 0 by hand (rather than rvq.encode() directly) so frame
+        # RVQ_TARGET_FRAME's level-1 input (z1) is available to place the
+        # near-tie against before level 1's codebook is finalized.
+        q0 = rvq.quantizers[0]
+        hs0 = q0.project_in(embeddings.permute(0, 2, 1)).reshape(-1, RVQ_DIM)
+        embed0 = q0.codebook.embed.t()
+        scaled0 = hs0.pow(2).sum(1, keepdim=True)
+        dist0 = -(scaled0 - 2 * hs0 @ embed0 + embed0.pow(2).sum(0, keepdim=True))
+        idx0 = dist0.max(dim=-1).indices
+        quant0 = q0.project_out(q0.codebook.decode(idx0.view(1, RVQ_FRAMES))).permute(0, 2, 1)
+        residual = embeddings - quant0
+
+        q1 = rvq.quantizers[1]
+        z1 = q1.project_in(residual.permute(0, 2, 1)).reshape(-1, RVQ_DIM)
+        base = z1[RVQ_TARGET_FRAME].clone()
+        near_tie_codebook = q1.codebook.embed.clone()
+        near_tie_codebook[0] = base + torch.tensor([RVQ_NEAR_R1, 0.0])
+        near_tie_codebook[1] = base + torch.tensor([RVQ_NEAR_R2, 0.0])
+        # Rows 2 and 3 stay clearly far from every frame's z1 (row 2/3's own
+        # random draw already is; overwritten with round literals anyway so
+        # the printed fixture does not depend on readers re-deriving "far
+        # enough" from an LCG draw they cannot see at a glance).
+        near_tie_codebook[2] = torch.tensor([9.5, -9.5])
+        near_tie_codebook[3] = torch.tensor([-9.5, 9.5])
+        q1.codebook.embed.copy_(near_tie_codebook)
+
+        final_indices = rvq.encode(embeddings).squeeze(1)  # [RVQ_LEVELS, RVQ_FRAMES]
+
+        # Independently recompute every (level, frame) gap -- not just the
+        # crafted one -- with the SAME dist formula rvq_encode's own host loop
+        # uses, so kRvqExpectedNarrowestGap is a measured minimum over the
+        # WHOLE grid, not an assumption that nothing else came out smaller.
+        def all_gaps(rvq, embeddings):
+            residual = embeddings.clone()
+            gaps = []
+            for level in range(RVQ_LEVELS):
+                q = rvq.quantizers[level]
+                hs = q.project_in(residual.permute(0, 2, 1)).reshape(-1, RVQ_DIM)
+                embed = q.codebook.embed.t()
+                scaled = hs.pow(2).sum(1, keepdim=True)
+                dist = -(scaled - 2 * hs @ embed + embed.pow(2).sum(0, keepdim=True))
+                sorted_dist, sorted_idx = torch.sort(dist, dim=-1, descending=True)
+                gaps.append(sorted_dist[:, 0] - sorted_dist[:, 1])
+                best = sorted_idx[:, 0]
+                quant = q.project_out(q.codebook.decode(best.view(1, RVQ_FRAMES))).permute(0, 2, 1)
+                residual = residual - quant
+            return torch.stack(gaps)
+
+        gaps = all_gaps(rvq, embeddings)
+        narrowest = gaps.min().item()
+        narrowest_level, narrowest_frame = (index.item() for index in torch.unravel_index(gaps.argmin(), gaps.shape))
+        assert torch.isfinite(gaps).all(), "a non-finite gap means a degenerate codebook row"
+        # Comfortably inside the crafted near-tie's own R2^2-R1^2 = 0.0021
+        # neighbourhood and comfortably below every OTHER gap in this grid
+        # (measured >= 0.0769 elsewhere) -- see the module-level comment above
+        # RVQ_TARGET_FRAME for why this is not the accidental near-zero a
+        # symmetric placement would give.
+        assert 1e-4 < narrowest < 1e-2, f"narrowest gap {narrowest} is not the crafted near-tie"
+        assert (narrowest_level, narrowest_frame) == (1, RVQ_TARGET_FRAME), (
+            f"narrowest gap landed at level {narrowest_level} frame {narrowest_frame}, "
+            f"not the crafted (1, {RVQ_TARGET_FRAME})"
+        )
+
+        print(f"// --rvq fixture 1 (primary + near-tie): indices {final_indices.tolist()}")
+        print(f"// narrowest gap {narrowest:.9g} at level {narrowest_level} frame {narrowest_frame}")
+        dump("kRvqLatent", latent_pm)
+        for level in range(RVQ_LEVELS):
+            q = rvq.quantizers[level]
+            dump(f"kRvqProjectInWeight{level}", q.project_in.weight)
+            dump(f"kRvqProjectInBias{level}", q.project_in.bias)
+            dump(f"kRvqProjectOutWeight{level}", q.project_out.weight)
+            dump(f"kRvqProjectOutBias{level}", q.project_out.bias)
+            dump(f"kRvqCodebook{level}", q.codebook.embed)
+        dump_i32("kRvqExpectedTokens", final_indices)
+        dump_scalar("kRvqExpectedNarrowestGap", narrowest)
+
+    # --- Fixture 2: a crafted EXACT tie -- two codebook rows equidistant from
+    # every frame's projected point, lower id wins, gap == 0.0 to the bit. A
+    # single level: the tie-break rule is level-independent, and a second
+    # level would only restate fixture 1's own residual-chaining coverage. ---
+    print()
+    tie_seed = RVQ_SEED + 1  # a distinct stream; the tie's geometry is
+    #                          independent of fixture 1's weights.
+    tie_stream = LcgStream(tie_seed)
+    tie_config = types.SimpleNamespace(
+        hidden_size=RVQ_CONCAT, codebook_dim=RVQ_DIM, codebook_size=RVQ_CODEBOOK_SIZE,
+        num_quantizers=1, frame_rate=25.0,
+    )
+    tie_rvq = HiggsAudioV2TokenizerResidualVectorQuantization(tie_config).eval()
+    tie_frames = 2
+
+    with torch.no_grad():
+        q = tie_rvq.quantizers[0]
+        # project_in.weight is FORCED to zero (not drawn from the LCG at all,
+        # deliberately skipping past those `RVQ_DIM * RVQ_CONCAT` draws the
+        # C++ side must skip too): z = project_in(x) = 0@x + bias = bias for
+        # EVERY frame regardless of x, which is what lets codebook rows 0/1
+        # below be placed as a literal, base-independent exact tie rather
+        # than one derived from (and therefore only as exact as) a computed
+        # projection.
+        q.project_in.weight.zero_()
+        q.project_in.bias.copy_(torch.tensor([0.5, -0.25]))
+        q.project_out.weight.copy_(tie_stream.fill(RVQ_CONCAT * RVQ_DIM, *weight).view(RVQ_CONCAT, RVQ_DIM))
+        q.project_out.bias.copy_(tie_stream.fill(RVQ_CONCAT, *bias))
+        # Row 0 and row 1 sit at +-0.25 from bias=[0.5,-0.25] along the first
+        # axis only -- every value here is an exact binary fraction (0.75,
+        # 0.25, -0.25 are all exactly representable in float32), so `z - e0`
+        # and `z - e1` round to exactly -0.25 and +0.25 with no cancellation
+        # error, and dist(e0) == dist(e1) to the bit (asserted below, not
+        # assumed). Rows 2/3 are far enough that they never contend.
+        codebook = torch.tensor([[0.75, -0.25], [0.25, -0.25], [9.5, 9.5], [-9.5, 9.5]])
+        q.codebook.embed.copy_(codebook)
+
+        tie_latent_pm = tie_stream.fill(tie_frames * RVQ_CONCAT, *weight).view(tie_frames, RVQ_CONCAT)
+        tie_embeddings = tie_latent_pm.T.unsqueeze(0)
+
+        hs = q.project_in(tie_embeddings.permute(0, 2, 1)).reshape(-1, RVQ_DIM)
+        embed = q.codebook.embed.t()
+        scaled = hs.pow(2).sum(1, keepdim=True)
+        dist = -(scaled - 2 * hs @ embed + embed.pow(2).sum(0, keepdim=True))
+        assert torch.equal(dist[:, 0], dist[:, 1]), (
+            f"the crafted tie is not bit-exact: dist[:,0]={dist[:, 0].tolist()} "
+            f"dist[:,1]={dist[:, 1].tolist()}"
+        )
+
+        tie_indices = tie_rvq.encode(tie_embeddings).squeeze(1)
+        assert torch.equal(tie_indices[0], torch.zeros(tie_frames, dtype=tie_indices.dtype)), (
+            f"the tie-break rule should pick the lower id (0) at every frame, got {tie_indices.tolist()}"
+        )
+
+        print(f"// --rvq fixture 2 (exact tie): indices {tie_indices.tolist()}, gap 0.0 exactly")
+        dump("kRvqTieLatent", tie_latent_pm)
+        dump("kRvqTieProjectInBias", q.project_in.bias)
+        dump("kRvqTieProjectOutWeight", q.project_out.weight)
+        dump("kRvqTieProjectOutBias", q.project_out.bias)
+        dump("kRvqTieCodebook", q.codebook.embed)
+        dump_i32("kRvqTieExpectedTokens", tie_indices)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     parser.add_argument(
         "--encoder", action="store_true",
         help="dump the acoustic encoder + reference fusion miniature fixture "
+             "plus the two RVQ-encode fixtures "
              "(tests/omnivoice_reference_encoder_test.cpp) instead of the "
              "decoder's (tests/omnivoice_codec_test.cpp)",
     )
     arguments = parser.parse_args()
     if arguments.encoder:
         main_encoder()
+        main_rvq()
     else:
         main_decoder()
 

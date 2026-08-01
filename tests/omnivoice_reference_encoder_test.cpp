@@ -38,6 +38,7 @@
 // 64-bit LCG in the same order, so only the outputs are pinned.
 
 #include "arch/omnivoice/catalog.h"
+#include "arch/omnivoice/reference-encoder-host.h"
 #include "arch/omnivoice/reference-encoder.h"
 #include "arch/omnivoice/weights.h"
 #include "ggml-alloc.h"
@@ -963,11 +964,345 @@ int check_acoustic_rejections() {
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Task 13: the host-side RVQ encode (reference-encoder-host.h's rvq_encode),
+// compared against scripts/dump_reference_omnivoice_codec.py's `--encoder`
+// mode RVQ section -- the REAL HiggsAudioV2TokenizerResidualVectorQuantization/
+// VectorQuantization/EuclideanCodebook classes, run against a small
+// `types.SimpleNamespace` stand-in config (see that file's own comment for
+// why). Two independent fixtures, unlike the acoustic/semantic sections
+// above: every weight here is printed VERBATIM rather than LCG-mirrored on
+// this side, because part of each fixture's codebook is hand-placed geometry
+// (a near-tie / an exact tie), not a plain LCG draw -- see the dumper's own
+// module-level comment for the reasoning.
+//
+// Fixture 1 is the general-correctness case: 2 levels (the residual chain
+// upstream's own ResidualVectorQuantization.encode runs), CONCAT=4, DIM=2,
+// CODEBOOK_SIZE=4, FRAMES=4, with level 1's codebook rows 0/1 placed a KNOWN
+// small distance (R2^2 - R1^2 = 0.0021) from frame 2's own projected point --
+// the narrowest gap over the WHOLE grid (asserted by the dumper itself before
+// printing, not merely assumed here).
+//
+// Fixture 2 is a crafted EXACT tie: 1 level, the SAME CONCAT/DIM/CODEBOOK_SIZE,
+// project_in.weight forced to zero (skipped, not drawn from the LCG -- see
+// the fixture builder's own comment) so project_in becomes a constant
+// (=bias) regardless of the frame, and codebook rows 0/1 placed at +-0.25
+// from that constant along exact binary fractions -- verified bit-exact
+// (torch.equal) by the dumper before a single value was printed. The
+// tie-break rule (lower id wins) is what this fixture exists to pin.
+
+constexpr uint32_t kRvqConcat       = 4;
+constexpr uint32_t kRvqDim          = 2;
+constexpr uint32_t kRvqCodebookSize = 4;
+constexpr uint32_t kRvqLevels       = 2;
+constexpr uint32_t kRvqFrames       = 4;
+constexpr uint32_t kRvqTieFrames    = 2;
+
+// The narrowest-gap comparison's own tolerance: at this miniature scale
+// (dim 2, concat 4) every dot product is 2-4 terms wide, far too small for a
+// reduction-order difference to matter -- this bounds ordinary float32
+// rounding across the handful of operations rvq_encode's own host loop
+// performs, not an accumulation-order uncertainty the way the real 64/1024-
+// wide reduction at Task 13's real-scale gate carries.
+constexpr float kRvqGapTolerance = 1e-5f;
+
+// values from `scripts/dump_reference_omnivoice_codec.py --encoder`'s RVQ
+// section, pasted verbatim (see this section's own top comment for why
+// weights are carried here rather than LCG-mirrored).
+constexpr float kRvqLatent[] = {
+    0.331333637f, 0.167058423f,  0.246854544f, -0.0170092098f, -0.0700741783f, 0.153625056f,
+    0.164575338f, -0.088275291f, 0.206975222f, -0.0642636269f, 0.371233374f,   0.0108558657f,
+    0.263777107f, -0.260244608f, 0.310748398f, -0.359967053f,
+};
+constexpr float kRvqProjectInWeight0[] = {
+    -0.385859966f, -0.0175449364f, -0.0808310509f, -0.0118323322f,
+    0.364188343f,  0.332585961f,   0.2642048f,     -0.0633210167f,
+};
+constexpr float kRvqProjectInBias0[] = {
+    -0.0552100763f,
+    -0.0267584082f,
+};
+constexpr float kRvqProjectOutWeight0[] = {
+    -0.386529297f, -0.123430967f, 0.0661906749f, -0.128744513f,
+    0.264158309f,  -0.314968169f, -0.259997308f, -0.285170615f,
+};
+constexpr float kRvqProjectOutBias0[] = {
+    -0.0321759582f,
+    -0.0985575169f,
+    -0.0325885899f,
+    -0.07223171f,
+};
+constexpr float kRvqCodebook0[] = {
+    0.407413065f, 0.448832214f, -0.346608877f, -0.185262442f, -0.377390027f, -0.286222219f, 0.404260993f, 0.477048457f,
+};
+constexpr float kRvqProjectInWeight1[] = {
+    0.118759826f, -0.257956088f, -0.10501866f, 0.395969808f, 0.0135128498f, -0.191459179f, -0.368743479f, -0.107158184f,
+};
+constexpr float kRvqProjectInBias1[] = {
+    0.0374228954f,
+    0.000108706954f,
+};
+constexpr float kRvqProjectOutWeight1[] = {
+    0.186664626f, 0.35291782f, -0.169734672f, -0.19550404f, -0.241514012f, 0.255845129f, 0.0961906463f, 0.0780927688f,
+};
+constexpr float kRvqProjectOutBias1[] = {
+    0.0520312674f,
+    -0.0163932443f,
+    0.0409584865f,
+    0.0334344618f,
+};
+constexpr float kRvqCodebook1[] = {
+    0.0689866841f, -0.159908116f, 0.078986682f, -0.159908116f, 9.5f, -9.5f, -9.5f, 9.5f,
+};
+constexpr int32_t kRvqExpectedTokens[] = {
+    1, 1, 1, 1, 0, 0, 0, 0,
+};
+constexpr float kRvqExpectedNarrowestGap = 0.00210000202f;
+
+constexpr float kRvqTieLatent[] = {
+    -0.145774454f, 0.0470499992f, -0.271406561f, 0.126806498f, -0.330947638f, 0.192781597f, 0.199083522f, 0.239999339f,
+};
+// project_in.weight is FORCED to zero in the fixture (not printed -- built
+// with std::vector<float>(kRvqConcat * kRvqDim, 0.0f) below).
+constexpr float kRvqTieProjectInBias[] = {
+    0.5f,
+    -0.25f,
+};
+constexpr float kRvqTieProjectOutWeight[] = {
+    -0.109859511f, 0.308622032f, -0.046402216f, -0.0265145786f,
+    -0.106354095f, 0.284307241f, -0.155935243f, -0.295769125f,
+};
+constexpr float kRvqTieProjectOutBias[] = {
+    0.0161764268f,
+    -0.0763859302f,
+    -0.0741397142f,
+    0.00325514073f,
+};
+constexpr float kRvqTieCodebook[] = {
+    0.75f, -0.25f, 0.25f, -0.25f, 9.5f, 9.5f, -9.5f, 9.5f,
+};
+constexpr int32_t kRvqTieExpectedTokens[] = {
+    0,
+    0,
+};
+
+struct RvqFixture {
+    ggml_backend_t                                     backend = nullptr;
+    Context                                            persistent;
+    ggml_backend_buffer_t                              buffer = nullptr;
+    std::vector<synth::omnivoice::RvqQuantizerWeights> quantizers;
+
+    RvqFixture()                               = default;
+    RvqFixture(const RvqFixture &)             = delete;
+    RvqFixture & operator=(const RvqFixture &) = delete;
+
+    ~RvqFixture() {
+        if (buffer != nullptr) {
+            ggml_backend_buffer_free(buffer);
+        }
+        if (backend != nullptr) {
+            ggml_backend_free(backend);
+        }
+    }
+};
+
+// Allocates `levels` quantizer levels (input_proj/output_proj/codebook,
+// every tensor real backend memory -- rvq_encode pulls their data with
+// ggml_backend_tensor_get, unlike the graph builders elsewhere in this file
+// which only read shapes at construction time) sized kRvqConcat/kRvqDim/
+// kRvqCodebookSize, and sets each from `values`, one quantizer's worth per
+// entry, in {input_weight, input_bias, output_weight, output_bias, codebook}
+// order.
+struct RvqLevelValues {
+    const float * input_weight;
+    const float * input_bias;
+    const float * output_weight;
+    const float * output_bias;
+    const float * codebook;
+};
+
+bool build_rvq_fixture(ggml_backend_dev_t device, size_t levels, const RvqLevelValues * values, RvqFixture & fixture) {
+    fixture.backend = ggml_backend_dev_init(device, nullptr);
+    if (fixture.backend == nullptr) {
+        return false;
+    }
+    fixture.persistent  = make_context(ggml_tensor_overhead() * (5 * levels + 8));
+    ggml_context * pctx = fixture.persistent.get();
+    if (pctx == nullptr) {
+        return false;
+    }
+
+    fixture.quantizers.resize(levels);
+    for (synth::omnivoice::RvqQuantizerWeights & quantizer : fixture.quantizers) {
+        quantizer.input_proj.weight  = ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kRvqConcat, kRvqDim);
+        quantizer.input_proj.bias    = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kRvqDim);
+        quantizer.output_proj.weight = ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kRvqDim, kRvqConcat);
+        quantizer.output_proj.bias   = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kRvqConcat);
+        quantizer.codebook           = ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kRvqDim, kRvqCodebookSize);
+    }
+    fixture.buffer = ggml_backend_alloc_ctx_tensors(pctx, fixture.backend);
+    if (fixture.buffer == nullptr) {
+        return false;
+    }
+
+    for (size_t level = 0; level < levels; ++level) {
+        synth::omnivoice::RvqQuantizerWeights & quantizer = fixture.quantizers[level];
+        const RvqLevelValues &                  value     = values[level];
+        ggml_backend_tensor_set(quantizer.input_proj.weight, value.input_weight, 0,
+                                ggml_nbytes(quantizer.input_proj.weight));
+        ggml_backend_tensor_set(quantizer.input_proj.bias, value.input_bias, 0, ggml_nbytes(quantizer.input_proj.bias));
+        ggml_backend_tensor_set(quantizer.output_proj.weight, value.output_weight, 0,
+                                ggml_nbytes(quantizer.output_proj.weight));
+        ggml_backend_tensor_set(quantizer.output_proj.bias, value.output_bias, 0,
+                                ggml_nbytes(quantizer.output_proj.bias));
+        ggml_backend_tensor_set(quantizer.codebook, value.codebook, 0, ggml_nbytes(quantizer.codebook));
+    }
+    return true;
+}
+
+// Fixture 1: general correctness plus the near-tie margin measurement.
+bool run_rvq_case(ggml_backend_dev_t device) {
+    const RvqLevelValues values[kRvqLevels] = {
+        { kRvqProjectInWeight0, kRvqProjectInBias0, kRvqProjectOutWeight0, kRvqProjectOutBias0, kRvqCodebook0 },
+        { kRvqProjectInWeight1, kRvqProjectInBias1, kRvqProjectOutWeight1, kRvqProjectOutBias1, kRvqCodebook1 },
+    };
+    RvqFixture fixture;
+    if (!build_rvq_fixture(device, kRvqLevels, values, fixture)) {
+        std::printf("  rvq fixture 1: allocation failed\n");
+        return false;
+    }
+
+    const std::vector<float> latent(std::begin(kRvqLatent), std::end(kRvqLatent));
+    std::vector<int32_t>     tokens;
+    float                    narrowest_gap = 0.0f;
+    if (!synth::omnivoice::rvq_encode(fixture.quantizers, latent, kRvqFrames, tokens, &narrowest_gap)) {
+        std::printf("  rvq fixture 1: rvq_encode refused to run\n");
+        return false;
+    }
+    if (tokens.size() != std::size(kRvqExpectedTokens)) {
+        std::printf("  rvq fixture 1: expected %zu tokens, got %zu\n", std::size(kRvqExpectedTokens), tokens.size());
+        return false;
+    }
+    bool exact = true;
+    for (size_t index = 0; index < tokens.size(); ++index) {
+        if (tokens[index] != kRvqExpectedTokens[index]) {
+            std::printf("  rvq fixture 1: token %zu got %d want %d\n", index, tokens[index], kRvqExpectedTokens[index]);
+            exact = false;
+        }
+    }
+    const float gap_diff = std::fabs(narrowest_gap - kRvqExpectedNarrowestGap);
+    std::printf("  rvq fixture 1: tokens %s, narrowest_gap %.9g (expected %.9g, diff %.3g)\n",
+                exact ? "exact" : "MISMATCH", double(narrowest_gap), double(kRvqExpectedNarrowestGap),
+                double(gap_diff));
+    return exact && gap_diff < kRvqGapTolerance;
+}
+
+// Fixture 2: the crafted exact tie -- lower id wins, gap == 0.
+bool run_rvq_tie_case(ggml_backend_dev_t device) {
+    std::vector<float>   zero_weight(size_t(kRvqConcat) * kRvqDim, 0.0f);
+    const RvqLevelValues values[1] = {
+        { zero_weight.data(), kRvqTieProjectInBias, kRvqTieProjectOutWeight, kRvqTieProjectOutBias, kRvqTieCodebook },
+    };
+    RvqFixture fixture;
+    if (!build_rvq_fixture(device, 1, values, fixture)) {
+        std::printf("  rvq fixture 2 (tie): allocation failed\n");
+        return false;
+    }
+
+    const std::vector<float> latent(std::begin(kRvqTieLatent), std::end(kRvqTieLatent));
+    std::vector<int32_t>     tokens;
+    float                    narrowest_gap = -1.0f;
+    if (!synth::omnivoice::rvq_encode(fixture.quantizers, latent, kRvqTieFrames, tokens, &narrowest_gap)) {
+        std::printf("  rvq fixture 2 (tie): rvq_encode refused to run\n");
+        return false;
+    }
+    if (tokens.size() != std::size(kRvqTieExpectedTokens)) {
+        std::printf("  rvq fixture 2 (tie): expected %zu tokens, got %zu\n", std::size(kRvqTieExpectedTokens),
+                    tokens.size());
+        return false;
+    }
+    bool exact = true;
+    for (size_t index = 0; index < tokens.size(); ++index) {
+        if (tokens[index] != kRvqTieExpectedTokens[index]) {
+            std::printf("  rvq fixture 2 (tie): token %zu got %d want %d (lower id must win the tie)\n", index,
+                        tokens[index], kRvqTieExpectedTokens[index]);
+            exact = false;
+        }
+    }
+    std::printf("  rvq fixture 2 (tie): tokens %s, narrowest_gap %.9g (expected 0)\n", exact ? "exact" : "MISMATCH",
+                double(narrowest_gap));
+    // The crafted tie is bit-exact in the Python fixture (torch.equal,
+    // asserted at dump time); this host loop's own float32 arithmetic over
+    // the identical values is held to the same bar, not a tolerance.
+    return exact && narrowest_gap == 0.0f;
+}
+
+// A shape rvq_encode cannot serve is refused (false) rather than crashing on
+// an unallocated tensor's data pointer -- every case below is caught by the
+// shape-validation loop BEFORE rvq_encode ever calls
+// ggml_backend_tensor_get, so none of these tensors need real backend memory,
+// the same no-real-buffer style check_rejections/check_acoustic_rejections
+// use for their own shape-only checks.
+int check_rvq_rejections() {
+    Context        context = make_graph_context();
+    ggml_context * ctx     = context.get();
+    SYNTH_TEST_CHECK(ctx != nullptr);
+
+    auto make_quantizer = [&](int64_t concat, int64_t dim, int64_t codebook_size) {
+        synth::omnivoice::RvqQuantizerWeights quantizer;
+        quantizer.input_proj.weight  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, concat, dim);
+        quantizer.input_proj.bias    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, dim);
+        quantizer.output_proj.weight = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, dim, concat);
+        quantizer.output_proj.bias   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, concat);
+        quantizer.codebook           = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, dim, codebook_size);
+        return quantizer;
+    };
+
+    std::vector<int32_t> tokens;
+
+    // Empty quantizers, and frames == 0: both refused before any per-level
+    // shape is even inspected.
+    SYNTH_TEST_CHECK(!synth::omnivoice::rvq_encode({}, {}, kRvqFrames, tokens));
+    std::vector<synth::omnivoice::RvqQuantizerWeights> one = { make_quantizer(kRvqConcat, kRvqDim, kRvqCodebookSize) };
+    SYNTH_TEST_CHECK(!synth::omnivoice::rvq_encode(one, std::vector<float>(kRvqConcat * kRvqFrames, 0.0f), 0, tokens));
+
+    // An unresolved tensor.
+    std::vector<synth::omnivoice::RvqQuantizerWeights> unbound = { make_quantizer(kRvqConcat, kRvqDim,
+                                                                                  kRvqCodebookSize) };
+    unbound[0].input_proj.bias                                 = nullptr;
+    SYNTH_TEST_CHECK(
+        !synth::omnivoice::rvq_encode(unbound, std::vector<float>(kRvqConcat * kRvqFrames, 0.0f), kRvqFrames, tokens));
+
+    // A codebook narrower than 2 rows has no second candidate for a margin.
+    std::vector<synth::omnivoice::RvqQuantizerWeights> narrow = { make_quantizer(kRvqConcat, kRvqDim, 1) };
+    SYNTH_TEST_CHECK(
+        !synth::omnivoice::rvq_encode(narrow, std::vector<float>(kRvqConcat * kRvqFrames, 0.0f), kRvqFrames, tokens));
+
+    // Two levels whose own `concat` (input_proj's in-width) disagree --
+    // exactly the "resolved inconsistently" case codec_rvq_decode's own
+    // sibling check refuses for the decode direction.
+    std::vector<synth::omnivoice::RvqQuantizerWeights> mismatched = {
+        make_quantizer(kRvqConcat, kRvqDim, kRvqCodebookSize),
+        make_quantizer(kRvqConcat + 1, kRvqDim, kRvqCodebookSize),
+    };
+    SYNTH_TEST_CHECK(!synth::omnivoice::rvq_encode(mismatched, std::vector<float>((kRvqConcat + 1) * kRvqFrames, 0.0f),
+                                                   kRvqFrames, tokens));
+
+    // A latent whose size disagrees with concat * frames.
+    SYNTH_TEST_CHECK(
+        !synth::omnivoice::rvq_encode(one, std::vector<float>(kRvqConcat * kRvqFrames - 1, 0.0f), kRvqFrames, tokens));
+
+    // Every rejection above leaves `tokens` cleared.
+    SYNTH_TEST_CHECK(tokens.empty());
+    return 0;
+}
+
 }  // namespace
 
 int main() {
     SYNTH_TEST_CHECK(check_rejections() == 0);
     SYNTH_TEST_CHECK(check_acoustic_rejections() == 0);
+    SYNTH_TEST_CHECK(check_rvq_rejections() == 0);
 
     const size_t device_count = ggml_backend_dev_count();
     SYNTH_TEST_CHECK(device_count > 0);
@@ -999,6 +1334,9 @@ int main() {
         std::printf("  acoustic max_diff %.3g (tolerance %.3g)\n", double(acoustic_max_diff),
                     double(acoustic_tolerance));
         SYNTH_TEST_CHECK(acoustic_max_diff < acoustic_tolerance);
+
+        SYNTH_TEST_CHECK(run_rvq_case(device));
+        SYNTH_TEST_CHECK(run_rvq_tie_case(device));
         ++exercised;
     }
     SYNTH_TEST_CHECK(exercised > 0);

@@ -794,42 +794,76 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> &      codes,
     return SYNTH_OK;
 }
 
-synth_status_t Model::encode_reference(const std::vector<float> & pcm_24k,
-                                       int                        threads,
-                                       std::vector<float> &       semantic_mean,
-                                       std::vector<float> &       fused_latent,
-                                       std::vector<float> *       out_semantic_encoder) {
-    semantic_mean.clear();
-    fused_latent.clear();
-    if (out_semantic_encoder != nullptr) {
-        out_semantic_encoder->clear();
-    }
-    Impl & impl = *implementation_;
+synth_status_t Model::encode_reference(const std::vector<float> & pcm_24k, int threads, ReferenceEncoding & output) {
+    output                  = ReferenceEncoding{};
+    Impl &          impl    = *implementation_;
+    const HParams & hparams = impl.hparams;
 
-    std::vector<float> pcm_16k;
-    if (!resample_24k_to_16k(pcm_24k, pcm_16k)) {
+    if (pcm_24k.empty()) {
         return SYNTH_ERR_INVALID_ARG;
     }
-    const int          resolved_threads = threads > 0 ? threads : default_synthesis_threads();
-    // The fusion's own semantic-side input is build_semantic_branch's PRIMARY
-    // return value (out_semantic_encoder), not semantic_mean -- this local
-    // always asks for it regardless of whether the caller wants it reported
-    // back, since run_acoustic_and_fuse below cannot run without it.
+
+    // Step 1: hop-clip (tail-clip to a whole number of hop_length-sample
+    // frames) then the quiet-reference boost, both in place -- see
+    // clip_and_boost_reference's own header comment for the citation on why
+    // this function measures ref_rms on the clipped segment rather than
+    // upstream's own pre-trim measurement point.
+    std::vector<float> clipped = pcm_24k;
+    clip_and_boost_reference(clipped, hparams.codec.hop_length, output.ref_rms);
+    if (clipped.empty()) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // Step 2: resample to 16 kHz for the semantic branch.
+    std::vector<float> pcm_16k;
+    if (!resample_24k_to_16k(clipped, pcm_16k)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    const int resolved_threads = threads > 0 ? threads : default_synthesis_threads();
+
+    // Step 3: the HuBERT semantic branch. The fusion's own semantic-side
+    // input is build_semantic_branch's PRIMARY return value
+    // (semantic_encoder_output), not semantic_mean, so this always asks for
+    // it regardless of whether a caller reads output.semantic_encoder_output
+    // back.
     std::vector<float> semantic_encoder_output;
-    synth_status_t     status = run_semantic_branch(*impl.backend_plan, impl.weights, impl.hparams, pcm_16k,
-                                                    resolved_threads, semantic_mean, &semantic_encoder_output);
+    synth_status_t status = run_semantic_branch(*impl.backend_plan, impl.weights, hparams, pcm_16k, resolved_threads,
+                                                output.semantic_mean, &semantic_encoder_output);
     if (status != SYNTH_OK) {
         return status;
     }
-    if (out_semantic_encoder != nullptr) {
-        *out_semantic_encoder = semantic_encoder_output;
+
+    // Step 4: the DAC acoustic branch plus reference fusion, over the
+    // clipped+boosted 24 kHz segment -- NOT the original `pcm_24k` -- so the
+    // acoustic and semantic branches see the identical waveform samples the
+    // RVQ encode below is a function of.
+    status = run_acoustic_and_fuse(*impl.backend_plan, impl.weights, hparams, clipped, semantic_encoder_output,
+                                   resolved_threads, output.fused_latent);
+    if (status != SYNTH_OK) {
+        return status;
     }
-    // The acoustic branch reads the ORIGINAL 24 kHz waveform, not the
-    // resampled one run_semantic_branch consumed -- the two branches sample
-    // the same reference audio at different rates by design (24 kHz for the
-    // codec's own hop, 16 kHz for HuBERT).
-    return run_acoustic_and_fuse(*impl.backend_plan, impl.weights, impl.hparams, pcm_24k, semantic_encoder_output,
-                                 resolved_threads, fused_latent);
+    output.pcm_16k                 = std::move(pcm_16k);
+    output.semantic_encoder_output = std::move(semantic_encoder_output);
+
+    // Step 5: RVQ nearest-neighbour encode. `concat` is the RVQ's own input
+    // width (codec.hidden_size + semantic.hidden_size, catalog.cpp's own
+    // concat_width -- duplicated here as a one-line formula rather than
+    // exposed from that file's anonymous namespace) and divides
+    // fused_latent's own size exactly for any hop-aligned input, matching
+    // build_reference_fusion's own contract.
+    const uint64_t concat = uint64_t(hparams.codec.hidden_size) + hparams.semantic.hidden_size;
+    if (concat == 0 || output.fused_latent.size() % concat != 0) {
+        return SYNTH_ERR_INTERNAL;
+    }
+    output.frames = output.fused_latent.size() / concat;
+
+    if (!rvq_encode(impl.weights.quantizers, output.fused_latent, output.frames, output.tokens, &output.narrowest_gap,
+                    &output.gaps)) {
+        output.tokens.clear();
+        return SYNTH_ERR_INTERNAL;
+    }
+    output.margin_measured = true;
+    return SYNTH_OK;
 }
 
 synth_status_t Model::load_cpu(const std::string & path, std::unique_ptr<Model> & output) {

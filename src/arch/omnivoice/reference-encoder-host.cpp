@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 
 namespace synth::omnivoice {
 
@@ -362,6 +363,238 @@ synth_status_t run_acoustic_and_fuse(const BackendPlan &        plan,
     ggml_backend_buffer_free(input_buffer);
     ggml_free(input_context);
     return status;
+}
+
+float reference_rms(const std::vector<float> & pcm) {
+    if (pcm.empty()) {
+        return 0.0f;
+    }
+    // Neumaier compensated summation over pcm's squared float32 values,
+    // widened to double for the running sum -- DurationEstimator::total_weight's
+    // own technique (frontend-host.cpp), cited in this function's header
+    // comment for why it is the closest a plain host loop gets to numpy's own
+    // float32 pairwise `np.mean` without reimplementing that algorithm.
+    double total      = 0.0;
+    double correction = 0.0;
+    for (float sample : pcm) {
+        const double value = double(sample) * double(sample);
+        const double sum   = total + value;
+        if (std::fabs(total) >= std::fabs(value)) {
+            correction += (total - sum) + value;
+        } else {
+            correction += (value - sum) + total;
+        }
+        total = sum;
+    }
+    const double mean = (total + correction) / double(pcm.size());
+    return float(std::sqrt(mean));
+}
+
+void clip_and_boost_reference(std::vector<float> & pcm, uint32_t hop_length, float & ref_rms) {
+    ref_rms = 0.0f;
+    if (hop_length == 0 || pcm.size() < size_t(hop_length)) {
+        pcm.clear();
+        return;
+    }
+    // Tail-clip to a whole number of hop_length-sample frames -- upstream's
+    // own `clip_size = ref_wav.shape[-1] % chunk_size; ref_wav[:, :-clip_size]`
+    // (omnivoice/models/omnivoice.py:816-818), transcribed as a resize rather
+    // than a negative-index slice.
+    const size_t clipped_length = pcm.size() - (pcm.size() % size_t(hop_length));
+    pcm.resize(clipped_length);
+
+    ref_rms = reference_rms(pcm);
+    // `0 < ref_rms < 0.1` scales up to rms 0.1; ref_rms itself keeps the
+    // pre-boost value already computed above. `ref_rms == 0` (a genuinely
+    // silent clipped segment) takes neither arm, matching upstream's own
+    // `if 0 < ref_rms < 0.1` guard -- Task 14's profile-creation seam is what
+    // rejects that case, not this function.
+    if (ref_rms > 0.0f && ref_rms < 0.1f) {
+        const float scale = 0.1f / ref_rms;
+        for (float & sample : pcm) {
+            sample *= scale;
+        }
+    }
+}
+
+bool rvq_encode(const std::vector<RvqQuantizerWeights> & quantizers,
+                const std::vector<float> &               latent,
+                uint64_t                                 frames,
+                std::vector<int32_t> &                   tokens,
+                float *                                  narrowest_gap,
+                std::vector<float> *                     out_gaps) {
+    tokens.clear();
+    if (out_gaps != nullptr) {
+        out_gaps->clear();
+    }
+    if (narrowest_gap != nullptr) {
+        *narrowest_gap = 0.0f;
+    }
+    if (quantizers.empty() || frames == 0) {
+        return false;
+    }
+
+    // Every level must resolve its full triple and agree on `concat`
+    // (input_proj's own in-width) before a single tensor is pulled to host --
+    // codec_rvq_decode's own "check every level before touching data" rule.
+    int64_t concat = -1;
+    for (const RvqQuantizerWeights & quantizer : quantizers) {
+        if (quantizer.input_proj.weight == nullptr || quantizer.input_proj.bias == nullptr ||
+            quantizer.output_proj.weight == nullptr || quantizer.output_proj.bias == nullptr ||
+            quantizer.codebook == nullptr || !ggml_is_contiguous(quantizer.input_proj.weight) ||
+            !ggml_is_contiguous(quantizer.input_proj.bias) || !ggml_is_contiguous(quantizer.output_proj.weight) ||
+            !ggml_is_contiguous(quantizer.output_proj.bias) || !ggml_is_contiguous(quantizer.codebook)) {
+            return false;
+        }
+        const int64_t level_concat = quantizer.input_proj.weight->ne[0];
+        const int64_t level_dim    = quantizer.input_proj.weight->ne[1];
+        if (level_concat <= 0 || level_dim <= 0 || quantizer.input_proj.bias->ne[0] != level_dim ||
+            quantizer.output_proj.weight->ne[0] != level_dim || quantizer.output_proj.weight->ne[1] != level_concat ||
+            quantizer.output_proj.bias->ne[0] != level_concat || quantizer.codebook->ne[0] != level_dim ||
+            quantizer.codebook->ne[1] < 2) {
+            return false;
+        }
+        if (concat < 0) {
+            concat = level_concat;
+        } else if (concat != level_concat) {
+            return false;
+        }
+    }
+    if (concat <= 0 || latent.size() != size_t(concat) * size_t(frames)) {
+        return false;
+    }
+
+    const size_t levels = quantizers.size();
+    tokens.assign(levels * size_t(frames), 0);
+    if (out_gaps != nullptr) {
+        out_gaps->assign(levels * size_t(frames), 0.0f);
+    }
+
+    // Frame-major, channel-fastest -- run_acoustic_and_fuse's own
+    // `fused_latent` layout exactly -- mutated in place as each level's
+    // dequant is subtracted, so the next level's project_in reads the
+    // residual rather than the original latent.
+    std::vector<float> residual(latent);
+    float              global_narrowest = std::numeric_limits<float>::infinity();
+    std::vector<float> z;
+    std::vector<float> embed_sq;
+
+    for (size_t level = 0; level < levels; ++level) {
+        const RvqQuantizerWeights & quantizer      = quantizers[level];
+        const int64_t               dim            = quantizer.input_proj.weight->ne[1];
+        const int64_t               codebook_size  = quantizer.codebook->ne[1];
+        const size_t                dim_count      = size_t(dim);
+        const size_t                concat_count   = size_t(concat);
+        const size_t                codebook_count = size_t(codebook_size);
+
+        // Named size locals rather than `Type(expr)` directly in the
+        // constructor call: `std::vector<float> in_bias(size_t(dim))` is the
+        // classic most-vexing-parse trap -- a single parenthesized
+        // type-cast-looking argument reads as a function declaration, not a
+        // call to the vector's size constructor.
+        std::vector<float> in_weight(concat_count * dim_count);
+        std::vector<float> in_bias(dim_count);
+        std::vector<float> out_weight(dim_count * concat_count);
+        std::vector<float> out_bias(concat_count);
+        std::vector<float> codebook(dim_count * codebook_count);
+        ggml_backend_tensor_get(quantizer.input_proj.weight, in_weight.data(), 0,
+                                ggml_nbytes(quantizer.input_proj.weight));
+        ggml_backend_tensor_get(quantizer.input_proj.bias, in_bias.data(), 0, ggml_nbytes(quantizer.input_proj.bias));
+        ggml_backend_tensor_get(quantizer.output_proj.weight, out_weight.data(), 0,
+                                ggml_nbytes(quantizer.output_proj.weight));
+        ggml_backend_tensor_get(quantizer.output_proj.bias, out_bias.data(), 0,
+                                ggml_nbytes(quantizer.output_proj.bias));
+        ggml_backend_tensor_get(quantizer.codebook, codebook.data(), 0, ggml_nbytes(quantizer.codebook));
+
+        // sum_d E[e][d]^2 depends only on the codebook, so it is computed once
+        // per level rather than once per (level, frame) -- upstream's own
+        // `embed.pow(2).sum(0, keepdim=True)` is likewise computed once and
+        // broadcast over every frame.
+        embed_sq.assign(size_t(codebook_size), 0.0f);
+        for (int64_t code = 0; code < codebook_size; ++code) {
+            const float * row = codebook.data() + size_t(code) * size_t(dim);
+            float         sum = 0.0f;
+            for (int64_t d = 0; d < dim; ++d) {
+                sum += row[d] * row[d];
+            }
+            embed_sq[size_t(code)] = sum;
+        }
+
+        z.assign(size_t(dim), 0.0f);
+        for (uint64_t frame = 0; frame < frames; ++frame) {
+            float * frame_residual = residual.data() + size_t(frame) * size_t(concat);
+
+            // z = project_in(residual): concat -> dim, biased Linear. Plain
+            // left-to-right float32 accumulation -- see this function's own
+            // header comment for the accumulation-order choice and why the
+            // real-scale exact-token gate, not this comment, is what settles
+            // it.
+            for (int64_t d = 0; d < dim; ++d) {
+                const float * weight_row  = in_weight.data() + size_t(d) * size_t(concat);
+                float         accumulator = in_bias[size_t(d)];
+                for (int64_t index = 0; index < concat; ++index) {
+                    accumulator += weight_row[index] * frame_residual[index];
+                }
+                z[size_t(d)] = accumulator;
+            }
+            float scaled = 0.0f;
+            for (int64_t d = 0; d < dim; ++d) {
+                scaled += z[size_t(d)] * z[size_t(d)];
+            }
+
+            // Plain L2 nearest neighbour: dist[e] = -(scaled - 2*z.E[e] +
+            // ||E[e]||^2); argmax over e, ties -> LOWEST id. The strict '>'
+            // below is the tie rule itself: a later e with an EQUAL dist never
+            // replaces an earlier one, so the first (lowest) maximal index
+            // wins, matching torch's own dist.max(dim=-1).indices.
+            int64_t best_code   = -1;
+            float   best_dist   = -std::numeric_limits<float>::infinity();
+            float   second_dist = -std::numeric_limits<float>::infinity();
+            for (int64_t code = 0; code < codebook_size; ++code) {
+                const float * row = codebook.data() + size_t(code) * size_t(dim);
+                float         dot = 0.0f;
+                for (int64_t d = 0; d < dim; ++d) {
+                    dot += z[size_t(d)] * row[d];
+                }
+                const float inner = scaled - 2.0f * dot + embed_sq[size_t(code)];
+                const float dist  = -inner;
+                if (dist > best_dist) {
+                    second_dist = best_dist;
+                    best_dist   = dist;
+                    best_code   = code;
+                } else if (dist > second_dist) {
+                    second_dist = dist;
+                }
+            }
+
+            const size_t slot = level * size_t(frames) + size_t(frame);
+            tokens[slot]      = int32_t(best_code);
+            const float gap   = best_dist - second_dist;
+            if (out_gaps != nullptr) {
+                (*out_gaps)[slot] = gap;
+            }
+            global_narrowest = std::fmin(global_narrowest, gap);
+
+            // dequant = project_out(E[best]): dim -> concat, biased Linear;
+            // residual -= dequant, in the concat space -- upstream's own
+            // `residual = residual - quantized` (the RVQ loop's own line, not
+            // a per-channel or per-level rescale).
+            const float * best_row = codebook.data() + size_t(best_code) * size_t(dim);
+            for (int64_t out_index = 0; out_index < concat; ++out_index) {
+                const float * weight_row  = out_weight.data() + size_t(out_index) * size_t(dim);
+                float         accumulator = out_bias[size_t(out_index)];
+                for (int64_t d = 0; d < dim; ++d) {
+                    accumulator += weight_row[d] * best_row[d];
+                }
+                frame_residual[out_index] -= accumulator;
+            }
+        }
+    }
+
+    if (narrowest_gap != nullptr) {
+        *narrowest_gap = std::isfinite(global_narrowest) ? global_narrowest : 0.0f;
+    }
+    return true;
 }
 
 }  // namespace synth::omnivoice

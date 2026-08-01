@@ -220,4 +220,119 @@ synth_status_t run_acoustic_and_fuse(const BackendPlan &        plan,
                                      std::vector<float> &       fused_latent,
                                      std::vector<float> *       out_acoustic = nullptr);
 
+// The reference's loudness: sqrt(mean(pcm^2)), Neumaier-compensated (the same
+// technique frontend-host.h's DurationEstimator::total_weight uses for its
+// own CPython-`sum()`-matching reduction) over pcm's squared float32 values
+// widened to double for the running sum. This is the closest a plain host
+// loop gets to numpy's own float32 `np.mean` (which pairwise-sums in float32,
+// not double, and not sequentially) without literally reimplementing that
+// block-recursive algorithm; VoiceClonePrompt.ref_rms's own value is float32
+// pairwise-summed and only needs matching where it crosses the quiet-boost
+// threshold below, which this reduction's few-ULP-level agreement with numpy
+// does not put in doubt for any reference this family's own limits admit.
+// Returns 0.0 for an empty `pcm` (nothing to sum), which is also what keeps
+// the quiet-boost gate below from ever firing on a genuinely empty buffer.
+float reference_rms(const std::vector<float> & pcm);
+
+// Hop-clips `pcm` to a whole number of `hop_length`-sample frames (the tail
+// remainder, if any, is dropped) and applies the quiet-reference boost IN
+// PLACE: `0 < ref_rms < 0.1` scales the CLIPPED segment up to rms 0.1;
+// `ref_rms >= 0.1` or `ref_rms == 0` (a digitally silent reference) leaves it
+// untouched -- rejecting a silent reference is Task 14's profile-creation
+// seam, not this function's (see ReferenceEncoding::ref_rms's own comment,
+// omnivoice.h, on the split). `ref_rms` receives the PRE-boost value,
+// matching upstream VoiceClonePrompt.ref_rms's own contract
+// (`create_voice_clone_prompt`, omnivoice/models/omnivoice.py:774-776).
+//
+// Measured ON the clipped segment, not upstream's own pre-trim measurement
+// point (upstream computes ref_rms on the FULL, un-clipped reference, BEFORE
+// the boost and BEFORE the hop clip that follows it -- confirmed by
+// instrumenting the pinned checkpoint's own `create_voice_clone_prompt`
+// against `models/omnivoice-reference-audio/seedtts_ref_en_1.wav`: the full
+// 337726-sample file's rms is 0.1229146420955658, matching the oracle's own
+// committed `ref_rms` exactly, while the 336960-sample hop-clipped segment's
+// is a measurably different 0.12305419892072678). This function's own
+// contract is deliberately the simpler one -- "the loudness of what actually
+// gets encoded" -- rather than a literal replay of that upstream ordering,
+// because Task 13's own gate (the RVQ token grid) cannot observe the
+// difference: neither committed clone case ever crosses the 0.1 boost
+// threshold, and every caller through Plan 3 hands this function an ALREADY
+// hop-aligned buffer (`ref/pcm_24k.f32` for the replay runner; the Audio
+// Normalizer's own 24 kHz output for a future public caller before Task 14
+// wires one up), for which the clip below is a no-op and the two orderings
+// coincide. If a later task needs bit parity with the upstream pre-trim
+// value, that reconciliation belongs there, informed by this citation rather
+// than by rediscovering the two numbers above.
+//
+// `pcm` is left at whatever length the clip produced (possibly empty, if
+// `pcm.size() < hop_length` or `hop_length == 0`) even when no boost applies.
+void clip_and_boost_reference(std::vector<float> & pcm, uint32_t hop_length, float & ref_rms);
+
+// Host-side residual vector quantization, encode direction. DISCRETE
+// DECISION -> CPU host code, by the placement rule docs/backends.md and this
+// family's own model.cpp header comment both state for the decode
+// direction's codec: the eight per-level weight tensors are pulled to host
+// with ggml_backend_tensor_get (never read through a stray tensor->data --
+// this family carries no rule that weights are always CPU-resident forever,
+// only that Plan 1/2 have not yet needed to move them), and every arithmetic
+// step from there is a plain C++ loop.
+//
+// Per level q in 0..levels-1, in ascending order (a later level always reads
+// the PREVIOUS level's residual, transcribing
+// HiggsAudioV2TokenizerResidualVectorQuantization.encode,
+// modeling_higgs_audio_v2_tokenizer.py:427-441):
+//   z_q      = project_in_q(residual)         // concat -> dim, biased Linear
+//   scaled   = sum_d z_q[d]^2                 // ||z_q||^2, once per frame
+//   dist[e]  = -(scaled - 2*(z_q . E_q[e]) + sum_d E_q[e][d]^2)   // per row
+//   code     = argmax_e dist[e]               // plain L2 nearest neighbour;
+//                                              // ties -> LOWEST id (strict
+//                                              // '>' scanning e ascending --
+//                                              // upstream's own
+//                                              // dist.max(dim=-1).indices
+//                                              // takes the first maximal
+//                                              // index, HiggsAudioV2Tokenizer
+//                                              // EuclideanCodebook.quantize)
+//   dequant  = project_out_q(E_q[code])       // dim -> concat, biased Linear
+//   residual = residual - dequant             // IN the concat (1024) space
+//
+// Every dot product and accumulation above is a plain left-to-right float32
+// loop (`float acc = 0.0f; for (...) acc += a[i] * b[i];`) -- NOT Neumaier,
+// NOT a double-precision intermediate: upstream's own computation is a
+// float32 torch matmul (`hidden_states @ embed`, `nn.Linear.forward`), and
+// this task's report documents the choice and the real-scale exact-token
+// gate (the RVQ token grid has no tolerance, ever) is what actually settles
+// whether it agrees with upstream's own BLAS reduction order closely enough,
+// at this family's real codebook_dim (64) and codebook_size (1024).
+//
+// `latent` is frame-major, channel-fastest -- run_acoustic_and_fuse's own
+// `fused_latent` layout exactly, `frames` frames of `concat` values each,
+// where `concat` is read from the FIRST level's `input_proj.weight` shape and
+// every level must agree with it. `tokens` receives `levels * frames`
+// codebook-major values (level l, frame t at `l * frames + t`) -- the
+// oracle's own `ref/tokens.i32` layout, and SynthesisRequest::reference_tokens'
+// own layout.
+//
+// Margin instrumentation (diagnostic only -- the gate is exact tokens):
+// `narrowest_gap`, when non-null, receives the smallest best-vs-second-best
+// `dist` gap over every (level, frame) decision made -- 0.0 for a clip with
+// no admissible second candidate anywhere is impossible once this returns
+// true (codebook_size < 2 is refused below), so this is always a real
+// measurement, never a fallback value dressed as one. `out_gaps`, when
+// non-null, receives the FULL per-(level, frame) gap grid in the same
+// codebook-major layout as `tokens` -- what a caller diagnosing a mismatch
+// against the exact-token gate reads to print the (level, frame, got, want,
+// gap) quintuple the validator's own contract requires.
+//
+// Returns false (leaving `tokens`/`out_gaps` cleared) for an empty
+// `quantizers`, `frames == 0`, an unresolved or inconsistently-shaped level
+// (an input/output projection whose widths disagree, a codebook narrower
+// than 2 rows, or a level whose own `concat` disagrees with the first
+// level's), or a `latent` size that is not exactly `concat * frames`.
+bool rvq_encode(const std::vector<RvqQuantizerWeights> & quantizers,
+                const std::vector<float> &               latent,
+                uint64_t                                 frames,
+                std::vector<int32_t> &                   tokens,
+                float *                                  narrowest_gap = nullptr,
+                std::vector<float> *                     out_gaps      = nullptr);
+
 }  // namespace synth::omnivoice

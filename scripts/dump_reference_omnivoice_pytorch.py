@@ -552,6 +552,124 @@ class SemanticProbe:
         self.handle.remove()
 
 
+class Pcm16kProbe:
+    """The resampled, mono, PRE-pad 16 kHz waveform HuBERT is actually called on.
+
+    ``_extract_semantic_features`` (transformers'
+    ``modeling_higgs_audio_v2_tokenizer.py:490-499``, pinned in this
+    environment) resamples 24 kHz to 16 kHz with ``torchaudio.functional.resample``
+    at its defaults, keeps channel 0, then pads a *fixed* 160 samples onto each
+    end before calling HuBERT -- a constant the pinned source itself flags as
+    differing from boson's original ``hop_length // 2 == 480`` (see the
+    in-source TODO at :497, referencing boson-ai/higgs-audio's
+    ``higgs_audio_v2_tokenizer.py:173-174``). Wrapping
+    ``torchaudio.functional.resample`` directly is fragile (it is called by
+    fully-qualified reference from inside the module, not looked up on an
+    instance), so this probe instead pre-hooks HuBERT's own forward and strips
+    the known 160-sample pad back off both ends. The strip is proven rather
+    than assumed: padded_length must equal stripped_length + 320, or a
+    SystemExit stops the dump instead of silently writing a mis-aligned
+    artifact.
+    """
+
+    PAD = 160
+
+    def __init__(self, semantic_model) -> None:
+        self.captured = None
+        self.handle = semantic_model.register_forward_pre_hook(self._hook)
+
+    def _hook(self, _module, args):
+        import torch
+
+        if self.captured is not None:
+            return
+        input_values = args[0]
+        padded_length = int(input_values.shape[-1])
+        stripped = input_values[:, self.PAD : padded_length - self.PAD]
+        stripped_length = int(stripped.shape[-1])
+        if padded_length != stripped_length + 2 * self.PAD:
+            raise SystemExit(
+                f"pcm_16k probe: padded length {padded_length} does not equal stripped "
+                f"length {stripped_length} + {2 * self.PAD}; the fixed 160-sample pad "
+                "strip is wrong and the artifact would not be the pre-pad waveform"
+            )
+        self.captured = stripped.detach().to(torch.float32).cpu().numpy()
+
+    def close(self) -> None:
+        self.handle.remove()
+
+
+class SemanticMeanProbe:
+    """The mean over all thirteen HuBERT hidden states, before the [::2] downsample.
+
+    ``_extract_semantic_features`` (``modeling_higgs_audio_v2_tokenizer.py:501-505``)
+    stacks HuBERT's ``output_hidden_states`` tuple along a NEW dimension 1 --
+    ``torch.stack([h.to(input_values.device) for h in hidden_states], dim=1)``,
+    giving ``[batch, num_layers, seq, hidden]`` -- and then averages over that
+    same dim 1, producing ``[batch, seq, hidden]``. This is the feature the
+    codec's quantiser actually consumes; ``SemanticProbe`` above captures only
+    the last of the thirteen layers, a cheaper stage boundary, not this value.
+    The hook transcribes the pinned source's exact stack-then-mean rather than
+    assuming a shortcut (e.g. averaging along dim 0) that would only coincide
+    with it because both reduce over the same number of elements. Captured
+    BEFORE the ``[::2]`` stride-2 downsample at :507-508: this probe is that
+    slice's input, not its output.
+    """
+
+    def __init__(self, semantic_model) -> None:
+        self.captured = None
+        self.handle = semantic_model.register_forward_hook(self._hook)
+
+    def _hook(self, _module, _inputs, output):
+        import torch
+
+        if self.captured is not None:
+            return
+        hidden_states = getattr(output, "hidden_states", None)
+        if not hidden_states:
+            raise SystemExit(
+                "semantic_mean probe: HuBERT forward returned no hidden_states; "
+                "output_hidden_states=True must be in effect for _extract_semantic_features"
+            )
+        stacked = torch.stack([h.to(hidden_states[0].device) for h in hidden_states], dim=1)
+        mean = stacked.mean(dim=1)
+        self.captured = mean.detach().to(torch.float32).cpu().numpy()
+
+    def close(self) -> None:
+        self.handle.remove()
+
+
+class FusedLatentProbe:
+    """``audio_tokenizer.fc``'s own output, first call: the RVQ quantiser's input.
+
+    ``HiggsAudioV2TokenizerModel.encode`` (``modeling_higgs_audio_v2_tokenizer.py:544-556``)
+    concatenates the acoustic and (downsampled) semantic branches and feeds the
+    result through ``self.fc`` (``nn.Linear(1024, 1024)``); exactly that
+    tensor -- reshaped back to channel-first, but not otherwise touched -- is
+    what ``self.quantizer.encode`` receives. Hooking ``fc`` directly captures
+    the per-frame latent the port must reproduce without re-deriving the
+    branch concatenation this dumper does not otherwise need to know about.
+    """
+
+    def __init__(self, fc) -> None:
+        self.captured = None
+        self.handle = fc.register_forward_hook(self._hook)
+
+    def _hook(self, _module, _inputs, output):
+        import torch
+
+        if self.captured is not None:
+            return
+        if not torch.is_tensor(output):
+            raise SystemExit(
+                "fused_latent probe: audio_tokenizer.fc did not return a plain tensor"
+            )
+        self.captured = output.detach().to(torch.float32).cpu().numpy()
+
+    def close(self) -> None:
+        self.handle.remove()
+
+
 # ---------------------------------------------------------------------------
 # Clone reference
 # ---------------------------------------------------------------------------
@@ -645,7 +763,14 @@ def materialise_reference(locator: str, digest: str, directory: pathlib.Path) ->
 
 
 def build_clone_prompt(model, path: pathlib.Path, ref_text: str, preprocess_prompt: bool) -> dict:
-    """Encode the reference, capturing the PCM, the tokens and the HuBERT states."""
+    """Encode the reference, capturing the PCM, the tokens and the HuBERT states.
+
+    Three additional probes were added by jiangzhuo's ruling of 2026-08-01 to
+    look inside the semantic branch that ``SemanticProbe`` alone only bounds:
+    ``Pcm16kProbe`` (the waveform HuBERT reads), ``SemanticMeanProbe`` (the
+    feature the quantiser actually consumes) and ``FusedLatentProbe`` (the
+    quantiser's input after the acoustic/semantic branches are combined).
+    """
     import soundfile
     import torch
 
@@ -653,6 +778,9 @@ def build_clone_prompt(model, path: pathlib.Path, ref_text: str, preprocess_prom
     waveform = torch.from_numpy(data.T.copy())
 
     semantic = SemanticProbe(model.audio_tokenizer)
+    pcm_16k = Pcm16kProbe(model.audio_tokenizer.semantic_model)
+    semantic_mean = SemanticMeanProbe(model.audio_tokenizer.semantic_model)
+    fused_latent = FusedLatentProbe(model.audio_tokenizer.fc)
     encode = MethodWrap(model.audio_tokenizer, "encode", _encode_wrap)
     try:
         prompt = model.create_voice_clone_prompt(
@@ -662,12 +790,21 @@ def build_clone_prompt(model, path: pathlib.Path, ref_text: str, preprocess_prom
         )
     finally:
         semantic.close()
+        pcm_16k.close()
+        semantic_mean.close()
+        fused_latent.close()
         encode.close()
 
     if not encode.calls:
         raise SystemExit(f"{path.name}: the reference never reached audio_tokenizer.encode")
     if semantic.captured is None:
         raise SystemExit(f"{path.name}: the HuBERT branch produced no hidden states")
+    if pcm_16k.captured is None:
+        raise SystemExit(f"{path.name}: the pcm_16k probe never saw a HuBERT forward")
+    if semantic_mean.captured is None:
+        raise SystemExit(f"{path.name}: the semantic_mean probe never saw a HuBERT forward")
+    if fused_latent.captured is None:
+        raise SystemExit(f"{path.name}: the fused_latent probe never saw audio_tokenizer.fc run")
 
     # (1, 1, T) as passed to encode -- already mono, resampled and hop-clipped.
     encoded_pcm = encode.calls[0].reshape(-1)
@@ -687,6 +824,9 @@ def build_clone_prompt(model, path: pathlib.Path, ref_text: str, preprocess_prom
         "tokens": tokens,
         "semantic_hidden": semantic.captured[0],
         "semantic_module": semantic.module_type,
+        "pcm_16k": pcm_16k.captured[0],
+        "semantic_mean": semantic_mean.captured[0],
+        "fused_latent": fused_latent.captured[0],
         "source_sample_rate": int(sample_rate),
         "ref_rms": float(prompt.ref_rms),
         "ref_text": prompt.ref_text,
@@ -1130,11 +1270,29 @@ def run_case(model, case: dict, output_root: pathlib.Path, clones: dict,
             "semantic_module": clone["semantic_module"],
             "semantic_hidden_shape": list(clone["semantic_hidden"].shape),
             "pcm_24k_samples": int(clone["pcm_24k"].shape[0]),
+            "pcm_16k_shape": list(clone["pcm_16k"].shape),
+            "semantic_mean_shape": list(clone["semantic_mean"].shape),
+            "fused_latent_shape": list(clone["fused_latent"].shape),
         }
         metadata["notes"].append(
             "ref/semantic_hidden.f32 is the HuBERT branch's FINAL layer output. The codec "
             "feeds the quantiser the mean over all hidden states, not this tensor; the probe "
             "is a stage boundary, not the consumed feature."
+        )
+        metadata["notes"].append(
+            "ref/pcm_16k.f32 is the 24->16 kHz resampled, channel-0 waveform HuBERT reads, "
+            "captured BEFORE the fixed 160-sample pad each side; the pad itself is not in "
+            "this file (clone-encode probe added by jiangzhuo's ruling of 2026-08-01)."
+        )
+        metadata["notes"].append(
+            "ref/semantic_mean.f32 IS the feature the quantiser consumes: the mean over all "
+            "thirteen HuBERT hidden states, captured BEFORE the [::2] stride-2 downsample "
+            "(clone-encode probe added by jiangzhuo's ruling of 2026-08-01)."
+        )
+        metadata["notes"].append(
+            "ref/fused_latent.f32 is audio_tokenizer.fc's own output, first call: the RVQ "
+            "quantiser's input after the acoustic and semantic branches are combined "
+            "(clone-encode probe added by jiangzhuo's ruling of 2026-08-01)."
         )
 
     produced = {
@@ -1154,6 +1312,9 @@ def run_case(model, case: dict, output_root: pathlib.Path, clones: dict,
         produced["ref.pcm_24k"] = (write_f32, clone["pcm_24k"])
         produced["ref.tokens"] = (write_i32, clone["tokens"])
         produced["ref.semantic_hidden"] = (write_f32, clone["semantic_hidden"])
+        produced["ref.pcm_16k"] = (write_f32, clone["pcm_16k"])
+        produced["ref.semantic_mean"] = (write_f32, clone["semantic_mean"])
+        produced["ref.fused_latent"] = (write_f32, clone["fused_latent"])
 
     artifacts = write_case(case, output_root / case_id, produced)
     return {"id": case_id, "result": result, "artifacts": artifacts}

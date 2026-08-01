@@ -448,6 +448,22 @@ int check_rejections() {
     forward.bias   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 7);
     SYNTH_TEST_CHECK(synth::omnivoice::codec_conv1d(ctx, signal, forward, 1, 3) == nullptr);
 
+    // The same weights with a matching bias are a sound convolution -- which
+    // pins the next two rejections on the parameters alone. A non-positive
+    // dilation or a negative padding is a wiring defect ggml would assert on,
+    // not a shape it can serve.
+    synth::omnivoice::Conv1dWeights sound = forward;
+    sound.bias                            = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    SYNTH_TEST_CHECK(synth::omnivoice::codec_conv1d(ctx, signal, sound, 1, 3) != nullptr);
+    SYNTH_TEST_CHECK(synth::omnivoice::codec_conv1d(ctx, signal, sound, 0, 3) == nullptr);
+    SYNTH_TEST_CHECK(synth::omnivoice::codec_conv1d(ctx, signal, sound, 1, -1) == nullptr);
+
+    // A non-positive stride has no scatter at all, and a kernel narrower than
+    // the stride leaves gaps col2im cannot fill; conv_t accepts stride 2 above,
+    // so these two rejections are the stride parameter's doing.
+    SYNTH_TEST_CHECK(synth::omnivoice::codec_transpose_conv1d(ctx, signal, conv_t, 0, 1, 0) == nullptr);
+    SYNTH_TEST_CHECK(synth::omnivoice::codec_transpose_conv1d(ctx, signal, conv_t, 5, 1, 0) == nullptr);
+
     // A curve whose width is not the signal's would broadcast onto the wrong
     // channels, and a missing one is an unresolved package.
     synth::omnivoice::SnakeWeights snake;

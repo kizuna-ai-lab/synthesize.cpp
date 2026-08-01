@@ -409,25 +409,36 @@ int run_generator_rejections() {
     // above requires key_value_head_count <= attention_head_count whenever
     // attention_head_count > 0, and both multiply the SAME head_dim, so
     // kv_inner can never exceed the ceiling while attention_inner does not.
+    //
+    // Each value sits one past kMaxDimensionProduct in weights.cpp (1 << 24),
+    // so what these cases pin is the boundary itself: if the ceiling ever
+    // moves, every case here goes stale together and loudly, rather than one
+    // at a time as values chosen above the old ceiling happen to straddle the
+    // new one.
+    constexpr uint32_t kOverCeiling = (1u << 24) + 1;
     SYNTH_TEST_CHECK(expect_rejected(
                          [](gguf_context * g) {
-                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.attention_head_count", 8388610);
-                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.key_value_head_count", 2);
+                             // (2^22 + 1) * 4 = 2^24 + 4; odd, so only kv 1
+                             // divides it, and kv_inner stays at 4.
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.attention_head_count", (1u << 22) + 1);
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.key_value_head_count", 1);
                              gguf_set_val_u32(g, "synthesize.omnivoice.generator.head_dim", 4);
                          },
                          "attention_head_count * head_dim alone over the ceiling") == 0);
     SYNTH_TEST_CHECK(
         expect_rejected(
-            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.omnivoice.generator.hidden_size", 1u << 25); },
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.omnivoice.generator.hidden_size", kOverCeiling); },
             "hidden_size alone over the ceiling") == 0);
-    SYNTH_TEST_CHECK(
-        expect_rejected(
-            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.omnivoice.generator.intermediate_size", 1u << 25); },
-            "intermediate_size alone over the ceiling") == 0);
-    SYNTH_TEST_CHECK(
-        expect_rejected(
-            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.omnivoice.generator.text_vocab_size", 1u << 25); },
-            "text_vocab_size alone over the ceiling") == 0);
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.intermediate_size", kOverCeiling);
+                         },
+                         "intermediate_size alone over the ceiling") == 0);
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_u32(g, "synthesize.omnivoice.generator.text_vocab_size", kOverCeiling);
+                         },
+                         "text_vocab_size alone over the ceiling") == 0);
     return 0;
 }
 

@@ -642,6 +642,26 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
     endif()
 
+    # OmniVoice's public-request validator needs no oracle payload -- it
+    # asserts relations between runs of this port's public seam (seed echo,
+    # same-seed byte identity, cross-seed artifact_differs), not agreement
+    # with the reference -- so it is model-guarded only, unlike the golden
+    # gate above which also needs the (uncommitted) oracle sentinel.
+    if(EXISTS "${SYNTH_OMNIVOICE_TEST_MODEL}")
+        add_test(
+            NAME synthesize-omnivoice-public-request
+            COMMAND ${SYNTH_UV_EXECUTABLE} run
+                --project ${CMAKE_SOURCE_DIR}/scripts/envs/omnivoice
+                --locked python ${CMAKE_SOURCE_DIR}/scripts/validate-omnivoice-public.py
+                --model ${SYNTH_OMNIVOICE_TEST_MODEL}
+                --runner $<TARGET_FILE:synthesize-omnivoice-public-real>
+                --profile F32 --backend cpu)
+        set_tests_properties(synthesize-omnivoice-public-request PROPERTIES
+            LABELS "integration;omnivoice;abi"
+            TIMEOUT 1800
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    endif()
+
     # Qwen3-TTS's two validators. Both need the package, which is why they sat
     # unregistered while the family shipped -- and being unregistered is how the
     # replay stage stopped being something CI could run at all.

@@ -65,6 +65,13 @@
             }
           },
           "note": "Twenty cases: 17 greedy and 3 sampled. The sampled cases contribute the step-0 probes only -- their grids and waveforms are the public sampled path's claim, which Plan 3 makes -- so the two waveform probes above are measured over 20 and 16 cases respectively: audio.pcm covers every case, and audio.pcm_freerun covers 20 minus the 3 sampled cases (no greedy free-run) minus omni-fast-mode, which matched its alternate grid and is exempt from oracle parity on that channel.\n\nWorst-case attribution, for the review this file records rather than for the gate: hidden_l27's max_abs of 0.0801 is omni-digits and is the largest absolute figure anywhere in the table, which is why the deep probes are cosine-gated -- the pre-norm outlier channels make max-abs useless as a threshold while the cosine holds at eight nines. The waveform's worst cosine is omni-medium-en and its worst max_abs omni-nonverbal, at 1.7e-05 on a signal peaking at 0.5."
+        },
+        "public": {
+          "backend": "CPU",
+          "description": "The public C seam driven end to end at package defaults (sampled); gates on relations between runs of this port -- seed echo, same-seed byte identity, cross-seed artifact_differs -- which cannot be expressed as thresholds against the oracle.",
+          "checks": 7,
+          "all_passed": true,
+          "note": "all_passed flips true when the registered gate first passes; sampled seed-contract cases carry no margin screen (screen rationale is oracle-parity knife edges; this stage claims none)."
         }
       }
     }

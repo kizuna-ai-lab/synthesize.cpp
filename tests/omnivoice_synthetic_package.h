@@ -25,7 +25,30 @@ struct SyntheticPackageOptions {
     // Override to 0.0f to exercise the loop's `guidance == 0` branch, which
     // skips the unconditional forward entirely.
     float guidance_scale       = 2.0f;
+    // Constant fill (the default, false) is what makes every candidate's
+    // guided log-prob tie across the ENTIRE vocabulary at every position --
+    // deliberate elsewhere in this file (check_grid's argmax-0 property), but
+    // it also means no seed or draw sequence can ever show up in a committed
+    // grid, so a test that needs to prove run_synthesis actually READS
+    // request.seed (rather than, say, hardcoding a constant) cannot use the
+    // default package. Set this to true to fill every generator/codec weight
+    // tensor with a fixed, non-constant, reproducible LCG walk instead, so
+    // logits genuinely vary across positions and vocabulary entries.
+    bool  varied_weights       = false;
 };
+
+// A tiny deterministic LCG -- not synth::NormalRandomStream, which is
+// production code belonging to a synthesis' own draw contract, not to a test
+// fixture's weights. Only used when SyntheticPackageOptions::varied_weights
+// is set. The output is scaled to a modest range: two transformer layers of
+// wide, unscaled random weights would risk overflow inside the attention
+// softmax, and nothing here needs realism, only variety.
+inline float lcg_next_weight(uint64_t & state) {
+    state                      = state * 6364136223846793005ULL + 1442695040888963407ULL;
+    const uint32_t bits        = uint32_t(state >> 32);
+    const float    unit_signed = float(bits) / float(0xFFFFFFFFu) * 2.0f - 1.0f;  // [-1, 1]
+    return unit_signed * 0.1f;                                                    // [-0.1, 0.1]
+}
 
 inline void set_string_array(gguf_context * g, const char * key, const std::vector<std::string> & values) {
     std::vector<const char *> pointers;
@@ -169,7 +192,11 @@ inline bool write_synthetic_package(const std::string & path, const SyntheticPac
         set_string_array(gguf, "synthesize.omnivoice.frontend.merges", { "tok1 tok2" });
     }
 
-    // --- Tensors: the small layout with real F32 payloads.
+    // --- Tensors: the small layout with real F32 payloads. One LCG state
+    // walks across every tensor's every element (rather than resetting per
+    // tensor), so varied_weights produces a genuinely varied pattern rather
+    // than the same short repeating sequence in every tensor.
+    uint64_t lcg_state = 0x2545f4914f6cdd1dULL;  // an arbitrary fixed seed
     for (const Entry & entry : entries) {
         ggml_tensor * tensor = ggml_new_tensor(context, GGML_TYPE_F32, int(entry.ne.size()), entry.ne.data());
         if (tensor == nullptr) {
@@ -180,7 +207,9 @@ inline bool write_synthetic_package(const std::string & path, const SyntheticPac
         ggml_set_name(tensor, entry.name.c_str());
         float * data = static_cast<float *>(tensor->data);
         for (int64_t index = 0; index < ggml_nelements(tensor); ++index) {
-            data[index] = 0.03125f;  // any finite constant; loading never computes
+            // any finite constant; loading never computes -- unless
+            // varied_weights asks for a real seed effect to be observable.
+            data[index] = options.varied_weights ? lcg_next_weight(lcg_state) : 0.03125f;
         }
         gguf_add_tensor(gguf, tensor);
     }

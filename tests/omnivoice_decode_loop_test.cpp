@@ -73,8 +73,16 @@ synth::omnivoice::SynthesisRequest base_request(uint64_t frames) {
 
 // Every property the committed grid must have regardless of what the weights
 // say: the right shape, the reported frame count, no surviving mask, and every
-// token a legal code.
-int check_grid(const synth::omnivoice::SynthesisOutput & output, uint64_t frames, const char * what) {
+// token a legal code. `expect_constant_argmax` additionally pins the
+// constant-weight package's degenerate argmax-0 property; callers running
+// against the varied-weights package (see SyntheticPackageOptions) pass
+// false, since that fixture's whole point is that tokens are NOT
+// predictable, and pinning a specific value there would be asserting on
+// numbers this test has no business predicting.
+int check_grid(const synth::omnivoice::SynthesisOutput & output,
+               uint64_t                                  frames,
+               const char *                              what,
+               bool                                      expect_constant_argmax = true) {
     if (output.frame_count != frames || output.codes.size() != size_t(kCodebooks) * frames) {
         std::fprintf(stderr, "%s: %llu frames and %zu codes, expected %llu and %zu\n", what,
                      (unsigned long long) output.frame_count, output.codes.size(), (unsigned long long) frames,
@@ -90,7 +98,7 @@ int check_grid(const synth::omnivoice::SynthesisOutput & output, uint64_t frames
         // Constant weights make every candidate's logits equal, so the ban on
         // the mask id leaves slot 0 as the argmax at every position. A stray
         // read would have to land on another all-0.03125 buffer to fake this.
-        if (token != 0) {
+        if (expect_constant_argmax && token != 0) {
             std::fprintf(stderr, "%s: code %zu is %d, not the constant-weight argmax 0\n", what, index, token);
             return 1;
         }
@@ -352,19 +360,22 @@ int check_sampled_same_seed_identical_grid(synth::omnivoice::Model & model) {
     return 0;
 }
 
-// Different seed: seed 7 vs seed 8, otherwise identical requests. This
-// fixture's `output.codes` CANNOT show the difference: its whole point (see
-// the file header) is constant weights, which make every candidate's guided
-// log-prob tie across the entire vocabulary at every position, so
-// choose_token's argmax always lands on token 0 regardless of which candidate
-// a Gumbel-perturbed score commits first -- widening `frames` does not change
-// this, because the degeneracy is in the WEIGHTS, not the canvas size. So
-// this checks the actual mechanism the loop's draw-order contract describes
-// (see the stream construction comment in run_synthesis) directly: two
-// NormalRandomStreams seeded 7 and 8 draw different uniforms, which is the
-// reason a non-degenerate package's grid WOULD differ. The two full runs are
-// still made (and still asserted equal) so this fixture's degeneracy is
-// pinned as understood behaviour rather than left as an unexplained gap.
+// NOTE: this does NOT prove run_synthesis reads request.seed -- it predates
+// (and is now redundant with) check_sampled_seed_actually_drives_the_grid
+// below, which does, on the varied-weights package. Kept only because it
+// documents WHY the constant-weight package's `output.codes` can never show
+// a seed effect (see that comment), a fact the wiring test's own comment
+// leans on. Seed 7 vs seed 8, otherwise identical requests: this fixture's
+// `output.codes` CANNOT show the difference -- its whole point (see the file
+// header) is constant weights, which make every candidate's guided log-prob
+// tie across the entire vocabulary at every position, so choose_token's
+// argmax always lands on token 0 regardless of which candidate a
+// Gumbel-perturbed score commits first -- widening `frames` does not change
+// this, because the degeneracy is in the WEIGHTS, not the canvas size. What
+// follows only shows that two NormalRandomStreams seeded 7 and 8 draw
+// different uniforms -- true regardless of whether run_synthesis ever reads
+// its own seed argument, since these two streams are built by the test, not
+// by the loop under test.
 int check_sampled_different_seed_different_draws(synth::omnivoice::Model & model) {
     synth::omnivoice::SynthesisRequest seed7 = base_request(5);
     seed7.seed                               = 7;
@@ -384,6 +395,56 @@ int check_sampled_different_seed_different_draws(synth::omnivoice::Model & model
     synth::NormalRandomStream stream7(7);
     synth::NormalRandomStream stream8(8);
     SYNTH_TEST_CHECK(stream7.next_uniform() != stream8.next_uniform());
+    return 0;
+}
+
+// The actual wiring proof the two checks above cannot give: on the
+// constant-weight package, EVERY candidate's guided log-prob ties across the
+// whole vocabulary at every position (build_guided's log-softmax makes any
+// constant added to every entry cancel out), so choose_token's strict `>`
+// tie-break always lands on token 0 no matter which order a Gumbel-perturbed
+// score commits candidates in -- a hardcoded seed inside run_synthesis and a
+// correctly-wired one would look IDENTICAL there. This uses the
+// varied-weights package instead, where logits genuinely differ across
+// positions and vocabulary entries, so the position draw's effect on commit
+// ORDER feeds back through the canvas refill into later steps' forwards and
+// produces a genuinely different token grid. A fresh SynthesisRequest is
+// built per call (never reused, unlike the identical-grid check above): a
+// hardcoded seed would still make every call from one shared, already-seeded
+// request "look the same", which proves nothing about whether the field is
+// read at all.
+//
+// Seeds 7 and 8 are verified (see task-4-report.md's fix-round-1 section) to
+// actually diverge on this fixture as it stands; if a future change to the
+// LCG walk or the small layout ever made them coincide, the fix is a
+// different seed pair, not relaxing this assertion.
+int check_sampled_seed_actually_drives_the_grid(synth::omnivoice::Model & varied_model) {
+    auto seeded_request = [](uint64_t seed) {
+        synth::omnivoice::SynthesisRequest request = base_request(5);
+        request.seed                               = seed;
+        request.position_temperature               = 5.0f;
+        request.class_temperature                  = 0.0f;
+        return request;
+    };
+
+    synth::omnivoice::SynthesisOutput seed7_first;
+    SYNTH_TEST_CHECK(varied_model.run_synthesis(seeded_request(7), seed7_first) == SYNTH_OK);
+    if (check_grid(seed7_first, 5, "varied-weights seed-7 run (first)", /*expect_constant_argmax=*/false) != 0) {
+        return 1;
+    }
+
+    // Same seed, a SECOND fresh request object: still the same grid.
+    synth::omnivoice::SynthesisOutput seed7_second;
+    SYNTH_TEST_CHECK(varied_model.run_synthesis(seeded_request(7), seed7_second) == SYNTH_OK);
+    SYNTH_TEST_CHECK(seed7_second.codes == seed7_first.codes);
+
+    // A different seed, yet another fresh request object: a different grid.
+    synth::omnivoice::SynthesisOutput seed8;
+    SYNTH_TEST_CHECK(varied_model.run_synthesis(seeded_request(8), seed8) == SYNTH_OK);
+    if (check_grid(seed8, 5, "varied-weights seed-8 run", /*expect_constant_argmax=*/false) != 0) {
+        return 1;
+    }
+    SYNTH_TEST_CHECK(seed8.codes != seed7_first.codes);
     return 0;
 }
 
@@ -499,6 +560,18 @@ int main(int argc, char ** argv) {
     SYNTH_TEST_CHECK(synth::omnivoice::Model::load_cpu(path, model) == SYNTH_OK);
     SYNTH_TEST_CHECK(model != nullptr);
 
+    // A second package, weights varied via a fixed LCG walk rather than the
+    // constant fill above: see check_sampled_seed_actually_drives_the_grid
+    // for why the constant-weight package cannot prove run_synthesis reads
+    // its own seed argument.
+    const std::string varied_weights_path = std::string(argv[1]) + "/synthetic-decode-loop-varied-weights.gguf";
+    synth::omnivoice::testing::SyntheticPackageOptions varied_options;
+    varied_options.varied_weights = true;
+    SYNTH_TEST_CHECK(synth::omnivoice::testing::write_synthetic_package(varied_weights_path, varied_options));
+    std::unique_ptr<synth::omnivoice::Model> varied_model;
+    SYNTH_TEST_CHECK(synth::omnivoice::Model::load_cpu(varied_weights_path, varied_model) == SYNTH_OK);
+    SYNTH_TEST_CHECK(varied_model != nullptr);
+
     int      failures          = 0;
     uint64_t one_forward_nodes = 0;
     failures += check_probe_only_skips_the_loop(*model, one_forward_nodes);
@@ -509,6 +582,7 @@ int main(int argc, char ** argv) {
     failures += check_decode_codes_refuses(*model);
     failures += check_sampled_same_seed_identical_grid(*model);
     failures += check_sampled_different_seed_different_draws(*model);
+    failures += check_sampled_seed_actually_drives_the_grid(*varied_model);
     failures += check_sampled_explicit_greedy_matches_defaulted_request(*model);
     failures += check_margin_report_refuses_positive_temperature(*model);
     failures += check_guidance_zero_skips_uncond_forward(*model, std::string(argv[1]));

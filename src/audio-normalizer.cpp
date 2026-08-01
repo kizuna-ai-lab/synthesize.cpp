@@ -145,6 +145,35 @@ synth_status_t normalize_reference(const float *         pcm,
         return SYNTH_ERR_INTERNAL;
     }
 
+    // The sweep that justified sizing the output buffer to the Reference
+    // Frame Equivalent (tests/audio_normalizer_test.cpp, task-8-report.md) is
+    // evidence about today's libsamplerate on the rate/channel combinations it
+    // covered, not a guarantee this code can lean on forever. If a future
+    // libsamplerate version, or some untested rate pair, ever left part of the
+    // input undrained, returning SYNTH_OK here would silently crop the
+    // signal -- exactly what ADR 0009 forbids ("never trims, truncates, or
+    // discards"). Fail loudly instead. This is INTERNAL rather than
+    // INVALID_ARG/UNSUPPORTED_INPUT because it is the *library* breaking its
+    // own drain contract, not a malformed caller input -- every input shape
+    // that could cause that was already rejected above.
+    if (static_cast<uint64_t>(data.input_frames_used) != frames) {
+        return SYNTH_ERR_INTERNAL;
+    }
+    // Symmetric check on the other half of the same contract:
+    // output_frames_gen must never exceed the capacity (rfe) we gave it.
+    // SRC_DATA.output_frames_gen is a signed `long`; a negative value here
+    // (impossible per the library's documented contract, but not something
+    // this code should trust blindly) would silently become a huge
+    // uint64_t once cast below and turn the resize() into a multi-exabyte
+    // allocation attempt instead of a clean, diagnosable failure. Note that
+    // gen < rfe is expected and fine (ADR 0009: the resampler need not emit
+    // exactly the Reference Frame Equivalent) -- only gen > rfe or gen < 0
+    // indicate the library returned something this code's own buffer sizing
+    // cannot have produced.
+    if (data.output_frames_gen < 0 || static_cast<uint64_t>(data.output_frames_gen) > rfe) {
+        return SYNTH_ERR_INTERNAL;
+    }
+
     // ADR 0009: retain the actual drained output rather than padding or
     // cropping it to force the Reference Frame Equivalent length.
     const uint64_t produced_frames = static_cast<uint64_t>(data.output_frames_gen);

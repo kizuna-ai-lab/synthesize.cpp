@@ -144,6 +144,31 @@ int main() {
         // Null pcm.
         SYNTH_TEST_CHECK(synth::normalize_reference(nullptr, valid.size(), 24000, 1, 24000, 1, output) ==
                          SYNTH_ERR_INVALID_ARG);
+
+        // Frame-count overflow: frames = UINT64_MAX must be rejected by the
+        // arithmetic guard before any sample is dereferenced -- a real (but
+        // small) pcm buffer is enough to prove that, since a bug that let
+        // this fall through to the finite-sample scan would read far past
+        // the 4-element buffer and a sanitizer build would catch it.
+        synth::NormalizedReference untouched;
+        untouched.frames = 999;
+        untouched.pcm    = { 1.0f, 2.0f };
+        SYNTH_TEST_CHECK(synth::normalize_reference(valid.data(), std::numeric_limits<uint64_t>::max(), 24000, 1, 24000,
+                                                    1, untouched) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(untouched.frames == 999);
+        SYNTH_TEST_CHECK((untouched.pcm == std::vector<float>{ 1.0f, 2.0f }));
+
+        // Malformed target format (a Loaded Model's own declared capability,
+        // not caller-supplied Reference Audio, but still load-bearing:
+        // convert_channels() only handles 2<->1, so an unvalidated
+        // target_channels outside {1, 2} would fall through to a
+        // wrongly-sized output buffer rather than fail cleanly).
+        SYNTH_TEST_CHECK(synth::normalize_reference(valid.data(), valid.size(), 24000, 1, 0, 1, output) ==
+                         SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(synth::normalize_reference(valid.data(), valid.size(), 24000, 1, 24000, 0, output) ==
+                         SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(synth::normalize_reference(valid.data(), valid.size(), 24000, 1, 24000, 3, output) ==
+                         SYNTH_ERR_INVALID_ARG);
     }
 
     return 0;

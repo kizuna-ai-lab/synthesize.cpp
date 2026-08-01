@@ -54,6 +54,14 @@ DEFAULT_MANIFEST = pathlib.Path("tests/golden/omnivoice/omnivoice-0-6b.manifest.
 # here as a string literal.
 SEED_CONTRACT_CASE_IDS = ("omni-sampled-seed-zero", "omni-sampled-seed-one", "omni-sampled-seed-forty-two")
 
+# include/synthesize.h: `#define SYNTH_SEED_RANDOM UINT64_MAX`. A resolver
+# that regressed to echoing the sentinel itself, deterministically, would
+# still be neither "" nor "0" and would still reproduce byte-for-byte on
+# replay (the replay would hit the same `== SYNTH_SEED_RANDOM` branch again)
+# -- broken but self-consistent, and check 4 below must not call that
+# "concrete".
+SYNTH_SEED_RANDOM_STR = str((1 << 64) - 1)
+
 
 def seed_contract_text(manifest_path: pathlib.Path) -> str:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -161,7 +169,7 @@ def main() -> int:
     # Check 4.
     record(
         "a random seed is reported concretely and reproduces",
-        drawn["actual_seed"] not in ("", "0") and drawn["digest"] == replayed["digest"],
+        drawn["actual_seed"] not in ("", "0", SYNTH_SEED_RANDOM_STR) and drawn["digest"] == replayed["digest"],
         f"drawn seed {drawn['actual_seed']}, digest {drawn['digest'][:16]} vs replay {replayed['digest'][:16]}",
     )
 

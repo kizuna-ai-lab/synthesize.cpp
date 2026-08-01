@@ -394,12 +394,30 @@ int check_assemble_prompt_ids() {
     SYNTH_TEST_CHECK(none_actual.size() >= none_style.size());
     SYNTH_TEST_CHECK(std::equal(none_style.begin(), none_style.end(), none_actual.begin()));
 
-    // Tokenizer failure (an out-of-vocabulary byte in the text) is the only
-    // way this function reports false.
+    // Tokenizer failure (an out-of-vocabulary byte in the text) is one way
+    // this function reports false.
     std::vector<int32_t> rejected = { 999 };
     SYNTH_TEST_CHECK(
         !synth::omnivoice::assemble_prompt_ids(*frontend, tokens, false, "en", "", "", "zzz not in vocab", rejected));
     SYNTH_TEST_CHECK(rejected.empty());
+
+    // The other way: a `tokens` whose text_end id disagrees with what the
+    // FRONTEND actually emits for "<|text_end|>" (still 106 -- the frontend
+    // fixture above is untouched). This is the release-path corruption guard
+    // firing on a frontend/tokens mismatch, the failure mode a dropped or
+    // renumbered closing marker would otherwise produce silently (see the
+    // .cpp's comment on the composed string always closing on text_end).
+    // Cheapest trigger available with the existing fixture: no real package
+    // can misconfigure this -- SpecialTokens and the frontend's special
+    // tokens are read from the same GGUF metadata at load time -- but a
+    // regression that changed one without the other is exactly what this
+    // guards against.
+    synth::omnivoice::SpecialTokens mismatched_tokens = tokens;
+    mismatched_tokens.text_end                        = 999;
+    std::vector<int32_t> mismatched                   = { 111, 222 };
+    SYNTH_TEST_CHECK(
+        !synth::omnivoice::assemble_prompt_ids(*frontend, mismatched_tokens, false, "en", "", "", "Hi.", mismatched));
+    SYNTH_TEST_CHECK(mismatched.empty());
     return 0;
 }
 

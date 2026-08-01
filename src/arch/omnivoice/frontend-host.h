@@ -98,8 +98,11 @@ class DurationEstimator {
 // `language_tag`: the core's resolved BCP-47 tag verbatim (en/zh/ja are the
 // ISO codes upstream expects; empty -> literal "None" inside style_text).
 //
-// Returns false only on tokenizer failure (empty text was rejected upstream
-// of here).
+// Returns false when the tokenizer itself fails (empty text was rejected
+// upstream of here), or when the result does not close on `tokens.text_end`
+// -- a release-path corruption guard against a frontend/tokens mismatch
+// (see the .cpp) rather than something a correctly-built package can
+// trigger. Either way `output` is left empty.
 bool assemble_prompt_ids(const TextFrontend &   frontend,
                          const SpecialTokens &  tokens,
                          bool                   denoise,

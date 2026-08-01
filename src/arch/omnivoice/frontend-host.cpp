@@ -4,7 +4,6 @@
 #include "unicode-ranges.h"
 
 #include <algorithm>
-#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <iterator>
@@ -612,12 +611,15 @@ bool assemble_prompt_ids(const TextFrontend &   frontend,
     // dropped or reordered the closing marker would corrupt every row
     // without tripping a status, which is exactly the failure mode this
     // family's docs warn produces different, still-plausible speech rather
-    // than an error. Debug-only, like the sibling contract assert in
-    // generator-host.cpp: it costs nothing in a release build and documents
-    // the invariant where the concrete id is in scope.
-    assert(!output.empty() && output.back() == int32_t(tokens.text_end) &&
-           "assemble_prompt_ids contract: the wrapped prompt always ends on <|text_end|>");
-    (void) tokens;
+    // than an error -- so this is enforced on the RELEASE path, not left to
+    // an assert: both trees this project builds (Release and
+    // RelWithDebInfo) define NDEBUG, which would make a plain assert() here
+    // inert in every standard build configuration, and a silently corrupted
+    // prompt is worse than a synthesis refused before it starts.
+    if (output.empty() || output.back() != int32_t(tokens.text_end)) {
+        output.clear();
+        return false;
+    }
     return true;
 }
 

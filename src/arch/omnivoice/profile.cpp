@@ -3,9 +3,15 @@
 #include "arch/omnivoice/frontend-host.h"
 #include "arch/omnivoice/omnivoice.h"
 #include "codepoint-scan.h"
+#include "ggml.h"
+#include "gguf-metadata.h"
+#include "gguf.h"
+#include "sha256.h"
 #include "text-frontend.h"
 
+#include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -414,6 +420,514 @@ synth_status_t resolve_instruct(const std::string &                     descript
     auto design      = std::make_shared<DesignInstruct>();
     design->instruct = std::move(joined);
     output           = std::move(design);
+    return SYNTH_OK;
+}
+
+// ---------------------------------------------------------------------------
+// Task 16: the v1 Serialized Voice Profile envelope. See profile.h's own
+// header comment on this section for the schema/kind split and the status
+// mapping load_profile_from_memory below implements.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr const char * kEnvelopeArchitecture    = "synthprofile";
+constexpr uint32_t     kEnvelopeFormatVersion   = 1;
+constexpr const char * kEnvelopeModelFamily     = "omnivoice";
+// The SAME string the package's own ProfileContract declares
+// (weights.cpp's read_profile_contract, "omnivoice-clone-prompt") -- see
+// profile.h's header comment on why this is one schema for two kinds rather
+// than two schemas.
+constexpr const char * kEnvelopeSchema          = "omnivoice-clone-prompt";
+constexpr uint32_t     kEnvelopeSchemaVersion   = 1;
+constexpr const char * kKindClonePrompt         = "clone-prompt";
+constexpr const char * kKindDesignInstruct      = "design-instruct";
+constexpr const char * kKeyCompatibilityId      = "synthesize.voice_profile.compatibility_id";
+constexpr const char * kKeyContentSha256        = "synthesize.voice_profile.content_sha256";
+constexpr const char * kTensorReferenceTokens   = "profile.reference_tokens";
+constexpr uint32_t     kReferenceTokenCodebooks = 8;
+
+struct GgufContextDeleter {
+    void operator()(gguf_context * context) const {
+        if (context != nullptr) {
+            gguf_free(context);
+        }
+    }
+};
+
+using OwnedGgufContext = std::unique_ptr<gguf_context, GgufContextDeleter>;
+
+// ---------------------------------------------------------------------------
+// Little-endian byte-buffer writers -- GGUF's own encoding (gguf.h's header
+// comment), and this project's blanket little-endian-host assumption
+// (gguf-metadata.cpp's own raw memcpy reads make the same assumption
+// elsewhere in this codebase; ggml's own writer/reader never byte-swaps
+// either).
+// ---------------------------------------------------------------------------
+
+void put_bytes(std::vector<uint8_t> & out, const void * data, size_t size) {
+    const auto * bytes = static_cast<const uint8_t *>(data);
+    out.insert(out.end(), bytes, bytes + size);
+}
+
+template <typename T> void put(std::vector<uint8_t> & out, T value) {
+    put_bytes(out, &value, sizeof(value));
+}
+
+void put_gguf_string(std::vector<uint8_t> & out, const std::string & value) {
+    put<uint64_t>(out, uint64_t(value.size()));
+    put_bytes(out, value.data(), value.size());
+}
+
+void pad_to_alignment(std::vector<uint8_t> & out, size_t alignment) {
+    while (out.size() % alignment != 0) {
+        out.push_back(0);
+    }
+}
+
+// Encodes every KV pair `ctx` holds, in insertion order, exactly mirroring
+// gguf.cpp's own gguf_write_out for the metadata portion of a GGUF file --
+// see write_envelope below for why the header and tensor sections are
+// hand-written instead of going through gguf's own (file-only) writer.
+// Handles only the value shapes this schema ever produces (uint32, uint64,
+// float32, and string scalars; one 32-element uint8 array shape, used for
+// both 32-byte ID fields) -- returning false for anything else, since
+// nothing here ever encodes untrusted input and reaching that arm is this
+// writer's own defect.
+//
+// Records the byte offset of `kKeyContentSha256`'s 32-byte VALUE into
+// `out_sha_offset` as it is written, so write_envelope can patch the real
+// digest in afterward without a second pass over the buffer.
+bool encode_metadata_kv(const gguf_context * ctx, std::vector<uint8_t> & out, size_t & out_sha_offset) {
+    bool          found_sha = false;
+    const int64_t n_kv      = gguf_get_n_kv(ctx);
+    for (int64_t index = 0; index < n_kv; ++index) {
+        const std::string key  = gguf_get_key(ctx, index);
+        const gguf_type   type = gguf_get_kv_type(ctx, index);
+        put_gguf_string(out, key);
+        if (type == GGUF_TYPE_ARRAY) {
+            const gguf_type element_type = gguf_get_arr_type(ctx, index);
+            const size_t    count        = gguf_get_arr_n(ctx, index);
+            put<int32_t>(out, int32_t(GGUF_TYPE_ARRAY));
+            put<int32_t>(out, int32_t(element_type));
+            put<uint64_t>(out, uint64_t(count));
+            if (element_type != GGUF_TYPE_UINT8) {
+                return false;
+            }
+            const auto * data = static_cast<const uint8_t *>(gguf_get_arr_data(ctx, index));
+            if (data == nullptr && count > 0) {
+                return false;
+            }
+            if (key == kKeyContentSha256) {
+                out_sha_offset = out.size();
+                found_sha      = true;
+            }
+            put_bytes(out, data, count);
+            continue;
+        }
+        put<int32_t>(out, int32_t(type));
+        switch (type) {
+            case GGUF_TYPE_UINT32:
+                put<uint32_t>(out, gguf_get_val_u32(ctx, index));
+                break;
+            case GGUF_TYPE_UINT64:
+                put<uint64_t>(out, gguf_get_val_u64(ctx, index));
+                break;
+            case GGUF_TYPE_FLOAT32:
+                put<float>(out, gguf_get_val_f32(ctx, index));
+                break;
+            case GGUF_TYPE_STRING:
+                put_gguf_string(out, gguf_get_val_str(ctx, index));
+                break;
+            default:
+                return false;
+        }
+    }
+    return found_sha;
+}
+
+// Appends the common v1 envelope header metadata every kind shares.
+// `compatibility_id` is copied verbatim. `content_sha256` is seeded at
+// zero -- docs/c-interface.md's exact rule: write_envelope hashes the
+// assembled buffer with this placeholder still in place, then patches the
+// real digest into the same 32 bytes afterward.
+void set_common_metadata(gguf_context * ctx, const char * kind, const uint8_t (&compatibility_id)[32]) {
+    gguf_set_val_str(ctx, "general.architecture", kEnvelopeArchitecture);
+    gguf_set_val_u32(ctx, "synthesize.voice_profile.format_version", kEnvelopeFormatVersion);
+    gguf_set_val_str(ctx, "synthesize.voice_profile.model_family", kEnvelopeModelFamily);
+    gguf_set_val_str(ctx, "synthesize.voice_profile.schema", kEnvelopeSchema);
+    gguf_set_val_u32(ctx, "synthesize.voice_profile.schema_version", kEnvelopeSchemaVersion);
+    gguf_set_arr_data(ctx, kKeyCompatibilityId, GGUF_TYPE_UINT8, compatibility_id, 32);
+    static constexpr uint8_t kZeroDigest[32] = {};
+    gguf_set_arr_data(ctx, kKeyContentSha256, GGUF_TYPE_UINT8, kZeroDigest, 32);
+    gguf_set_val_str(ctx, "synthesize.voice_profile.kind", kind);
+}
+
+// Hand-writes the header, tensor-info section (0 or 1 entries), alignment
+// padding, and tensor data (if any) that gguf.h's own writer API cannot
+// produce into a memory buffer: the function gguf_get_meta_size/
+// gguf_get_meta_data themselves call to do this internally
+// (gguf_write_to_buf) is declared only in ggml-impl.h, an internal header
+// this project's ggml submodule boundary puts out of reach (CLAUDE.md:
+// "never edit ggml/ in place ... it is a checkout of another repository";
+// depending on its private headers carries the same fragility -- an
+// upstream refactor could move or remove it without notice). The metadata
+// KV section above genuinely goes through gguf's own setter/getter API
+// (gguf_set_val_*/gguf_get_*); only the header/tensor-info/tensor-data
+// framing below is this project's own, and it is deliberately narrow: this
+// schema never has more than one tensor, with a shape this function already
+// knows locally (it is never read back from `ctx`, which has no
+// per-dimension shape getter to read it back FROM -- gguf_get_tensor_size
+// only ever returns the flattened byte count).
+//
+// `ctx` must already hold `content_sha256` seeded at 32 zero bytes
+// (set_common_metadata's job).
+synth_status_t write_envelope(const gguf_context *         ctx,
+                              const std::vector<int32_t> * tensor_tokens,
+                              uint64_t                     tensor_frames,
+                              std::vector<uint8_t> &       out_bytes) {
+    std::vector<uint8_t> bytes;
+    const int64_t        n_tensors = (tensor_tokens != nullptr) ? 1 : 0;
+
+    put_bytes(bytes, GGUF_MAGIC, 4);
+    put<uint32_t>(bytes, uint32_t(GGUF_VERSION));
+    put<int64_t>(bytes, n_tensors);
+    put<int64_t>(bytes, gguf_get_n_kv(ctx));
+
+    size_t sha_offset = 0;
+    if (!encode_metadata_kv(ctx, bytes, sha_offset)) {
+        return SYNTH_ERR_INTERNAL;
+    }
+
+    if (tensor_tokens != nullptr) {
+        put_gguf_string(bytes, kTensorReferenceTokens);
+        put<uint32_t>(bytes, uint32_t(2));                       // n_dims
+        put<int64_t>(bytes, int64_t(tensor_frames));             // ne[0] = T_ref
+        put<int64_t>(bytes, int64_t(kReferenceTokenCodebooks));  // ne[1] = 8
+        put<int32_t>(bytes, int32_t(GGML_TYPE_I32));
+        put<uint64_t>(bytes, uint64_t(0));                       // the only tensor starts at offset 0
+    }
+    pad_to_alignment(bytes, GGUF_DEFAULT_ALIGNMENT);
+
+    if (tensor_tokens != nullptr) {
+        put_bytes(bytes, tensor_tokens->data(), tensor_tokens->size() * sizeof(int32_t));
+        pad_to_alignment(bytes, GGUF_DEFAULT_ALIGNMENT);
+    }
+
+    // The digest step docs/c-interface.md prescribes: hash the buffer with
+    // content_sha256 already zero (set_common_metadata seeded it that way,
+    // untouched above), then overwrite just those 32 bytes with the result.
+    uint8_t digest[32];
+    synth::sha256(bytes.data(), bytes.size(), digest);
+    std::memcpy(bytes.data() + sha_offset, digest, sizeof(digest));
+
+    out_bytes = std::move(bytes);
+    return SYNTH_OK;
+}
+
+// Reads a required, exactly-32-element uint8 array metadata value. `false`
+// covers "missing", "wrong GGUF type", and "wrong element count" alike --
+// the caller maps all three to the same malformed outcome.
+bool read_u8_32_array(const gguf_context * ctx, const char * key, uint8_t (&out)[32]) {
+    const int64_t id = gguf_find_key(ctx, key);
+    if (id < 0 || gguf_get_kv_type(ctx, id) != GGUF_TYPE_ARRAY || gguf_get_arr_type(ctx, id) != GGUF_TYPE_UINT8 ||
+        gguf_get_arr_n(ctx, id) != 32) {
+        return false;
+    }
+    const void * data = gguf_get_arr_data(ctx, id);
+    if (data == nullptr) {
+        return false;
+    }
+    std::memcpy(out, data, 32);
+    return true;
+}
+
+// Locates the byte OFFSET of `key`'s 32-element uint8 array VALUE within a
+// raw, untrusted GGUF byte buffer, by searching for that KV entry's own
+// on-disk encoding PREFIX (length-prefixed key text, then the array marker,
+// element-type tag, and element count -- see gguf.cpp's gguf_kv::write for
+// the exact byte layout this mirrors). This is independent of the parsed
+// gguf_context's own bookkeeping: gguf_get_arr_data only ever hands back a
+// pointer into the PARSED context's own internal copy, never an offset into
+// the caller's original bytes, and the digest check below needs the latter
+// to hash "the complete input with that one value treated as zero"
+// (docs/c-interface.md) rather than a reconstruction built from parsed
+// fields.
+bool find_u8_32_value_offset(const uint8_t * data, size_t data_size, const std::string & key, size_t & out_offset) {
+    std::vector<uint8_t> needle;
+    put<uint64_t>(needle, uint64_t(key.size()));
+    put_bytes(needle, key.data(), key.size());
+    put<int32_t>(needle, int32_t(GGUF_TYPE_ARRAY));
+    put<int32_t>(needle, int32_t(GGUF_TYPE_UINT8));
+    put<uint64_t>(needle, uint64_t(32));
+
+    const uint8_t * begin = data;
+    const uint8_t * end   = data + data_size;
+    const uint8_t * found = std::search(begin, end, needle.begin(), needle.end());
+    if (found == end) {
+        return false;
+    }
+    const size_t value_offset = size_t(found - begin) + needle.size();
+    if (value_offset + 32 > data_size) {
+        return false;
+    }
+    out_offset = value_offset;
+    return true;
+}
+
+}  // namespace
+
+synth_status_t serialize_clone_prompt(const ClonePrompt & prompt,
+                                      const uint8_t (&compatibility_id)[32],
+                                      std::vector<uint8_t> & out_bytes) {
+    if (prompt.reference_tokens.empty() || prompt.reference_tokens.size() % kReferenceTokenCodebooks != 0) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    OwnedGgufContext ctx(gguf_init_empty());
+    if (ctx == nullptr) {
+        return SYNTH_ERR_OOM;
+    }
+    set_common_metadata(ctx.get(), kKindClonePrompt, compatibility_id);
+    gguf_set_val_str(ctx.get(), "synthesize.voice_profile.transcript_text", prompt.transcript_text.c_str());
+    gguf_set_val_f32(ctx.get(), "synthesize.voice_profile.ref_rms", prompt.ref_rms);
+    gguf_set_val_str(ctx.get(), "synthesize.voice_profile.language_tag", prompt.language_tag.c_str());
+
+    const uint64_t frames = uint64_t(prompt.reference_tokens.size() / kReferenceTokenCodebooks);
+    return write_envelope(ctx.get(), &prompt.reference_tokens, frames, out_bytes);
+}
+
+synth_status_t serialize_design_instruct(const DesignInstruct & instruct,
+                                         const uint8_t (&compatibility_id)[32],
+                                         std::vector<uint8_t> & out_bytes) {
+    OwnedGgufContext ctx(gguf_init_empty());
+    if (ctx == nullptr) {
+        return SYNTH_ERR_OOM;
+    }
+    set_common_metadata(ctx.get(), kKindDesignInstruct, compatibility_id);
+    gguf_set_val_str(ctx.get(), "synthesize.voice_profile.instruct", instruct.instruct.c_str());
+    return write_envelope(ctx.get(), nullptr, 0, out_bytes);
+}
+
+synth_status_t load_profile_from_memory(Model &         model,
+                                        const uint8_t * data,
+                                        size_t          data_size,
+                                        const uint8_t (&compatibility_id)[32],
+                                        uint64_t                      max_total_frames,
+                                        synth::ProfileFamilyTag &     out_family_tag,
+                                        std::shared_ptr<const void> & out_payload,
+                                        const char *&                 out_diagnostic_code,
+                                        const char *&                 out_diagnostic_message) {
+    out_payload.reset();
+    out_family_tag         = synth::ProfileFamilyTag::None;
+    out_diagnostic_code    = nullptr;
+    out_diagnostic_message = nullptr;
+
+    if (data == nullptr || data_size == 0) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // Structural parse only: `ctx == nullptr` means gguf_init_from_buffer
+    // never reads (or allocates for) the tensor DATA blob, no matter how
+    // large the file's own tensor-info section claims it is -- only the
+    // bounded tensor-info section (name/shape/type/offset) is parsed here.
+    // The declared token count is checked against `max_total_frames` below,
+    // using only that bounded info, before this function ever allocates
+    // anything sized from it.
+    gguf_init_params init_params{};
+    init_params.no_alloc = true;
+    init_params.ctx      = nullptr;
+    OwnedGgufContext ctx(gguf_init_from_buffer(data, data_size, init_params));
+    if (ctx == nullptr) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    gguf_context * g = ctx.get();
+
+    if (gguf_get_alignment(g) != GGUF_DEFAULT_ALIGNMENT) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    GgufMetadata meta(g, "omnivoice");
+    if (!meta.require_string("general.architecture", kEnvelopeArchitecture)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    uint32_t format_version = 0;
+    if (!meta.u32("synthesize.voice_profile.format_version", format_version) ||
+        format_version != kEnvelopeFormatVersion) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    std::string model_family;
+    if (!meta.string("synthesize.voice_profile.model_family", model_family)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if (model_family != kEnvelopeModelFamily) {
+        // A structurally sound envelope for a DIFFERENT family, not corrupt
+        // data -- this loader understands the shape, just not for itself.
+        return SYNTH_ERR_UNSUPPORTED_VOICE;
+    }
+    std::string schema;
+    uint32_t    schema_version = 0;
+    if (!meta.string("synthesize.voice_profile.schema", schema) ||
+        !meta.u32("synthesize.voice_profile.schema_version", schema_version)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if (schema != kEnvelopeSchema || schema_version != kEnvelopeSchemaVersion) {
+        return SYNTH_ERR_UNSUPPORTED_VOICE;
+    }
+    std::string kind;
+    if (!meta.string("synthesize.voice_profile.kind", kind)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if (kind != kKindClonePrompt && kind != kKindDesignInstruct) {
+        // Unlike model_family/schema/schema_version above, `kind` is this
+        // ONE schema's own internal tag, not a different schema, version, or
+        // family: a value outside its two-member enum means the payload
+        // structure the rest of the bytes describe cannot be interpreted at
+        // all, which this project treats as malformed rather than merely
+        // unsupported (profile.h's own header comment on this function).
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    uint8_t file_compatibility_id[32];
+    if (!read_u8_32_array(g, kKeyCompatibilityId, file_compatibility_id)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if (std::memcmp(file_compatibility_id, compatibility_id, sizeof(file_compatibility_id)) != 0) {
+        return SYNTH_ERR_UNSUPPORTED_VOICE;
+    }
+    uint8_t stored_digest[32];
+    if (!read_u8_32_array(g, kKeyContentSha256, stored_digest)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    const bool is_clone = (kind == kKindClonePrompt);
+    if (gguf_get_n_tensors(g) != (is_clone ? 1 : 0)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // Size arithmetic BEFORE allocation: the declared token count is bounded
+    // by max_total_frames using only cheap tensor-info getters (no tensor
+    // payload byte has been read yet) before anything sized from it is ever
+    // allocated below -- neither the digest scratch copy (sized from
+    // `data_size`, which the caller already materialized, not from anything
+    // this file's own bytes claim) nor, later, the token vector itself.
+    int64_t  tensor_id     = -1;
+    uint64_t element_count = 0;
+    uint64_t frames        = 0;
+    if (is_clone) {
+        tensor_id = gguf_find_tensor(g, kTensorReferenceTokens);
+        if (tensor_id < 0 || gguf_get_tensor_type(g, tensor_id) != GGML_TYPE_I32) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        const size_t tensor_bytes = gguf_get_tensor_size(g, tensor_id);
+        if (tensor_bytes == 0 || tensor_bytes % (sizeof(int32_t) * kReferenceTokenCodebooks) != 0) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        element_count = tensor_bytes / sizeof(int32_t);
+        frames        = element_count / kReferenceTokenCodebooks;
+        if (frames == 0 || frames > max_total_frames) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+    }
+
+    // Digest verification (docs/c-interface.md's exact rule): hash the
+    // complete input with content_sha256's own 32 bytes treated as zero, and
+    // compare against the value stored there.
+    size_t sha_offset = 0;
+    if (!find_u8_32_value_offset(data, data_size, kKeyContentSha256, sha_offset)) {
+        // The parse above already confirmed this key exists as a 32-element
+        // uint8 array; failing to relocate it by its own on-disk encoding is
+        // this loader's own defect, not a caller mistake.
+        return SYNTH_ERR_INTERNAL;
+    }
+    std::vector<uint8_t> scratch(data, data + data_size);
+    std::memset(scratch.data() + sha_offset, 0, 32);
+    uint8_t computed_digest[32];
+    synth::sha256(scratch.data(), scratch.size(), computed_digest);
+    if (std::memcmp(computed_digest, stored_digest, sizeof(computed_digest)) != 0) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    if (!is_clone) {
+        std::string instruct;
+        if (!meta.string("synthesize.voice_profile.instruct", instruct)) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        auto design      = std::make_shared<DesignInstruct>();
+        design->instruct = std::move(instruct);
+        out_payload      = std::move(design);
+        out_family_tag   = synth::ProfileFamilyTag::OmnivoiceDesign;
+        return SYNTH_OK;
+    }
+
+    std::string transcript_text;
+    float       ref_rms = 0.0f;
+    std::string language_tag;
+    if (!meta.string("synthesize.voice_profile.transcript_text", transcript_text) ||
+        !meta.f32("synthesize.voice_profile.ref_rms", ref_rms) ||
+        !meta.string("synthesize.voice_profile.language_tag", language_tag)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if (!(ref_rms > 0.0f)) {
+        // ClonePrompt::ref_rms's own contract (profile.h): "always strictly
+        // positive for a ClonePrompt that exists at all" -- a serialized
+        // envelope claiming otherwise is malformed, the same rejection
+        // create_clone_prompt itself applies before a ClonePrompt is ever
+        // built.
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // Truncation guard: the DECLARED tensor byte range must actually fit
+    // inside the SUPPLIED buffer. gguf_init_from_buffer was called with
+    // `ctx == nullptr` specifically so it never performed this read (or the
+    // allocation it implies) itself -- see this function's own comment
+    // above the size-arithmetic block.
+    const size_t data_offset   = gguf_get_data_offset(g);
+    const size_t tensor_offset = gguf_get_tensor_offset(g, tensor_id);
+    const size_t tensor_bytes  = size_t(element_count) * sizeof(int32_t);
+    if (data_offset > data_size) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    size_t remaining = data_size - data_offset;
+    if (tensor_offset > remaining) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    remaining -= tensor_offset;
+    if (tensor_bytes > remaining) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    std::vector<int32_t> tokens(element_count);
+    std::memcpy(tokens.data(), data + data_offset + tensor_offset, tensor_bytes);
+
+    const uint32_t vocab_size = model.audio_vocab_size();
+    const uint32_t mask_id    = model.audio_mask_id();
+    for (int32_t token : tokens) {
+        if (token < 0 || uint32_t(token) >= vocab_size || uint32_t(token) == mask_id) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+    }
+
+    auto prompt              = std::make_shared<ClonePrompt>();
+    prompt->reference_tokens = std::move(tokens);
+    prompt->transcript_text  = transcript_text;
+    prompt->ref_rms          = ref_rms;
+    prompt->language_tag     = language_tag;
+
+    // transcript_ids is NOT serialized (profile.h's own ClonePrompt
+    // comment): re-tokenize the already-canonical transcript_text through
+    // this Loaded Model's own frontend, the same call create_clone_prompt
+    // itself makes on the punctuated transcript -- determinism guaranteed by
+    // the frozen BPE vocabulary, so this reproduces the exact ids the
+    // original profile's own creation call produced.
+    const std::shared_ptr<const TextFrontend> frontend = model.text_frontend();
+    if (frontend == nullptr || frontend->prepare(SYNTH_INPUT_TEXT_UTF8, transcript_text.data(), transcript_text.size(),
+                                                 0, prompt->transcript_ids) != SYNTH_OK) {
+        out_diagnostic_code    = "voice_profile.transcript_unencodable";
+        out_diagnostic_message = "the reference transcript contains a byte this package's frontend has no token for";
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    out_payload    = std::move(prompt);
+    out_family_tag = synth::ProfileFamilyTag::OmnivoiceClone;
     return SYNTH_OK;
 }
 

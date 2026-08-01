@@ -2,6 +2,7 @@ add_library(synthesize
     audio-delivery.cpp
     audio-normalizer.cpp
     gguf-metadata.cpp
+    sha256.cpp
     backend-device.cpp
     backend-module.cpp
     backend-plan.cpp

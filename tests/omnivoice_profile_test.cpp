@@ -19,6 +19,7 @@
 #include "omnivoice_synthetic_package.h"
 #include "synthesize.h"
 #include "test-assert.h"
+#include "voice-profile-handle.h"
 
 #include <cmath>
 #include <cstdint>
@@ -192,6 +193,46 @@ synth_sink_result_t SYNTH_CALL refuse_audio(void * user_data, const synth_audio_
     return SYNTH_SINK_CONTINUE;
 }
 
+// Synthesizes `text` at a fixed `seed` against `profile` and returns the raw
+// PCM plus its channel count, for the Serialized Profile round-trip's own
+// byte-identical comparison below (Task 16).
+bool synthesize_pcm(synth_model_t *         model,
+                    synth_voice_profile_t * profile,
+                    const char *            text,
+                    uint64_t                seed,
+                    std::vector<float> &    out_samples,
+                    uint32_t &              out_channels) {
+    synth_context_t * context = nullptr;
+    if (synth_context_create(model, &context) != SYNTH_OK) {
+        return false;
+    }
+
+    synth_request_t request;
+    synth_request_init(&request, sizeof(request));
+    request.input_kind        = SYNTH_INPUT_TEXT_UTF8;
+    request.input_data        = text;
+    request.input_count       = std::strlen(text);
+    request.language_tag      = "en";
+    request.language_tag_size = 2;
+    request.voice_profile     = profile;
+    request.seed              = seed;
+
+    synth_audio_buffer_t * audio = nullptr;
+    synth_result_t         result;
+    synth_result_init(&result, sizeof(result));
+    const bool ok = synth_synthesize_to_buffer(context, &request, &audio, &result) == SYNTH_OK && audio != nullptr;
+    if (ok) {
+        out_channels                = audio->channel_count;
+        const uint64_t sample_count = audio->frame_count * audio->channel_count;
+        out_samples.assign(audio->samples, audio->samples + sample_count);
+    }
+    if (audio != nullptr) {
+        synth_audio_buffer_free(audio);
+    }
+    synth_context_free(context);
+    return ok;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
@@ -226,10 +267,14 @@ int main(int argc, char ** argv) {
     SYNTH_TEST_CHECK(synth_model_get_voice_profile_capabilities(model, &capabilities) == SYNTH_OK);
     SYNTH_TEST_CHECK((capabilities.source_flags & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) != 0);
     SYNTH_TEST_CHECK((capabilities.source_flags & SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT) != 0);
-    // Serialized Profile is Task 16's; not claimed yet, so the schema/version/
-    // compatibility-id fields all stay at their unsupported default even
-    // though this model's HParams already carries real values internally.
-    SYNTH_TEST_CHECK((capabilities.source_flags & SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE) == 0);
+    // Serialized Profile (Task 16): claimed alongside REFERENCE_AUDIO/
+    // DESCRIPTION_TEXT now that a Voice Profile prepared either way can be
+    // serialized -- docs/c-interface.md: "Any Loaded Model that creates a
+    // Profile from Reference Audio, Description Text, or Random Seed also
+    // sets SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE". The schema string and
+    // compatibility id now come out of the same HParams that were already
+    // internally populated before this task, just not exposed until now.
+    SYNTH_TEST_CHECK((capabilities.source_flags & SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE) != 0);
     SYNTH_TEST_CHECK(capabilities.reference_transcript == SYNTH_REQUIREMENT_REQUIRED);
     SYNTH_TEST_CHECK(capabilities.reference_language == SYNTH_REQUIREMENT_OPTIONAL);
     SYNTH_TEST_CHECK(capabilities.description_language == SYNTH_REQUIREMENT_OPTIONAL);
@@ -239,11 +284,15 @@ int main(int argc, char ** argv) {
     SYNTH_TEST_CHECK(capabilities.min_reference_frames_per_clip == 24000);
     SYNTH_TEST_CHECK(capabilities.max_reference_frames_per_clip == 480000);
     SYNTH_TEST_CHECK(capabilities.max_reference_total_frames == 480000);
-    SYNTH_TEST_CHECK(capabilities.profile_schema == nullptr && capabilities.profile_schema_size == 0);
-    SYNTH_TEST_CHECK(capabilities.profile_schema_version == 0);
+    SYNTH_TEST_CHECK(capabilities.profile_schema != nullptr && capabilities.profile_schema_size > 0);
+    SYNTH_TEST_CHECK(std::string(capabilities.profile_schema, size_t(capabilities.profile_schema_size)) ==
+                     "omnivoice-clone-prompt");
+    SYNTH_TEST_CHECK(capabilities.profile_schema_version == 1);
+    bool compatibility_id_nonzero = false;
     for (uint8_t byte : capabilities.profile_compatibility_id) {
-        SYNTH_TEST_CHECK(byte == 0);
+        compatibility_id_nonzero = compatibility_id_nonzero || (byte != 0);
     }
+    SYNTH_TEST_CHECK(compatibility_id_nonzero);
 
     // --- Missing transcript -> INVALID_ARG, named diagnostic.
     {
@@ -424,6 +473,96 @@ int main(int argc, char ** argv) {
         synth_audio_buffer_free(audio);
         synth_context_free(context);
         synth_voice_profile_free(profile);
+    }
+
+    // --- Serialized Profiles (Plan 3's Task 16): the ClonePrompt round
+    // trip against the real package -- serialize, load_from_memory, then
+    // synthesize at a fixed seed from BOTH the original and the reloaded
+    // profile and require byte-identical PCM. Two serialize calls over the
+    // same profile are also compared byte-for-byte (determinism).
+    {
+        const synth_voice_reference_t        reference = make_reference(pcm, sample_rate, kPinnedTranscript, "en");
+        const synth_voice_reference_params_t params    = make_params(&reference, 1, nullptr);
+        synth_voice_profile_t *              original  = nullptr;
+        SYNTH_TEST_CHECK(synth_voice_profile_create_from_reference(model, &params, &original) == SYNTH_OK);
+
+        synth_voice_profile_serialize_params_t serialize_params;
+        synth_voice_profile_serialize_params_init(&serialize_params, sizeof(serialize_params));
+        synth_byte_buffer_t * buffer_a = nullptr;
+        synth_byte_buffer_t * buffer_b = nullptr;
+        SYNTH_TEST_CHECK(synth_voice_profile_serialize(original, &serialize_params, &buffer_a) == SYNTH_OK);
+        SYNTH_TEST_CHECK(synth_voice_profile_serialize(original, &serialize_params, &buffer_b) == SYNTH_OK);
+        SYNTH_TEST_CHECK(buffer_a->data_size == buffer_b->data_size);
+        SYNTH_TEST_CHECK(std::memcmp(buffer_a->data, buffer_b->data, buffer_a->data_size) == 0);
+
+        synth_voice_profile_load_params_t load_params;
+        synth_voice_profile_load_params_init(&load_params, sizeof(load_params));
+        load_params.data                 = buffer_a->data;
+        load_params.data_size            = buffer_a->data_size;
+        synth_voice_profile_t * reloaded = nullptr;
+        SYNTH_TEST_CHECK(synth_voice_profile_load_from_memory(model, &load_params, &reloaded) == SYNTH_OK);
+        SYNTH_TEST_CHECK(reloaded != nullptr);
+        SYNTH_TEST_CHECK(reloaded->model == model);
+        SYNTH_TEST_CHECK(reloaded->family_tag == synth::ProfileFamilyTag::OmnivoiceClone);
+
+        const char *       text = "The reloaded clone speaks the same way it always has.";
+        std::vector<float> pcm_original;
+        std::vector<float> pcm_reloaded;
+        uint32_t           channels_original = 0;
+        uint32_t           channels_reloaded = 0;
+        SYNTH_TEST_CHECK(synthesize_pcm(model, original, text, 7, pcm_original, channels_original));
+        SYNTH_TEST_CHECK(synthesize_pcm(model, reloaded, text, 7, pcm_reloaded, channels_reloaded));
+        SYNTH_TEST_CHECK(channels_original == channels_reloaded);
+        SYNTH_TEST_CHECK(!pcm_original.empty());
+        SYNTH_TEST_CHECK(pcm_original.size() == pcm_reloaded.size());
+        SYNTH_TEST_CHECK(std::memcmp(pcm_original.data(), pcm_reloaded.data(), pcm_original.size() * sizeof(float)) ==
+                         0);
+
+        synth_byte_buffer_free(buffer_a);
+        synth_byte_buffer_free(buffer_b);
+        synth_voice_profile_free(original);
+        synth_voice_profile_free(reloaded);
+    }
+
+    // --- Serialized Profiles: the DesignInstruct round trip, same proof.
+    {
+        synth_voice_description_params_t params;
+        synth_voice_description_params_init(&params, sizeof(params));
+        params.description               = kGoldenDesignInstruct;
+        params.description_size          = std::strlen(kGoldenDesignInstruct);
+        synth_voice_profile_t * original = nullptr;
+        SYNTH_TEST_CHECK(synth_voice_profile_create_from_description(model, &params, &original) == SYNTH_OK);
+
+        synth_voice_profile_serialize_params_t serialize_params;
+        synth_voice_profile_serialize_params_init(&serialize_params, sizeof(serialize_params));
+        synth_byte_buffer_t * buffer = nullptr;
+        SYNTH_TEST_CHECK(synth_voice_profile_serialize(original, &serialize_params, &buffer) == SYNTH_OK);
+
+        synth_voice_profile_load_params_t load_params;
+        synth_voice_profile_load_params_init(&load_params, sizeof(load_params));
+        load_params.data                 = buffer->data;
+        load_params.data_size            = buffer->data_size;
+        synth_voice_profile_t * reloaded = nullptr;
+        SYNTH_TEST_CHECK(synth_voice_profile_load_from_memory(model, &load_params, &reloaded) == SYNTH_OK);
+        SYNTH_TEST_CHECK(reloaded != nullptr);
+        SYNTH_TEST_CHECK(reloaded->family_tag == synth::ProfileFamilyTag::OmnivoiceDesign);
+
+        const char *       text = "OmniVoice speaks with one voice, loaded or not.";
+        std::vector<float> pcm_original;
+        std::vector<float> pcm_reloaded;
+        uint32_t           channels_original = 0;
+        uint32_t           channels_reloaded = 0;
+        SYNTH_TEST_CHECK(synthesize_pcm(model, original, text, 7, pcm_original, channels_original));
+        SYNTH_TEST_CHECK(synthesize_pcm(model, reloaded, text, 7, pcm_reloaded, channels_reloaded));
+        SYNTH_TEST_CHECK(channels_original == channels_reloaded);
+        SYNTH_TEST_CHECK(!pcm_original.empty());
+        SYNTH_TEST_CHECK(pcm_original.size() == pcm_reloaded.size());
+        SYNTH_TEST_CHECK(std::memcmp(pcm_original.data(), pcm_reloaded.data(), pcm_original.size() * sizeof(float)) ==
+                         0);
+
+        synth_byte_buffer_free(buffer);
+        synth_voice_profile_free(original);
+        synth_voice_profile_free(reloaded);
     }
 
     synth_model_free(model);

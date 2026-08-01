@@ -56,6 +56,17 @@ struct VoiceProfileInfo {
     uint64_t            max_total_frames             = 0;
     uint32_t            max_reference_count          = 0;
     uint8_t             compatibility_id[32]         = {};  // decoded from the package hex
+    // The package's own declared Serialized Profile schema identity (the
+    // same "synthesize.profile.schema"/"schema_version" ProfileContract pair
+    // weights.cpp already validates at load time) -- exposed through
+    // `synth_voice_profile_capabilities_t::profile_schema`/
+    // `profile_schema_version` once `source_flags` also carries
+    // SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE (Task 16). `schema` is owned by
+    // this Loaded Model's own `ModelInfo` for its whole lifetime, which is
+    // what lets the public query hand back a borrowed pointer that "remains
+    // valid until synth_model_free()" (docs/c-interface.md).
+    std::string         schema;
+    uint32_t            schema_version = 0;
 };
 
 // Decodes a 64-character lowercase-hex Profile Compatibility ID -- the shape

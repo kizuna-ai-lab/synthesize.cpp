@@ -1,7 +1,9 @@
 #pragma once
 
 #include "synthesize.h"
+#include "voice-profile-handle.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -171,5 +173,98 @@ synth_status_t resolve_instruct(const std::string &                     descript
                                 std::shared_ptr<const DesignInstruct> & output,
                                 const char *&                           out_diagnostic_code,
                                 std::string &                           out_diagnostic_message);
+
+// ---------------------------------------------------------------------------
+// Task 16: the v1 Serialized Voice Profile envelope (ADR 0008,
+// docs/c-interface.md's "v1 Serialized Profile GGUF Contract" and
+// docs/c-interface.md:654-674) -- little-endian GGUF v3, alignment 32,
+// `general.architecture = "synthprofile"`. ONE family schema
+// ("omnivoice-clone-prompt", the same string the package's own
+// ProfileContract already declares) covers BOTH of this family's payload
+// shapes; `synthesize.voice_profile.kind` ("clone-prompt" | "design-instruct")
+// picks between them. A second schema id would be truthful too, but would
+// need a package re-cut to declare (every already-shipped package's
+// `synthesize.profile.schema` is frozen at "omnivoice-clone-prompt"); one
+// schema with an internal kind tag is available without one.
+// ---------------------------------------------------------------------------
+
+// Serializes `prompt` into a fresh v1 envelope. `compatibility_id` is the
+// Loaded Model's own 32-byte Profile Compatibility ID (already decoded from
+// the package's hex metadata by model-handle.h's
+// decode_profile_compatibility_id / model-info.h's VoiceProfileInfo) and is
+// copied into the envelope verbatim.
+//
+// `prompt.transcript_ids` is NOT written: it is a re-tokenization cache
+// (profile.h's own ClonePrompt comment), and load_profile_from_memory below
+// rebuilds it from `prompt.transcript_text` through the Loaded Model's own
+// frontend, which this project's frozen BPE vocabulary guarantees is
+// deterministic across the round trip.
+//
+// Deterministic: the same `prompt` and `compatibility_id` always produce
+// byte-identical output -- the metadata key insertion order below is fixed,
+// and nothing here reads the wall clock, an address, or any other
+// environment-derived value. The round-trip and byte-determinism tests
+// (tests/omnivoice_profile_test.cpp, tests/omnivoice_serialize_test.cpp)
+// depend on this.
+//
+// Returns SYNTH_ERR_INVALID_ARG if `prompt.reference_tokens` is not a
+// non-empty multiple of 8 (profile.h's own "8 x T_ref" contract) -- a
+// ClonePrompt this project itself ever builds should never violate that, so
+// reaching this path is itself evidence of a defect upstream of this call,
+// not a caller mistake to diagnose further.
+synth_status_t serialize_clone_prompt(const ClonePrompt & prompt,
+                                      const uint8_t (&compatibility_id)[32],
+                                      std::vector<uint8_t> & out_bytes);
+
+// DesignInstruct's sibling: no tensor, one `synthesize.voice_profile.instruct`
+// metadata string.
+synth_status_t serialize_design_instruct(const DesignInstruct & instruct,
+                                         const uint8_t (&compatibility_id)[32],
+                                         std::vector<uint8_t> & out_bytes);
+
+// Parses a v1 envelope out of untrusted `data`/`data_size` against `model`'s
+// own compatibility id and Reference Audio token budget (`max_total_frames`,
+// this package's `max_total_frames` from ProfileContract -- the ceiling on
+// `reference_tokens.size() / 8`), and reconstructs whichever payload the
+// envelope's own `kind` metadata names.
+//
+// Status mapping (docs/c-interface.md: "Incompatible Model data returns
+// SYNTH_ERR_UNSUPPORTED_VOICE; malformed, truncated, or corrupt data returns
+// SYNTH_ERR_INVALID_ARG"):
+//   * structurally broken bytes (gguf_init_from_buffer itself refuses them,
+//     a required key is missing/wrongly typed/duplicated, the tensor shape
+//     or byte range does not fit `data`, a token is outside
+//     [0, mask_id) \ {mask_id}, or the content digest does not match) ->
+//     SYNTH_ERR_INVALID_ARG;
+//   * a structurally well-formed envelope for a DIFFERENT model_family,
+//     schema, schema_version, or exact compatibility_id -> SYNTH_ERR_UNSUPPORTED_VOICE
+//     (this loader understands the envelope, just not for this Model);
+//   * an unrecognized `kind` value -> SYNTH_ERR_INVALID_ARG: unlike the three
+//     mismatches above, `kind` is this ONE schema's own internal tag, not a
+//     different schema/version/model -- a value outside its two-member enum
+//     means the payload structure the rest of the bytes describe cannot be
+//     interpreted at all, which is this project's definition of malformed,
+//     not merely unsupported.
+//
+// Size arithmetic runs BEFORE any allocation sized from the untrusted bytes:
+// the declared tensor element count is checked against `max_total_frames * 8`
+// using only cheap GGUF metadata/tensor-info getters (no tensor payload is
+// read) before `std::vector<int32_t>` ever sizes itself from it -- the
+// qwen3-3TB lesson (docs referenced in this project's own Task 16 brief)
+// applies here too.
+//
+// On a refusal this function itself names (currently only an unencodable
+// re-tokenized transcript), `out_diagnostic_code`/`out_diagnostic_message`
+// are set to non-null static strings; otherwise both stay null and the
+// returned status is specific enough on its own.
+synth_status_t load_profile_from_memory(Model &         model,
+                                        const uint8_t * data,
+                                        size_t          data_size,
+                                        const uint8_t (&compatibility_id)[32],
+                                        uint64_t                      max_total_frames,
+                                        synth::ProfileFamilyTag &     out_family_tag,
+                                        std::shared_ptr<const void> & out_payload,
+                                        const char *&                 out_diagnostic_code,
+                                        const char *&                 out_diagnostic_message);
 
 }  // namespace synth::omnivoice

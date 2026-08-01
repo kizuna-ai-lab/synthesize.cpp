@@ -365,6 +365,14 @@ uint32_t Model::text_vocab_size() const {
     return implementation_->hparams.generator.text_vocab_size;
 }
 
+uint32_t Model::audio_vocab_size() const {
+    return implementation_->hparams.audio.vocab_size;
+}
+
+uint32_t Model::audio_mask_id() const {
+    return implementation_->hparams.audio.mask_id;
+}
+
 synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisOutput & output) {
     output                  = SynthesisOutput{};
     Impl &          impl    = *implementation_;

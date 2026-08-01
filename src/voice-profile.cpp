@@ -8,11 +8,13 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -440,6 +442,94 @@ synth_status_t create_omnivoice_profile_from_description(const synth_model_t *  
     return SYNTH_OK;
 }
 
+// ---------------------------------------------------------------------------
+// OmniVoice's serialize / load_from_memory dispatch (Task 16): the v1
+// Serialized Profile round trip, ADR 0008 / docs/c-interface.md's "v1
+// Serialized Profile GGUF Contract". The GGUF envelope writer/reader itself
+// lives in arch/omnivoice/profile.cpp; this file only owns dispatch (which
+// family, which of that family's two payload shapes) and the public
+// `synth_byte_buffer_t` allocation.
+// ---------------------------------------------------------------------------
+
+synth_status_t serialize_omnivoice_profile(const synth_voice_profile *                    profile,
+                                           const synth_voice_profile_serialize_params_t * params,
+                                           synth_byte_buffer_t **                         out_data) {
+    const synth_diagnostic_sink_t * diagnostics =
+        read_visible(params, offsetof(synth_voice_profile_serialize_params_t, diagnostics),
+                     static_cast<const synth_diagnostic_sink_t *>(nullptr));
+    if (!valid_diagnostic_sink(diagnostics)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    const uint8_t (&compatibility_id)[32] = profile->model->info.voice_profile.compatibility_id;
+
+    std::vector<uint8_t> bytes;
+    synth_status_t       status;
+    if (profile->family_tag == synth::ProfileFamilyTag::OmnivoiceClone) {
+        const auto & clone = *static_cast<const synth::omnivoice::ClonePrompt *>(profile->payload.get());
+        status             = synth::omnivoice::serialize_clone_prompt(clone, compatibility_id, bytes);
+    } else {
+        const auto & design = *static_cast<const synth::omnivoice::DesignInstruct *>(profile->payload.get());
+        status              = synth::omnivoice::serialize_design_instruct(design, compatibility_id, bytes);
+    }
+    if (status != SYNTH_OK) {
+        return status;
+    }
+
+    auto storage  = std::make_unique<ByteBufferStorage>();
+    storage->data = std::make_unique<uint8_t[]>(bytes.size());
+    if (!bytes.empty()) {
+        std::memcpy(storage->data.get(), bytes.data(), bytes.size());
+    }
+    storage->public_value.struct_size = sizeof(storage->public_value);
+    storage->public_value.data        = storage->data.get();
+    storage->public_value.data_size   = bytes.size();
+    *out_data                         = reinterpret_cast<synth_byte_buffer_t *>(storage.release());
+    return SYNTH_OK;
+}
+
+synth_status_t load_omnivoice_profile_from_memory(const synth_model_t *                     model,
+                                                  const synth_voice_profile_load_params_t * params,
+                                                  synth_voice_profile_t **                  out_profile) {
+    const synth_diagnostic_sink_t * diagnostics =
+        read_visible(params, offsetof(synth_voice_profile_load_params_t, diagnostics),
+                     static_cast<const synth_diagnostic_sink_t *>(nullptr));
+    if (!valid_diagnostic_sink(diagnostics)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    const uint8_t * data =
+        read_visible(params, offsetof(synth_voice_profile_load_params_t, data), static_cast<const uint8_t *>(nullptr));
+    const uint64_t data_size =
+        read_visible(params, offsetof(synth_voice_profile_load_params_t, data_size), uint64_t(0));
+    // docs/c-interface.md: "Loading requires non-null, non-empty bytes."
+    if (data == nullptr || data_size == 0) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if (data_size > std::numeric_limits<size_t>::max()) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> payload;
+    const char *                diagnostic_code    = nullptr;
+    const char *                diagnostic_message = nullptr;
+    const synth_status_t        status             = synth::omnivoice::load_profile_from_memory(
+        *model->omnivoice, data, static_cast<size_t>(data_size), model->info.voice_profile.compatibility_id,
+        model->info.voice_profile.max_total_frames, family_tag, payload, diagnostic_code, diagnostic_message);
+    if (status != SYNTH_OK) {
+        emit_diagnostic(diagnostics, status, diagnostic_code, diagnostic_message);
+        return status;
+    }
+
+    auto profile        = std::make_unique<synth_voice_profile>();
+    profile->model      = model;
+    profile->family_tag = family_tag;
+    profile->payload    = std::move(payload);
+    *out_profile        = profile.release();
+    return SYNTH_OK;
+}
+
 }  // namespace
 
 void synth_voice_profile_capabilities_init(synth_voice_profile_capabilities_t * capabilities, uint64_t struct_size) {
@@ -486,13 +576,26 @@ synth_status_t synth_model_get_voice_profile_capabilities(const synth_model_t * 
     write_visible(out_capabilities, offsetof(synth_voice_profile_capabilities_t, max_reference_total_frames),
                   &profile.max_total_frames, sizeof(profile.max_total_frames));
 
-    // profile_schema/profile_schema_version/profile_compatibility_id stay at
-    // the initializer's null/zero default until SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE
-    // is also set (Task 16): docs/c-interface.md's "When Serialized Profile is
-    // unsupported ... the 32 ID bytes are zero" rule, which a model can be on
-    // the near side of even once it stores real compatibility_id bytes
-    // internally (VoiceProfileInfo::compatibility_id, filled from Task 14 on).
+    // profile_schema/profile_schema_size/profile_schema_version/
+    // profile_compatibility_id stay at the initializer's null/zero default
+    // until SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE is also set (Task 16):
+    // docs/c-interface.md's "When Serialized Profile is unsupported ... the
+    // 32 ID bytes are zero" rule, which a model can be on the near side of
+    // even once it stores real compatibility_id bytes internally
+    // (VoiceProfileInfo::compatibility_id, filled from Task 14 on). Once the
+    // flag is set, the schema string is borrowed from `model->info` itself
+    // (VoiceProfileInfo::schema, a std::string owned by the Loaded Model),
+    // which is exactly what lets it "remain valid until synth_model_free()"
+    // per that same doc section.
     if ((profile.source_flags & SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE) != 0) {
+        const char *   schema_data = profile.schema.c_str();
+        const uint64_t schema_size = profile.schema.size();
+        write_visible(out_capabilities, offsetof(synth_voice_profile_capabilities_t, profile_schema), &schema_data,
+                      sizeof(schema_data));
+        write_visible(out_capabilities, offsetof(synth_voice_profile_capabilities_t, profile_schema_size), &schema_size,
+                      sizeof(schema_size));
+        write_visible(out_capabilities, offsetof(synth_voice_profile_capabilities_t, profile_schema_version),
+                      &profile.schema_version, sizeof(profile.schema_version));
         write_visible(out_capabilities, offsetof(synth_voice_profile_capabilities_t, profile_compatibility_id),
                       &profile.compatibility_id, sizeof(profile.compatibility_id));
     }
@@ -608,7 +711,31 @@ synth_status_t synth_voice_profile_load_from_memory(const synth_model_t *       
     if (model == nullptr) {
         return SYNTH_ERR_INVALID_ARG;
     }
-    return validate_unsupported_params(params, offsetof(synth_voice_profile_load_params_t, diagnostics));
+    if (params == nullptr) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if (params->struct_size < sizeof(uint64_t)) {
+        return SYNTH_ERR_BAD_STRUCT_SIZE;
+    }
+    // `params` is fully validated (non-null, adequately sized) before `model`
+    // is ever dereferenced below -- tests/voice_profile_api_test.c drives
+    // this exact function with a dummy, never-dereferenced
+    // `(synth_model_t *) 1` specifically to pin a too-small params struct
+    // returning BAD_STRUCT_SIZE without needing a real model behind it; that
+    // ordering has to survive Task 16 wiring a real family dispatch in here.
+    if (model->info.family != synth::ModelFamily::Omnivoice) {
+        // Every other family still takes the generic "unsupported" fallback,
+        // the same one synth_voice_profile_create_from_reference/
+        // create_from_description use for a non-OmniVoice model.
+        return validate_unsupported_params(params, offsetof(synth_voice_profile_load_params_t, diagnostics));
+    }
+    try {
+        return load_omnivoice_profile_from_memory(model, params, out_profile);
+    } catch (const std::bad_alloc &) {
+        return SYNTH_ERR_OOM;
+    } catch (...) {
+        return SYNTH_ERR_INTERNAL;
+    }
 }
 
 synth_status_t synth_voice_profile_serialize(const synth_voice_profile_t *                  profile,
@@ -624,6 +751,25 @@ synth_status_t synth_voice_profile_serialize(const synth_voice_profile_t *      
     if (params != nullptr && params->struct_size < sizeof(uint64_t)) {
         return SYNTH_ERR_BAD_STRUCT_SIZE;
     }
+    // `params` is fully validated before `profile` is ever dereferenced
+    // below, for the same reason and against the same test as
+    // synth_voice_profile_load_from_memory's own ordering comment above --
+    // tests/voice_profile_api_test.c's dummy `(synth_voice_profile_t *) 1`
+    // case for THIS function relies on it too.
+    if (profile->family_tag == synth::ProfileFamilyTag::OmnivoiceClone ||
+        profile->family_tag == synth::ProfileFamilyTag::OmnivoiceDesign) {
+        try {
+            return serialize_omnivoice_profile(profile, params, out_data);
+        } catch (const std::bad_alloc &) {
+            return SYNTH_ERR_OOM;
+        } catch (...) {
+            return SYNTH_ERR_INTERNAL;
+        }
+    }
+    // No family currently produces any other tag, but the generic fallback
+    // stays here rather than being narrowed to an assert: a Voice Profile's
+    // own family_tag is the one thing this dispatcher must never
+    // misinterpret as OmniVoice's.
     const synth_diagnostic_sink_t * diagnostics =
         read_visible(params, offsetof(synth_voice_profile_serialize_params_t, diagnostics),
                      static_cast<const synth_diagnostic_sink_t *>(nullptr));

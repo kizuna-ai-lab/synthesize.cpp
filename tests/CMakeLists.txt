@@ -159,6 +159,7 @@ if(SYNTH_BUILD_SHARED AND UNIX AND NOT APPLE)
     set_tests_properties(synthesize-shared-exports PROPERTIES LABELS "unit;abi")
 endif()
 
+synth_add_unit_test(synthesize-sha256-test sha256_test.cpp)
 synth_add_unit_test(synthesize-kokoro-metadata-test kokoro_metadata_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-metadata-test qwen3_tts_metadata_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-bpe-test qwen3_tts_bpe_test.cpp)
@@ -332,8 +333,20 @@ target_link_libraries(synthesize-omnivoice-design-test PRIVATE synthesize ggml)
 add_test(NAME synthesize-omnivoice-design-test
     COMMAND synthesize-omnivoice-design-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-design)
 synth_register_unit_target(synthesize-omnivoice-design-test)
+# Serialized Voice Profiles (Task 16): the GGUF envelope round trip and
+# tamper matrix, against a synthetic package -- its own fixtures
+# subdirectory, not omnivoice-synthetic's or omnivoice-design's, for the
+# same race-avoidance reason those two already keep separate ones.
+add_executable(synthesize-omnivoice-serialize-test omnivoice_serialize_test.cpp)
+target_include_directories(synthesize-omnivoice-serialize-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(synthesize-omnivoice-serialize-test PRIVATE synthesize ggml)
+add_test(NAME synthesize-omnivoice-serialize-test
+    COMMAND synthesize-omnivoice-serialize-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-serialize)
+synth_register_unit_target(synthesize-omnivoice-serialize-test)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-synthetic)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-design)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-serialize)
 set_tests_properties(
     synthesize-omnivoice-metadata-test
     synthesize-omnivoice-catalog-test
@@ -348,6 +361,7 @@ set_tests_properties(
     synthesize-omnivoice-load-synthetic-test
     synthesize-omnivoice-decode-loop-test
     synthesize-omnivoice-design-test
+    synthesize-omnivoice-serialize-test
     PROPERTIES LABELS "unit;omnivoice")
 set_tests_properties(
     synthesize-vits-text-encoder-host-test
@@ -715,11 +729,18 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         set_tests_properties(synthesize-omnivoice-profile-test PROPERTIES
             LABELS "integration;omnivoice;abi"
             # One real encode_reference pass (HuBERT semantic branch, DAC
-            # acoustic encoder, RVQ) over ~14 s of audio, plus the silent-clip
-            # case's own pass over exactly 1 s -- both real forward passes
-            # through the 0.6B-parameter generator's shared weights buffer,
-            # not the generator loop itself.
-            TIMEOUT 600)
+            # acoustic encoder, RVQ) over ~14 s of audio, the silent-clip
+            # case's own pass over exactly 1 s, and -- since Task 16's
+            # Serialized Profile round trip -- four more full synthesize
+            # calls through the 0.6B-parameter generator (original and
+            # reloaded, ClonePrompt and DesignInstruct, each a real
+            # denoising-loop decode, not just an encode). 600s covered the
+            # pre-Task-16 shape comfortably; under the sanitizer build
+            # (docs/testing.md's required gate for any C/C++ inference
+            # change) the combined ASan/UBSan instrumentation on this much
+            # real generator work needs meaningfully more headroom than a
+            # plain build does.
+            TIMEOUT 1800)
     endif()
 
     # The resampler's real-signal gate: the same

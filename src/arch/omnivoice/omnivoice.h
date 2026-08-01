@@ -259,6 +259,15 @@ class Model {
     uint32_t samples_per_frame() const;  // the codec hop: 960
     uint32_t text_vocab_size() const;
 
+    // The audio canvas vocabulary (AudioCanvasParams, weights.h): the
+    // package's own codebook_size + 1 (the mask id, always the top slot --
+    // weights.cpp's read_audio enforces `mask_id == vocab_size - 1`).
+    // profile.cpp's Serialized Profile loader (Task 16) range-checks a
+    // deserialized `reference_tokens` grid against these before trusting a
+    // single value from the untrusted bytes.
+    uint32_t audio_vocab_size() const;
+    uint32_t audio_mask_id() const;
+
     // The greedy mask-predict synthesis path. Deterministic: with the golden
     // parameters it makes no random draw at all, which is what the exact-token
     // gate stands on. The sampled path is Plan 3.

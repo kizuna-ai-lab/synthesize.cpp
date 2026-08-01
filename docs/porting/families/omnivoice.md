@@ -616,6 +616,33 @@ rather than cleaned up first. This is a scope decision recorded here rather
 than a defect: adding upstream's silence/chunking behavior is future work if
 a caller ever needs it, not part of the v1 Reference Audio Profile contract.
 
+### Serialized Profile: one schema, two kinds (Task 16)
+
+The v1 Serialized Voice Profile envelope (ADR 0008, docs/c-interface.md's "v1
+Serialized Profile GGUF Contract") declares exactly one
+`synthesize.voice_profile.schema` per family: `"omnivoice-clone-prompt"`, the
+same string every already-shipped package's own `synthesize.profile.schema`
+metadata already carries (weights.cpp's `read_profile_contract`). Rather than
+adding a second schema id for Description Text ("voice design") profiles,
+this family's envelope carries one extra metadata string,
+`synthesize.voice_profile.kind`, set to `"clone-prompt"` or
+`"design-instruct"`, and dispatches its payload shape (a
+`profile.reference_tokens` tensor plus transcript/ref_rms/language_tag
+metadata, versus a bare `instruct` string) from that.
+
+The alternative -- a second schema string, e.g.
+`"omnivoice-design-instruct"` -- would be equally truthful, but every
+already-shipped Model Package declares its OWN schema as a fixed, validated
+metadata value (`weights.cpp`'s `read_profile_contract` refuses anything
+other than `"omnivoice-clone-prompt"`); introducing a second schema the
+loader must also accept would mean either re-cutting every shipped package to
+declare a package-level schema list, or teaching the loader that a package
+declaring schema A may still emit envelopes claiming schema B -- both a
+larger, riskier change than one more metadata string this loader already
+reads unconditionally for every kind. `kind` costs nothing to add without a
+package re-cut and keeps the package's own single declared schema truthful
+for every profile it can produce.
+
 ## Quantization Profile Shape
 
 F32 is the reference package, and this family has a measured reason to expect

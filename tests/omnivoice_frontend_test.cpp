@@ -130,6 +130,85 @@ int check_combine_text() {
 }
 
 // --------------------------------------------------------------------------
+// add_punctuation
+// --------------------------------------------------------------------------
+
+// Every expected string below was cross-checked against the pinned package
+// (scripts/envs/omnivoice/.venv, omnivoice/utils/text.py at source revision
+// 468e927ba3716cd8dd86421148dfb3046e9f9d7b): `add_punctuation` run directly
+// against each `transcript` reproduces `expected` byte for byte.
+int check_add_punctuation() {
+    // No trailing punctuation: English gets ".", Chinese gets "。" -- and the
+    // Chinese test scans the WHOLE string, not just its last character.
+    SYNTH_TEST_CHECK(synth::omnivoice::add_punctuation("Hello world") == "Hello world.");
+    SYNTH_TEST_CHECK(synth::omnivoice::add_punctuation("\xe6\xac\xa2\xe8\xbf\x8e\xe4\xbd\xbf\xe7\x94\xa8") ==
+                     "\xe6\xac\xa2\xe8\xbf\x8e\xe4\xbd\xbf\xe7\x94\xa8\xe3\x80\x82");
+    // Mixed script: one CJK ideograph anywhere in the (stripped) text is
+    // enough to select the Chinese mark, even with Latin text and a Latin
+    // trailing character.
+    SYNTH_TEST_CHECK(synth::omnivoice::add_punctuation("hello \xe4\xbd\xa0\xe5\xa5\xbd") ==
+                     "hello \xe4\xbd\xa0\xe5\xa5\xbd\xe3\x80\x82");
+
+    // Already terminated: every END_PUNCTUATION member (text.py:38-65) is a
+    // no-op. Each row is `text[-1]` unchanged from what `strip()` leaves it,
+    // whether that codepoint is one or several bytes.
+    struct AlreadyTerminated {
+        const char * text;
+    };
+
+    constexpr AlreadyTerminated kAlreadyTerminated[] = {
+        { "hello;" },
+        { "hello:" },
+        { "hello," },
+        { "hello." },
+        { "hello!" },
+        { "hello?" },
+        // … U+2026
+        { "hello\xe2\x80\xa6" },
+        { "hello)" },
+        { "hello]" },
+        { "hello}" },
+        { "hello\"" },
+        { "hello'" },
+        // “ ” ‘ ’
+        { "hello\xe2\x80\x9c" },
+        { "hello\xe2\x80\x9d" },
+        { "hello\xe2\x80\x98" },
+        { "hello\xe2\x80\x99" },
+        // ； ： ， 。 ！ ？ 、 ） 】 (fullwidth / CJK punctuation)
+        { "hello\xef\xbc\x9b" },
+        { "hello\xef\xbc\x9a" },
+        { "hello\xef\xbc\x8c" },
+        { "hello\xe3\x80\x82" },
+        { "hello\xef\xbc\x81" },
+        { "hello\xef\xbc\x9f" },
+        { "hello\xe3\x80\x81" },
+        { "hello\xef\xbc\x89" },
+        { "hello\xe3\x80\x91" },
+        // The set's one two-character member, "……" (a doubled U+2026):
+        // unreachable through `text[-1]` on its own two-character identity,
+        // but its trailing codepoint IS the lone "…" member above, so a text
+        // ending in it is unchanged for that reason.
+        { "hello\xe2\x80\xa6\xe2\x80\xa6" },
+    };
+    for (const AlreadyTerminated & item : kAlreadyTerminated) {
+        SYNTH_TEST_CHECK(synth::omnivoice::add_punctuation(item.text) == item.text);
+    }
+
+    // Empty, and whitespace-only (which strips to empty): upstream's own
+    // `if not text: return text` fires AFTER the strip, so both come back
+    // empty rather than gaining a mark of their own.
+    SYNTH_TEST_CHECK(synth::omnivoice::add_punctuation("").empty());
+    SYNTH_TEST_CHECK(synth::omnivoice::add_punctuation("   ").empty());
+
+    // Leading/trailing whitespace is stripped before the check and before the
+    // mark is appended -- the mark lands immediately after the trimmed text.
+    SYNTH_TEST_CHECK(synth::omnivoice::add_punctuation("  trailing space  ") == "trailing space.");
+
+    return 0;
+}
+
+// --------------------------------------------------------------------------
 // style_text
 // --------------------------------------------------------------------------
 
@@ -620,6 +699,7 @@ int check_frame_truncation() {
 
 int main() {
     SYNTH_TEST_CHECK(check_combine_text() == 0);
+    SYNTH_TEST_CHECK(check_add_punctuation() == 0);
     SYNTH_TEST_CHECK(check_style_text() == 0);
     SYNTH_TEST_CHECK(check_nonverbal_split() == 0);
     SYNTH_TEST_CHECK(check_assemble_prompt_ids() == 0);

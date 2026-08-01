@@ -27,6 +27,33 @@ namespace synth::omnivoice {
 // voice-design case; the target alone is used. This is `_combine_text`.
 std::string combine_text(const std::string & ref_text, const std::string & text);
 
+// The Voice Profile module's punctuation rule for a Reference Audio
+// transcript (Task 14), transcribed line for line from upstream's
+// `add_punctuation` (`omnivoice/utils/text.py:213-225`, END_PUNCTUATION set
+// at `text.py:38-65`):
+//   text = text.strip()
+//   if not text: return text
+//   if text[-1] not in END_PUNCTUATION:
+//       is_chinese = any("一" <= char <= "鿿" for char in text)
+//       text += "。" if is_chinese else "."
+//   return text
+// `text[-1]` tests exactly one trailing Python character (one Unicode
+// codepoint), so the set's one two-character member -- "……", a doubled
+// ideographic ellipsis -- can never be what a single trailing codepoint
+// equals; it is not transcribed as a set entry of its own because the lone
+// "…" (U+2026) member already answers "unchanged" for every text whose last
+// codepoint is part of it. `is_chinese` scans the WHOLE (stripped) text, not
+// just its last character, reusing the same CJK range `combine_text`'s
+// cleanup rule 4 tests above (`is_cjk_ideograph`).
+//
+// An empty or whitespace-only transcript returns empty, unchanged -- this is
+// upstream's own behaviour (`if not text: return text` fires after the
+// strip), not a refusal: voice-profile.cpp's "transcript required" check
+// runs on the CALLER's raw string before this function ever sees it, so an
+// empty result here only happens for a transcript that was already
+// rejected upstream of this call in the real Voice Profile path.
+std::string add_punctuation(const std::string & transcript);
+
 // Builds the style prefix that precedes the wrapped text.
 //
 // `denoise` is the reference's `denoise and ref_audio_tokens is not None`

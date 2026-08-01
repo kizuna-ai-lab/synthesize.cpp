@@ -671,6 +671,68 @@ int check_host_guards() {
     return 0;
 }
 
+// Task 14's quiet-reference arm, unit-tested here because the pinned clone
+// reference measures ref_rms ~0.123 -- ABOVE the 0.1 gate -- so no golden
+// case, today or foreseeably, ever exercises the scaling branch itself (see
+// docs/porting/families/omnivoice.md's "Silent-Reference Rejection" note and
+// this family's carryover item 7). This fixture IS the coverage.
+int check_reference_volume() {
+    // peak-1.0, rms 0.05: every sample scaled by exactly 0.05 / 0.1 = 0.5,
+    // mirroring the Plan 2 no-reference fixture's own "peak 0.4 -> 0.5" case
+    // above -- a mutation that dropped the scale entirely, or applied it only
+    // to the peak sample, would still pass a single-value check.
+    std::vector<float> quiet = { 1.0f, -0.5f, 0.25f, 0.0f };
+    synth::omnivoice::apply_reference_volume(quiet, 0.05f);
+    SYNTH_TEST_CHECK(quiet[0] == 0.5f);
+    SYNTH_TEST_CHECK(quiet[1] == -0.25f);
+    SYNTH_TEST_CHECK(quiet[2] == 0.125f);
+    SYNTH_TEST_CHECK(quiet[3] == 0.0f);
+
+    // The 0.1 boundary is inclusive on the "no change" side: `rms >= 0.1`
+    // takes no action at all.
+    std::vector<float> at_boundary = { 1.0f, -0.3f };
+    synth::omnivoice::apply_reference_volume(at_boundary, 0.1f);
+    SYNTH_TEST_CHECK(at_boundary[0] == 1.0f);
+    SYNTH_TEST_CHECK(at_boundary[1] == -0.3f);
+
+    // One ULP below the boundary: the quiet arm fires, however slightly.
+    const float        just_below_threshold = std::nextafter(0.1f, 0.0f);
+    std::vector<float> near_boundary        = { 1.0f };
+    synth::omnivoice::apply_reference_volume(near_boundary, just_below_threshold);
+    SYNTH_TEST_CHECK(near_boundary[0] == just_below_threshold / 0.1f);
+    SYNTH_TEST_CHECK(near_boundary[0] != 1.0f);
+
+    // One ULP above: still "no change".
+    const float        just_above_threshold = std::nextafter(0.1f, 1.0f);
+    std::vector<float> above_boundary       = { 1.0f };
+    synth::omnivoice::apply_reference_volume(above_boundary, just_above_threshold);
+    SYNTH_TEST_CHECK(above_boundary[0] == 1.0f);
+
+    // A loud reference: nothing happens, whatever the audio holds.
+    std::vector<float> loud = { 0.9f, -0.9f };
+    synth::omnivoice::apply_reference_volume(loud, 0.5f);
+    SYNTH_TEST_CHECK(loud[0] == 0.9f);
+    SYNTH_TEST_CHECK(loud[1] == -0.9f);
+
+    // ref_rms == 0.0f is unreachable in a real synthesis (voice-profile.cpp
+    // rejects a digitally silent reference before a ClonePrompt can exist),
+    // but this function still has to leave the signal alone rather than
+    // divide by it -- and so does a stray negative, Model::synthesize's own
+    // "no reference" sentinel.
+    std::vector<float> guarded_zero     = { 1.0f, -1.0f };
+    std::vector<float> guarded_negative = { 1.0f, -1.0f };
+    synth::omnivoice::apply_reference_volume(guarded_zero, 0.0f);
+    synth::omnivoice::apply_reference_volume(guarded_negative, -1.0f);
+    SYNTH_TEST_CHECK(guarded_zero[0] == 1.0f && guarded_zero[1] == -1.0f);
+    SYNTH_TEST_CHECK(guarded_negative[0] == 1.0f && guarded_negative[1] == -1.0f);
+
+    // An empty buffer is a no-op, not a crash.
+    std::vector<float> empty;
+    synth::omnivoice::apply_reference_volume(empty, 0.05f);
+    SYNTH_TEST_CHECK(empty.empty());
+    return 0;
+}
+
 // The wave array is what catches the two defects no shape reveals -- a
 // surviving tanh and a time shift -- and it can only do that if its samples
 // are big enough and different enough from each other. A re-dump from a
@@ -699,6 +761,7 @@ int check_wave_has_power() {
 int main() {
     SYNTH_TEST_CHECK(check_rejections() == 0);
     SYNTH_TEST_CHECK(check_host_guards() == 0);
+    SYNTH_TEST_CHECK(check_reference_volume() == 0);
     SYNTH_TEST_CHECK(check_wave_has_power() == 0);
 
     // Every registered device. The decoder is the family's second hot path, so

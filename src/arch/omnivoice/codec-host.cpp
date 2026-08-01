@@ -34,4 +34,14 @@ void apply_no_reference_volume(std::vector<float> & audio) {
     }
 }
 
+void apply_reference_volume(std::vector<float> & audio, float ref_rms) {
+    if (ref_rms <= 0.0f || ref_rms >= 0.1f) {
+        return;
+    }
+    const float scale = ref_rms / 0.1f;
+    for (float & value : audio) {
+        value *= scale;
+    }
+}
+
 }  // namespace synth::omnivoice

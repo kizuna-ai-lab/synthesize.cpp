@@ -60,7 +60,23 @@ import subprocess
 import numpy as np
 
 PROBE_LAYERS = (0, 7, 14, 21, 27)
-VOLUME_BY_BRANCH = {"peak_normalise_to_0.5": "peak", "none": "none"}
+# "scale_by_ref_rms_over_0.1" (the quiet-reference arm, Task 14's
+# apply_reference_volume) is recorded here for a FUTURE golden case, not a
+# wired-up comparison: the runner (tests/omnivoice_replay_real.cpp) has no
+# "quiet" volume argument and no way to learn the numeric ref_rms to scale
+# by, because no case exercises the branch today -- the two committed clone
+# cases both measure ref_rms ~0.123, above the 0.1 gate, and the pinned
+# reference wav cannot be swapped for a quieter one without re-cutting the
+# golden. If a future case's oracle ever DOES report this branch, this
+# mapping keeps the failure legible: the runner refuses the unrecognized
+# "quiet" token with a plain usage error instead of this script silently
+# mapping the branch to nothing and comparing against the wrong waveform.
+# Closing carryover item 7
+# (docs/superpowers/plans/2026-08-01-omnivoice-plan-3-sampling-cloning.md)
+# does not mean building that runner path before anything can reach it; the
+# coverage for the scaling formula itself is
+# tests/omnivoice_codec_test.cpp:check_reference_volume, a real unit fixture.
+VOLUME_BY_BRANCH = {"peak_normalise_to_0.5": "peak", "none": "none", "scale_by_ref_rms_over_0.1": "quiet"}
 
 # The RVQ's own codebook count, fixed for this family (kCodebooks in
 # tests/omnivoice_replay_real.cpp); tokens.i32/gaps.f32 are both

@@ -383,8 +383,9 @@ anyone re-ran it with one variable.
 
 `tests/tolerances/qwen3-tts.json` carried `"suite_version": 1` while
 `tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice.manifest.json` held
-`"suite_version": 2` at the manifest from the clone-zh revision. This is the
-staleness class that omnivoice commit 0887553 addressed: a tolerance file not
-updated in step with its sibling manifest. The values on this file's committed
-thresholds did not change; only the file version number was advanced to match
-the manifest's.
+`"suite_version": 2`, which the manifest reached in commit 0b80e534 when
+two longer test cases (qwen3-longer-english, qwen3-longer-chinese) were added,
+taking the suite from 18 to 20 cases. This is the staleness class that omnivoice
+commit 0887553 addressed: a tolerance file not updated in step with its sibling
+manifest. The values on this file's committed thresholds did not change; only
+the file version number was advanced to match the manifest's.

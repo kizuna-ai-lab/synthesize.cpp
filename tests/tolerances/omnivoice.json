@@ -87,9 +87,9 @@
         "public": {
           "backend": "CPU",
           "description": "The public C seam driven end to end at package defaults (sampled); gates on relations between runs of this port -- seed echo, same-seed byte identity, cross-seed artifact_differs -- which cannot be expressed as thresholds against the oracle.",
-          "checks": 7,
+          "checks": 10,
           "all_passed": true,
-          "note": "all_passed flips true when the registered gate first passes; sampled seed-contract cases carry no margin screen (screen rationale is oracle-parity knife edges; this stage claims none)."
+          "note": "all_passed flips true when the registered gate first passes; sampled seed-contract cases carry no margin screen (screen rationale is oracle-parity knife edges; this stage claims none). Task 14 (2026-08-01) added checks 8-10, the cloning path against omni-clone-en's own pinned reference and transcript: clone synthesis succeeds, same-seed reproducibility holds with a profile, and the clone digest differs from a same-seed no-profile run. Re-measured with a real run against omnivoice-0-6b-F32.gguf: all 10 checks passed."
         }
       }
     }

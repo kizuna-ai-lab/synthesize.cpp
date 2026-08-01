@@ -7,9 +7,9 @@ caller does and checks the promises the public interface makes about seeds
 and language, for a family whose Preset Voice Catalog is empty (there is no
 Voice axis here the way qwen3-tts has one -- see check 7).
 
-Seven checks, mirroring the manifest's `public_request` relation over the
-three sampled-seed cases (`omni-sampled-seed-{zero,one,forty-two}`, text
-pinned there as "Sampling follows the seed."):
+Ten checks. The first seven mirror the manifest's `public_request` relation
+over the three sampled-seed cases (`omni-sampled-seed-{zero,one,forty-two}`,
+text pinned there as "Sampling follows the seed."):
 
 1. seed 0, seed 1, seed 42: `actual_seed` echoes the request.
 2. seed 0 run twice -> identical PCM digest.
@@ -26,10 +26,26 @@ pinned there as "Sampling follows the seed."):
    divergence evidence for "changing the draw changes the (auto-chosen)
    voice" -- recorded in the report JSON below, no extra run.
 
+Three more (Task 14, the cloning path), against the `omni-clone-en` golden
+case's own pinned reference clip and transcript:
+
+8. a clone request (Reference Audio profile + target text) succeeds.
+9. the same clone request, same seed, run twice -> identical PCM digest:
+   same-seed reproducibility holds WITH a profile, not only without one.
+10. the clone digest differs from a same-seed, same-text run carrying no
+    profile at all: the reference conditions the output rather than being
+    silently ignored.
+
+The public phase claims relations only -- it does not compare against the
+oracle's own clone waveform (that is the replay gate's job, gated by an
+uncommitted oracle payload) -- and the free-running greedy grid claim for
+this case stays where it has always lived, in scripts/validate-omnivoice-replay.py.
+
 The seed-contract text (checks 1-4 and 7) is read from the manifest at run
 time rather than pinned as a second literal in this file, so a manifest text
 change is caught here instead of silently validating a sentence the manifest
-no longer contains.
+no longer contains. The clone checks (8-10) read the `omni-clone-en` case's
+own text/reference/transcript/language the same way.
 
 Run from the repository root:
 
@@ -43,8 +59,10 @@ import argparse
 import hashlib
 import json
 import pathlib
+import struct
 import subprocess
 import sys
+import wave
 
 DEFAULT_MANIFEST = pathlib.Path("tests/golden/omnivoice/omnivoice-0-6b.manifest.json")
 
@@ -53,6 +71,9 @@ DEFAULT_MANIFEST = pathlib.Path("tests/golden/omnivoice/omnivoice-0-6b.manifest.
 # "relations"). Their pinned text is read out below rather than repeated
 # here as a string literal.
 SEED_CONTRACT_CASE_IDS = ("omni-sampled-seed-zero", "omni-sampled-seed-one", "omni-sampled-seed-forty-two")
+
+# The clone case the Task 14 checks (8-10) drive.
+CLONE_CASE_ID = "omni-clone-en"
 
 # include/synthesize.h: `#define SYNTH_SEED_RANDOM UINT64_MAX`. A resolver
 # that regressed to echoing the sentinel itself, deterministically, would
@@ -75,6 +96,36 @@ def seed_contract_text(manifest_path: pathlib.Path) -> str:
     return next(iter(texts))
 
 
+def clone_case(manifest_path: pathlib.Path) -> dict:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    cases = {case["id"]: case for case in manifest["cases"]}
+    if CLONE_CASE_ID not in cases:
+        raise SystemExit(f"{manifest_path} no longer defines {CLONE_CASE_ID}")
+    return cases[CLONE_CASE_ID]
+
+
+def wav_to_f32(wav_path: pathlib.Path, out_path: pathlib.Path) -> None:
+    """Converts a mono 16-bit PCM wav to raw little-endian f32 samples.
+
+    Stdlib only (`wave` + `struct`) -- this validator's locked environment
+    already carries `soundfile` for the oracle dumpers, but that is a heavier
+    dependency than one small, one-time format conversion needs, and every
+    other artifact this script produces is written the same plain way (raw
+    PCM straight from the runner's own write_pcm).
+    """
+    with wave.open(str(wav_path), "rb") as handle:
+        channels   = handle.getnchannels()
+        sampwidth  = handle.getsampwidth()
+        frame_count = handle.getnframes()
+        raw        = handle.readframes(frame_count)
+    if channels != 1 or sampwidth != 2:
+        raise SystemExit(f"{wav_path}: expected mono 16-bit PCM, got {channels} channel(s) at {sampwidth * 8}-bit")
+    sample_count = len(raw) // 2
+    samples = struct.unpack(f"<{sample_count}h", raw)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(struct.pack(f"<{sample_count}f", *(sample / 32768.0 for sample in samples)))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=pathlib.Path,
@@ -82,6 +133,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runner", type=pathlib.Path,
                         default=pathlib.Path("build/bin/synthesize-omnivoice-public-real"))
     parser.add_argument("--manifest", type=pathlib.Path, default=DEFAULT_MANIFEST)
+    parser.add_argument("--reference-wav", type=pathlib.Path,
+                        default=pathlib.Path("models/omnivoice-reference-audio/seedtts_ref_en_1.wav"),
+                        help="the pinned clone reference clip (Task 14's checks 8-10)")
     parser.add_argument("--work", type=pathlib.Path, default=pathlib.Path("build/goldens/omnivoice-public"))
     parser.add_argument("--report", type=pathlib.Path, default=None)
     # The Quantization Profile and Execution Backend this run covers, recorded
@@ -94,7 +148,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def synthesize(arguments: argparse.Namespace, name: str, language: str | None, seed: str, text: str) -> dict | None:
+def synthesize(arguments: argparse.Namespace, name: str, language: str | None, seed: str, text: str,
+              reference_f32: pathlib.Path | None = None, transcript: str | None = None) -> dict | None:
     target = arguments.work / f"{name}.pcm"
     target.parent.mkdir(parents=True, exist_ok=True)
     # <model.gguf> <out.pcm> <language-tag|-> <seed|random>; no voice-id
@@ -102,6 +157,8 @@ def synthesize(arguments: argparse.Namespace, name: str, language: str | None, s
     # (this family's only backend is CPU) -- see tests/omnivoice_public_real.c.
     command = [str(arguments.runner), str(arguments.model), str(target), language if language is not None else "-",
                seed]
+    if reference_f32 is not None:
+        command += ["--reference", str(reference_f32), "--transcript", transcript]
     finished = subprocess.run(command, input=text.encode("utf-8"), capture_output=True)
     if finished.returncode != 0:
         print(f"  {name}: runner failed: {finished.stderr.decode('utf-8', 'replace').strip()[:200]}")
@@ -212,6 +269,44 @@ def main() -> int:
         "the package default (auto-voice) is the only voice this family has; "
         f"digests {', '.join(f'{seed}:{digest[:16]}' for seed, digest in digests.items())} "
         "are the same three runs check 3 already made",
+    )
+
+    # --- Task 14: the cloning path, against omni-clone-en's own pinned
+    # reference clip and transcript.
+    clone = clone_case(arguments.manifest)
+    clone_text = clone["input"]["text"]
+    clone_reference = clone["input"]["reference"]
+    clone_transcript = clone_reference["transcript"]
+    clone_language = clone_reference.get("language_tag") or clone["input"].get("language_tag") or "en"
+
+    reference_f32 = arguments.work / "clone-reference.f32"
+    wav_to_f32(arguments.reference_wav, reference_f32)
+
+    clone_a = synthesize(arguments, "clone-en-a", clone_language, "0", clone_text, reference_f32, clone_transcript)
+    clone_b = synthesize(arguments, "clone-en-b", clone_language, "0", clone_text, reference_f32, clone_transcript)
+    clone_no_profile = synthesize(arguments, "clone-en-no-profile", clone_language, "0", clone_text)
+    if clone_a is None or clone_b is None or clone_no_profile is None:
+        return 1
+
+    # Check 8.
+    record(
+        "a clone request (Reference Audio profile + target text) succeeds",
+        int(clone_a["status"]) == 0 and int(clone_a["frames"]) > 0,
+        f"status {clone_a['status']}, frames {clone_a['frames']}",
+    )
+
+    # Check 9.
+    record(
+        "same-seed reproducibility holds WITH a profile",
+        clone_a["digest"] == clone_b["digest"],
+        f"{clone_a['digest'][:16]} vs {clone_b['digest'][:16]}",
+    )
+
+    # Check 10.
+    record(
+        "clone output differs from the no-profile run at the same seed",
+        clone_a["digest"] != clone_no_profile["digest"],
+        f"clone {clone_a['digest'][:16]} vs no-profile {clone_no_profile['digest'][:16]}",
     )
 
     if arguments.report is not None:

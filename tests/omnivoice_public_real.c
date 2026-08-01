@@ -2,17 +2,18 @@
  *
  * Task 5 validates the public seam this family's Model::synthesize lands
  * behind: seed reporting, same-seed repeatability, and language resolution.
- * None of it injects tensors -- that is what separates this driver from the
- * replay one (omnivoice_replay_real.cpp).
+ * Task 14 adds the cloning path: `--reference <pcm.f32> --transcript <text>`
+ * build a Reference Audio Voice Profile before the request and thread it
+ * through `request.voice_profile`. None of it injects tensors -- that is
+ * what separates this driver from the replay one (omnivoice_replay_real.cpp).
  *
  * An adapter, not a test: it asserts nothing and prints what it observed.
- * The relations and their meaning live in Task 6's
- * scripts/validate-omnivoice-public.py. Transcribed from
- * tests/qwen3_tts_public_real.c, with two differences that follow directly
- * from this family's shape: no voice-id positional (the Preset Voice
- * Catalog is empty and the package default is unnamed auto-voice) and no
- * backend selector (Plan 2's placement note: every graph in this family
- * runs on the CPU).
+ * The relations and their meaning live in scripts/validate-omnivoice-public.py.
+ * Transcribed from tests/qwen3_tts_public_real.c, with two differences that
+ * follow directly from this family's shape: no voice-id positional (the
+ * Preset Voice Catalog is empty and the package default is unnamed
+ * auto-voice) and no backend selector (Plan 2's placement note: every graph
+ * in this family runs on the CPU).
  */
 
 #include "synthesize.h"
@@ -43,16 +44,85 @@ static int write_pcm(const char * path, const float * samples, uint64_t count) {
     return written == (size_t) count && flushed;
 }
 
+/* Reads a whole file into a freshly malloc'd buffer; `*out_size` receives the
+ * byte count. Returns NULL on any failure, leaving `*out_size` untouched. */
+static void * read_whole_file(const char * path, size_t * out_size) {
+    FILE * file = fopen(path, "rb");
+    if (file == NULL) {
+        return NULL;
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return NULL;
+    }
+    const long size = ftell(file);
+    if (size < 0 || fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return NULL;
+    }
+    void * buffer = malloc((size_t) size > 0 ? (size_t) size : 1);
+    if (buffer == NULL) {
+        fclose(file);
+        return NULL;
+    }
+    const size_t read = fread(buffer, 1, (size_t) size, file);
+    const int    ok   = fclose(file) == 0;
+    if (!ok || read != (size_t) size) {
+        free(buffer);
+        return NULL;
+    }
+    *out_size = (size_t) size;
+    return buffer;
+}
+
 int main(int argc, char ** argv) {
-    if (argc < 5) {
-        fprintf(stderr, "usage: %s <model.gguf> <out.pcm> <language-tag|-> <seed|random> [max-frames] [threads]\n",
+    /* `--reference <pcm.f32>` and `--transcript <text>` (Task 14) may sit
+     * anywhere among the arguments, so they are scanned out first and the
+     * remaining positionals keep their original numbering -- the same
+     * pattern tests/omnivoice_replay_real.cpp uses for its own trailing
+     * flags. */
+    const char * reference_path = NULL;
+    const char * transcript     = NULL;
+    const char * positional[8];
+    int          positional_count = 0;
+    for (int index = 1; index < argc; ++index) {
+        if (strcmp(argv[index], "--reference") == 0) {
+            if (index + 1 >= argc) {
+                fprintf(stderr, "--reference needs a path\n");
+                return 2;
+            }
+            reference_path = argv[++index];
+            continue;
+        }
+        if (strcmp(argv[index], "--transcript") == 0) {
+            if (index + 1 >= argc) {
+                fprintf(stderr, "--transcript needs text\n");
+                return 2;
+            }
+            transcript = argv[++index];
+            continue;
+        }
+        if (positional_count >= (int) (sizeof(positional) / sizeof(positional[0]))) {
+            fprintf(stderr, "too many positional arguments\n");
+            return 2;
+        }
+        positional[positional_count++] = argv[index];
+    }
+    if (positional_count < 4) {
+        fprintf(stderr,
+                "usage: %s <model.gguf> <out.pcm> <language-tag|-> <seed|random> [max-frames] [threads] "
+                "[--reference <pcm.f32> --transcript <text>]\n",
                 argv[0]);
         return 2;
     }
-    const char * model_path = argv[1];
-    const char * out_path   = argv[2];
-    const char * language   = strcmp(argv[3], "-") == 0 ? NULL : argv[3];
-    const char * seed_text  = argv[4];
+    if ((reference_path == NULL) != (transcript == NULL)) {
+        fprintf(stderr, "--reference and --transcript must be given together\n");
+        return 2;
+    }
+    const char * model_path = positional[0];
+    const char * out_path   = positional[1];
+    const char * language   = strcmp(positional[2], "-") == 0 ? NULL : positional[2];
+    const char * seed_text  = positional[3];
 
     /* The text arrives on stdin so a case can carry any UTF-8 without
      * quoting. */
@@ -75,21 +145,70 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    /* The Reference Audio Voice Profile, built once before the request it
+     * decorates. `reference_pcm` outlives the profile-creation call (the
+     * public interface only borrows it for that synchronous call), so it is
+     * freed only after the profile itself no longer needs it. */
+    synth_voice_profile_t * profile       = NULL;
+    void *                  reference_pcm = NULL;
+    if (reference_path != NULL) {
+        size_t reference_bytes = 0;
+        reference_pcm          = read_whole_file(reference_path, &reference_bytes);
+        if (reference_pcm == NULL || reference_bytes % sizeof(float) != 0) {
+            fprintf(stderr, "cannot read --reference %s\n", reference_path);
+            free(reference_pcm);
+            synth_model_free(model);
+            return 1;
+        }
+
+        synth_voice_reference_t reference;
+        synth_voice_reference_init(&reference, sizeof reference);
+        reference.samples           = (const float *) reference_pcm;
+        reference.frame_count       = reference_bytes / sizeof(float);
+        reference.sample_rate       = 24000; /* this family's declared Reference Audio target format */
+        reference.channel_count     = 1;
+        reference.transcript        = transcript;
+        reference.transcript_size   = strlen(transcript);
+        /* Fixed rather than a new flag: this driver's only clone caller
+         * (scripts/validate-omnivoice-public.py) always pairs --reference
+         * with the pinned English reference clip. */
+        reference.language_tag      = "en";
+        reference.language_tag_size = 2;
+
+        synth_voice_reference_params_t reference_params;
+        synth_voice_reference_params_init(&reference_params, sizeof reference_params);
+        reference_params.references       = &reference;
+        reference_params.reference_count  = 1;
+        reference_params.reference_stride = sizeof reference;
+
+        status = synth_voice_profile_create_from_reference(model, &reference_params, &profile);
+        if (status != SYNTH_OK) {
+            fprintf(stderr, "create_from_reference -> %d\n", (int) status);
+            free(reference_pcm);
+            synth_model_free(model);
+            return 1;
+        }
+    }
+
     synth_context_t * context = NULL;
     status                    = synth_context_create(model, &context);
     if (status != SYNTH_OK) {
         fprintf(stderr, "context -> %d\n", (int) status);
+        synth_voice_profile_free(profile);
+        free(reference_pcm);
         synth_model_free(model);
         return 1;
     }
 
     /* 0 keeps whatever the context chose for itself, which is what an
      * embedder that never calls the setter gets. */
-    if (argc > 6) {
-        status = synth_context_set_threads(context, (int32_t) strtol(argv[6], NULL, 10));
+    if (positional_count > 5) {
+        status = synth_context_set_threads(context, (int32_t) strtol(positional[5], NULL, 10));
         if (status != SYNTH_OK) {
             fprintf(stderr, "set_threads -> %d\n", (int) status);
             synth_context_free(context);
+            synth_voice_profile_free(profile);
+            free(reference_pcm);
             synth_model_free(model);
             return 1;
         }
@@ -106,13 +225,16 @@ int main(int argc, char ** argv) {
         request.language_tag      = language;
         request.language_tag_size = strlen(language);
     }
-    /* No voice_id and no voice_profile: the catalog is empty and the package
-     * default is the unnamed auto-voice, which is what leaving both null
-     * asks for. */
+    /* No voice_id: the catalog is empty and the package default is the
+     * unnamed auto-voice, which is what leaving it null asks for.
+     * `voice_profile` carries the Reference Audio clone built above, or
+     * stays null for the same auto-voice path Task 5's checks already
+     * cover. */
+    request.voice_profile     = profile;
     request.seed              = strcmp(seed_text, "random") == 0 ? SYNTH_SEED_RANDOM : strtoull(seed_text, NULL, 10);
     /* PCM frames, per docs/c-interface.md; the family converts to its own
      * native codec frames internally. */
-    request.max_output_frames = argc > 5 ? strtoull(argv[5], NULL, 10) : 0;
+    request.max_output_frames = positional_count > 4 ? strtoull(positional[4], NULL, 10) : 0;
 
     synth_audio_buffer_t * audio = NULL;
     synth_result_t         result;
@@ -125,6 +247,8 @@ int main(int argc, char ** argv) {
     if (status != SYNTH_OK) {
         fprintf(stderr, "synthesize -> %d\n", (int) status);
         synth_context_free(context);
+        synth_voice_profile_free(profile);
+        free(reference_pcm);
         synth_model_free(model);
         return 1;
     }
@@ -133,6 +257,8 @@ int main(int argc, char ** argv) {
         fprintf(stderr, "cannot write %s\n", out_path);
         synth_audio_buffer_free(audio);
         synth_context_free(context);
+        synth_voice_profile_free(profile);
+        free(reference_pcm);
         synth_model_free(model);
         return 1;
     }
@@ -147,6 +273,8 @@ int main(int argc, char ** argv) {
 
     synth_audio_buffer_free(audio);
     synth_context_free(context);
+    synth_voice_profile_free(profile);
+    free(reference_pcm);
     synth_model_free(model);
     return 0;
 }

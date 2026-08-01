@@ -541,6 +541,81 @@ dumps carry the scaling too. Where the scaling *lives* was decided on
 2026-07-31 and is recorded under Open Questions: inside the family's synthesis
 path, with no public normalisation control in v1.
 
+Plan 3's Task 14 is what makes the quiet arm (row 1 of the table above) real:
+until then, `run_synthesis` applied the no-reference peak-normalize branch
+unconditionally, because nothing upstream of it could supply a reference RMS.
+`Model::synthesize` now threads the profile's own `ref_rms` through
+(`SynthesisRequest::reference_rms`, a negative sentinel meaning "no reference
+known" that keeps the replay seam — which has no ref_rms of its own — on the
+legacy branch), and `codec-host.h`'s `apply_reference_volume` implements
+exactly the `rms >= 0.1` / `0 < rms < 0.1` split.
+
+### Silent-Reference Rejection (jiangzhuo's ruling, 2026-08-01)
+
+The table's middle row is not symmetric with the third: a digitally silent
+reference (`ref_rms == 0.0`) is not boosted going in
+(`clip_and_boost_reference`'s own `0 < ref_rms < 0.1` guard excludes exactly
+zero), but upstream's `_post_process_audio` still takes the quiet arm's
+formula on the way out — `generated_audio * 0.0 / 0.1` — and hands back
+silence as if the request had succeeded.
+
+This port refuses instead. `voice-profile.cpp`'s `create_from_reference`
+handler rejects a Reference Audio clip whose measured `ref_rms` is exactly
+`0.0f` with `SYNTH_ERR_INVALID_ARG` and diagnostic code
+`voice_profile.reference_silent`, before a `ClonePrompt` (and so a Voice
+Profile) can ever exist to carry one. The ruling: a caller who supplied
+digital silence and calls the result a cloned voice has almost certainly
+handed the wrong file to the wrong argument, and returning silence dressed as
+success hides that mistake rather than surfacing it. This is a **deliberate,
+recorded divergence** from upstream's own behavior, not an omission --
+`apply_reference_volume` (codec-host.h) still documents `ref_rms == 0.0f` as
+"unreachable" for exactly this reason, and the invariant depends on every
+ClonePrompt-producing path (today, only this one) enforcing the rejection
+before construction.
+
+Coverage: no golden case exercises this path (a committed golden's reference
+clip is, definitionally, real audio), so `tests/omnivoice_profile_test.cpp`
+drives it directly against the real package with a synthesized all-zero
+buffer at the package's own minimum clip length.
+
+### Quiet-arm coverage disposition (carryover item 7, closed)
+
+The quiet volume arm (`0 < ref_rms < 0.1`) itself has the same coverage gap
+the silent-reference rejection does, for a different reason: this family's
+only pinned Reference Audio clip
+(`models/omnivoice-reference-audio/seedtts_ref_en_1.wav`) measures
+`ref_rms ≈ 0.1229`, comfortably above the 0.1 gate, and both committed clone
+goldens (`omni-clone-en`, `omni-clone-zh`) share it. No golden this family
+has, or is likely to add without deliberately sourcing a second, quieter
+reference clip, ever takes this branch. `scripts/validate-omnivoice-replay.py`'s
+`VOLUME_BY_BRANCH` carries a `scale_by_ref_rms_over_0.1` entry for a future
+case that might, but the replay runner has no corresponding argument to act
+on it — recording the mapping, not building a path nothing can reach yet.
+
+Carryover item 7 (docs/superpowers/plans/2026-07-30-omnivoice-plan-2-carryover.md)
+is closed by a unit fixture instead:
+`tests/omnivoice_codec_test.cpp:check_reference_volume` exercises
+`apply_reference_volume` directly against hand-built audio and RMS values
+spanning both sides of the 0.1 boundary, which is the only place this family
+can prove the formula correct without a real, quieter reference recording.
+
+### No pydub silence preprocessing (upstream divergence)
+
+Upstream's `create_voice_clone_prompt` optionally runs `preprocess_prompt` --
+pydub-based silence removal and long-audio trimming -- before measuring
+`ref_rms` or encoding a reference. Both committed clone goldens pin
+`preprocess_prompt=False` (see the Reference Contract above), and this port
+carries **no** trim/silence-removal stage at all: `Model::encode_reference`
+and `voice-profile.cpp`'s dispatcher work on exactly the clip a caller
+supplies, RFE-prechecked and normalized to the package's target format, never
+edited. The public contract this implies: callers hand clean 1-20 s clips (the
+package's own `min_frames_per_clip`/`max_frames_per_clip`, 1 s and 20 s at
+24 kHz); a reference with substantial leading/trailing silence, or one long
+enough that upstream would have chunked it, is handed to the model as-is
+rather than cleaned up first. This is a scope decision recorded here rather
+than a defect: adding upstream's silence/chunking behavior is future work if
+a caller ever needs it, not part of the v1 Reference Audio Profile contract.
+
 ## Quantization Profile Shape
 
 F32 is the reference package, and this family has a measured reason to expect

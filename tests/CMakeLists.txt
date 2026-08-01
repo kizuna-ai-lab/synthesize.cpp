@@ -176,6 +176,7 @@ synth_add_unit_test(synthesize-omnivoice-generator-test omnivoice_generator_test
 synth_add_unit_test(synthesize-omnivoice-generator-host-test omnivoice_generator_host_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-sampler-test omnivoice_sampler_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-codec-test omnivoice_codec_test.cpp)
+synth_add_unit_test(synthesize-omnivoice-resampler-test omnivoice_resampler_test.cpp)
 synth_add_unit_test(synthesize-kokoro-lstm-test kokoro_lstm_test.cpp)
 synth_add_unit_test(synthesize-kokoro-catalog-test kokoro_catalog_test.cpp)
 synth_add_unit_test(synthesize-kokoro-plbert-test kokoro_plbert_test.cpp)
@@ -323,6 +324,7 @@ set_tests_properties(
     synthesize-omnivoice-generator-host-test
     synthesize-omnivoice-sampler-test
     synthesize-omnivoice-codec-test
+    synthesize-omnivoice-resampler-test
     synthesize-omnivoice-model-errors-test
     synthesize-omnivoice-load-synthetic-test
     synthesize-omnivoice-decode-loop-test
@@ -668,6 +670,26 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         set_tests_properties(synthesize-omnivoice-load-real PROPERTIES
             LABELS "integration;omnivoice;abi"
             TIMEOUT 600)
+    endif()
+
+    # The resampler's real-signal gate: the same
+    # synthesize-omnivoice-resampler-test binary the unit gate already built
+    # (registered unconditionally above with no arguments), re-invoked here
+    # with the golden directory as argv[1] so its sentinel-guarded branch
+    # loads ref/pcm_24k.f32 and ref/pcm_16k.f32 and asserts max_abs against
+    # the oracle. Needs only the (uncommitted) oracle payload, not the
+    # package itself -- unlike every other golden gate in this file, there is
+    # no model here to check for.
+    set(_synth_omnivoice_resampler_golden_sentinel
+        "${CMAKE_SOURCE_DIR}/build/goldens/omnivoice/omni-clone-en/ref/pcm_16k.f32")
+    if(EXISTS "${_synth_omnivoice_resampler_golden_sentinel}")
+        add_test(
+            NAME synthesize-omnivoice-resampler-golden
+            COMMAND synthesize-omnivoice-resampler-test
+                "${CMAKE_SOURCE_DIR}/build/goldens/omnivoice/omni-clone-en")
+        set_tests_properties(synthesize-omnivoice-resampler-golden PROPERTIES
+            LABELS "integration;omnivoice"
+            TIMEOUT 60)
     endif()
 
     # OmniVoice's replay validator runs with --check, so it is a gate against

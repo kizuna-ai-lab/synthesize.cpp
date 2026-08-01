@@ -230,6 +230,7 @@ synth_add_unit_test(synthesize-backend-plan-test backend_plan_test.cpp)
 synth_add_unit_test(synthesize-text-frontend-test text_frontend_test.cpp)
 synth_add_unit_test(synthesize-synthesis-request-test synthesis_request_test.cpp)
 synth_add_unit_test(synthesize-audio-delivery-test audio_delivery_test.cpp)
+synth_add_unit_test(synthesize-audio-normalizer-test audio_normalizer_test.cpp)
 synth_add_unit_test(synthesize-vits-runner-voice-test vits_runner_voice_test.cpp)
 add_executable(synthesize-qwen3-tts-quantization-policy-test
     qwen3_tts_quantization_policy_test.cpp

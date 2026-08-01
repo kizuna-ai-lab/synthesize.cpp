@@ -19,7 +19,7 @@ CF_VERSION="22.1.5"
 
 # Paths we never format: vendored upstream trees, and files copied verbatim from
 # upstream (kept byte-identical so future re-syncs stay clean).
-EXCLUDE_RE='^ggml/'
+EXCLUDE_RE='^ggml/|^third_party/'
 
 cd "$(git rev-parse --show-toplevel)"
 

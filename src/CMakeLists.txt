@@ -1,5 +1,6 @@
 add_library(synthesize
     audio-delivery.cpp
+    audio-normalizer.cpp
     gguf-metadata.cpp
     backend-device.cpp
     backend-module.cpp
@@ -71,7 +72,7 @@ target_include_directories(synthesize
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_link_libraries(synthesize PRIVATE $<BUILD_INTERFACE:ggml>)
+target_link_libraries(synthesize PRIVATE $<BUILD_INTERFACE:ggml> synth-libsamplerate)
 target_compile_definitions(synthesize PRIVATE SYNTH_BUILDING_LIBRARY)
 
 if(SYNTH_GGML_BACKEND_DL)

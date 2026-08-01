@@ -79,9 +79,14 @@ int check_dc96_fixture() {
     SYNTH_TEST_CHECK(actual.size() == expected.size());
     const float measured = max_abs_diff(actual, expected);
     std::cout << "dc96 max_abs = " << measured << '\n';
-    // Measured 1.19209e-07 on the development host: tightened well below the
-    // interim 1e-6 gate, with headroom for cross-platform libm variation.
-    SYNTH_TEST_CHECK(measured <= 5e-7f);
+    // Measured 0.0 after fix-round-1 (the scalar-promotion correction made
+    // the kernel construction bit-exact against torch's own kernel tensor,
+    // and this fixture's accumulation order happens to match too) -- was
+    // 1.19209e-07 before the fix. Asserted exactly rather than with a
+    // tolerance: a regression back to the wrong promotion model, or any
+    // other change that perturbs this fixture, should fail loudly rather
+    // than sneak under a nonzero bound.
+    SYNTH_TEST_CHECK(measured == 0.0f);
     return 0;
 }
 
@@ -116,9 +121,10 @@ int check_impulse64_fixture() {
     SYNTH_TEST_CHECK(actual.size() == expected.size());
     const float measured = max_abs_diff(actual, expected);
     std::cout << "impulse64 max_abs = " << measured << '\n';
-    // Measured 2.98023e-08 on the development host: tightened well below the
-    // interim 1e-6 gate, with headroom for cross-platform libm variation.
-    SYNTH_TEST_CHECK(measured <= 5e-7f);
+    // Measured 0.0 after fix-round-1 (was 2.98023e-08 before the
+    // scalar-promotion correction) -- see the dc96 fixture above for why
+    // this is asserted exactly rather than with a tolerance.
+    SYNTH_TEST_CHECK(measured == 0.0f);
     return 0;
 }
 
@@ -161,9 +167,12 @@ int check_mixed48_fixture() {
     SYNTH_TEST_CHECK(actual.size() == expected.size());
     const float measured = max_abs_diff(actual, expected);
     std::cout << "mixed48 max_abs = " << measured << '\n';
-    // Measured 5.96046e-08 on the development host: tightened well below the
-    // interim 1e-6 gate, with headroom for cross-platform libm variation.
-    SYNTH_TEST_CHECK(measured <= 5e-7f);
+    // Measured 5.96046e-08 both before and after fix-round-1 (unchanged --
+    // the kernel itself is now bit-exact against torch's; this residual is
+    // the convolution's own accumulation order, an implementation-defined
+    // non-goal). Tightened to <=1e-7f (~1.7x measured, comfortably within
+    // the project's <=5x-measured discipline), down from the interim 1e-6.
+    SYNTH_TEST_CHECK(measured <= 1e-7f);
     return 0;
 }
 
@@ -247,11 +256,16 @@ int check_real_signal_parity(const std::string & golden_dir) {
     const float measured = max_abs_diff(actual, pcm_16k_expected);
     std::cout << "real-signal (omni-clone-en) pcm_24k(" << pcm_24k.size() << ") -> pcm_16k(" << pcm_16k_expected.size()
               << ") max_abs = " << measured << '\n';
-    // Interim gate (this task's brief): agreement with the oracle to
-    // max_abs <= 1e-6 against a +-1-scale signal. Task 13 commits the final
-    // measured tolerance once the whole encode chain exists to compare
-    // against.
-    SYNTH_TEST_CHECK(measured <= 1e-6f);
+    // Measured 1.19209e-07 after fix-round-1's scalar-promotion correction
+    // (was 1.78814e-07 before it) -- this task's brief set an interim gate
+    // of 1e-6 against a +-1-scale signal, but since the kernel is now
+    // bit-exact against torch's own tensor, this file's OWN gate is
+    // tightened to <=5e-7f (~4.2x measured, within the project's
+    // <=5x-measured discipline) rather than left at the interim value. Task
+    // 13 still owns committing the FINAL tolerance once the whole encode
+    // chain exists to compare against -- this is this test's own gate, not
+    // that one.
+    SYNTH_TEST_CHECK(measured <= 5e-7f);
     return 0;
 }
 

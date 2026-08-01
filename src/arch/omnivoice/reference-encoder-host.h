@@ -42,15 +42,9 @@ namespace synth::omnivoice {
 // by up to ~6e-8 per tap on this exact orig/new pair), so getting this wrong
 // is observable, not academic.
 //
-// Kernel construction (functional.py:1345-1397), all scalar constants below
-// are Python doubles exactly as computed there; each combination of a
-// float32 "tensor" value with one of these plain-number scalars is a
-// PyTorch "wrapped number" op, which computes as if promoting the float32
-// operand to double, multiplying/dividing in double, and rounding once back
-// to float32 (verified empirically against the pinned torchaudio for
-// representative operands) -- precisely what C++'s ordinary float/double
-// mixed-arithmetic promotion already does, so the port below leans on plain
-// `float op double` expressions rather than hand-rolled rounding:
+// Kernel construction (functional.py:1345-1397). `base_freq`, `width` and
+// `scale` are plain Python doubles, computed with no tensor involved yet
+// (functional.py:1345-1350, 1369, 1395):
 //   base_freq  = min(orig_freq, new_freq) * rolloff        = min(3,2)*0.99 = 1.98
 //   width      = ceil(lowpass_filter_width * orig_freq / base_freq)
 //              = ceil(6*3/1.98) = ceil(9.0909...) = 10          (measured)
@@ -58,15 +52,51 @@ namespace synth::omnivoice {
 //              = 46 coefficients total                          (measured)
 //   scale      = base_freq / orig_freq = 1.98/3 = 0.66
 //
-// Per phase p in [0, new_freq), tap k in [0, 2*width+orig_freq):
-//   idx[k]   = float32((k - width) / orig_freq)                  (functional.py:1376)
-//   t        = float32(-p / new_freq) + idx[k]                   (functional.py:1378)
-//   t       *= base_freq                                         (functional.py:1379)
+// SCALAR PROMOTION -- the second fact this task got wrong before it was
+// caught by code review, corrected here with the evidence that settled it.
+// Once `base_freq`, `scale` and `math.pi` (all Python doubles) are combined
+// with a float32 "tensor" value (`t *= base_freq`, `window * scale`, `t *
+// math.pi`, ...), PyTorch's tensor-scalar op for `float32_tensor op
+// python_number` **rounds the scalar down to float32 FIRST, then computes
+// entirely in float32 -- there is no double intermediate.** A first draft of
+// this file modeled it the other way (promote the float32 side to double,
+// multiply, round once back to float32) on the strength of a 5-value manual
+// spot check that happened not to expose the difference. Code review
+// rebuilt the kernel-construction code standalone and diffed it against
+// `_get_sinc_resample_kernel`'s real output tensor directly: the
+// double-intermediate model was bit-exact on only 8 of 46 taps (up to
+// 4.77e-7 off elsewhere); rounding each scalar to float32 once and then
+// computing float32-op-float32 throughout is bit-exact on all 46 -- 0.0
+// diff, confirmed independently by isolating the very first scalar multiply
+// (`t *= base_freq`) against a from-scratch torch tensor of the same
+// pre-multiply values, and again end-to-end with a full from-scratch
+// reconstruction of the kernel. `kBaseFreqF` and `kScaleF` in the .cpp are
+// exactly `kBaseFreqD` and `scale` rounded to float32 once, at the point
+// they stop being pure-Python scalars; every downstream expression is
+// `float op float`, never `float op double`.
+//
+// This is the same class of mistake as Plan 2's `shifted_timesteps`
+// (src/arch/omnivoice/generator-host.cpp:54-82): torch's reference
+// computation is float32-elementwise, not double, and the plan's own
+// standing facts record it as such ("the commit schedule is float32
+// torch-elementwise", docs/superpowers/plans/2026-08-01-omnivoice-plan-3-sampling-cloning.md:101).
+// There too, a double-precision port of a nominally-double formula silently
+// disagreed with the float32 reference at a small fraction of input
+// lengths. Getting the *rounding order* right, not just the *final dtype*,
+// is the recurring lesson.
+//
+// Per phase p in [0, new_freq), tap k in [0, 2*width+orig_freq), every step
+// float32 throughout (orig_freq, new_freq, lowpass_filter_width are Python
+// ints, exactly representable in float32, so casting them to float IS
+// "round to float32 first"):
+//   idx[k]   = float32(k - width) / float32(orig_freq)            (functional.py:1376)
+//   t        = float32(-p) / float32(new_freq) + idx[k]           (functional.py:1378)
+//   t       *= kBaseFreqF                                         (functional.py:1379)
 //   t        = clamp(t, -lowpass_filter_width, lowpass_filter_width)  (functional.py:1380)
 //   window   = cos(((t * pi) / lowpass_filter_width) / 2) ^ 2    (functional.py:1385, Hann)
 //   t_rad    = t * pi                                            (functional.py:1393, reassigns t)
 //   sinc     = t_rad == 0 ? 1.0 : sin(t_rad) / t_rad              (functional.py:1396)
-//   kernel   = sinc * (window * scale)                           (functional.py:1397)
+//   kernel   = sinc * (window * kScaleF)                          (functional.py:1397)
 //
 // Convolution (_apply_sinc_resample_kernel, functional.py:1420-1428): pad the
 // input with `width` zeros on the left and `width + orig_freq` zeros on the
@@ -75,11 +105,23 @@ namespace synth::omnivoice {
 // functional.py:1425-1426), letting block = j / new_freq, phase = j %
 // new_freq:
 //   y[j] = sum_{k=0}^{taps-1} kernel[phase][k] * padded[block*orig_freq + k]
-// target_length = ceil(new_freq * input_length / orig_freq)      (functional.py:1427)
-// output is the first target_length samples of that interleaved stream
-// (functional.py:1428) -- confirmed against the oracle's own measured pair:
-// 336960 input samples -> 224640 output samples (336960 divides evenly by 3,
-// so this particular case has no rounding ambiguity to probe, but the
+//
+// target_length = torch.ceil(torch.as_tensor(new_freq * length /
+// orig_freq)).long() (functional.py:1427) -- a THIRD promotion point:
+// `new_freq * length / orig_freq` is plain Python int/true-division
+// arithmetic (double precision), but `torch.as_tensor` on a plain Python
+// float defaults to torch's default dtype, float32 (confirmed directly:
+// `torch.as_tensor(2/3).dtype == torch.float32`), so the pre-ceil value is
+// downcast to float32 BEFORE ceiling, not ceiled directly in double. Output
+// is the first target_length samples of the interleaved stream
+// (functional.py:1428). Checked (both by code review and independently
+// reproduced here) against a plain double-then-ceil model for every length
+// in [1, 200000] plus a sparse sample up to 3,000,000: zero divergence --
+// this module's reference clips cap well under 500,000 samples -- but the
+// downcast is transcribed anyway so this file carries no unverified
+// promotion gap. Confirmed against the oracle's own measured pair: 336960
+// input samples -> 224640 output samples (336960 divides evenly by 3, so
+// this particular case has no rounding ambiguity to probe on its own; the
 // arithmetic above is exercised at a non-exact ratio by this module's own
 // length-arithmetic tests, e.g. 961 -> 641).
 //

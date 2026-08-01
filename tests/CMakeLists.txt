@@ -177,6 +177,7 @@ synth_add_unit_test(synthesize-omnivoice-generator-host-test omnivoice_generator
 synth_add_unit_test(synthesize-omnivoice-sampler-test omnivoice_sampler_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-codec-test omnivoice_codec_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-resampler-test omnivoice_resampler_test.cpp)
+synth_add_unit_test(synthesize-omnivoice-reference-encoder-test omnivoice_reference_encoder_test.cpp)
 synth_add_unit_test(synthesize-kokoro-lstm-test kokoro_lstm_test.cpp)
 synth_add_unit_test(synthesize-kokoro-catalog-test kokoro_catalog_test.cpp)
 synth_add_unit_test(synthesize-kokoro-plbert-test kokoro_plbert_test.cpp)
@@ -325,6 +326,7 @@ set_tests_properties(
     synthesize-omnivoice-sampler-test
     synthesize-omnivoice-codec-test
     synthesize-omnivoice-resampler-test
+    synthesize-omnivoice-reference-encoder-test
     synthesize-omnivoice-model-errors-test
     synthesize-omnivoice-load-synthetic-test
     synthesize-omnivoice-decode-loop-test

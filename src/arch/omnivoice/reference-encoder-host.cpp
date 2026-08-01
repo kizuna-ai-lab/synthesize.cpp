@@ -1,5 +1,11 @@
 #include "arch/omnivoice/reference-encoder-host.h"
 
+#include "arch/omnivoice/reference-encoder.h"
+#include "backend-plan.h"
+#include "cpu-parallelism.h"
+#include "ggml-backend.h"
+#include "ggml.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -153,6 +159,102 @@ bool resample_24k_to_16k(const std::vector<float> & input, std::vector<float> & 
         output[size_t(j)] = acc;
     }
     return true;
+}
+
+// A generous, single-shot budget: this graph is built once per cloning
+// request, not once per denoising step the way the generator's are, so it is
+// not worth sizing precisely the way model.cpp's per-layer formula does for a
+// graph that gets rebuilt dozens of times in one synthesis.
+constexpr size_t kSemanticGraphNodeBudget = 8192;
+
+synth_status_t run_semantic_branch(const BackendPlan &        plan,
+                                   const ModelWeights &       weights,
+                                   const HParams &            hparams,
+                                   const std::vector<float> & pcm_16k,
+                                   int                        threads,
+                                   std::vector<float> &       semantic_mean,
+                                   std::vector<float> *       out_semantic_encoder) {
+    semantic_mean.clear();
+    if (out_semantic_encoder != nullptr) {
+        out_semantic_encoder->clear();
+    }
+    if (pcm_16k.empty()) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // The input tensor lives in its own tiny persistent buffer, the same
+    // shape model.cpp's Persistent gives every graph-run input in this
+    // family: the graph allocator below must not own it.
+    ggml_init_params input_params{};
+    input_params.mem_size        = ggml_tensor_overhead() * 4;
+    input_params.no_alloc        = true;
+    ggml_context * input_context = ggml_init(input_params);
+    if (input_context == nullptr) {
+        return SYNTH_ERR_OOM;
+    }
+    ggml_tensor *         pcm_tensor   = ggml_new_tensor_1d(input_context, GGML_TYPE_F32, int64_t(pcm_16k.size()));
+    ggml_backend_buffer_t input_buffer = ggml_backend_alloc_ctx_tensors(input_context, plan.cpu_backend());
+    if (input_buffer == nullptr) {
+        ggml_free(input_context);
+        return SYNTH_ERR_OOM;
+    }
+    ggml_backend_tensor_set(pcm_tensor, pcm_16k.data(), 0, ggml_nbytes(pcm_tensor));
+
+    ggml_init_params graph_params{};
+    graph_params.mem_size        = ggml_tensor_overhead() * (kSemanticGraphNodeBudget + 256) +
+                                   ggml_graph_overhead_custom(kSemanticGraphNodeBudget, false);
+    graph_params.no_alloc        = true;
+    ggml_context * graph_context = ggml_init(graph_params);
+    if (graph_context == nullptr) {
+        ggml_backend_buffer_free(input_buffer);
+        ggml_free(input_context);
+        return SYNTH_ERR_OOM;
+    }
+    ggml_cgraph * graph = ggml_new_graph_custom(graph_context, kSemanticGraphNodeBudget, false);
+
+    ggml_tensor * mean_tensor = nullptr;
+    ggml_tensor * final_tensor =
+        build_semantic_branch(graph_context, pcm_tensor, weights, hparams, nullptr, &mean_tensor, nullptr);
+    synth_status_t status = SYNTH_OK;
+    if (final_tensor == nullptr || mean_tensor == nullptr) {
+        status = SYNTH_ERR_INTERNAL;
+    } else {
+        // `mean_tensor` is a side tap, not the graph's own output, so it must
+        // be marked and expanded before allocation or the allocator is free
+        // to reuse its buffer for a later node -- generator_branch_forward's
+        // own rule for its probe tensors.
+        ggml_set_output(mean_tensor);
+        ggml_build_forward_expand(graph, mean_tensor);
+        ggml_build_forward_expand(graph, final_tensor);
+
+        const size_t         hash_size = size_t(ggml_graph_size(graph)) + 4096;
+        ggml_backend_sched_t scheduler = plan.create_cpu_scheduler(hash_size);
+        if (scheduler == nullptr) {
+            status = SYNTH_ERR_BACKEND;
+        } else {
+            if (!ggml_backend_sched_alloc_graph(scheduler, graph)) {
+                status = SYNTH_ERR_OOM;
+            } else {
+                plan.set_threads(threads > 0 ? threads : default_synthesis_threads());
+                status = ggml_backend_sched_graph_compute(scheduler, graph) == GGML_STATUS_SUCCESS ? SYNTH_OK :
+                                                                                                     SYNTH_ERR_BACKEND;
+                if (status == SYNTH_OK) {
+                    semantic_mean.resize(size_t(ggml_nelements(mean_tensor)));
+                    ggml_backend_tensor_get(mean_tensor, semantic_mean.data(), 0, ggml_nbytes(mean_tensor));
+                    if (out_semantic_encoder != nullptr) {
+                        out_semantic_encoder->resize(size_t(ggml_nelements(final_tensor)));
+                        ggml_backend_tensor_get(final_tensor, out_semantic_encoder->data(), 0,
+                                                ggml_nbytes(final_tensor));
+                    }
+                }
+            }
+            ggml_backend_sched_free(scheduler);
+        }
+    }
+    ggml_free(graph_context);
+    ggml_backend_buffer_free(input_buffer);
+    ggml_free(input_context);
+    return status;
 }
 
 }  // namespace synth::omnivoice

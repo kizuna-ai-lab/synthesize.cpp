@@ -21,6 +21,7 @@
 #include "arch/omnivoice/generator-host.h"
 #include "arch/omnivoice/generator.h"
 #include "arch/omnivoice/omnivoice.h"
+#include "arch/omnivoice/reference-encoder-host.h"
 #include "arch/omnivoice/weights.h"
 #include "backend-plan.h"
 #include "bpe-frontend.h"
@@ -791,6 +792,25 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> &      codes,
         return SYNTH_ERR_INTERNAL;
     }
     return SYNTH_OK;
+}
+
+synth_status_t Model::encode_reference(const std::vector<float> & pcm_24k,
+                                       int                        threads,
+                                       std::vector<float> &       semantic_mean,
+                                       std::vector<float> *       out_semantic_encoder) {
+    semantic_mean.clear();
+    if (out_semantic_encoder != nullptr) {
+        out_semantic_encoder->clear();
+    }
+    Impl & impl = *implementation_;
+
+    std::vector<float> pcm_16k;
+    if (!resample_24k_to_16k(pcm_24k, pcm_16k)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    return run_semantic_branch(*impl.backend_plan, impl.weights, impl.hparams, pcm_16k,
+                               threads > 0 ? threads : default_synthesis_threads(), semantic_mean,
+                               out_semantic_encoder);
 }
 
 synth_status_t Model::load_cpu(const std::string & path, std::unique_ptr<Model> & output) {

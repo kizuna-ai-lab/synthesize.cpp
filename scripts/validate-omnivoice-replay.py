@@ -31,6 +31,14 @@ Without --check this script measures; with --check it gates against
 tests/tolerances/omnivoice.json (profiles.<PROFILE>.stages.<STAGE>), refusing
 to run when the cell is absent -- a threshold the suite writes for itself
 proves nothing.
+
+The two clone cases additionally carry an encode-reference channel (Task 11):
+the runner's `--encode-reference` resamples and runs the HuBERT semantic
+branch plus the codec's own SemanticEncoder over `ref/pcm_24k.f32`, and this
+script compares the result against the oracle's own `ref/semantic_mean.f32`
+probe. That comparison is REPORTED here (max_abs and cosine, printed and
+carried into --report's JSON) but not folded into `measurements`/`worst`, so
+it never participates in --check's gate: thresholds for it are Task 13's.
 """
 from __future__ import annotations
 
@@ -227,6 +235,13 @@ def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
             raise SystemExit(f"{case_id}: {len(alternates)} alternate grids, but the runner "
                              f"takes one --alt-grid; the free-run waveform channel needs widening")
         command += ["--alt-grid", str(arguments.manifest.parent / alternates[0]["file"])]
+    # The encode-reference channel: only the two clone cases dump the
+    # pcm_24k/semantic_mean pair this needs, so its presence in the manifest's
+    # own artifact list -- not --require -- decides whether this case carries
+    # it. Independent of the greedy grid/decode machinery above.
+    has_encode_reference = "ref.pcm_24k" in names and "ref.semantic_mean" in names
+    if has_encode_reference:
+        command += ["--encode-reference", str(oracle / "ref/pcm_24k.f32")]
     finished = subprocess.run(command, capture_output=True)
     if finished.returncode != 0:
         stderr = finished.stderr.decode("utf-8", "replace")
@@ -300,9 +315,22 @@ def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
             freerun = {"mode": "not-compared", "grid": None,
                        "reason": "the free-run grid matched no admissible grid"}
 
+    # Kept OUT of `measurements`/`worst` on purpose: Task 11 reports this
+    # channel, it does not gate it (see this script's own top comment and
+    # scripts/dump_reference_omnivoice_pytorch.py's semantic_mean note --
+    # captured before the [::2] downsample, which is exactly what
+    # build_semantic_branch's `semantic_mean` out-parameter is too).
+    encode_reference = None
+    if has_encode_reference:
+        produced_path = work / "semantic_mean.f32"
+        if int(stats.get("encode_reference_elements", 0)) == 0 or not produced_path.is_file():
+            encode_reference = {"status": "missing"}
+        else:
+            encode_reference = compare(read_f32(oracle / "ref/semantic_mean.f32"), read_f32(produced_path))
+
     return {"case": case_id, "status": "ok", "greedy": greedy, "stats": stats,
             "measurements": measurements, "grid": grid, "finite_pcm": finite,
-            "freerun": freerun, "margin": stats.get("margin")}
+            "freerun": freerun, "margin": stats.get("margin"), "encode_reference": encode_reference}
 
 
 def main(argv=None) -> int:
@@ -382,6 +410,20 @@ def main(argv=None) -> int:
         if placement["generator"][1] != 0 or placement["codec"][1] != 0:
             failures += 1
             print(f"{result['case']}: nodes left the CPU: {placement}")
+        # REPORTED, not gated (see this script's top comment): this never
+        # touches `failures`/`structural_failures`, regardless of what it
+        # prints -- Task 13 is what turns this into a real gate.
+        encode_reference = result.get("encode_reference")
+        if encode_reference is not None:
+            if "shape_mismatch" in encode_reference:
+                print(f"{result['case']}: ref.semantic_mean shape mismatch "
+                      f"{encode_reference['shape_mismatch']} (reported, not gated -- Task 13)")
+            elif encode_reference.get("status") == "missing":
+                print(f"{result['case']}: ref.semantic_mean requested but semantic_mean.f32 "
+                      f"is missing or empty (reported, not gated -- Task 13)")
+            else:
+                print(f"{result['case']}: ref.semantic_mean max_abs {encode_reference['max_abs']:.6g} "
+                      f"cosine {encode_reference['cosine']:.8f} (reported, not gated -- Task 13)")
 
     compared = [result for result in results if result["status"] == "ok"]
     print(f"\n{'probe':32} {'max_abs':>12} {'min_cosine':>12}")

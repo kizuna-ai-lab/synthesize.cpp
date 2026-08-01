@@ -21,6 +21,18 @@
 // seam, and the pair is compared for decode determinism instead of for oracle
 // parity. Which comparison a case gets is the validator's call, from which
 // grid the exact comparison matched.
+//
+// A fourth, independent channel: `--encode-reference <pcm_24k.f32>` runs the
+// CLONING path's encode half (Model::encode_reference -- resample to 16 kHz,
+// then the HuBERT semantic branch plus the codec's own SemanticEncoder,
+// reference-encoder.h's build_semantic_branch) over the given file and writes
+// `semantic_mean.f32`. It is unrelated to the greedy grid/decode machinery
+// above -- it runs whenever the flag is given, independent of --require --
+// and Task 11 leaves its comparison REPORTED, not gated: the validator prints
+// max_abs/cosine against the oracle's own `ref/semantic_mean.f32` but never
+// fails on them (thresholds are Task 13's). A failure inside this channel is
+// caught and reported on stderr rather than aborting the process, so a defect
+// here cannot regress the three channels above it that already gate.
 
 #include "arch/omnivoice/codec-host.h"
 #include "arch/omnivoice/generator-host.h"
@@ -62,6 +74,16 @@ bool read_i32(const std::string & path, std::vector<int32_t> & values) {
         return false;
     }
     values.resize(bytes.size() / sizeof(int32_t));
+    std::memcpy(values.data(), bytes.data(), bytes.size());
+    return true;
+}
+
+bool read_f32(const std::string & path, std::vector<float> & values) {
+    std::vector<char> bytes;
+    if (!read_file(path, bytes) || bytes.size() % sizeof(float) != 0) {
+        return false;
+    }
+    values.resize(bytes.size() / sizeof(float));
     std::memcpy(values.data(), bytes.data(), bytes.size());
     return true;
 }
@@ -110,6 +132,7 @@ int main(int argc, char ** argv) {
     std::vector<std::string> positional;
     bool                     margin_report = false;
     std::string              alt_grid_path;
+    std::string              encode_reference_path;
     for (int index = 1; index < argc; ++index) {
         const std::string argument(argv[index]);
         if (argument == "--margin-report") {
@@ -124,6 +147,14 @@ int main(int argc, char ** argv) {
                 return 2;
             }
             alt_grid_path = argv[++index];
+            continue;
+        }
+        if (argument == "--encode-reference") {
+            if (index + 1 >= argc) {
+                std::fprintf(stderr, "--encode-reference needs a path\n");
+                return 2;
+            }
+            encode_reference_path = argv[++index];
             continue;
         }
         // An unrecognized flag is refused rather than parsed as a positional.
@@ -141,7 +172,7 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr,
                      "usage: %s <model.gguf> <case-dir> <out-dir> <num-step> <run-greedy 0|1> "
                      "<decode-replay 0|1> <volume peak|none> [probe-layers...] [--margin-report] "
-                     "[--alt-grid <grid.i32>]\n",
+                     "[--alt-grid <grid.i32>] [--encode-reference <pcm_24k.f32>]\n",
                      argv[0]);
         return 2;
     }
@@ -204,6 +235,31 @@ int main(int argc, char ** argv) {
     if (status != SYNTH_OK) {
         std::fprintf(stderr, "load -> %d\n", int(status));
         return 1;
+    }
+
+    // The encode-reference channel: independent of the greedy grid/decode
+    // machinery below, so it runs before that request is even assembled.
+    // Task 11 leaves its comparison to the validator, REPORTED rather than
+    // gated -- see this file's top comment -- so a failure here is printed
+    // and left as a missing semantic_mean.f32 rather than aborting the run:
+    // the three channels below still owe their own pass/fail regardless of
+    // whether this fourth one worked.
+    size_t encode_reference_elements = 0;
+    if (!encode_reference_path.empty()) {
+        std::vector<float> pcm_24k;
+        std::vector<float> semantic_mean;
+        if (!read_f32(encode_reference_path, pcm_24k)) {
+            std::fprintf(stderr, "cannot read --encode-reference %s\n", encode_reference_path.c_str());
+        } else {
+            const synth_status_t encode_status = model->encode_reference(pcm_24k, 0, semantic_mean);
+            if (encode_status != SYNTH_OK) {
+                std::fprintf(stderr, "encode_reference -> %d\n", int(encode_status));
+            } else if (!write_f32(out_dir + "/semantic_mean.f32", semantic_mean)) {
+                std::fprintf(stderr, "cannot write %s/semantic_mean.f32\n", out_dir.c_str());
+            } else {
+                encode_reference_elements = semantic_mean.size();
+            }
+        }
     }
 
     synth::omnivoice::SynthesisRequest request;
@@ -338,12 +394,14 @@ int main(int argc, char ** argv) {
         "\"probe_layers\": %zu, "
         "\"generator_seconds\": %.4f, \"generator_setup_seconds\": %.4f, \"codec_seconds\": %.4f, "
         "\"placement\": {\"generator\": [%llu, %llu], \"codec\": [%llu, %llu]}, \"margin\": %s, "
+        "\"encode_reference_elements\": %zu, "
         "\"wall_seconds\": %.4f}\n",
         (unsigned long long) frames, samples, freerun_samples, alternate_samples, output.layer_hidden.size(),
         output.generator_seconds, output.generator_setup_seconds, output.codec_seconds,
         (unsigned long long) output.generator_placement.nodes,
         (unsigned long long) output.generator_placement.accelerator_nodes,
         (unsigned long long) output.codec_placement.nodes,
-        (unsigned long long) output.codec_placement.accelerator_nodes, margin_json(output.margin).c_str(), wall);
+        (unsigned long long) output.codec_placement.accelerator_nodes, margin_json(output.margin).c_str(),
+        encode_reference_elements, wall);
     return 0;
 }

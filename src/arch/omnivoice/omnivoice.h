@@ -219,6 +219,22 @@ class Model {
                                 double *                          out_seconds   = nullptr,
                                 SynthesisOutput::StagePlacement * out_placement = nullptr);
 
+    // The cloning path's encode half, symmetric with decode_codes above:
+    // resamples `pcm_24k` to 16 kHz (reference-encoder-host.h's
+    // resample_24k_to_16k) and runs the HuBERT semantic branch plus the
+    // codec's own SemanticEncoder over it (reference-encoder.h's
+    // build_semantic_branch, orchestrated by reference-encoder-host.h's
+    // run_semantic_branch). `semantic_mean` receives the mean over all
+    // hidden states BEFORE the stride-2 downsample -- the oracle's own
+    // `ref/semantic_mean.f32` probe; `out_semantic_encoder`, when non-null,
+    // additionally receives the SemanticEncoder's own output, reported for
+    // debugging since no committed oracle probe isolates it yet. Both are
+    // cleared and meaningful ONLY when this returns SYNTH_OK.
+    synth_status_t encode_reference(const std::vector<float> & pcm_24k,
+                                    int                        threads,
+                                    std::vector<float> &       semantic_mean,
+                                    std::vector<float> *       out_semantic_encoder = nullptr);
+
   private:
     struct Impl;
     explicit Model(std::unique_ptr<Impl> implementation);

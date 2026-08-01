@@ -1,7 +1,15 @@
 #pragma once
 
+#include "arch/omnivoice/catalog.h"
+#include "arch/omnivoice/weights.h"
+#include "synthesize.h"
+
 #include <cstdint>
 #include <vector>
+
+namespace synth {
+class BackendPlan;
+}
 
 namespace synth::omnivoice {
 
@@ -129,5 +137,40 @@ namespace synth::omnivoice {
 // other length, including 1-3 samples, has a well-defined torchaudio output
 // (measured against the pinned venv) and succeeds here too.
 bool resample_24k_to_16k(const std::vector<float> & input, std::vector<float> & output);
+
+// Runs reference-encoder.h's build_semantic_branch once over a 16 kHz mono
+// PCM buffer and reads the results back: the graph-construction and
+// GraphRun-style allocate/compute/read-back split this family keeps
+// throughout (model.cpp's GraphRun, duplicated in miniature here rather than
+// exposed from that file, which is anonymous-namespace-local to model.cpp).
+//
+// Placement is CPU-only, unconditionally: `plan.create_cpu_scheduler` is the
+// scheduler this calls, matching Model::decode_codes's own "no measurement to
+// move it" note -- cloning preparation is a once-per-request cost, not a
+// per-step one, so there is nothing here Plan 2's placement work needs to
+// revisit.
+//
+// `pcm_16k` is PRE-pad (see reference-encoder.h). `semantic_mean` receives
+// the mean over all hidden states BEFORE the stride-2 downsample -- the
+// oracle's own `ref/semantic_mean.f32` probe. `out_semantic_encoder`, when
+// non-null, additionally receives the SemanticEncoder's own output (the
+// builder's primary return value): no committed oracle probe exists for it
+// yet (only `semantic_mean` and the downstream `fused_latent`, which also
+// depends on the acoustic branch Task 12 adds, are captured), so it is
+// reported for debugging rather than compared against anything today.
+//
+// Returns SYNTH_ERR_INVALID_ARG for an empty `pcm_16k` (resample_24k_to_16k's
+// own empty-input refusal propagates here the same way), SYNTH_ERR_OOM/
+// SYNTH_ERR_BACKEND on allocation or scheduling failure, and
+// SYNTH_ERR_INTERNAL when build_semantic_branch itself refuses the package's
+// shapes. `semantic_mean` (and `out_semantic_encoder`, if requested) are
+// cleared up front and left empty on any non-OK return.
+synth_status_t run_semantic_branch(const BackendPlan &        plan,
+                                   const ModelWeights &       weights,
+                                   const HParams &            hparams,
+                                   const std::vector<float> & pcm_16k,
+                                   int                        threads,
+                                   std::vector<float> &       semantic_mean,
+                                   std::vector<float> *       out_semantic_encoder = nullptr);
 
 }  // namespace synth::omnivoice

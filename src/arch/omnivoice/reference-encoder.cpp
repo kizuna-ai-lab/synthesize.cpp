@@ -114,18 +114,20 @@ ggml_tensor * layer_norm(ggml_context * context, ggml_tensor * input, const Laye
 // ne0, so the tensor is transposed to time-major, normalized (now a per-
 // channel reduction over ne0 = time), affine-scaled with the weight/bias
 // reshaped to broadcast along ne1 = channels, and transposed back.
-ggml_tensor * group_norm_per_channel(ggml_context * context, ggml_tensor * input, const LayerNormWeights & weights,
-                                     float eps) {
+ggml_tensor * group_norm_per_channel(ggml_context *           context,
+                                     ggml_tensor *            input,
+                                     const LayerNormWeights & weights,
+                                     float                    eps) {
     if (context == nullptr || input == nullptr || !bound(weights) || weights.weight->ne[0] != input->ne[0]) {
         return nullptr;
     }
-    const int64_t channels    = input->ne[0];
-    ggml_tensor * time_major  = ggml_cont(context, ggml_transpose(context, input));  // [T, C]
-    ggml_tensor * normed      = ggml_norm(context, time_major, eps);
-    ggml_tensor * gain        = ggml_reshape_2d(context, weights.weight, 1, channels);
-    ggml_tensor * shift       = ggml_reshape_2d(context, weights.bias, 1, channels);
-    ggml_tensor * scaled      = ggml_mul(context, normed, gain);
-    ggml_tensor * shifted     = ggml_add(context, scaled, shift);
+    const int64_t channels   = input->ne[0];
+    ggml_tensor * time_major = ggml_cont(context, ggml_transpose(context, input));  // [T, C]
+    ggml_tensor * normed     = ggml_norm(context, time_major, eps);
+    ggml_tensor * gain       = ggml_reshape_2d(context, weights.weight, 1, channels);
+    ggml_tensor * shift      = ggml_reshape_2d(context, weights.bias, 1, channels);
+    ggml_tensor * scaled     = ggml_mul(context, normed, gain);
+    ggml_tensor * shifted    = ggml_add(context, scaled, shift);
     return ggml_cont(context, ggml_transpose(context, shifted));  // back to [C, T]
 }
 
@@ -135,8 +137,13 @@ ggml_tensor * group_norm_per_channel(ggml_context * context, ggml_tensor * input
 // are all stride-1 and biased. `weight` is a Conv1dWeights.weight, ne =
 // [kernel, in_channels, out_channels]; `bias`, when non-null, must be
 // [out_channels].
-ggml_tensor * conv1d(ggml_context * context, ggml_tensor * input, ggml_tensor * weight, ggml_tensor * bias,
-                     int stride, int padding, int dilation) {
+ggml_tensor * conv1d(ggml_context * context,
+                     ggml_tensor *  input,
+                     ggml_tensor *  weight,
+                     ggml_tensor *  bias,
+                     int            stride,
+                     int            padding,
+                     int            dilation) {
     if (context == nullptr || input == nullptr || weight == nullptr || stride <= 0 || padding < 0 || dilation <= 0) {
         return nullptr;
     }
@@ -157,8 +164,12 @@ ggml_tensor * conv1d(ggml_context * context, ggml_tensor * input, ggml_tensor * 
     return bias != nullptr ? add_channel_bias(context, signal, bias) : signal;
 }
 
-ggml_tensor * conv1d(ggml_context * context, ggml_tensor * input, const Conv1dWeights & weights, int stride,
-                     int padding, int dilation) {
+ggml_tensor * conv1d(ggml_context *        context,
+                     ggml_tensor *         input,
+                     const Conv1dWeights & weights,
+                     int                   stride,
+                     int                   padding,
+                     int                   dilation) {
     return conv1d(context, input, weights.weight, weights.bias, stride, padding, dilation);
 }
 
@@ -171,15 +182,14 @@ ggml_tensor * conv1d(ggml_context * context, ggml_tensor * input, const Conv1dWe
 // input, concatenated back together -- the number of groups here is small
 // (16 at real scale) and this graph is built once per cloning request, not
 // once per step, so the loop costs nothing worth avoiding.
-ggml_tensor * grouped_conv1d(ggml_context * context, ggml_tensor * input, const Conv1dWeights & weights,
-                             int padding) {
+ggml_tensor * grouped_conv1d(ggml_context * context, ggml_tensor * input, const Conv1dWeights & weights, int padding) {
     if (context == nullptr || input == nullptr || !bound(weights, true)) {
         return nullptr;
     }
-    const int64_t kernel      = weights.weight->ne[0];
+    const int64_t kernel       = weights.weight->ne[0];
     const int64_t in_per_group = weights.weight->ne[1];
-    const int64_t out_total   = weights.weight->ne[2];
-    const int64_t in_total    = input->ne[0];
+    const int64_t out_total    = weights.weight->ne[2];
+    const int64_t in_total     = input->ne[0];
     if (kernel <= 0 || in_per_group <= 0 || out_total <= 0 || in_total <= 0 || in_total % in_per_group != 0) {
         return nullptr;
     }
@@ -193,11 +203,11 @@ ggml_tensor * grouped_conv1d(ggml_context * context, ggml_tensor * input, const 
     for (int64_t group = 0; group < groups; ++group) {
         ggml_tensor * group_weight =
             ggml_view_3d(context, weights.weight, kernel, in_per_group, out_per_group, weights.weight->nb[1],
-                        weights.weight->nb[2], size_t(group) * size_t(out_per_group) * weights.weight->nb[2]);
-        ggml_tensor * group_input = ggml_view_2d(context, input, in_per_group, input->ne[1], input->nb[1],
-                                                 size_t(group) * size_t(in_per_group) * input->nb[0]);
-        ggml_tensor * group_bias =
-            ggml_view_1d(context, weights.bias, out_per_group, size_t(group) * size_t(out_per_group) * weights.bias->nb[0]);
+                         weights.weight->nb[2], size_t(group) * size_t(out_per_group) * weights.weight->nb[2]);
+        ggml_tensor * group_input  = ggml_view_2d(context, input, in_per_group, input->ne[1], input->nb[1],
+                                                  size_t(group) * size_t(in_per_group) * input->nb[0]);
+        ggml_tensor * group_bias   = ggml_view_1d(context, weights.bias, out_per_group,
+                                                  size_t(group) * size_t(out_per_group) * weights.bias->nb[0]);
         ggml_tensor * group_output = conv1d(context, group_input, group_weight, group_bias, 1, padding, 1);
         if (group_output == nullptr) {
             return nullptr;
@@ -243,8 +253,11 @@ ggml_tensor * pos_conv_embed(ggml_context * context, ggml_tensor * hidden, const
 // (there is no other mode HuBERT ever runs in): q/k/v/out all biased and
 // square, no rope, no per-head norm, no GQA. See this file's top comment for
 // the full delta list against generator.cpp's generator_layer.
-ggml_tensor * semantic_attention(ggml_context * context, ggml_tensor * hidden, const SemanticLayerWeights & weights,
-                                 uint32_t heads, uint32_t head_dim) {
+ggml_tensor * semantic_attention(ggml_context *               context,
+                                 ggml_tensor *                hidden,
+                                 const SemanticLayerWeights & weights,
+                                 uint32_t                     heads,
+                                 uint32_t                     head_dim) {
     if (context == nullptr || hidden == nullptr || !bound(weights.q_proj) || !bound(weights.k_proj) ||
         !bound(weights.v_proj) || !bound(weights.out_proj) || heads == 0 || head_dim == 0) {
         return nullptr;
@@ -273,7 +286,7 @@ ggml_tensor * semantic_attention(ggml_context * context, ggml_tensor * hidden, c
     // HubertAttention's own scaling, head_dim**-0.5 -- full bidirectional
     // attention, so mask is null exactly as it is at generator_layer's own
     // call site when no mask is asked for.
-    scores = ggml_soft_max_ext(context, scores, nullptr, 1.0f / std::sqrt(float(head_dim)), 0.0f);
+    scores               = ggml_soft_max_ext(context, scores, nullptr, 1.0f / std::sqrt(float(head_dim)), 0.0f);
 
     ggml_tensor * v_t      = ggml_cont(context, ggml_permute(context, v_hd, 1, 0, 2, 3));
     ggml_tensor * attended = ggml_mul_mat(context, v_t, scores);
@@ -285,7 +298,9 @@ ggml_tensor * semantic_attention(ggml_context * context, ggml_tensor * hidden, c
 
 // HubertFeedForward: intermediate_dense -> GELU(erf) -> output_dense (both
 // dropouts are no-ops in eval).
-ggml_tensor * semantic_feed_forward(ggml_context * context, ggml_tensor * hidden, const SemanticLayerWeights & weights) {
+ggml_tensor * semantic_feed_forward(ggml_context *               context,
+                                    ggml_tensor *                hidden,
+                                    const SemanticLayerWeights & weights) {
     if (context == nullptr || hidden == nullptr || !bound(weights.inter_dense) || !bound(weights.output_dense)) {
         return nullptr;
     }
@@ -303,8 +318,12 @@ ggml_tensor * semantic_feed_forward(ggml_context * context, ggml_tensor * hidden
 // already-normalized state, then +residual, then final_layer_norm. Contrast
 // generator_layer, which normalizes BEFORE each branch and never normalizes
 // the branch's own output.
-ggml_tensor * semantic_layer(ggml_context * context, ggml_tensor * hidden, const SemanticLayerWeights & weights,
-                             uint32_t heads, uint32_t head_dim, float eps) {
+ggml_tensor * semantic_layer(ggml_context *               context,
+                             ggml_tensor *                hidden,
+                             const SemanticLayerWeights & weights,
+                             uint32_t                     heads,
+                             uint32_t                     head_dim,
+                             float                        eps) {
     if (context == nullptr || hidden == nullptr) {
         return nullptr;
     }
@@ -327,13 +346,14 @@ ggml_tensor * semantic_layer(ggml_context * context, ggml_tensor * hidden, const
 // (dilation 1, pad 1 -- this checkpoint's block_dilations are fixed to
 // [1, 1] by catalog.cpp's own resolution) -> ELU -> bias-free kernel-1 conv,
 // added back to the branch's input.
-ggml_tensor * semantic_encoder_res_unit(ggml_context * context, ggml_tensor * hidden,
+ggml_tensor * semantic_encoder_res_unit(ggml_context *                 context,
+                                        ggml_tensor *                  hidden,
                                         const SemanticEncoderResUnit & weights) {
     if (context == nullptr || hidden == nullptr || !bound(weights.conv1, false) || !bound(weights.conv2, false)) {
         return nullptr;
     }
     ggml_tensor * branch = ggml_elu(context, hidden);
-    branch                = conv1d(context, branch, weights.conv1, 1, int((weights.conv1.weight->ne[0] - 1) / 2), 1);
+    branch               = conv1d(context, branch, weights.conv1, 1, int((weights.conv1.weight->ne[0] - 1) / 2), 1);
     if (branch == nullptr) {
         return nullptr;
     }
@@ -349,7 +369,9 @@ ggml_tensor * semantic_encoder_res_unit(ggml_context * context, ggml_tensor * hi
 // then the block's own biased exit convolution (kernel 3, stride 1, pad 1
 // for this checkpoint's fixed strides == [1, 1] -- catalog.cpp's
 // kSemanticEncoderKernel).
-ggml_tensor * semantic_encoder_block(ggml_context * context, ggml_tensor * hidden, const SemanticEncoderBlock & weights) {
+ggml_tensor * semantic_encoder_block(ggml_context *               context,
+                                     ggml_tensor *                hidden,
+                                     const SemanticEncoderBlock & weights) {
     if (context == nullptr || hidden == nullptr || weights.res_units.empty() || !bound(weights.conv, true)) {
         return nullptr;
     }
@@ -365,9 +387,13 @@ ggml_tensor * semantic_encoder_block(ggml_context * context, ggml_tensor * hidde
 
 }  // namespace
 
-ggml_tensor * build_semantic_branch(ggml_context * context, ggml_tensor * pcm_16k, const ModelWeights & weights,
-                                    const HParams & hparams, std::vector<ggml_tensor *> * out_hidden_states,
-                                    ggml_tensor ** out_mean, ggml_tensor ** out_downsampled) {
+ggml_tensor * build_semantic_branch(ggml_context *               context,
+                                    ggml_tensor *                pcm_16k,
+                                    const ModelWeights &         weights,
+                                    const HParams &              hparams,
+                                    std::vector<ggml_tensor *> * out_hidden_states,
+                                    ggml_tensor **               out_mean,
+                                    ggml_tensor **               out_downsampled) {
     if (out_hidden_states != nullptr) {
         out_hidden_states->clear();
     }
@@ -382,15 +408,15 @@ ggml_tensor * build_semantic_branch(ggml_context * context, ggml_tensor * pcm_16
         return nullptr;
     }
 
-    const SemanticParams &         s      = hparams.semantic;
-    const SemanticModelWeights &   hubert = weights.semantic_model;
+    const SemanticParams &         s       = hparams.semantic;
+    const SemanticModelWeights &   hubert  = weights.semantic_model;
     const SemanticEncoderWeights & sem_enc = weights.encoder_semantic;
     if (s.hidden_size == 0 || s.attention_head_count == 0 || s.hidden_size % s.attention_head_count != 0 ||
         s.layer_count == 0 || hubert.feat_conv.size() != s.conv_dim.size() ||
         s.conv_dim.size() != s.conv_kernel.size() || s.conv_dim.size() != s.conv_stride.size() ||
         hubert.feat_conv.empty() || hubert.layers.size() != s.layer_count || !bound(hubert.feat_conv_norm) ||
-        !bound(hubert.feature_projection_norm) || !bound(hubert.feature_projection) ||
-        !bound(hubert.pos_conv, true) || !bound(hubert.encoder_norm)) {
+        !bound(hubert.feature_projection_norm) || !bound(hubert.feature_projection) || !bound(hubert.pos_conv, true) ||
+        !bound(hubert.encoder_norm)) {
         return nullptr;
     }
     const uint32_t head_dim = s.hidden_size / s.attention_head_count;
@@ -453,8 +479,8 @@ ggml_tensor * build_semantic_branch(ggml_context * context, ggml_tensor * pcm_16
     states.reserve(size_t(s.layer_count) + 1);
     states.push_back(hidden);
     for (uint32_t layer = 0; layer < s.layer_count; ++layer) {
-        hidden = semantic_layer(context, hidden, hubert.layers[layer], s.attention_head_count, head_dim,
-                                s.layer_norm_eps);
+        hidden =
+            semantic_layer(context, hidden, hubert.layers[layer], s.attention_head_count, head_dim, s.layer_norm_eps);
         if (hidden == nullptr) {
             return nullptr;
         }
@@ -475,11 +501,10 @@ ggml_tensor * build_semantic_branch(ggml_context * context, ggml_tensor * pcm_16
 
     // Python's `[:, ::2, :]`: a strided view (every other position), taking
     // the FIRST of each pair -- ceil(T / 2) positions survive when T is odd.
-    const int64_t total       = mean->ne[1];
+    const int64_t total              = mean->ne[1];
     const int64_t downsampled_length = (total + kSemanticDownsampleFactor - 1) / kSemanticDownsampleFactor;
-    ggml_tensor * downsampled =
-        ggml_cont(context, ggml_view_2d(context, mean, mean->ne[0], downsampled_length,
-                                        size_t(kSemanticDownsampleFactor) * mean->nb[1], 0));
+    ggml_tensor * downsampled = ggml_cont(context, ggml_view_2d(context, mean, mean->ne[0], downsampled_length,
+                                                                size_t(kSemanticDownsampleFactor) * mean->nb[1], 0));
     if (out_downsampled != nullptr) {
         *out_downsampled = downsampled;
     }

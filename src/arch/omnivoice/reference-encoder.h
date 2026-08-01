@@ -93,12 +93,12 @@ namespace synth::omnivoice {
 // Returns the SemanticEncoder's output, [semantic.hidden_size,
 // downsampled_length], or nullptr on any shape this builder cannot serve.
 // Every out-parameter is meaningful ONLY when this returns non-null.
-ggml_tensor * build_semantic_branch(ggml_context *                context,
-                                    ggml_tensor *                 pcm_16k,
-                                    const ModelWeights &          weights,
-                                    const HParams &               hparams,
-                                    std::vector<ggml_tensor *> *  out_hidden_states = nullptr,
-                                    ggml_tensor **                 out_mean          = nullptr,
-                                    ggml_tensor **                 out_downsampled   = nullptr);
+ggml_tensor * build_semantic_branch(ggml_context *               context,
+                                    ggml_tensor *                pcm_16k,
+                                    const ModelWeights &         weights,
+                                    const HParams &              hparams,
+                                    std::vector<ggml_tensor *> * out_hidden_states = nullptr,
+                                    ggml_tensor **               out_mean          = nullptr,
+                                    ggml_tensor **               out_downsampled   = nullptr);
 
 }  // namespace synth::omnivoice

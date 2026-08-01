@@ -240,6 +240,19 @@ synth_status_t choose_token_sampled(const float *        cond,
     guided.resize(vocab_size);
     build_guided(cond, uncond, mask_id, guidance_scale, guided);
 
+    // Upstream's `confidence_scores = log_probs.max(dim=-1)[0]`
+    // (omnivoice.py:1449): the position confidence is the max of the FULL
+    // guided array (post mask-ban, pre top-k filter) -- the same value
+    // choose_token's own argmax would report for this row -- regardless of
+    // which survivor the Gumbel draw below actually picks. It is computed
+    // from `pred_tokens`, not from it: reading `guided[token]` instead would
+    // silently swap in the chosen survivor's value whenever the draw did not
+    // land on the row's true argmax, which is common once keep > 1.
+    float full_max = -std::numeric_limits<float>::infinity();
+    for (uint32_t index = 0; index < vocab_size; ++index) {
+        full_max = std::max(full_max, guided[index]);
+    }
+
     // Upstream's `_filter_top_k`: keep = ceil(0.1 * vocab_size) largest
     // guided values (the mask entry is already -inf from build_guided's ban,
     // so it can never be among them). Computed as integer ceiling division
@@ -266,21 +279,19 @@ synth_status_t choose_token_sampled(const float *        cond,
     // whole row at once rather than one uniform per surviving class.
     std::sort(order.begin(), order.begin() + keep);
 
-    int32_t best        = -1;
-    float   best_score  = -std::numeric_limits<float>::infinity();
-    float   best_guided = -std::numeric_limits<float>::infinity();
+    int32_t best       = -1;
+    float   best_score = -std::numeric_limits<float>::infinity();
     for (uint32_t index = 0; index < keep; ++index) {
         const uint32_t class_id = order[index];
         const float    uniform  = stream.next_uniform();
         const float    score    = gumbel_perturb(guided[class_id], class_temperature, uniform);
         if (score > best_score) {
-            best_score  = score;
-            best        = int32_t(class_id);
-            best_guided = guided[class_id];
+            best_score = score;
+            best       = int32_t(class_id);
         }
     }
     token    = best;
-    log_prob = best_guided;
+    log_prob = full_max;
     return SYNTH_OK;
 }
 

@@ -122,9 +122,17 @@ float gumbel_perturb(float logit, float temperature, float uniform);
 // not reproduce that shape. `token` is the argmax of
 // `gumbel_perturb(guided[c], class_temperature, u_c)` over the survivors
 // (ties keep the lower class id, matching this port's argmax first-maximal
-// convention elsewhere); `log_prob` is that token's guided log-probability
-// -- the same quantity `choose_token` would have reported had it chosen the
-// same token, not a function of the Gumbel draw.
+// convention elsewhere).
+//
+// `log_prob` is upstream's `confidence_scores = log_probs.max(dim=-1)[0]`
+// (omnivoice.py:1449): the max over the FULL guided array (post mask-ban,
+// pre top-k filter) -- the same value `choose_token` would report as its own
+// argmax's log_prob for this row -- NOT `guided[token]`. Upstream computes
+// this confidence from `log_probs` independently of which token
+// `pred_tokens` names, so whenever the Gumbel draw picks a survivor other
+// than the row's true argmax (routine once more than one class survives the
+// filter), `log_prob` and the guided value of the chosen `token` diverge by
+// design and must not be conflated.
 //
 // Preconditions identical to `choose_token`, including the
 // `guidance_scale != 0.0f && uncond == nullptr` assert (carryover item 1,

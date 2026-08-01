@@ -215,6 +215,63 @@ int check_choose_token_sampled_zero_temperature_short_circuits() {
     return 0;
 }
 
+// Fix round 1 (reviewer finding 1): upstream's `confidence_scores =
+// log_probs.max(dim=-1)[0]` (omnivoice.py:1449) is the max over the FULL
+// guided array, computed independently of which token the Gumbel draw
+// actually names -- not `guided[token]`. keep = ceil(0.1*20) = 2 here, with
+// classes 0 and 1 crafted to rank within ~0.1 of each other in guided value
+// (everything else far behind), so across many seeds the Gumbel draw picks
+// the non-argmax survivor (class 1) often -- not as a rare fluke. Whenever
+// that happens, `log_prob` must still equal the row's true max (what greedy
+// choose_token reports), never the chosen survivor's own guided value.
+//
+// This is the exact case the reviewer's probe caught (vocab 20, keep 2, a
+// ~45/55 split observed at 20,000 seeds): against the pre-fix
+// `log_prob = guided[token]`, this test fails every time class 1 wins,
+// because guided[1] is ~0.1 below guided[0] -- well outside the 1e-6f
+// tolerance below. 400 seeds is enough to observe both outcomes with
+// overwhelming probability (each has roughly even odds per seed here).
+int check_choose_token_sampled_log_prob_is_row_max_not_chosen_value() {
+    constexpr uint32_t kVocab  = 20;
+    constexpr uint32_t kMaskId = 999;  // Out of range: the ban never applies here.
+    float              cond[kVocab];
+    for (uint32_t index = 0; index < kVocab; ++index) {
+        cond[index] = 0.0f;
+    }
+    cond[0] = 5.0f;
+    cond[1] = 4.9f;  // ~0.1 apart in guided value after log-softmax (the gap
+                     // is shift-invariant: guided[0] - guided[1] == cond[0] - cond[1]).
+
+    int32_t greedy_token    = -1;
+    float   greedy_log_prob = 0.0f;
+    synth::omnivoice::choose_token(cond, nullptr, kVocab, kMaskId, 0.0f, greedy_token, greedy_log_prob);
+    SYNTH_TEST_CHECK(greedy_token == 0);  // The row's true argmax.
+
+    bool saw_argmax_win     = false;
+    bool saw_non_argmax_win = false;
+    for (uint64_t seed = 0; seed < 400; ++seed) {
+        synth::NormalRandomStream stream(seed);
+        int32_t                   token    = -1;
+        float                     log_prob = 0.0f;
+        SYNTH_TEST_CHECK(synth::omnivoice::choose_token_sampled(cond, nullptr, kVocab, kMaskId, 0.0f, 1.0f, stream,
+                                                                token, log_prob) == SYNTH_OK);
+        SYNTH_TEST_CHECK(token == 0 || token == 1);
+        // The fixed semantic: log_prob is always the row's max guided value,
+        // regardless of which survivor the draw actually picked.
+        SYNTH_TEST_CHECK(std::fabs(log_prob - greedy_log_prob) < 1e-6f);
+        if (token == greedy_token) {
+            saw_argmax_win = true;
+        } else {
+            saw_non_argmax_win = true;
+        }
+    }
+    // Both outcomes must actually occur, or this fixture is not exercising
+    // the case finding 1 was about: a draw that changes the winner.
+    SYNTH_TEST_CHECK(saw_argmax_win);
+    SYNTH_TEST_CHECK(saw_non_argmax_win);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -224,5 +281,6 @@ int main() {
     SYNTH_TEST_CHECK(check_choose_token_sampled_bans_mask() == 0);
     SYNTH_TEST_CHECK(check_choose_token_sampled_guidance_consistency() == 0);
     SYNTH_TEST_CHECK(check_choose_token_sampled_zero_temperature_short_circuits() == 0);
+    SYNTH_TEST_CHECK(check_choose_token_sampled_log_prob_is_row_max_not_chosen_value() == 0);
     return 0;
 }

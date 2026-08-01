@@ -123,14 +123,18 @@ struct ClonePrompt;
 // a null pointer means the caller supplied neither. `clone` is threaded
 // through as of Task 14 (src/voice-profile.cpp's create_from_reference
 // handler builds one, src/synthesize.cpp's omnivoice branch passes it
-// through here); `instruct` stays null until Task 15.
+// through here); `instruct` is threaded the same way as of Task 15
+// (src/voice-profile.cpp's create_from_description handler builds a
+// synth::omnivoice::DesignInstruct, and src/synthesize.cpp's omnivoice
+// branch points this at its already-canonical `instruct` member -- no
+// re-validation happens here, only assembly).
 struct PublicSynthesisParams {
-    std::string         text;                         // Linguistic Input, UTF-8
-    std::string         language_tag;                 // resolved by core; may be empty
-    const ClonePrompt * clone             = nullptr;  // the Reference Audio profile, if any (Task 14)
-    const std::string * instruct          = nullptr;  // Task 15 threads this; null now
-    double              speaking_rate     = 1.0;
-    uint64_t            seed              = 0;
+    std::string         text;                     // Linguistic Input, UTF-8
+    std::string         language_tag;             // resolved by core; may be empty
+    const ClonePrompt * clone         = nullptr;  // the Reference Audio profile, if any (Task 14)
+    const std::string * instruct      = nullptr;  // the Description Text profile's canonical instruct, if any (Task 15)
+    double              speaking_rate = 1.0;
+    uint64_t            seed          = 0;
     uint64_t            max_output_frames = 0;  // native frames; 0 = package cap
     int32_t             threads           = 0;
 };

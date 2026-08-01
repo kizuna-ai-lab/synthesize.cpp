@@ -2,6 +2,7 @@
 
 #include "arch/kokoro/kokoro.h"
 #include "arch/omnivoice/omnivoice.h"
+#include "arch/omnivoice/profile.h"
 #include "arch/qwen3-tts/qwen3-tts.h"
 #include "arch/vits/vits.h"
 #include "audio-delivery.h"
@@ -865,22 +866,35 @@ synth_status_t synth_synthesize(synth_context_t *          context,
             family_request.language_tag.assign(
                 prepared.resolved_language_tag != nullptr ? prepared.resolved_language_tag : "",
                 size_t(prepared.resolved_language_size));
-            // `instruct` stays null: Task 15 threads the free-text
-            // instruction through here. `clone` (Task 14): a profile from a
-            // different model, or one that is not this family's own
-            // Reference Audio payload (a Description Text DesignInstruct,
-            // Task 15, would carry a different tag on the SAME model), is
-            // refused here rather than silently ignored -- prepare_synthesis_request
-            // threads any non-null profile through without checking either
-            // property, because it has no access to synth_voice_profile's
-            // full definition (voice-profile-handle.h) to do so.
+            // `clone` (Task 14) and `instruct` (Task 15): a profile from a
+            // different model, or one that is neither of this family's own
+            // payload shapes, is refused here rather than silently ignored
+            // -- prepare_synthesis_request threads any non-null profile
+            // through without checking either property, because it has no
+            // access to synth_voice_profile's full definition
+            // (voice-profile-handle.h) to do so. The two payload shapes are
+            // mutually exclusive by construction (one synth_voice_profile_t
+            // carries exactly one family_tag), so at most one of `clone`/
+            // `instruct` is ever set below.
             if (prepared.voice_profile != nullptr) {
-                if (prepared.voice_profile->model != context->model ||
-                    prepared.voice_profile->family_tag != synth::ProfileFamilyTag::OmnivoiceClone) {
+                if (prepared.voice_profile->model != context->model) {
                     return SYNTH_ERR_UNSUPPORTED_VOICE;
                 }
-                family_request.clone =
-                    static_cast<const synth::omnivoice::ClonePrompt *>(prepared.voice_profile->payload.get());
+                if (prepared.voice_profile->family_tag == synth::ProfileFamilyTag::OmnivoiceClone) {
+                    family_request.clone =
+                        static_cast<const synth::omnivoice::ClonePrompt *>(prepared.voice_profile->payload.get());
+                } else if (prepared.voice_profile->family_tag == synth::ProfileFamilyTag::OmnivoiceDesign) {
+                    // Points at the DesignInstruct's own already-canonical
+                    // `instruct` member rather than copying it: the profile
+                    // (and so its payload) outlives this synchronous
+                    // synthesis call, which is all PublicSynthesisParams'
+                    // borrowed pointer needs.
+                    family_request.instruct =
+                        &static_cast<const synth::omnivoice::DesignInstruct *>(prepared.voice_profile->payload.get())
+                             ->instruct;
+                } else {
+                    return SYNTH_ERR_UNSUPPORTED_VOICE;
+                }
             }
             family_request.speaking_rate = double(prepared.speaking_rate);
             family_request.seed          = actual_seed;

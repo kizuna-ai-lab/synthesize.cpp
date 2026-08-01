@@ -102,4 +102,74 @@ synth_status_t create_clone_prompt(Model &                              model,
                                    const char *&                        out_diagnostic_code,
                                    const char *&                        out_diagnostic_message);
 
+// ClonePrompt's sibling for a Description Text ("voice design") Voice
+// Profile (Task 15): the validated, canonical instruct string
+// resolve_instruct() below produces. Unlike ClonePrompt, this payload needs
+// no Model at all -- vocabulary resolution is pure string processing, never
+// a tensor -- so it carries nothing else.
+struct DesignInstruct {
+    // EN- or ZH-unified, joined with ", " or "，" -- upstream's own
+    // _resolve_instruct() return value shape
+    // (omnivoice/utils/voice_design.py + omnivoice/models/omnivoice.py's
+    // own _resolve_instruct, lines 1492-1621, both at the pinned revision),
+    // reproduced by resolve_instruct() below. Flows into Model::synthesize's
+    // assemble_prompt_ids call as the instruct slot verbatim. May be empty:
+    // a description that validates to zero attribute items (e.g. one made
+    // only of separators) resolves the same way upstream's own empty-result
+    // path does -- see resolve_instruct's own comment.
+    std::string instruct;
+};
+
+// Validates and canonicalizes a Description Text ("voice design") instruct
+// string against upstream's CLOSED attribute vocabulary --
+// omnivoice/utils/voice_design.py:31-97 and omnivoice/models/omnivoice.py's
+// own _resolve_instruct (1492-1621), both at the pinned revision.
+//
+// This is a closed vocabulary, not a free-form/attribute hybrid: transcription
+// (see profile.cpp's own citations) confirmed upstream raises ValueError on
+// any comma-separated item that is not one of the fixed gender/age/pitch/
+// style/accent/dialect terms below, so this port rejects a non-member the
+// same way, by name, rather than accepting it as free text. The design
+// spec's "attribute / free-form instruct vocabulary" phrasing is resolved
+// against the pinned source in the vocabulary's favor.
+//
+// `description` is the caller's raw, non-empty string -- voice-profile.cpp's
+// dispatcher has already checked presence per docs/c-interface.md
+// ("description is required, non-empty"), but has not touched its content
+// otherwise.
+//
+// `use_zh` is the language-unification baseline BEFORE this function's own
+// dialect/accent overrides (a dialect item present forces Chinese, an accent
+// item present forces English, exactly as upstream's own override does).
+// Upstream computes its OWN baseline from the target TEXT being synthesized
+// (omnivoice.py:1068's `use_zh = bool(text_list[i] and _ZH_RE.search(text_list[i]))`),
+// which does not exist yet at Voice Profile creation time -- this port's
+// caller (voice-profile.cpp) substitutes the request's resolved
+// `description_language` instead, a deliberate, documented divergence
+// forced by the public Interface's own shape (Description Text profiles
+// are prepared independently of any later synthesis text).
+//
+// Returns SYNTH_ERR_INVALID_ARG, with `out_diagnostic_code` set to one of
+// three non-null static strings and `out_diagnostic_message` filled with a
+// diagnostic naming the offending item(s) -- for the three rejections
+// _resolve_instruct itself raises on:
+//   * an item outside the closed vocabulary ("voice_profile.instruct_unknown_item"),
+//     named verbatim as the caller wrote it (no difflib "did you mean"
+//     suggestion: a diagnostic, not a search engine);
+//   * two or more items from the same mutually-exclusive category
+//     ("voice_profile.instruct_category_conflict"), naming every conflicting
+//     item;
+//   * a Chinese dialect item combined with an English accent item in the
+//     same instruct ("voice_profile.instruct_dialect_accent_mix").
+// Unlike create_clone_prompt above, the message is an owned `std::string`
+// rather than a static `const char *`: two of these three diagnostics name
+// caller-controlled content, which a static string cannot hold.
+//
+// `output` is left untouched (reset to null) on any non-OK return.
+synth_status_t resolve_instruct(const std::string &                     description,
+                                bool                                    use_zh,
+                                std::shared_ptr<const DesignInstruct> & output,
+                                const char *&                           out_diagnostic_code,
+                                std::string &                           out_diagnostic_message);
+
 }  // namespace synth::omnivoice

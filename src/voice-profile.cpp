@@ -326,6 +326,120 @@ synth_status_t create_omnivoice_profile_from_reference(const synth_model_t *    
     return SYNTH_OK;
 }
 
+// ---------------------------------------------------------------------------
+// OmniVoice's create_from_description handler (Task 15): the second Voice
+// Profile source this family implements for real. `model`/`params` are
+// already known non-null with a params struct_size of at least
+// sizeof(uint64_t) by the caller below.
+// ---------------------------------------------------------------------------
+
+synth_status_t create_omnivoice_profile_from_description(const synth_model_t *                    model,
+                                                         const synth_voice_description_params_t * params,
+                                                         synth_voice_profile_t **                 out_profile) {
+    const synth_diagnostic_sink_t * diagnostics =
+        read_visible(params, offsetof(synth_voice_description_params_t, diagnostics),
+                     static_cast<const synth_diagnostic_sink_t *>(nullptr));
+    if (!valid_diagnostic_sink(diagnostics)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    const char *   description = read_visible(params, offsetof(synth_voice_description_params_t, description),
+                                              static_cast<const char *>(nullptr));
+    const uint64_t description_size =
+        read_visible(params, offsetof(synth_voice_description_params_t, description_size), uint64_t(0));
+    const char *   language_tag = read_visible(params, offsetof(synth_voice_description_params_t, language_tag),
+                                               static_cast<const char *>(nullptr));
+    const uint64_t language_size =
+        read_visible(params, offsetof(synth_voice_description_params_t, language_tag_size), uint64_t(0));
+    const uint64_t seed = read_visible(params, offsetof(synth_voice_description_params_t, seed), uint64_t(0));
+
+    if ((description == nullptr) != (description_size == 0) || (language_tag == nullptr) != (language_size == 0)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if (description_size > std::numeric_limits<size_t>::max() || language_size > std::numeric_limits<size_t>::max()) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // Step 1: description required, non-empty (docs/c-interface.md:566:
+    // "description is required, non-empty, length-delimited UTF-8").
+    if (description == nullptr || description_size == 0) {
+        emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.description_required",
+                        "a Description Text Voice Profile requires a non-empty description");
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    const std::string description_text(description, static_cast<size_t>(description_size));
+
+    // Step 2: the preparation seed must be concrete (docs/c-interface.md:570,
+    // "v1 profile preparation rejects SYNTH_SEED_RANDOM"; docs/voice-conditioning.md:57,
+    // "a concrete preparation seed"). This family's Description Text
+    // preparation is itself deterministic -- pure vocabulary resolution, no
+    // sampling -- so the seed is accepted here and otherwise unused;
+    // rejecting the sentinel is what stops a caller from building a Voice
+    // Profile it could never reproduce, not a randomness concern of this
+    // family's own. The Python binding
+    // (bindings/python/src/synthesize_cpp/voice_profiles.py's
+    // _concrete_profile_seed) already refuses the sentinel before it ever
+    // reaches this function; a direct C caller has no such gate, so this
+    // port enforces it here too.
+    if (seed == SYNTH_SEED_RANDOM) {
+        emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.seed_must_be_concrete",
+                        "Voice Profile preparation does not accept SYNTH_SEED_RANDOM; generate a concrete seed first");
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // Step 3: description_language, validated against this family's own
+    // description-language support (en/zh -- upstream's trained set) rather
+    // than the synthesis Language Capability Catalog (docs/c-interface.md:568:
+    // "validated against the Model Variant's description-language support
+    // rather than its synthesis Language Capability Catalog"). A null tag
+    // selects the Model Package's declared default, a FIXED "en" -- NEVER
+    // detected from the description's own text: docs/c-interface.md is
+    // explicit ("The implementation never detects the description language
+    // from its text"), and this port follows that literally even though it
+    // means a Chinese-script description with no explicit tag resolves as
+    // "en" until the caller says otherwise. (This is a deliberate reading of
+    // a looser earlier brief that suggested sniffing the description for
+    // CJK content for this default; the confirmed contract's explicit
+    // prohibition governs.)
+    bool use_zh = false;  // the "en" default
+    if (language_tag != nullptr) {
+        if (!valid_bcp47_shape(language_tag, static_cast<size_t>(language_size))) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        const bool is_en = equals_ascii_case(language_tag, static_cast<size_t>(language_size), "en");
+        const bool is_zh = equals_ascii_case(language_tag, static_cast<size_t>(language_size), "zh");
+        if (!is_en && !is_zh) {
+            emit_diagnostic(
+                diagnostics, SYNTH_ERR_UNSUPPORTED_INPUT, "voice_profile.description_language_unsupported",
+                "this package's Description Text only supports the \"en\" and \"zh\" description languages");
+            return SYNTH_ERR_UNSUPPORTED_INPUT;
+        }
+        use_zh = is_zh;
+    }
+
+    // Step 4: the vocabulary resolution itself (profile.cpp). `use_zh` here
+    // is the unification BASELINE only -- resolve_instruct's own
+    // dialect/accent overrides (a dialect item forces Chinese, an accent
+    // item forces English) still apply on top of it, exactly as upstream's
+    // own override does on top of whatever baseline its call site computed.
+    std::shared_ptr<const synth::omnivoice::DesignInstruct> design;
+    const char *                                            diagnostic_code = nullptr;
+    std::string                                             diagnostic_message;
+    const synth_status_t                                    resolve_status =
+        synth::omnivoice::resolve_instruct(description_text, use_zh, design, diagnostic_code, diagnostic_message);
+    if (resolve_status != SYNTH_OK) {
+        emit_diagnostic(diagnostics, resolve_status, diagnostic_code, diagnostic_message.c_str());
+        return resolve_status;
+    }
+
+    auto profile        = std::make_unique<synth_voice_profile>();
+    profile->model      = model;
+    profile->family_tag = synth::ProfileFamilyTag::OmnivoiceDesign;
+    profile->payload    = std::move(design);
+    *out_profile        = profile.release();
+    return SYNTH_OK;
+}
+
 }  // namespace
 
 void synth_voice_profile_capabilities_init(synth_voice_profile_capabilities_t * capabilities, uint64_t struct_size) {
@@ -438,7 +552,25 @@ synth_status_t synth_voice_profile_create_from_description(const synth_model_t *
     if (model == nullptr) {
         return SYNTH_ERR_INVALID_ARG;
     }
-    return validate_unsupported_params(params, offsetof(synth_voice_description_params_t, diagnostics));
+    // Every other family still takes the generic "unsupported" fallback,
+    // unchanged from before Task 15 -- the same split
+    // create_from_reference's own dispatcher above uses.
+    if (model->info.family != synth::ModelFamily::Omnivoice) {
+        return validate_unsupported_params(params, offsetof(synth_voice_description_params_t, diagnostics));
+    }
+    if (params == nullptr) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if (params->struct_size < sizeof(uint64_t)) {
+        return SYNTH_ERR_BAD_STRUCT_SIZE;
+    }
+    try {
+        return create_omnivoice_profile_from_description(model, params, out_profile);
+    } catch (const std::bad_alloc &) {
+        return SYNTH_ERR_OOM;
+    } catch (...) {
+        return SYNTH_ERR_INTERNAL;
+    }
 }
 
 void synth_voice_random_params_init(synth_voice_random_params_t * params, uint64_t struct_size) {

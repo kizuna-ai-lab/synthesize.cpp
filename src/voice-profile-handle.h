@@ -15,6 +15,9 @@ namespace synth {
 enum class ProfileFamilyTag : uint32_t {
     None = 0,
     OmnivoiceClone,
+    // Description Text ("voice design"): wraps a
+    // synth::omnivoice::DesignInstruct payload (profile.h, Task 15).
+    OmnivoiceDesign,
 };
 
 }  // namespace synth

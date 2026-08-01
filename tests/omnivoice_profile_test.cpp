@@ -122,6 +122,13 @@ constexpr const char * kPinnedTranscript =
     "Some call me nature. Others call me Mother Nature. I've been here for over four point and "
     "five billion years, twenty-two thousand five hundred times longer than you.";
 
+// tests/golden/omnivoice/omnivoice-0-6b.manifest.json's own `omni-design-en`
+// case (voice.description); this is also the exact instruct the vocabulary
+// transcription's own fixed-point unit case pins
+// (tests/omnivoice_design_test.cpp), transcribed here with this provenance
+// comment for the same reason kPinnedTranscript above is.
+constexpr const char * kGoldenDesignInstruct = "female, young adult, high pitch";
+
 struct SeenDiagnostic {
     std::string code;
     std::string message;
@@ -370,6 +377,52 @@ int main(int argc, char ** argv) {
 
         synth_context_free(context);
         synth_model_free(other_model);
+        synth_voice_profile_free(profile);
+    }
+
+    // --- Description Text ("voice design"), Task 15: the golden-instruct
+    // profile through the public seam, then a real synthesis producing
+    // finite PCM. The vocabulary transcription itself (every rejection arm,
+    // the fixed-point cases, width-comma splitting) is
+    // tests/omnivoice_design_test.cpp's job, against a synthetic package --
+    // this only proves the wiring reaches the real package end to end.
+    {
+        synth_voice_description_params_t params;
+        synth_voice_description_params_init(&params, sizeof(params));
+        params.description      = kGoldenDesignInstruct;
+        params.description_size = std::strlen(kGoldenDesignInstruct);
+
+        synth_voice_profile_t * profile = nullptr;
+        SYNTH_TEST_CHECK(synth_voice_profile_create_from_description(model, &params, &profile) == SYNTH_OK);
+        SYNTH_TEST_CHECK(profile != nullptr);
+
+        synth_context_t * context = nullptr;
+        SYNTH_TEST_CHECK(synth_context_create(model, &context) == SYNTH_OK);
+
+        const char *    text = "OmniVoice speaks with one voice.";
+        synth_request_t request;
+        synth_request_init(&request, sizeof(request));
+        request.input_kind        = SYNTH_INPUT_TEXT_UTF8;
+        request.input_data        = text;
+        request.input_count       = std::strlen(text);
+        request.language_tag      = "en";
+        request.language_tag_size = 2;
+        request.voice_profile     = profile;
+        request.seed              = 0;
+
+        synth_audio_buffer_t * audio = nullptr;
+        synth_result_t         result;
+        synth_result_init(&result, sizeof(result));
+        SYNTH_TEST_CHECK(synth_synthesize_to_buffer(context, &request, &audio, &result) == SYNTH_OK);
+        SYNTH_TEST_CHECK(audio != nullptr);
+        SYNTH_TEST_CHECK(audio->frame_count > 0);
+        const uint64_t sample_count = audio->frame_count * audio->channel_count;
+        for (uint64_t index = 0; index < sample_count; ++index) {
+            SYNTH_TEST_CHECK(std::isfinite(audio->samples[index]));
+        }
+
+        synth_audio_buffer_free(audio);
+        synth_context_free(context);
         synth_voice_profile_free(profile);
     }
 

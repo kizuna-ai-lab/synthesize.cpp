@@ -4,8 +4,12 @@
  * behind: seed reporting, same-seed repeatability, and language resolution.
  * Task 14 adds the cloning path: `--reference <pcm.f32> --transcript <text>`
  * build a Reference Audio Voice Profile before the request and thread it
- * through `request.voice_profile`. None of it injects tensors -- that is
- * what separates this driver from the replay one (omnivoice_replay_real.cpp).
+ * through `request.voice_profile`. Task 15 adds the voice-design path:
+ * `--instruct <text>` builds a Description Text Voice Profile the same way.
+ * `--reference`/`--transcript` and `--instruct` are mutually exclusive --
+ * one synth_request_t carries at most one Voice Profile. None of it injects
+ * tensors -- that is what separates this driver from the replay one
+ * (omnivoice_replay_real.cpp).
  *
  * An adapter, not a test: it asserts nothing and prints what it observed.
  * The relations and their meaning live in scripts/validate-omnivoice-public.py.
@@ -83,6 +87,7 @@ int main(int argc, char ** argv) {
      * flags. */
     const char * reference_path = NULL;
     const char * transcript     = NULL;
+    const char * instruct       = NULL;
     const char * positional[8];
     int          positional_count = 0;
     for (int index = 1; index < argc; ++index) {
@@ -102,6 +107,14 @@ int main(int argc, char ** argv) {
             transcript = argv[++index];
             continue;
         }
+        if (strcmp(argv[index], "--instruct") == 0) {
+            if (index + 1 >= argc) {
+                fprintf(stderr, "--instruct needs text\n");
+                return 2;
+            }
+            instruct = argv[++index];
+            continue;
+        }
         if (positional_count >= (int) (sizeof(positional) / sizeof(positional[0]))) {
             fprintf(stderr, "too many positional arguments\n");
             return 2;
@@ -111,12 +124,16 @@ int main(int argc, char ** argv) {
     if (positional_count < 4) {
         fprintf(stderr,
                 "usage: %s <model.gguf> <out.pcm> <language-tag|-> <seed|random> [max-frames] [threads] "
-                "[--reference <pcm.f32> --transcript <text>]\n",
+                "[--reference <pcm.f32> --transcript <text>] [--instruct <text>]\n",
                 argv[0]);
         return 2;
     }
     if ((reference_path == NULL) != (transcript == NULL)) {
         fprintf(stderr, "--reference and --transcript must be given together\n");
+        return 2;
+    }
+    if (instruct != NULL && reference_path != NULL) {
+        fprintf(stderr, "--instruct and --reference are mutually exclusive: one request, one Voice Profile\n");
         return 2;
     }
     const char * model_path = positional[0];
@@ -190,6 +207,27 @@ int main(int argc, char ** argv) {
         }
     }
 
+    /* The Description Text ("voice design") Voice Profile (Task 15):
+     * mutually exclusive with --reference above (checked before either
+     * profile-building block runs), so `profile` is still NULL here on this
+     * branch. Language and seed stay at the params initializer's defaults
+     * (package default description language, concrete seed zero) -- this
+     * driver's only design caller (scripts/validate-omnivoice-public.py)
+     * has no need to vary either. */
+    if (instruct != NULL) {
+        synth_voice_description_params_t description_params;
+        synth_voice_description_params_init(&description_params, sizeof description_params);
+        description_params.description      = instruct;
+        description_params.description_size = strlen(instruct);
+
+        status = synth_voice_profile_create_from_description(model, &description_params, &profile);
+        if (status != SYNTH_OK) {
+            fprintf(stderr, "create_from_description -> %d\n", (int) status);
+            synth_model_free(model);
+            return 1;
+        }
+    }
+
     synth_context_t * context = NULL;
     status                    = synth_context_create(model, &context);
     if (status != SYNTH_OK) {
@@ -227,9 +265,9 @@ int main(int argc, char ** argv) {
     }
     /* No voice_id: the catalog is empty and the package default is the
      * unnamed auto-voice, which is what leaving it null asks for.
-     * `voice_profile` carries the Reference Audio clone built above, or
-     * stays null for the same auto-voice path Task 5's checks already
-     * cover. */
+     * `voice_profile` carries the Reference Audio clone or the Description
+     * Text design built above (mutually exclusive), or stays null for the
+     * same auto-voice path Task 5's checks already cover. */
     request.voice_profile     = profile;
     request.seed              = strcmp(seed_text, "random") == 0 ? SYNTH_SEED_RANDOM : strtoull(seed_text, NULL, 10);
     /* PCM frames, per docs/c-interface.md; the family converts to its own

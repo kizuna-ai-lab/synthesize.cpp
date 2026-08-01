@@ -7,7 +7,7 @@ caller does and checks the promises the public interface makes about seeds
 and language, for a family whose Preset Voice Catalog is empty (there is no
 Voice axis here the way qwen3-tts has one -- see check 7).
 
-Ten checks. The first seven mirror the manifest's `public_request` relation
+Thirteen checks. The first seven mirror the manifest's `public_request` relation
 over the three sampled-seed cases (`omni-sampled-seed-{zero,one,forty-two}`,
 text pinned there as "Sampling follows the seed."):
 
@@ -36,16 +36,29 @@ case's own pinned reference clip and transcript:
     profile at all: the reference conditions the output rather than being
     silently ignored.
 
+Three more (Task 15, the voice-design path), against the `omni-design-en`
+golden case's own pinned instruct:
+
+11. a design request (Description Text profile + target text) succeeds.
+12. the same design request, same seed, run twice -> identical PCM digest:
+    same-seed reproducibility holds WITH a design profile, exactly as it
+    does with a clone one.
+13. the design digest differs from a same-seed, same-text run carrying no
+    profile at all: the instruct conditions the output rather than being
+    silently ignored.
+
 The public phase claims relations only -- it does not compare against the
-oracle's own clone waveform (that is the replay gate's job, gated by an
-uncommitted oracle payload) -- and the free-running greedy grid claim for
-this case stays where it has always lived, in scripts/validate-omnivoice-replay.py.
+oracle's own clone or design waveform (that is the replay gate's job, gated
+by an uncommitted oracle payload) -- and the free-running greedy grid claim
+for these cases stays where it has always lived, in
+scripts/validate-omnivoice-replay.py.
 
 The seed-contract text (checks 1-4 and 7) is read from the manifest at run
 time rather than pinned as a second literal in this file, so a manifest text
 change is caught here instead of silently validating a sentence the manifest
 no longer contains. The clone checks (8-10) read the `omni-clone-en` case's
-own text/reference/transcript/language the same way.
+own text/reference/transcript/language the same way; the design checks
+(11-13) read `omni-design-en`'s own text/description/language.
 
 Run from the repository root:
 
@@ -75,6 +88,9 @@ SEED_CONTRACT_CASE_IDS = ("omni-sampled-seed-zero", "omni-sampled-seed-one", "om
 # The clone case the Task 14 checks (8-10) drive.
 CLONE_CASE_ID = "omni-clone-en"
 
+# The design case the Task 15 checks (11-13) drive.
+DESIGN_CASE_ID = "omni-design-en"
+
 # include/synthesize.h: `#define SYNTH_SEED_RANDOM UINT64_MAX`. A resolver
 # that regressed to echoing the sentinel itself, deterministically, would
 # still be neither "" nor "0" and would still reproduce byte-for-byte on
@@ -102,6 +118,14 @@ def clone_case(manifest_path: pathlib.Path) -> dict:
     if CLONE_CASE_ID not in cases:
         raise SystemExit(f"{manifest_path} no longer defines {CLONE_CASE_ID}")
     return cases[CLONE_CASE_ID]
+
+
+def design_case(manifest_path: pathlib.Path) -> dict:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    cases = {case["id"]: case for case in manifest["cases"]}
+    if DESIGN_CASE_ID not in cases:
+        raise SystemExit(f"{manifest_path} no longer defines {DESIGN_CASE_ID}")
+    return cases[DESIGN_CASE_ID]
 
 
 def wav_to_f32(wav_path: pathlib.Path, out_path: pathlib.Path) -> None:
@@ -149,7 +173,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def synthesize(arguments: argparse.Namespace, name: str, language: str | None, seed: str, text: str,
-              reference_f32: pathlib.Path | None = None, transcript: str | None = None) -> dict | None:
+              reference_f32: pathlib.Path | None = None, transcript: str | None = None,
+              instruct: str | None = None) -> dict | None:
     target = arguments.work / f"{name}.pcm"
     target.parent.mkdir(parents=True, exist_ok=True)
     # <model.gguf> <out.pcm> <language-tag|-> <seed|random>; no voice-id
@@ -159,6 +184,8 @@ def synthesize(arguments: argparse.Namespace, name: str, language: str | None, s
                seed]
     if reference_f32 is not None:
         command += ["--reference", str(reference_f32), "--transcript", transcript]
+    if instruct is not None:
+        command += ["--instruct", instruct]
     finished = subprocess.run(command, input=text.encode("utf-8"), capture_output=True)
     if finished.returncode != 0:
         print(f"  {name}: runner failed: {finished.stderr.decode('utf-8', 'replace').strip()[:200]}")
@@ -307,6 +334,40 @@ def main() -> int:
         "clone output differs from the no-profile run at the same seed",
         clone_a["digest"] != clone_no_profile["digest"],
         f"clone {clone_a['digest'][:16]} vs no-profile {clone_no_profile['digest'][:16]}",
+    )
+
+    # --- Task 15: the voice-design path, against omni-design-en's own
+    # pinned instruct.
+    design = design_case(arguments.manifest)
+    design_text = design["input"]["text"]
+    design_language = design["input"].get("language_tag") or "en"
+    design_instruct = design["voice"]["description"]
+
+    design_a = synthesize(arguments, "design-en-a", design_language, "0", design_text, instruct=design_instruct)
+    design_b = synthesize(arguments, "design-en-b", design_language, "0", design_text, instruct=design_instruct)
+    design_no_profile = synthesize(arguments, "design-en-no-profile", design_language, "0", design_text)
+    if design_a is None or design_b is None or design_no_profile is None:
+        return 1
+
+    # Check 11.
+    record(
+        "a design request (Description Text profile + target text) succeeds",
+        int(design_a["status"]) == 0 and int(design_a["frames"]) > 0,
+        f"status {design_a['status']}, frames {design_a['frames']}",
+    )
+
+    # Check 12.
+    record(
+        "same-seed reproducibility holds WITH a design profile",
+        design_a["digest"] == design_b["digest"],
+        f"{design_a['digest'][:16]} vs {design_b['digest'][:16]}",
+    )
+
+    # Check 13.
+    record(
+        "design output differs from the no-profile run at the same seed",
+        design_a["digest"] != design_no_profile["digest"],
+        f"design {design_a['digest'][:16]} vs no-profile {design_no_profile['digest'][:16]}",
     )
 
     if arguments.report is not None:

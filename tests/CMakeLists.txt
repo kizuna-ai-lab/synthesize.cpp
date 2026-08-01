@@ -317,7 +317,23 @@ target_link_libraries(synthesize-omnivoice-decode-loop-test PRIVATE synthesize g
 add_test(NAME synthesize-omnivoice-decode-loop-test
     COMMAND synthesize-omnivoice-decode-loop-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-synthetic)
 synth_register_unit_target(synthesize-omnivoice-decode-loop-test)
+# Description Text profiles (Task 15): a genuine unit test against a
+# synthetic package (its own fixtures subdirectory, not
+# omnivoice-synthetic's -- write_synthetic_package's own file, not one this
+# other suite's tests could race against). Nothing here touches the
+# frontend or a tensor -- resolve_instruct is pure string processing and
+# create_from_description never reaches the frontend either -- so the
+# heavier model-guarded harness tests/omnivoice_profile_test.cpp uses for
+# Task 14's Reference Audio path (a real forward pass) buys nothing here.
+add_executable(synthesize-omnivoice-design-test omnivoice_design_test.cpp)
+target_include_directories(synthesize-omnivoice-design-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(synthesize-omnivoice-design-test PRIVATE synthesize ggml)
+add_test(NAME synthesize-omnivoice-design-test
+    COMMAND synthesize-omnivoice-design-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-design)
+synth_register_unit_target(synthesize-omnivoice-design-test)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-synthetic)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-design)
 set_tests_properties(
     synthesize-omnivoice-metadata-test
     synthesize-omnivoice-catalog-test
@@ -331,6 +347,7 @@ set_tests_properties(
     synthesize-omnivoice-model-errors-test
     synthesize-omnivoice-load-synthetic-test
     synthesize-omnivoice-decode-loop-test
+    synthesize-omnivoice-design-test
     PROPERTIES LABELS "unit;omnivoice")
 set_tests_properties(
     synthesize-vits-text-encoder-host-test

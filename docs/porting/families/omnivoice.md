@@ -802,7 +802,24 @@ oracle, and no public normalisation control exists in v1. The replay seam's
 branch per case. The quiet-reference and zero-reference branches are decided
 with cloning (Plan 3).
 
-**Voice-design instruct passthrough.** v1 does not reimplement upstream's
-`_resolve_instruct` normalization. Oracle cases pin already-normalized instruct
-strings, so the port passes Description Text through unchanged and the
-normalization stays an upstream concern until something forces it inward.
+**Voice-design instruct passthrough — decided 2026-08-02 (Plan 3, Task 15).**
+v1 DOES reimplement `_resolve_instruct`: `src/arch/omnivoice/profile.cpp`'s
+`resolve_instruct()` transcribes the closed attribute/accent/dialect
+vocabulary from `omnivoice/utils/voice_design.py:31-97` and the validation/
+unification rules from `omnivoice/models/omnivoice.py:1492-1621`, both at the
+pinned revision. `synth_voice_profile_create_from_description` (Task 14
+staged the capability bit; Task 15 implements the dispatch) runs a raw
+description through it before a Voice Profile is ever built, so a caller's
+description is validated and canonicalized the same way upstream's own
+`generate()` call validates an `instruct` string -- not passed through
+unchanged. Two deliberate divergences, forced by the public Interface's own
+shape rather than chosen for convenience:
+  * upstream computes its unify-to-one-language baseline from the TARGET
+    TEXT being synthesized (`omnivoice.py:1068`), which does not exist yet
+    at Voice Profile creation time; this port substitutes the request's
+    resolved `description_language` instead (English unless the caller
+    names Chinese explicitly -- never detected from the description's own
+    text, per docs/c-interface.md's explicit prohibition on that).
+  * the closed-vocabulary rejection for an unsupported item is reported
+    without upstream's `difflib` "did you mean" suggestion -- a diagnostic
+    naming the bad item, not a search engine.

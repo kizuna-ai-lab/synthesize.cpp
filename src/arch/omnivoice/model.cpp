@@ -21,6 +21,7 @@
 #include "arch/omnivoice/generator-host.h"
 #include "arch/omnivoice/generator.h"
 #include "arch/omnivoice/omnivoice.h"
+#include "arch/omnivoice/profile.h"
 #include "arch/omnivoice/reference-encoder-host.h"
 #include "arch/omnivoice/weights.h"
 #include "backend-plan.h"
@@ -344,6 +345,7 @@ synth_status_t Model::get_info(ModelInfo & output) const {
     output.language_tags        = hparams.language_tags;
     output.frontend_present     = hparams.frontend_present;
     output.frontend_provider    = hparams.frontend_provider;
+    output.profile              = hparams.profile;
     return SYNTH_OK;
 }
 
@@ -646,14 +648,22 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         return status;
     }
     // Decision 3 of the plan: the residual output scaling lives HERE, inside
-    // the family's synthesis path, faithful to the oracle. Auto-voice and
-    // voice-design requests take the no-reference branch; the clone branches
-    // arrive with Plan 3's reference handling, which is the only thing that can
-    // supply the reference RMS the other two arms key off -- so a Plan 2
-    // request carrying reference TOKENS still takes this branch, and the replay
-    // seam applies the oracle's own branch separately rather than reading this
-    // one.
-    apply_no_reference_volume(output.audio);
+    // the family's synthesis path, faithful to the oracle's own
+    // `_post_process_audio` three-arm branch (docs/porting/families/omnivoice.md's
+    // "One scaling survives the switches" table). Task 14 makes the choice
+    // real: `request.reference_rms` (see its own comment in omnivoice.h) is
+    // negative for auto-voice, voice-design, and every caller that predates
+    // Plan 3's cloning path -- including the replay seam, which applies the
+    // oracle's own branch itself rather than reading this one -- and
+    // non-negative only when the public seam (Model::synthesize) built this
+    // request from a Reference Audio profile, in which case
+    // apply_reference_volume's own `rms >= 0.1 -> none` / `0 < rms < 0.1 ->
+    // scale` split governs instead.
+    if (request.reference_rms >= 0.0f) {
+        apply_reference_volume(output.audio, request.reference_rms);
+    } else {
+        apply_no_reference_volume(output.audio);
+    }
     return SYNTH_OK;
 }
 
@@ -662,17 +672,32 @@ synth_status_t Model::synthesize(const PublicSynthesisParams & params, Synthesis
     Impl &          impl    = *implementation_;
     const HParams & hparams = impl.hparams;
 
-    // Auto-voice and voice-design only this task: no Reference Audio and no
-    // free-text instruction until Tasks 14 and 15 thread `params.clone` and
-    // `params.instruct` through here. `ref_text` stays empty throughout --
-    // assemble_prompt_ids's combine_text and DurationEstimator both read an
-    // empty reference as "no reference" and take their own no-reference
-    // branches (auto-voice/voice-design anchors and the no-reference volume
-    // arm respectively).
-    const std::string ref_text;
+    // Task 15 threads the free-text instruction through `params.instruct`;
+    // this task (14) threads Reference Audio through `params.clone`.
+    // `ref_text`/`denoise`/`ref_frames` are the clone-shaped inputs
+    // assemble_prompt_ids and DurationEstimator both expect: empty/false/0
+    // for auto-voice and voice-design, which is what makes them read as "no
+    // reference" and take their own no-reference branches (the anchor pair
+    // and the no-reference volume arm respectively) exactly as before this
+    // task.
+    const bool        has_clone  = params.clone != nullptr;
+    const std::string ref_text   = has_clone ? params.clone->transcript_text : std::string();
     const std::string instruct   = params.instruct != nullptr ? *params.instruct : std::string();
-    const bool        denoise    = false;  // the clone-only marker; Task 14 sets it when cloning
-    const uint64_t    ref_frames = 0;      // Task 14 supplies the reference's own frame count
+    const bool        denoise    = has_clone;  // the clone-only marker
+    uint64_t          ref_frames = 0;          // the reference's own frame count, T_ref
+    if (has_clone) {
+        const uint32_t codebooks = hparams.audio.num_codebooks;
+        // A ClonePrompt's reference_tokens is always an exact codebook-major
+        // multiple of num_codebooks (Model::encode_reference's own
+        // postcondition, ReferenceEncoding::tokens); a profile that
+        // disagrees is a wiring defect upstream of this call, not a runtime
+        // case a caller can trigger through the public seam (voice-profile.cpp
+        // never stores a ClonePrompt that failed encode_reference).
+        if (codebooks == 0 || params.clone->reference_tokens.size() % codebooks != 0) {
+            return SYNTH_ERR_INTERNAL;
+        }
+        ref_frames = params.clone->reference_tokens.size() / codebooks;
+    }
 
     // Empty or whitespace-only text is refused before any estimate is made:
     // upstream never runs a synthesis for a request that names no Linguistic
@@ -716,6 +741,10 @@ synth_status_t Model::synthesize(const PublicSynthesisParams & params, Synthesis
     request.target_frames   = estimated;
     request.seed            = params.seed;
     request.threads         = params.threads;
+    if (has_clone) {
+        request.reference_tokens = params.clone->reference_tokens;
+        request.reference_rms    = params.clone->ref_rms;
+    }
     // position_temperature and class_temperature stay at SynthesisRequest's
     // own -1.0f default: the package's own defaults govern, which for the
     // public path is what makes it sample rather than decode greedily.

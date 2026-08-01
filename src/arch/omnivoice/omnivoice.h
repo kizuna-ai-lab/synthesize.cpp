@@ -1,6 +1,7 @@
 #pragma once
 
 #include "arch/omnivoice/generator-host.h"
+#include "arch/omnivoice/weights.h"
 #include "synthesize.h"
 #include "text-frontend.h"
 
@@ -35,6 +36,11 @@ struct ModelInfo {
 
     bool        frontend_present = false;
     std::string frontend_provider;
+
+    // The Reference Audio limits and Serialized Profile identity, read
+    // straight from HParams::profile (Model::get_info's own copy) --
+    // synthesize.cpp's `shared_info` fills synth::VoiceProfileInfo from this.
+    ProfileContract profile;
 };
 
 // A family-internal synthesis request. Plan 2 reached this through the
@@ -70,6 +76,21 @@ struct SynthesisRequest {
     // Stop after the step-0 conditional forward with the probe buffers filled;
     // the sampled golden cases compare only that forward in Plan 2.
     bool                  probe_only           = false;
+    // Task 14's volume-arm selector, independent of whether `reference_tokens`
+    // above is populated: the replay runner (tests/omnivoice_replay_real.cpp)
+    // fills `reference_tokens` from a pre-computed oracle grid with no
+    // ref_rms context at all, and switching this function's own volume
+    // branch on "is reference_tokens non-empty" would silently change
+    // `pcm_freerun`'s bytes out from under the golden tolerance file -- the
+    // replay seam's OWN documented job is to apply the oracle's branch
+    // itself (scripts/validate-omnivoice-replay.py's VOLUME_BY_BRANCH), not
+    // to have this function guess it from a different field. A negative
+    // value (the default) means "no reference RMS known", which keeps every
+    // existing caller (replay, every Plan 2 golden) on the legacy
+    // no-reference peak-normalize branch; only the public seam
+    // (Model::synthesize, when params.clone is non-null) sets a real,
+    // non-negative value here.
+    float                 reference_rms        = -1.0f;
     // Measure how narrowly the greedy loop's decisions were made and report the
     // narrowest one (see MarginReport). Off by default: nothing in a synthesis
     // needs it, and it is a screening instrument for golden-case selection.
@@ -82,11 +103,11 @@ struct SynthesisRequest {
 // SynthesisRequest::margin_report is set, and its NaN-wins update rule
 // (note_margin) lives there too, where it is unit-testable without a Model.
 
-// The Reference Audio and Serialized Profile payload a cloning request
-// carries. Defined in profile.h from Plan 3's Task 14 on; forward-declared
-// here so this task's PublicSynthesisParams can carry the pointer this
-// family's own request eventually threads through, without this file
-// depending on a header that does not exist yet.
+// The Reference Audio payload a cloning request carries, defined in
+// profile.h (Task 14). Forward-declared here so this file's
+// PublicSynthesisParams and SynthesisRequest can carry the pointer without
+// this file depending on profile.h itself -- only model.cpp, which actually
+// reads a ClonePrompt's fields, includes it.
 struct ClonePrompt;
 
 // The public seam's own request shape: everything `src/synthesize.cpp`'s
@@ -99,14 +120,14 @@ struct ClonePrompt;
 // `clone` and `instruct` are pointers rather than values so "absent" and
 // "empty string" stay distinguishable: an instruction of "" is a legal,
 // meaningful request (the language-agnostic, instruction-free style), while
-// a null pointer means the caller supplied neither. Both stay null through
-// this task -- Task 14 threads Reference Audio through `clone`, Task 15
-// threads the free-text instruction through `instruct` -- so the struct's
-// shape does not change again when those land.
+// a null pointer means the caller supplied neither. `clone` is threaded
+// through as of Task 14 (src/voice-profile.cpp's create_from_reference
+// handler builds one, src/synthesize.cpp's omnivoice branch passes it
+// through here); `instruct` stays null until Task 15.
 struct PublicSynthesisParams {
     std::string         text;                         // Linguistic Input, UTF-8
     std::string         language_tag;                 // resolved by core; may be empty
-    const ClonePrompt * clone             = nullptr;  // Task 14 threads this; null now
+    const ClonePrompt * clone             = nullptr;  // the Reference Audio profile, if any (Task 14)
     const std::string * instruct          = nullptr;  // Task 15 threads this; null now
     double              speaking_rate     = 1.0;
     uint64_t            seed              = 0;

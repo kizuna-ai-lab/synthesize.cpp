@@ -191,9 +191,13 @@ synth_status_t prepare_synthesis_request(const ModelInfo &          info,
     if ((voice_id == nullptr) != (voice_size == 0) || (voice_id != nullptr && profile != nullptr)) {
         return SYNTH_ERR_INVALID_ARG;
     }
-    if (profile != nullptr) {
-        return SYNTH_ERR_UNSUPPORTED_VOICE;
-    }
+    // A profile from another model, or from a family with no Voice Profile
+    // support at all, is refused at the family branch that reads
+    // `output.voice_profile` below (src/synthesize.cpp) -- this file has no
+    // access to `synth_voice_profile`'s full definition (it would need
+    // voice-profile-handle.h for `->model`) and does not need it: threading
+    // the opaque pointer through is all a family-independent validator can
+    // do with a Voice Profile.
     uint32_t speaker_index = UINT32_MAX;
     if (voice_id != nullptr) {
         if (voice_size > std::numeric_limits<size_t>::max()) {
@@ -268,6 +272,7 @@ synth_status_t prepare_synthesis_request(const ModelInfo &          info,
         output.resolved_voice_id     = resolved.c_str();
         output.resolved_voice_size   = resolved.size();
     }
+    output.voice_profile = profile;
     return SYNTH_OK;
 }
 

@@ -231,6 +231,7 @@ synth_add_unit_test(synthesize-backend-device-internal-test backend_device_inter
 synth_add_unit_test(synthesize-backend-plan-test backend_plan_test.cpp)
 synth_add_unit_test(synthesize-text-frontend-test text_frontend_test.cpp)
 synth_add_unit_test(synthesize-synthesis-request-test synthesis_request_test.cpp)
+synth_add_unit_test(synthesize-model-info-test model_info_test.cpp)
 synth_add_unit_test(synthesize-audio-delivery-test audio_delivery_test.cpp)
 synth_add_unit_test(synthesize-audio-normalizer-test audio_normalizer_test.cpp)
 synth_add_unit_test(synthesize-vits-runner-voice-test vits_runner_voice_test.cpp)
@@ -671,6 +672,36 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             COMMAND synthesize-omnivoice-load-real ${SYNTH_OMNIVOICE_TEST_MODEL})
         set_tests_properties(synthesize-omnivoice-load-real PROPERTIES
             LABELS "integration;omnivoice;abi"
+            TIMEOUT 600)
+    endif()
+
+    # Reference Audio profiles end to end (Plan 3's Task 14): the public
+    # create_from_reference dispatch against the real package and its pinned
+    # reference clip. Guarded on the wav too -- a locally-materialized asset
+    # like the model itself (models/ is gitignored), not something every
+    # checkout has merely because the model does.
+    set(_synth_omnivoice_reference_wav
+        "${CMAKE_SOURCE_DIR}/models/omnivoice-reference-audio/seedtts_ref_en_1.wav")
+    if(EXISTS "${SYNTH_OMNIVOICE_TEST_MODEL}" AND EXISTS "${_synth_omnivoice_reference_wav}")
+        add_executable(synthesize-omnivoice-profile-test omnivoice_profile_test.cpp)
+        target_include_directories(synthesize-omnivoice-profile-test PRIVATE
+            ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+        target_link_libraries(synthesize-omnivoice-profile-test PRIVATE synthesize ggml)
+        synth_register_integration_target(synthesize-omnivoice-profile-test)
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-profile")
+        add_test(NAME synthesize-omnivoice-profile-test
+            COMMAND synthesize-omnivoice-profile-test
+                ${SYNTH_OMNIVOICE_TEST_MODEL}
+                ${_synth_omnivoice_reference_wav}
+                ${CMAKE_SOURCE_DIR}/build/goldens/omnivoice/omni-clone-en/ref/tokens.i32
+                ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-profile)
+        set_tests_properties(synthesize-omnivoice-profile-test PROPERTIES
+            LABELS "integration;omnivoice;abi"
+            # One real encode_reference pass (HuBERT semantic branch, DAC
+            # acoustic encoder, RVQ) over ~14 s of audio, plus the silent-clip
+            # case's own pass over exactly 1 s -- both real forward passes
+            # through the 0.6B-parameter generator's shared weights buffer,
+            # not the generator loop itself.
             TIMEOUT 600)
     endif()
 

@@ -10,9 +10,11 @@
 #include "cpu-parallelism.h"
 #include "gguf-metadata.h"
 #include "gguf.h"
+#include "model-handle.h"
 #include "model-info.h"
 #include "random-stream.h"
 #include "synthesis-request.h"
+#include "voice-profile-handle.h"
 
 #include <algorithm>
 #include <atomic>
@@ -24,20 +26,6 @@
 #include <new>
 #include <thread>
 #include <vector>
-
-// A Loaded Model is one family's model behind the family-independent info the
-// core runtime reads. Only one implementation pointer is ever set, and `info`
-// says which.
-struct synth_model {
-    synth::ModelInfo                         info;
-    std::unique_ptr<synth::vits::Model>      vits;
-    std::unique_ptr<synth::kokoro::Model>    kokoro;
-    std::unique_ptr<synth::qwen3tts::Model>  qwen3_tts;
-    std::unique_ptr<synth::omnivoice::Model> omnivoice;
-    // What only the VITS synthesis path reads; Kokoro's equivalents live behind
-    // its own seeded entry point.
-    synth::vits::ModelInfo                   vits_extras;
-};
 
 struct synth_context {
     const synth_model_t * model   = nullptr;
@@ -363,6 +351,33 @@ synth::ModelInfo shared_info(const synth::omnivoice::ModelInfo &        info,
     shared.max_output_frames    = info.max_output_frames;
     shared.min_speaking_rate    = info.min_speaking_rate;
     shared.max_speaking_rate    = info.max_speaking_rate;
+
+    // Voice Profile capabilities (Task 14): REFERENCE_AUDIO dispatches for
+    // real as of this task; DESCRIPTION_TEXT's own dispatch
+    // (create_from_description) is Task 15's, and SERIALIZED_PROFILE is
+    // claimed only once Task 16's round-trip exists -- both bits are named
+    // in the plan record together with this one
+    // (docs/superpowers/plans/2026-08-01-omnivoice-plan-3-sampling-cloning.md),
+    // which is why DESCRIPTION_TEXT is set here even though its own creation
+    // path still answers UNSUPPORTED_VOICE until Task 15 lands.
+    synth::VoiceProfileInfo & profile    = shared.voice_profile;
+    profile.source_flags                 = SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT;
+    profile.reference_transcript         = SYNTH_REQUIREMENT_REQUIRED;
+    profile.reference_language           = SYNTH_REQUIREMENT_OPTIONAL;
+    profile.description_language         = SYNTH_REQUIREMENT_OPTIONAL;
+    profile.reference_target_sample_rate = info.profile.reference_sample_rate;
+    profile.reference_target_channels    = info.profile.reference_channels;
+    profile.min_frames_per_clip          = info.profile.min_frames_per_clip;
+    profile.max_frames_per_clip          = info.profile.max_frames_per_clip;
+    profile.max_total_frames             = info.profile.max_total_frames;
+    profile.max_reference_count          = static_cast<uint32_t>(info.profile.max_reference_count);
+    // Best-effort: HParams::profile is already validated at load time
+    // (weights.cpp's read_profile_contract, is_sha256_hex), so this should
+    // never fail for a package that made it this far; a defect that slipped
+    // through leaves the bytes at their all-zero default rather than
+    // propagating a load failure this deep into shared_info.
+    (void) synth::decode_profile_compatibility_id(info.profile.compatibility_id_hex, profile.compatibility_id);
+
     return shared;
 }
 
@@ -850,11 +865,23 @@ synth_status_t synth_synthesize(synth_context_t *          context,
             family_request.language_tag.assign(
                 prepared.resolved_language_tag != nullptr ? prepared.resolved_language_tag : "",
                 size_t(prepared.resolved_language_size));
-            // `clone` and `instruct` stay null: Tasks 14 and 15 thread the
-            // Reference Audio and the free-text instruction through here.
-            // Voice profile pointer: prepare_synthesis_request above already
-            // refuses any non-null one for every family, so `prepared` never
-            // carries one to relax here before Task 14.
+            // `instruct` stays null: Task 15 threads the free-text
+            // instruction through here. `clone` (Task 14): a profile from a
+            // different model, or one that is not this family's own
+            // Reference Audio payload (a Description Text DesignInstruct,
+            // Task 15, would carry a different tag on the SAME model), is
+            // refused here rather than silently ignored -- prepare_synthesis_request
+            // threads any non-null profile through without checking either
+            // property, because it has no access to synth_voice_profile's
+            // full definition (voice-profile-handle.h) to do so.
+            if (prepared.voice_profile != nullptr) {
+                if (prepared.voice_profile->model != context->model ||
+                    prepared.voice_profile->family_tag != synth::ProfileFamilyTag::OmnivoiceClone) {
+                    return SYNTH_ERR_UNSUPPORTED_VOICE;
+                }
+                family_request.clone =
+                    static_cast<const synth::omnivoice::ClonePrompt *>(prepared.voice_profile->payload.get());
+            }
             family_request.speaking_rate = double(prepared.speaking_rate);
             family_request.seed          = actual_seed;
             family_request.threads       = context->threads;
@@ -913,6 +940,15 @@ synth_status_t synth_synthesize(synth_context_t *          context,
     }
 
     if (context->model->info.family == synth::ModelFamily::Qwen3Tts) {
+        // This family has no Voice Profile support of its own: a profile
+        // reaching here would either be a defect in the cross-model check
+        // above (see the omnivoice branch) or a future family's own profile
+        // presented to the wrong one. Either way, silently ignoring
+        // `prepared.voice_profile` and synthesizing anyway would answer with
+        // the wrong Voice rather than the refusal the caller asked for.
+        if (prepared.voice_profile != nullptr) {
+            return SYNTH_ERR_UNSUPPORTED_VOICE;
+        }
         try {
             synth::qwen3tts::SynthesisRequest family_request;
             family_request.token_ids = prepared.token_ids;
@@ -984,6 +1020,12 @@ synth_status_t synth_synthesize(synth_context_t *          context,
     }
 
     if (context->model->info.family == synth::ModelFamily::Kokoro) {
+        // This family has no Voice Profile support of its own; see the
+        // matching guard in the Qwen3-TTS branch above for why this refuses
+        // rather than silently ignoring the profile.
+        if (prepared.voice_profile != nullptr) {
+            return SYNTH_ERR_UNSUPPORTED_VOICE;
+        }
         try {
             // A Kokoro Voice is a table row chosen by input length, so the row
             // is resolved from the final token count rather than at load time.
@@ -1020,6 +1062,12 @@ synth_status_t synth_synthesize(synth_context_t *          context,
                             "unexpected exception during synthesis");
             return SYNTH_ERR_INTERNAL;
         }
+    }
+
+    // The remaining branch is VITS, which -- like Kokoro and Qwen3-TTS above
+    // -- has no Voice Profile support of its own.
+    if (prepared.voice_profile != nullptr) {
+        return SYNTH_ERR_UNSUPPORTED_VOICE;
     }
 
     try {

@@ -30,6 +30,9 @@ INVENTORY_PATH = (
 )
 sys.path.insert(0, str(SCRIPTS))
 
+import dump_reference_omnivoice_pytorch as dump_reference  # noqa: E402
+import omnivoice_pinned_inputs  # noqa: E402
+
 _spec = importlib.util.spec_from_file_location(
     "convert_omnivoice", SCRIPTS / "convert-omnivoice.py"
 )
@@ -534,40 +537,45 @@ class PinnedInputTests(unittest.TestCase):
     and vouched for. Hashing the copy against its own source proves nothing.
     """
 
-    LICENSE_SUFFIX = "/audio_tokenizer/LICENSE"
-
     def manifest_with(self, artifacts: list[dict[str, str]]) -> dict[str, object]:
         return {"source": {"artifacts": artifacts}}
 
-    def license_input(self, path: Path) -> object:
-        return convert.PinnedInput("codec_license", path, "license", self.LICENSE_SUFFIX)
+    def license_pin(self) -> omnivoice_pinned_inputs.PinnedInput:
+        return omnivoice_pinned_inputs.PinnedInput(
+            "license", "audio_tokenizer/LICENSE", "codec_license"
+        )
+
+    def license_path(self, weights_dir: Path) -> Path:
+        return omnivoice_pinned_inputs.resolve_local(weights_dir, self.license_pin())
 
     def test_the_codec_license_is_one_of_the_pinned_inputs(self) -> None:
-        entries = {entry.label: entry for entry in convert.pinned_inputs(Path("weights"))}
+        entries = {entry.sha256_key: entry for entry in omnivoice_pinned_inputs.PINNED_INPUTS}
         self.assertIn("codec_license", entries)
         entry = entries["codec_license"]
-        self.assertEqual(entry.path, Path("weights") / "audio_tokenizer" / "LICENSE")
+        self.assertEqual(entry.relative_path, "audio_tokenizer/LICENSE")
         self.assertEqual(entry.role, "license")
-        self.assertEqual(entry.locator_suffix, self.LICENSE_SUFFIX)
 
     def test_the_committed_manifest_pins_the_audited_license_digest(self) -> None:
         """The pin the intake audited, resolved the way the converter resolves it.
 
-        The manifest carries two `license` artifacts; the suffix must select the
-        codec's rather than the source repository's Apache grant.
+        The manifest carries two `license` artifacts; the "/resolve/" marker
+        must select the codec's rather than the source repository's Apache
+        grant, whose raw.githubusercontent.com locator carries no such marker.
         """
         manifest = json.loads(
             (REPO_ROOT / "tests" / "golden" / "omnivoice" / "omnivoice-0-6b.manifest.json")
             .read_text(encoding="utf-8")
         )
         self.assertEqual(
-            convert.pinned_digest(manifest, "license", self.LICENSE_SUFFIX),
+            convert.pinned_digest(manifest, self.license_pin()),
             "ac933dc084d119bd20401956b90d11ae87c248b2da62622cd580d82cdf2fa049",
         )
 
     def test_a_license_that_does_not_match_its_pin_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "LICENSE"
+            weights = Path(directory)
+            path = self.license_path(weights)
+            path.parent.mkdir(parents=True)
             path.write_bytes(b"a locally edited grant\n")
             manifest = self.manifest_with([{
                 "role": "license",
@@ -575,14 +583,16 @@ class PinnedInputTests(unittest.TestCase):
                 "sha256": "ac933dc084d119bd20401956b90d11ae87c248b2da62622cd580d82cdf2fa049",
             }])
             with self.assertRaises(convert.ConverterError) as caught:
-                convert.verify_pinned_inputs(manifest, [self.license_input(path)])
+                convert.verify_pinned_inputs(manifest, weights, [self.license_pin()])
             message = str(caught.exception)
             self.assertIn(str(path), message, "the error must name the offending file")
             self.assertIn(hashlib.sha256(path.read_bytes()).hexdigest(), message)
 
     def test_a_manifest_with_no_license_artifact_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "LICENSE"
+            weights = Path(directory)
+            path = self.license_path(weights)
+            path.parent.mkdir(parents=True)
             path.write_bytes(b"some grant\n")
             manifest = self.manifest_with([{
                 "role": "checkpoint",
@@ -590,7 +600,7 @@ class PinnedInputTests(unittest.TestCase):
                 "sha256": "0" * 64,
             }])
             with self.assertRaises(convert.ConverterError) as caught:
-                convert.verify_pinned_inputs(manifest, [self.license_input(path)])
+                convert.verify_pinned_inputs(manifest, weights, [self.license_pin()])
             self.assertIn("license", str(caught.exception))
 
     def test_two_matching_license_artifacts_are_refused(self) -> None:
@@ -602,24 +612,27 @@ class PinnedInputTests(unittest.TestCase):
         }
         with self.assertRaises(convert.ConverterError) as caught:
             convert.pinned_digest(self.manifest_with([duplicate, dict(duplicate)]),
-                                  "license", self.LICENSE_SUFFIX)
+                                  self.license_pin())
         self.assertIn("exactly one", str(caught.exception))
 
     def test_a_missing_pinned_input_is_refused_before_anything_is_read(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "LICENSE"
+            weights = Path(directory)
+            path = self.license_path(weights)
             manifest = self.manifest_with([{
                 "role": "license",
                 "locator": "https://example.invalid/resolve/rev/audio_tokenizer/LICENSE",
                 "sha256": "0" * 64,
             }])
             with self.assertRaises(convert.ConverterError) as caught:
-                convert.verify_pinned_inputs(manifest, [self.license_input(path)])
+                convert.verify_pinned_inputs(manifest, weights, [self.license_pin()])
             self.assertIn(str(path), str(caught.exception))
 
     def test_a_matching_input_returns_its_digest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "LICENSE"
+            weights = Path(directory)
+            path = self.license_path(weights)
+            path.parent.mkdir(parents=True)
             payload = b"the audited grant\n"
             path.write_bytes(payload)
             digest = hashlib.sha256(payload).hexdigest()
@@ -629,9 +642,85 @@ class PinnedInputTests(unittest.TestCase):
                 "sha256": digest,
             }])
             self.assertEqual(
-                convert.verify_pinned_inputs(manifest, [self.license_input(path)]),
+                convert.verify_pinned_inputs(manifest, weights, [self.license_pin()]),
                 {"codec_license": digest},
             )
+
+
+class SharedPinnedInputTableTests(unittest.TestCase):
+    """Plan 3 carryover item 4: one pinned-input table, two consumers.
+
+    `convert-omnivoice.py` used to carry a private six-entry list and
+    `dump_reference_omnivoice_pytorch.py` inferred its own idea of the same
+    set from "/resolve/" markers in manifest locator URLs, with nothing
+    checking the two agreed. Both now import `omnivoice_pinned_inputs` and
+    walk its `PINNED_INPUTS`; this is what keeps that true instead of a
+    private second copy creeping back into either script.
+    """
+
+    def build_weights_and_manifest(self, directory: Path) -> dict[str, object]:
+        """A weights directory and a matching manifest covering every pin.
+
+        Built by walking `PINNED_INPUTS` itself rather than a restated
+        six-item list, so a table edited to add or drop an entry keeps this
+        test honest about what it is actually exercising.
+        """
+        artifacts = []
+        for pin in omnivoice_pinned_inputs.PINNED_INPUTS:
+            local = omnivoice_pinned_inputs.resolve_local(directory, pin)
+            local.parent.mkdir(parents=True, exist_ok=True)
+            payload = f"payload for {pin.sha256_key}\n".encode()
+            local.write_bytes(payload)
+            artifacts.append({
+                "role": pin.role,
+                "locator": f"https://example.invalid/resolve/rev/{pin.relative_path}",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            })
+        return {"source": {"artifacts": artifacts}}
+
+    def test_both_consumers_import_the_identical_table_object(self) -> None:
+        self.assertIs(convert.omnivoice_pinned_inputs, omnivoice_pinned_inputs)
+        self.assertIs(dump_reference.omnivoice_pinned_inputs, omnivoice_pinned_inputs)
+        self.assertIs(
+            convert.omnivoice_pinned_inputs.PINNED_INPUTS,
+            omnivoice_pinned_inputs.PINNED_INPUTS,
+        )
+        self.assertIs(
+            dump_reference.omnivoice_pinned_inputs.PINNED_INPUTS,
+            omnivoice_pinned_inputs.PINNED_INPUTS,
+        )
+
+    def test_the_converter_verifies_exactly_the_shared_table_by_default(self) -> None:
+        """`verify_pinned_inputs` with no explicit list walks the shared table.
+
+        This is the converter's startup-verification list: `main()` calls
+        `verify_pinned_inputs(manifest, weights_dir)` with no third argument,
+        so whatever this default resolves to is what a real conversion checks.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            weights = Path(directory)
+            manifest = self.build_weights_and_manifest(weights)
+            digests = convert.verify_pinned_inputs(manifest, weights)
+        self.assertEqual(
+            set(digests), {pin.sha256_key for pin in omnivoice_pinned_inputs.PINNED_INPUTS}
+        )
+
+    def test_the_dumper_digest_checks_exactly_the_shared_table(self) -> None:
+        """`dump_reference_omnivoice_pytorch.verify_pinned_inputs` walks the same table.
+
+        It used to infer a private set of paths from "/resolve/" markers with
+        no reference to what the converter pins; this drives it the same way
+        the test above drives the converter and checks the same six relative
+        paths come back verified.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            weights = Path(directory)
+            manifest = self.build_weights_and_manifest(weights)
+            verified = dump_reference.verify_pinned_inputs(manifest, weights)
+        self.assertEqual(
+            sorted(verified),
+            sorted(pin.relative_path for pin in omnivoice_pinned_inputs.PINNED_INPUTS),
+        )
 
 
 class LicenseCarriageTests(unittest.TestCase):

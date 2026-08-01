@@ -57,6 +57,9 @@ import sys
 import time
 import urllib.request
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import omnivoice_pinned_inputs  # noqa: E402
+
 MANIFEST_SCHEMA = "synthesize-golden-manifest-v1"
 FAMILY = "omnivoice"
 DUMP_SCHEMA = "synthesize-oracle-dump-v1"
@@ -554,24 +557,40 @@ class SemanticProbe:
 # ---------------------------------------------------------------------------
 
 
+RESOLVE_MARKER = "/resolve/"
+
+
 def verify_pinned_inputs(manifest: dict, weights_dir: pathlib.Path) -> list[str]:
     """sha256-verify every weights-repository input the manifest pins.
 
-    Until now only the clone reference audio was checked; the weights, configs
-    and tokenizer the dump actually reads were trusted. A parity baseline dumped
-    from silently different inputs would be wrong in a way no later gate could
-    localise, so a mismatch stops the dump.
+    Walks `omnivoice_pinned_inputs.PINNED_INPUTS` -- the same six-entry table
+    `convert-omnivoice.py` verifies at startup, rather than a private idea of
+    which local files count as pinned inputs inferred solely from which
+    manifest artifacts happen to carry a "/resolve/" marker. Until this table
+    existed only the clone reference audio was checked with anything like this
+    rigor; the weights, configs and tokenizer the dump actually reads were
+    trusted. A parity baseline dumped from silently different inputs would be
+    wrong in a way no later gate could localise, so a mismatch stops the dump.
+
+    Source-repository files (the Apache LICENSE) and the clone reference
+    (checked separately by `materialise_reference`) carry no "/resolve/"
+    marker or are not in the table, and are not dump inputs.
     """
-    marker = "/resolve/"
     verified = []
-    for artifact in manifest["source"]["artifacts"]:
-        locator = artifact["locator"]
-        if marker not in locator:
-            # Source-repository files (the Apache LICENSE) and the clone
-            # reference (checked by materialise_reference) are not dump inputs.
-            continue
-        relative = locator.split(marker, 1)[1].split("/", 1)[1]
-        local = weights_dir / relative
+    for pin in omnivoice_pinned_inputs.PINNED_INPUTS:
+        matches = [
+            artifact for artifact in manifest["source"]["artifacts"]
+            if artifact["role"] == pin.role
+            and RESOLVE_MARKER in artifact["locator"]
+            and artifact["locator"].split(RESOLVE_MARKER, 1)[1].split("/", 1)[1]
+            == pin.relative_path
+        ]
+        if len(matches) != 1:
+            raise SystemExit(
+                f"the manifest names {len(matches)} {pin.role} artifacts resolving to "
+                f"{pin.relative_path!r}; exactly one is required to pin the dump"
+            )
+        local = omnivoice_pinned_inputs.resolve_local(weights_dir, pin)
         if not local.is_file():
             raise SystemExit(f"{local}: the manifest pins this input and it is missing")
         # Chunked: model.safetensors is multi-gigabyte and this runs before
@@ -582,17 +601,13 @@ def verify_pinned_inputs(manifest: dict, weights_dir: pathlib.Path) -> list[str]
             for chunk in iter(lambda: handle.read(1 << 20), b""):
                 digest.update(chunk)
         actual = digest.hexdigest()
-        if actual != artifact["sha256"]:
+        expected = matches[0]["sha256"]
+        if actual != expected:
             raise SystemExit(
                 f"{local}: sha256 {actual} does not match the manifest's "
-                f"{artifact['sha256']}; refusing to dump against unpinned inputs"
+                f"{expected}; refusing to dump against unpinned inputs"
             )
-        verified.append(relative)
-    required = {"model.safetensors", "audio_tokenizer/model.safetensors",
-                "config.json", "audio_tokenizer/config.json", "tokenizer.json"}
-    missing = required - set(verified)
-    if missing:
-        raise SystemExit(f"the manifest pins no digest for dump inputs: {sorted(missing)}")
+        verified.append(pin.relative_path)
     return verified
 
 

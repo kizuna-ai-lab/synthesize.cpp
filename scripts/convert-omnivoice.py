@@ -84,6 +84,7 @@ from lib.gguf_common import (  # noqa: E402
     sha256_file,
     write_json_atomic,
 )
+import omnivoice_pinned_inputs  # noqa: E402
 
 ARCH_KEY = "omnivoice"
 FORMAT_VERSION = 1
@@ -253,81 +254,66 @@ def require_config(mapping: dict[str, Any], key: str, where: str) -> Any:
     return mapping[key]
 
 
-def pinned_digest(manifest: dict[str, Any], role: str, locator_suffix: str,
-                  *, excluding: str | None = None) -> str:
+RESOLVE_MARKER = "/resolve/"
+
+
+def pinned_digest(manifest: dict[str, Any], pin: omnivoice_pinned_inputs.PinnedInput) -> str:
+    """Find the manifest's pin for `pin` via its /resolve/<revision>/ locator.
+
+    A HuggingFace resolve URL names the file's path in the weights repository
+    after the revision segment; matching that path exactly (rather than a
+    locator suffix) is what lets `model.safetensors` and
+    `audio_tokenizer/model.safetensors` -- both `role == "checkpoint"` -- pick
+    out different artifacts with no separate exclusion rule.
+    """
     matches = [
         artifact for artifact in manifest["source"]["artifacts"]
-        if artifact["role"] == role
-        and artifact["locator"].endswith(locator_suffix)
-        and (excluding is None or excluding not in artifact["locator"])
+        if artifact["role"] == pin.role
+        and RESOLVE_MARKER in artifact["locator"]
+        and artifact["locator"].split(RESOLVE_MARKER, 1)[1].split("/", 1)[1] == pin.relative_path
     ]
     if len(matches) != 1:
         raise ConverterError(
-            f"the manifest names {len(matches)} {role} artifacts ending in "
-            f"{locator_suffix!r}; exactly one is required to pin the conversion"
+            f"the manifest names {len(matches)} {pin.role} artifacts resolving to "
+            f"{pin.relative_path!r}; exactly one is required to pin the conversion"
         )
     return matches[0]["sha256"]
 
 
-@dataclass(frozen=True)
-class PinnedInput:
-    """A file the manifest pins by digest, and where its pin lives."""
-
-    label: str
-    path: Path
-    role: str
-    locator_suffix: str
-    excluding: str | None = None
-
-
-def pinned_inputs(weights_dir: Path) -> tuple[PinnedInput, ...]:
-    """Every local file the conversion reads or republishes.
-
-    The codec's LICENSE belongs here and not merely in the copy step. It is
-    republished beside the artifact and its digest is recorded in the report as
-    authoritative, so a locally edited grant would be carried into the package
-    and vouched for. Hashing the copy against its own source is a tautology
-    after `shutil.copyfile`; the manifest is the only outside witness.
-    """
-    return (
-        PinnedInput("generator", weights_dir / "model.safetensors",
-                    "checkpoint", "/model.safetensors", "/audio_tokenizer/"),
-        PinnedInput("codec", weights_dir / "audio_tokenizer" / "model.safetensors",
-                    "checkpoint", "/audio_tokenizer/model.safetensors"),
-        PinnedInput("config", weights_dir / "config.json",
-                    "config", "/config.json", "/audio_tokenizer/"),
-        PinnedInput("codec_config", weights_dir / "audio_tokenizer" / "config.json",
-                    "config", "/audio_tokenizer/config.json"),
-        PinnedInput("tokenizer", weights_dir / "tokenizer.json",
-                    "frontend-resource", "/tokenizer.json"),
-        PinnedInput("codec_license", weights_dir / "audio_tokenizer" / "LICENSE",
-                    "license", "/audio_tokenizer/LICENSE"),
-    )
-
-
-def verify_pinned_inputs(manifest: dict[str, Any],
-                         inputs: Iterable[PinnedInput]) -> dict[str, str]:
+def verify_pinned_inputs(
+    manifest: dict[str, Any], weights_dir: Path,
+    inputs: Iterable[omnivoice_pinned_inputs.PinnedInput] | None = None,
+) -> dict[str, str]:
     """Hash every input against its manifest pin before anything is read.
 
     Runs first, so a missing or altered input costs nothing rather than being
-    discovered after a 3.2 GB file has been written.
+    discovered after a 3.2 GB file has been written. `inputs` defaults to
+    `omnivoice_pinned_inputs.PINNED_INPUTS` -- every local file the conversion
+    reads or republishes, including the codec's LICENSE, which belongs here
+    and not merely in the copy step: it is republished beside the artifact and
+    its digest is recorded in the report as authoritative, so a locally edited
+    grant would be carried into the package and vouched for. Hashing the copy
+    against its own source is a tautology after `shutil.copyfile`; the
+    manifest is the only outside witness.
     """
+    if inputs is None:
+        inputs = omnivoice_pinned_inputs.PINNED_INPUTS
     digests: dict[str, str] = {}
-    for entry in inputs:
-        if not entry.path.is_file():
+    for pin in inputs:
+        local = omnivoice_pinned_inputs.resolve_local(weights_dir, pin)
+        if not local.is_file():
             raise ConverterError(
-                f"{entry.path} is missing; the manifest pins it and the conversion cannot "
+                f"{local} is missing; the manifest pins it and the conversion cannot "
                 "proceed without it"
             )
-        digest = sha256_file(entry.path)
-        expected = pinned_digest(manifest, entry.role, entry.locator_suffix,
-                                 excluding=entry.excluding)
+        digest = sha256_file(local)
+        expected = pinned_digest(manifest, pin)
         if digest != expected:
             raise ConverterError(
-                f"{entry.path}: the local file hashes to {digest} but the manifest pins "
+                f"{local}: the local file hashes to {digest} but the manifest pins "
                 f"{expected}; converting it would produce a package nothing validated"
             )
-        digests[entry.label] = digest
+        digests[pin.sha256_key] = digest
     return digests
 
 
@@ -995,7 +981,7 @@ def main() -> int:
 
     # Every pinned input -- weights, both configs, the tokenizer and the codec's
     # LICENSE -- is verified before a single tensor is read.
-    digests = verify_pinned_inputs(manifest, pinned_inputs(weights))
+    digests = verify_pinned_inputs(manifest, weights)
 
     config = load_json(weights / "config.json")
     codec_config = load_json(weights / "audio_tokenizer" / "config.json")

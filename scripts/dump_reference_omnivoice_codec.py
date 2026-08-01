@@ -136,6 +136,20 @@ def main():
         (decoder.conv2.weight, *weight),
         (decoder.conv2.bias, *bias),
     ]
+    # The list above is built by hand from the module names this script knows
+    # about; a transformers release that grows DacDecoder would leave the new
+    # parameter at its (unseeded) random initialization and silently change
+    # the dump on every run. Refuse to dump around such a parameter.
+    assigned = {id(parameter) for parameter, _scale, _offset in assignments}
+    missed = [
+        name
+        for name, parameter in decoder.named_parameters()
+        if id(parameter) not in assigned
+    ]
+    assert not missed, (
+        f"decoder parameters keeping their random initialization: {missed}; "
+        "the dump would not be reproducible"
+    )
     with torch.no_grad():
         for parameter, scale, offset in assignments:
             parameter.copy_(

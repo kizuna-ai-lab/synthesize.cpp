@@ -35,7 +35,7 @@
 - clang-format: run `scripts/ci/clang-format.sh --fix` **before** `git add` in every commit touching C/C++ — the trap is real: `git add` first and then formatting leaves the unformatted copy staged while the working tree looks clean, and `--check-diff` then fails CI on a commit that looked done. Never format `ggml/`.
 - Commit message footer, every commit in this plan:
 
-  ```
+  ```text
   Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
   Claude-Session: https://claude.ai/code/session_01NFjueGrsKXs44rfZ7DunQK
   ```

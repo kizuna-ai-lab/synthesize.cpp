@@ -3,15 +3,15 @@
 `write_case`'s format check is a pure function over a `case` dict and a
 `produced` dict of (writer, payload) pairs -- it never calls the writer
 functions themselves (they are only used as dict keys), so it needs neither a
-manifest that satisfies schema validation nor real oracle data. The script is
-hyphenated (`dump_reference_omnivoice_pytorch.py`), loaded via `importlib`,
-the same pattern `test_validate_omnivoice_replay.py` uses for
-`validate-omnivoice-replay.py`.
+manifest that satisfies schema validation nor real oracle data. Unlike
+`validate-omnivoice-replay.py` (hyphenated, so its test must go through
+`importlib`), this script's name is a legal module name and its heavy imports
+(torch, transformers, omnivoice) are all function-local, so a plain import
+after the `sys.path` insertion is all the loading it needs.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 import tempfile
 import unittest
@@ -21,12 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-_spec = importlib.util.spec_from_file_location(
-    "dump_reference_omnivoice_pytorch", SCRIPTS / "dump_reference_omnivoice_pytorch.py"
-)
-dump = importlib.util.module_from_spec(_spec)
-sys.modules["dump_reference_omnivoice_pytorch"] = dump
-_spec.loader.exec_module(dump)
+import dump_reference_omnivoice_pytorch as dump  # noqa: E402
 
 
 class WriteCaseFormatAgreementTest(unittest.TestCase):

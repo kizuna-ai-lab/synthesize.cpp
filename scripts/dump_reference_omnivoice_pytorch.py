@@ -69,8 +69,10 @@ PROBE_ARTIFACT_PREFIX = "generator.hidden_l"
 
 # 24 kHz mono at a 25 Hz frame rate: one codec frame is exactly 960 samples.
 SAMPLES_PER_FRAME = 960
-FRAME_RATE_HZ = 25.0
 NATIVE_SAMPLE_RATE = 24000
+# Derived, not restated: the frame rate feeds the audio_chunk_threshold gate,
+# and a restated value would drift silently if a revision ever moved the hop.
+FRAME_RATE_HZ = NATIVE_SAMPLE_RATE / SAMPLES_PER_FRAME
 AUDIO_MASK_ID = 1024
 NUM_CODEBOOKS = 8
 
@@ -572,7 +574,14 @@ def verify_pinned_inputs(manifest: dict, weights_dir: pathlib.Path) -> list[str]
         local = weights_dir / relative
         if not local.is_file():
             raise SystemExit(f"{local}: the manifest pins this input and it is missing")
-        actual = hashlib.sha256(local.read_bytes()).hexdigest()
+        # Chunked: model.safetensors is multi-gigabyte and this runs before
+        # the model loads, so a whole-file read_bytes() would add a transient
+        # allocation of the same size on top of the dump's own peak.
+        digest = hashlib.sha256()
+        with local.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        actual = digest.hexdigest()
         if actual != artifact["sha256"]:
             raise SystemExit(
                 f"{local}: sha256 {actual} does not match the manifest's "

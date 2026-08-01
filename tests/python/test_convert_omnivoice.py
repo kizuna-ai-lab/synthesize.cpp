@@ -286,6 +286,11 @@ class NameLengthTests(unittest.TestCase):
         return names
 
     def test_emitted_names_match_the_report_count(self) -> None:
+        # 798 is output.emitted_tensor_count (312 generator + 486 codec) in
+        # the conversion report reports/convert/omnivoice/omnivoice-0-6b-F32
+        # .json -- a local artifact, not committed -- from the conversion
+        # that produced the pinned package (GGUF sha256 3ecaa5e2..., recorded
+        # in full in the porting log).
         self.assertEqual(len(self.emitted_names()), 798,
                          "the helper no longer models what the converter emits")
 

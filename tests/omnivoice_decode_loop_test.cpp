@@ -55,6 +55,9 @@ constexpr uint32_t kHop          = 6;
 // vocabulary -- so the mask id is also the first value decode_codes must
 // refuse, which is the coincidence that makes this fixture worth having.
 constexpr int32_t  kCodebookSize = 4;
+// The small package's text vocabulary width; the first id run_synthesis must
+// refuse as out of range.
+constexpr uint32_t kTextVocab    = 40;
 
 // Text ids inside the small package's 40-token text vocabulary: the text_start
 // and text_end markers around two ordinary tokens.
@@ -284,6 +287,17 @@ int check_requests_the_loop_refuses(synth::omnivoice::Model & model) {
     synth::omnivoice::SynthesisRequest no_text = base_request(4);
     no_text.prompt_text_ids.clear();
     SYNTH_TEST_CHECK(model.run_synthesis(no_text, output) == SYNTH_ERR_INVALID_ARG);
+
+    // A text id outside the embedding table would reach ggml_get_rows as an
+    // out-of-range row -- an abort, not a status -- so the loop refuses it at
+    // the seam. One past the top and one below zero pin both edges.
+    synth::omnivoice::SynthesisRequest overflowing_text = base_request(4);
+    overflowing_text.prompt_text_ids.push_back(int32_t(kTextVocab));
+    SYNTH_TEST_CHECK(model.run_synthesis(overflowing_text, output) == SYNTH_ERR_INVALID_ARG);
+
+    synth::omnivoice::SynthesisRequest negative_text = base_request(4);
+    negative_text.prompt_text_ids.push_back(-1);
+    SYNTH_TEST_CHECK(model.run_synthesis(negative_text, output) == SYNTH_ERR_INVALID_ARG);
 
     SYNTH_TEST_CHECK(model.run_synthesis(base_request(0), output) == SYNTH_ERR_INVALID_ARG);
 

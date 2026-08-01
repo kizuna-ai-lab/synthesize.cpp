@@ -368,6 +368,15 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     if (request.prompt_text_ids.empty() || request.target_frames == 0) {
         return SYNTH_ERR_INVALID_ARG;
     }
+    // The ids index the text-embedding table through ggml_get_rows, which has
+    // no bounds of its own -- an out-of-range row is an abort inside ggml, not
+    // a status. The frontend only emits in-vocabulary ids; this holds the
+    // request seam itself to the same range.
+    for (int32_t id : request.prompt_text_ids) {
+        if (id < 0 || uint32_t(id) >= hparams.generator.text_vocab_size) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+    }
     if (request.target_frames > hparams.max_output_frames) {
         return SYNTH_ERR_OUTPUT_LIMIT;
     }

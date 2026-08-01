@@ -803,11 +803,11 @@ synth_status_t Model::encode_reference(const std::vector<float> & pcm_24k, int t
         return SYNTH_ERR_INVALID_ARG;
     }
 
-    // Step 1: hop-clip (tail-clip to a whole number of hop_length-sample
-    // frames) then the quiet-reference boost, both in place -- see
-    // clip_and_boost_reference's own header comment for the citation on why
-    // this function measures ref_rms on the clipped segment rather than
-    // upstream's own pre-trim measurement point.
+    // Step 1: ref_rms (measured on the FULL, un-clipped `pcm_24k`), the
+    // quiet-reference boost, THEN the hop-clip (tail-clip to a whole number
+    // of hop_length-sample frames) -- all in place, upstream's own order;
+    // see clip_and_boost_reference's own header comment for the line-by-line
+    // citation.
     std::vector<float> clipped = pcm_24k;
     clip_and_boost_reference(clipped, hparams.codec.hop_length, output.ref_rms);
     if (clipped.empty()) {

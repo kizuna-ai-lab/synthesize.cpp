@@ -1297,12 +1297,191 @@ int check_rvq_rejections() {
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Task 13 fix-round-1: focused coverage for reference_rms and
+// clip_and_boost_reference. Neither had a dedicated test before this round --
+// both committed clone goldens are hop-aligned with rms ~0.123 (loud, and
+// already a multiple of the hop), so neither the quiet-boost branch nor the
+// tail-clip's own trimming ever ran under a real input in this suite. These
+// cases exercise the boundaries and the ordering directly, in isolation from
+// the whole encode chain.
+
+constexpr float kLoudnessTolerance = 1e-6f;
+
+bool near(float actual, float expected, float tolerance = kLoudnessTolerance) {
+    return std::fabs(actual - expected) < tolerance;
+}
+
+// rms exactness on a small, hand-computable buffer: {0.3, -0.4} -> sqrt((0.09
+// + 0.16) / 2) = sqrt(0.125) = 0.3535533905932738. The Neumaier compensation
+// reference_rms's own header comment describes is invisible at this size (two
+// terms cannot accumulate a compensable error), so this case is really
+// pinning the formula (mean of squares, then sqrt), not the compensation.
+int check_reference_rms_exactness() {
+    const std::vector<float> buffer   = { 0.3f, -0.4f };
+    const float              rms      = synth::omnivoice::reference_rms(buffer);
+    const float              expected = 0.3535533905932738f;
+    std::printf("  reference_rms({0.3,-0.4}) = %.9g (expected %.9g)\n", double(rms), double(expected));
+    SYNTH_TEST_CHECK(near(rms, expected));
+    return 0;
+}
+
+// Quiet-boost arithmetic: a buffer with a known rms of 0.05 (four samples at
+// +-0.05, so mean-of-squares is exactly 0.05^2 regardless of sign pattern)
+// must scale by 0.1/0.05 = 2.0, land the boosted buffer's OWN rms at 0.1
+// within float noise, and report the PRE-boost 0.05 as `ref_rms` -- not the
+// post-boost value. hop_length=1 makes the trailing hop-clip step a no-op
+// (any length is already "a whole number of 1-sample frames"), isolating the
+// boost arithmetic from the clip.
+int check_quiet_boost_arithmetic() {
+    std::vector<float> buffer  = { 0.05f, -0.05f, 0.05f, -0.05f };
+    float              ref_rms = -1.0f;
+    synth::omnivoice::clip_and_boost_reference(buffer, 1, ref_rms);
+    std::printf("  quiet boost: stored ref_rms %.9g (expected ~0.05)\n", double(ref_rms));
+    SYNTH_TEST_CHECK(near(ref_rms, 0.05f));
+    SYNTH_TEST_CHECK(buffer.size() == 4);
+    const float boosted_rms = synth::omnivoice::reference_rms(buffer);
+    std::printf("  quiet boost: boosted buffer's own rms %.9g (expected ~0.1)\n", double(boosted_rms));
+    SYNTH_TEST_CHECK(near(boosted_rms, 0.1f));
+    for (float sample : buffer) {
+        SYNTH_TEST_CHECK(near(std::fabs(sample), 0.1f));
+    }
+    return 0;
+}
+
+// Boundaries: ref_rms == 0.0 (digitally silent) takes no boost, and reports
+// the exact 0.0 stored value; ref_rms == 0.1 EXACTLY also takes no boost,
+// because the gate is a strict '<' (upstream's own `if 0 < ref_rms < 0.1`,
+// not '<='). The single-element {0.1f} buffer is deliberate: squaring a
+// single float32 in double precision is exact (no other terms to round
+// against), and IEEE754 sqrt is correctly rounded, so
+// reference_rms({0.1f}) recovers exactly 0.1f -- verified by the assertion
+// below, not merely assumed, so this case tests the real strict-inequality
+// boundary rather than a value that only APPROXIMATES it.
+int check_boost_boundaries() {
+    std::vector<float> silent     = { 0.0f, 0.0f, 0.0f, 0.0f };
+    float              silent_rms = -1.0f;
+    synth::omnivoice::clip_and_boost_reference(silent, 1, silent_rms);
+    std::printf("  boundary: silent ref_rms %.9g (expected exactly 0)\n", double(silent_rms));
+    SYNTH_TEST_CHECK(silent_rms == 0.0f);
+    for (float sample : silent) {
+        SYNTH_TEST_CHECK(sample == 0.0f);
+    }
+
+    std::vector<float> at_threshold = { 0.1f };
+    const float        measured_rms = synth::omnivoice::reference_rms(at_threshold);
+    std::printf("  boundary: reference_rms({0.1f}) = %.9g (expected exactly 0.1)\n", double(measured_rms));
+    SYNTH_TEST_CHECK(measured_rms == 0.1f);
+    float threshold_rms = -1.0f;
+    synth::omnivoice::clip_and_boost_reference(at_threshold, 1, threshold_rms);
+    std::printf("  boundary: ref_rms exactly 0.1 -> stored %.9g, value %.9g (expected untouched)\n",
+                double(threshold_rms), double(at_threshold[0]));
+    SYNTH_TEST_CHECK(threshold_rms == 0.1f);
+    SYNTH_TEST_CHECK(at_threshold[0] == 0.1f);  // strict '<' -- 0.1 itself is not boosted
+    return 0;
+}
+
+// Tail-clip length math: hop*k + r samples -> k*hop kept, FROM THE FRONT (the
+// tail is what is clipped). Distinct ascending values (1, 2, 3, ...) make
+// "which k*hop samples survived" directly checkable, not just their count.
+int check_tail_clip_length() {
+    constexpr uint32_t kHop = 4;
+    constexpr uint32_t kK   = 3;
+    for (uint32_t remainder : { 0u, 1u, kHop - 1u }) {
+        const uint32_t     total = kHop * kK + remainder;
+        std::vector<float> buffer(total);
+        for (uint32_t index = 0; index < total; ++index) {
+            buffer[index] = float(index + 1);  // 1, 2, 3, ... -- large enough that no boost ever fires
+        }
+        float ref_rms = -1.0f;
+        synth::omnivoice::clip_and_boost_reference(buffer, kHop, ref_rms);
+        std::printf("  tail-clip: total %u, remainder %u -> kept %zu (expected %u)\n", total, remainder, buffer.size(),
+                    kHop * kK);
+        SYNTH_TEST_CHECK(buffer.size() == kHop * kK);
+        for (uint32_t index = 0; index < buffer.size(); ++index) {
+            SYNTH_TEST_CHECK(buffer[index] == float(index + 1));  // the FRONT kHop*kK samples, unchanged
+        }
+    }
+    return 0;
+}
+
+// Degenerate: an input shorter than one hop (or hop_length == 0 itself)
+// leaves `pcm` empty -- this port's own implemented semantics (no error
+// signal from this void function; Model::encode_reference's own
+// `if (clipped.empty()) return SYNTH_ERR_INVALID_ARG;` is where that turns
+// into a status).
+int check_short_reference_semantics() {
+    std::vector<float> too_short = { 1.0f, 2.0f, 3.0f };
+    float              ref_rms   = -1.0f;
+    synth::omnivoice::clip_and_boost_reference(too_short, 10, ref_rms);
+    std::printf("  degenerate: 3 samples, hop 10 -> %zu kept (expected 0, empty)\n", too_short.size());
+    SYNTH_TEST_CHECK(too_short.empty());
+
+    std::vector<float> zero_hop     = { 1.0f, 2.0f, 3.0f, 4.0f };
+    float              zero_hop_rms = -1.0f;
+    synth::omnivoice::clip_and_boost_reference(zero_hop, 0, zero_hop_rms);
+    std::printf("  degenerate: hop_length 0 -> %zu kept (expected 0, empty)\n", zero_hop.size());
+    SYNTH_TEST_CHECK(zero_hop.empty());
+    return 0;
+}
+
+// The measurement-point regression: an input whose FULL-buffer rms and
+// CLIPPED-buffer rms fall on OPPOSITE sides of 0.1, so the two orderings
+// (measure-then-clip vs. the fixed clip-then-... no -- the FIX is
+// measure/boost-then-clip; the BUG this guards against is clip-then-measure)
+// produce OBSERVABLY DIFFERENT results, not just different by a few ULPs.
+//
+// Construction: hop=4, a 4-sample "quiet body" at +-0.05 (body-only rms
+// exactly 0.05, which alone WOULD cross the 0 < rms < 0.1 gate) followed by
+// one loud "tail" sample (1.0) that the hop-clip drops (4*1 + 1 = 5 total,
+// remainder 1). The FULL 5-sample buffer's rms is
+// sqrt((4*0.05^2 + 1.0^2) / 5) = sqrt(1.01 / 5) = sqrt(0.202) ~= 0.449444,
+// comfortably >= 0.1.
+//
+// Fixed (upstream) order -- measure on the FULL buffer, boost, THEN clip:
+// ref_rms ~= 0.449444 (>= 0.1) -> NO boost -> hop-clip drops the tail ->
+// output is the untouched quiet body, {0.05, 0.05, 0.05, 0.05}.
+//
+// The bug this replaces -- clip FIRST, then measure the clipped body alone:
+// clipped rms = 0.05 (< 0.1) -> BOOST fires, scale 0.1/0.05 = 2.0 -> output
+// would be {0.1, 0.1, 0.1, 0.1}, and the (wrongly) stored ref_rms would be
+// 0.05, not the full buffer's ~0.449444. This is a real, not cosmetic,
+// divergence: two clearly different waveforms and two clearly different
+// reported loudness values, from the identical input.
+int check_measurement_point_regression() {
+    constexpr uint32_t kHop              = 4;
+    std::vector<float> buffer            = { 0.05f, 0.05f, 0.05f, 0.05f, 1.0f };
+    const float        expected_full_rms = std::sqrt((4.0f * 0.05f * 0.05f + 1.0f * 1.0f) / 5.0f);
+    SYNTH_TEST_CHECK(expected_full_rms >= 0.1f);  // the construction's own premise
+
+    float ref_rms = -1.0f;
+    synth::omnivoice::clip_and_boost_reference(buffer, kHop, ref_rms);
+    std::printf("  straddle: stored ref_rms %.9g (expected full-buffer ~%.9g, NOT clipped-body 0.05)\n",
+                double(ref_rms), double(expected_full_rms));
+    std::printf("  straddle: kept %zu samples, first = %.9g (expected 4, 0.05 -- untouched, not boosted)\n",
+                buffer.size(), buffer.empty() ? 0.0 : double(buffer[0]));
+    // The gate this test exists to pin: measured on the FULL buffer, not the
+    // clipped body, so no boost fires and the quiet body survives untouched.
+    SYNTH_TEST_CHECK(near(ref_rms, expected_full_rms, 1e-5f));
+    SYNTH_TEST_CHECK(buffer.size() == 4);
+    for (float sample : buffer) {
+        SYNTH_TEST_CHECK(sample == 0.05f);  // untouched -- NOT boosted to 0.1
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
     SYNTH_TEST_CHECK(check_rejections() == 0);
     SYNTH_TEST_CHECK(check_acoustic_rejections() == 0);
     SYNTH_TEST_CHECK(check_rvq_rejections() == 0);
+    SYNTH_TEST_CHECK(check_reference_rms_exactness() == 0);
+    SYNTH_TEST_CHECK(check_quiet_boost_arithmetic() == 0);
+    SYNTH_TEST_CHECK(check_boost_boundaries() == 0);
+    SYNTH_TEST_CHECK(check_tail_clip_length() == 0);
+    SYNTH_TEST_CHECK(check_short_reference_semantics() == 0);
+    SYNTH_TEST_CHECK(check_measurement_point_regression() == 0);
 
     const size_t device_count = ggml_backend_dev_count();
     SYNTH_TEST_CHECK(device_count > 0);

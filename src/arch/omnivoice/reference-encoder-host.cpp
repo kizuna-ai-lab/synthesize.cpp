@@ -391,30 +391,41 @@ float reference_rms(const std::vector<float> & pcm) {
 }
 
 void clip_and_boost_reference(std::vector<float> & pcm, uint32_t hop_length, float & ref_rms) {
-    ref_rms = 0.0f;
-    if (hop_length == 0 || pcm.size() < size_t(hop_length)) {
-        pcm.clear();
-        return;
-    }
-    // Tail-clip to a whole number of hop_length-sample frames -- upstream's
-    // own `clip_size = ref_wav.shape[-1] % chunk_size; ref_wav[:, :-clip_size]`
-    // (omnivoice/models/omnivoice.py:816-818), transcribed as a resize rather
-    // than a negative-index slice.
-    const size_t clipped_length = pcm.size() - (pcm.size() % size_t(hop_length));
-    pcm.resize(clipped_length);
-
+    // Step 1: ref_rms, measured on the FULL input, before anything else
+    // touches it -- omnivoice.py:774, `ref_rms = sqrt(mean(ref_wav**2))`.
+    // This is the value the caller keeps (ReferenceEncoding::ref_rms):
+    // PRE-boost AND pre-clip, matching upstream's own measurement point
+    // exactly, not merely "pre-boost" -- see this function's own header
+    // comment for why an earlier revision that clipped first was wrong at
+    // more than a boundary.
     ref_rms = reference_rms(pcm);
-    // `0 < ref_rms < 0.1` scales up to rms 0.1; ref_rms itself keeps the
-    // pre-boost value already computed above. `ref_rms == 0` (a genuinely
-    // silent clipped segment) takes neither arm, matching upstream's own
-    // `if 0 < ref_rms < 0.1` guard -- Task 14's profile-creation seam is what
-    // rejects that case, not this function.
+
+    // Step 2: the quiet-reference boost, applied to that SAME full buffer,
+    // still before any clipping -- omnivoice.py:775-776, `if 0 < ref_rms <
+    // 0.1: ref_wav = ref_wav * 0.1 / ref_rms`. `ref_rms == 0` (a digitally
+    // silent reference) takes neither this arm nor any other special
+    // handling here -- Task 14's profile-creation seam is what rejects that
+    // case, not this function.
     if (ref_rms > 0.0f && ref_rms < 0.1f) {
         const float scale = 0.1f / ref_rms;
         for (float & sample : pcm) {
             sample *= scale;
         }
     }
+
+    // Step 3: hop-clip, LAST, on the (possibly boosted) buffer -- upstream's
+    // own `clip_size = ref_wav.shape[-1] % chunk_size; ref_wav[:,
+    // :-clip_size]` (omnivoice.py:816-818), transcribed as a resize rather
+    // than a negative-index slice. `ref_rms` is left as the real measurement
+    // over the original input even when the buffer ends up empty here (too
+    // short for one hop, or hop_length == 0) -- it was a genuine measurement
+    // of what the caller passed in, not something this branch invalidates.
+    if (hop_length == 0 || pcm.size() < size_t(hop_length)) {
+        pcm.clear();
+        return;
+    }
+    const size_t clipped_length = pcm.size() - (pcm.size() % size_t(hop_length));
+    pcm.resize(clipped_length);
 }
 
 bool rvq_encode(const std::vector<RvqQuantizerWeights> & quantizers,

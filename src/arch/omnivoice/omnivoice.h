@@ -161,7 +161,7 @@ struct SynthesisOutput {
 };
 
 // The cloning path's full encode-chain result (Task 13): reference-encoder-
-// host.h's hop-clip -> ref_rms -> quiet-boost -> resample -> semantic branch
+// host.h's ref_rms -> quiet-boost -> hop-clip -> resample -> semantic branch
 // -> acoustic branch + fusion -> RVQ nearest-neighbour encode, run by
 // Model::encode_reference below. A struct rather than a growing out-parameter
 // list: the debugging taps alone (pcm_16k, semantic_mean, fused_latent,
@@ -176,10 +176,11 @@ struct ReferenceEncoding {
     std::vector<int32_t> tokens;
     uint64_t             frames = 0;
 
-    // The reference's loudness, PRE-boost -- VoiceClonePrompt.ref_rms's own
-    // contract (see reference-encoder-host.h's clip_and_boost_reference for
-    // exactly which segment this is measured over). Task 14's volume arms
-    // read this; encode_reference itself never rejects on it.
+    // The reference's loudness, measured on the FULL input before the boost
+    // or the hop-clip touch it -- VoiceClonePrompt.ref_rms's own contract
+    // exactly (see reference-encoder-host.h's clip_and_boost_reference for
+    // the line-by-line citation). Task 14's volume arms read this;
+    // encode_reference itself never rejects on it.
     float ref_rms = 0.0f;
 
     // RVQ margin instrumentation (diagnostic only -- the gate is exact
@@ -270,11 +271,13 @@ class Model {
 
     // The cloning path's encode half, symmetric with decode_codes above: the
     // WHOLE chain from a raw 24 kHz mono reference to a committed token grid.
-    // `pcm_24k` need not already be hop-aligned -- hop-clip (tail-clip to a
-    // whole number of `hparams.codec.hop_length`-sample frames) is this
-    // function's own first step (reference-encoder-host.h's
-    // clip_and_boost_reference), followed by the quiet-reference boost, THEN
-    // resample to 16 kHz (resample_24k_to_16k) and the HuBERT semantic branch
+    // `pcm_24k` need not already be hop-aligned -- this function's own first
+    // step (reference-encoder-host.h's clip_and_boost_reference) measures
+    // ref_rms on the FULL input, applies the quiet-reference boost, THEN
+    // hop-clips (tail-clips to a whole number of
+    // `hparams.codec.hop_length`-sample frames) -- upstream's own order, not
+    // clip-then-measure. THEN resample to 16 kHz (resample_24k_to_16k) and
+    // the HuBERT semantic branch
     // plus the codec's own SemanticEncoder (reference-encoder.h's
     // build_semantic_branch, orchestrated by run_semantic_branch), THEN the
     // DAC acoustic encoder over the clipped+boosted 24 kHz segment plus the

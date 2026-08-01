@@ -234,38 +234,48 @@ synth_status_t run_acoustic_and_fuse(const BackendPlan &        plan,
 // the quiet-boost gate below from ever firing on a genuinely empty buffer.
 float reference_rms(const std::vector<float> & pcm);
 
-// Hop-clips `pcm` to a whole number of `hop_length`-sample frames (the tail
-// remainder, if any, is dropped) and applies the quiet-reference boost IN
-// PLACE: `0 < ref_rms < 0.1` scales the CLIPPED segment up to rms 0.1;
-// `ref_rms >= 0.1` or `ref_rms == 0` (a digitally silent reference) leaves it
-// untouched -- rejecting a silent reference is Task 14's profile-creation
-// seam, not this function's (see ReferenceEncoding::ref_rms's own comment,
-// omnivoice.h, on the split). `ref_rms` receives the PRE-boost value,
-// matching upstream VoiceClonePrompt.ref_rms's own contract
-// (`create_voice_clone_prompt`, omnivoice/models/omnivoice.py:774-776).
+// Measures `ref_rms`, applies the quiet-reference boost, THEN hop-clips
+// `pcm` to a whole number of `hop_length`-sample frames (the tail remainder,
+// if any, is dropped) -- all in place. This is upstream's own order,
+// transcribed line for line from `create_voice_clone_prompt`
+// (omnivoice/models/omnivoice.py):
+//   774:     ref_rms = sqrt(mean(ref_wav**2))            -- on the FULL,
+//            un-clipped, un-boosted buffer, before anything else runs.
+//   775-776: if 0 < ref_rms < 0.1: ref_wav *= 0.1 / ref_rms
+//            -- the boost, applied to that SAME full buffer.
+//   778-797: preprocess_prompt (silence removal / long-audio trimming) --
+//            SKIPPED here: Plan 3's own two committed clone goldens both run
+//            with preprocess_prompt=False, and this port carries no
+//            trim/silence-removal stage at all (see the family doc).
+//   816-818: chunk_size = hop_length; clip_size = len % chunk_size;
+//            ref_wav = ref_wav[:, :-clip_size] if clip_size > 0 else ref_wav
+//            -- the hop-clip, LAST, on the (possibly boosted) buffer.
+// `ref_rms >= 0.1` or `ref_rms == 0` (a digitally silent reference) takes
+// neither the boost nor any other special handling here -- rejecting a
+// silent reference is Task 14's profile-creation seam, not this function's
+// (see ReferenceEncoding::ref_rms's own comment, omnivoice.h, on the split).
+// `ref_rms` receives the PRE-boost value, matching upstream
+// VoiceClonePrompt.ref_rms's own contract exactly, including WHICH samples
+// it is measured over.
 //
-// Measured ON the clipped segment, not upstream's own pre-trim measurement
-// point (upstream computes ref_rms on the FULL, un-clipped reference, BEFORE
-// the boost and BEFORE the hop clip that follows it -- confirmed by
-// instrumenting the pinned checkpoint's own `create_voice_clone_prompt`
-// against `models/omnivoice-reference-audio/seedtts_ref_en_1.wav`: the full
-// 337726-sample file's rms is 0.1229146420955658, matching the oracle's own
-// committed `ref_rms` exactly, while the 336960-sample hop-clipped segment's
-// is a measurably different 0.12305419892072678). This function's own
-// contract is deliberately the simpler one -- "the loudness of what actually
-// gets encoded" -- rather than a literal replay of that upstream ordering,
-// because Task 13's own gate (the RVQ token grid) cannot observe the
-// difference: neither committed clone case ever crosses the 0.1 boost
-// threshold, and every caller through Plan 3 hands this function an ALREADY
-// hop-aligned buffer (`ref/pcm_24k.f32` for the replay runner; the Audio
-// Normalizer's own 24 kHz output for a future public caller before Task 14
-// wires one up), for which the clip below is a no-op and the two orderings
-// coincide. If a later task needs bit parity with the upstream pre-trim
-// value, that reconciliation belongs there, informed by this citation rather
-// than by rediscovering the two numbers above.
+// An earlier revision of this function clipped BEFORE measuring `ref_rms`,
+// which is wrong at more than a boundary: the boost scale (`0.1/ref_rms`)
+// differs systematically for every reference that actually crosses the
+// threshold, since the pre-clip and post-clip rms values are not merely
+// rounding-apart (measured against the real reference wav this family's
+// golden cases use, `models/omnivoice-reference-audio/seedtts_ref_en_1.wav`:
+// 0.1229146420955658 on the full 337726-sample file vs. a measurably
+// different 0.12305419892072678 on the 336960-sample hop-clipped segment).
+// Caught by review before Task 14 could inherit the bug silently: neither
+// committed clone case ever crosses the 0.1 threshold (their rms is ~0.123
+// either way), so the wrong order never actually moved either golden's
+// tokens -- see tests/omnivoice_reference_encoder_test.cpp's own
+// measurement-point regression case for the input that DOES distinguish the
+// two orders.
 //
 // `pcm` is left at whatever length the clip produced (possibly empty, if
-// `pcm.size() < hop_length` or `hop_length == 0`) even when no boost applies.
+// `pcm.size() < hop_length` or `hop_length == 0`); `ref_rms` is still the
+// real measurement over the ORIGINAL input in that case, not reset to 0.
 void clip_and_boost_reference(std::vector<float> & pcm, uint32_t hop_length, float & ref_rms);
 
 // Host-side residual vector quantization, encode direction. DISCRETE

@@ -680,53 +680,94 @@ bool find_u8_32_value_offset(const uint8_t * data, size_t data_size, const std::
 // Untrusted-buffer pre-scan: a defect in ggml's own parser that this loader
 // cannot fix downstream of calling it, only guard against beforehand.
 //
-// ggml/src/gguf.cpp's gguf_init_from_reader (lines 451-894, read end to end
-// for this guard) reads exactly ONE metadata key EAGERLY, before returning
-// control to any caller: GGUF_KEY_GENERAL_ALIGNMENT ("general.alignment"),
-// via `gguf_get_val_u32(ctx, alignment_idx)` at gguf.cpp:610. That getter
-// calls `gguf_kv::get_val<uint32_t>()`, which asserts the key's STORED type
-// is exactly UINT32 (`GGML_ASSERT(type_to_gguf_type<T>::value == type)` at
-// gguf.cpp:194) and, in `gguf_get_val_u32` itself, that it holds exactly one
-// element (`GGML_ASSERT(get_ne() == 1)` at gguf.cpp:1102). GGML_ASSERT
-// aborts the WHOLE PROCESS (SIGABRT) rather than returning an error, so a
-// buffer that declares "general.alignment" as, say, a STRING instead of a
-// UINT32 crashes the host process inside gguf_init_from_buffer -- before
-// this file's own (already type-guarded, via GgufMetadata and
-// read_u8_32_array above) validation ever runs. Grepping the entirety of
-// gguf_init_from_reader confirms "general.alignment" is the ONLY reserved
-// key the parser reads this way during construction: every other
-// gguf_get_val_* call in gguf.cpp belongs either to this project's own
-// already-type-guarded reads, or to ggml's tensor-info loop, which fails
-// closed (logs and returns nullptr) on every malformed shape rather than
-// asserting.
+// Fix round 1 closed ONE instance: ggml/src/gguf.cpp's gguf_init_from_reader
+// reads "general.alignment" eagerly during construction
+// (gguf_get_val_u32(ctx, alignment_idx) at gguf.cpp:610), and that getter's
+// GGML_ASSERT(type_to_gguf_type<T>::value == type) (gguf.cpp:194) aborts the
+// whole process on a type mismatch rather than returning an error. Round 1's
+// guard special-cased that one key. Fix round 2 exists because fuzzing found
+// a SECOND, different instance in minutes: a KV entry with key_length == 0
+// passed round 1's guard untouched (0 is not > any length ceiling, and an
+// empty key never equals "general.alignment"), reached
+// gguf_kv's constructors, and hit GGML_ASSERT(!key.empty()) -- all four
+// overloads, gguf.cpp:143/151/161/167 -- for ANY value type, reserved or
+// not. Same SIGABRT, same public path, different key.
 //
-// ggml is a submodule that "cannot carry a local change" (CLAUDE.md), so
-// the fix lives entirely on this side: a hand-written, bounds-checked walk
-// of the RAW bytes -- independent of gguf_init_from_buffer, run before it
-// -- that confirms every reserved key the parser will later read eagerly
-// has a type that read will accept. This mirrors gguf_init_from_reader's
-// own header and KV layout (magic/version/n_tensors/n_kv at gguf.cpp:456-535,
-// then per KV a length-prefixed key, a type tag, and -- for GGUF_TYPE_ARRAY
-// -- an element type and count, per gguf_reader::read at gguf.cpp:266-360)
-// closely enough to reject anything that section would also reject, but it
-// is not a general-purpose parser: it stops once every KV entry has been
-// walked (skipping over each value's bytes without decoding it) and hands
-// the buffer to the real, hardened gguf_init_from_buffer for everything
-// else (tensor info and data), which this file's own earlier review already
-// established fails closed rather than aborting on every malformed shape it
-// can encounter there.
+// THE LESSON: enumerating ggml's internal asserts is a blacklist, and a
+// blacklist of another library's invariants can never be proven complete --
+// closing one instance told us nothing about the next one, and fuzzing
+// found the next one in the same session. This guard is POSITIVE validation
+// instead: a v1 Serialized Profile is narrow and fully known to US -- we
+// write it (write_envelope, set_common_metadata, serialize_clone_prompt,
+// serialize_design_instruct, all in this file) -- so the pre-scan accepts
+// ONLY what our own writer ever emits and refuses everything else, before
+// gguf_init_from_buffer ever runs. This subsumes the empty-key hole (empty
+// is not a member of the known key set below), the alignment hole round 1
+// closed (this writer never emits "general.alignment" at all, so its mere
+// PRESENCE is now an unknown-key rejection, no special case needed), and
+// every OTHER ggml invariant about a key or value shape this project has
+// not yet found by name: an unknown key, an unexpected type for a known
+// key, a duplicate key, or a tensor section that isn't exactly "zero
+// tensors" or "one profile.reference_tokens tensor of our exact shape" is
+// refused on the same "not our format" basis, with no dependency on which
+// ggml assert it might otherwise have hit.
+//
+// The bounds-safe byte-walking machinery below (prescan_has_remaining/
+// prescan_skip/prescan_read_bytes/prescan_read/prescan_fixed_type_size/
+// prescan_skip_value) is unchanged from round 1 -- an 8000+ iteration fuzz
+// campaign against it (see task-16-report.md's fix-round-2 section) found
+// zero sanitizer reports and zero hangs, so only the ACCEPTANCE PREDICATE
+// changes here: what used to ask "is this obviously hostile?" now asks "is
+// this exactly our format?".
 
-// This schema (profile.h's own header comment) never has more than one
-// tensor and writes 8 required metadata keys for a ClonePrompt (9 for
-// DesignInstruct); these ceilings leave generous room for "unknown optional
-// namespaced metadata" (docs/c-interface.md) a future writer might add,
-// while still refusing an obviously-adversarial count before ever counting
-// past it.
-constexpr int64_t  kPrescanMaxTensors       = 8;
-constexpr int64_t  kPrescanMaxKv            = 64;
-constexpr uint64_t kPrescanMaxKeyLength     = 256;
-constexpr uint64_t kPrescanMaxStringLength  = 1u << 20;  // 1 MiB: far past any reasonable transcript/instruct text
-constexpr uint64_t kPrescanMaxArrayElements = 256;
+// The exact, closed set of metadata keys this family's writer ever emits --
+// transcribed from set_common_metadata (the 8 common keys, including
+// "general.alignment"'s absence: this writer never sets that key, so it is
+// simply not a member here, and its mere presence in an inbound buffer is
+// therefore an unknown-key rejection with no special case), plus
+// serialize_clone_prompt's 3 ClonePrompt-only keys and
+// serialize_design_instruct's 1 DesignInstruct-only key. `is_array` and
+// `count` are only meaningful together; a scalar entry's `count` is
+// ignored.
+struct PrescanKeySpec {
+    const char * key;
+    gguf_type    type;
+    bool         is_array;
+    uint64_t     count;
+};
+
+constexpr PrescanKeySpec kPrescanKnownKeys[] = {
+    // set_common_metadata (8 keys, every kind).
+    { "general.architecture",                     GGUF_TYPE_STRING,  false, 0  },
+    { "synthesize.voice_profile.format_version",  GGUF_TYPE_UINT32,  false, 0  },
+    { "synthesize.voice_profile.model_family",    GGUF_TYPE_STRING,  false, 0  },
+    { "synthesize.voice_profile.schema",          GGUF_TYPE_STRING,  false, 0  },
+    { "synthesize.voice_profile.schema_version",  GGUF_TYPE_UINT32,  false, 0  },
+    { kKeyCompatibilityId,                        GGUF_TYPE_UINT8,   true,  32 },
+    { kKeyContentSha256,                          GGUF_TYPE_UINT8,   true,  32 },
+    { "synthesize.voice_profile.kind",            GGUF_TYPE_STRING,  false, 0  },
+    // serialize_clone_prompt (3 more keys, "clone-prompt" only).
+    { "synthesize.voice_profile.transcript_text", GGUF_TYPE_STRING,  false, 0  },
+    { "synthesize.voice_profile.ref_rms",         GGUF_TYPE_FLOAT32, false, 0  },
+    { "synthesize.voice_profile.language_tag",    GGUF_TYPE_STRING,  false, 0  },
+    // serialize_design_instruct (1 more key, "design-instruct" only).
+    { "synthesize.voice_profile.instruct",        GGUF_TYPE_STRING,  false, 0  },
+};
+constexpr size_t kPrescanKnownKeyCount = sizeof(kPrescanKnownKeys) / sizeof(kPrescanKnownKeys[0]);
+
+// n_kv is exactly one of these two values: 8 common + 1 ("instruct") for
+// DesignInstruct, 8 common + 3 (transcript_text/ref_rms/language_tag) for
+// ClonePrompt -- not a generous ceiling, an exact enumeration, since this
+// writer never produces anything else. Which SPECIFIC keys are required for
+// a given `kind` is still load_profile_from_memory's own job afterward
+// (GgufMetadata's per-field reads already fail closed on a missing field);
+// this pre-scan only bounds the total count and rejects any key outside the
+// union above.
+constexpr int64_t kPrescanKvCountDesign = 9;
+constexpr int64_t kPrescanKvCountClone  = 11;
+
+constexpr uint64_t kPrescanMaxKeyLength    = 256;
+constexpr uint64_t kPrescanMaxStringLength = 1u << 20;  // 1 MiB: far past any reasonable transcript/instruct text
 
 bool prescan_has_remaining(size_t offset, size_t size, size_t need) {
     return offset <= size && need <= size - offset;
@@ -808,11 +849,13 @@ bool prescan_skip_value(const uint8_t * data, size_t size, size_t & offset, gguf
     return prescan_skip(offset, size, size_t(count) * element_size);
 }
 
-// The full walk. Returns false for anything gguf_init_from_buffer would
-// also refuse (malformed/truncated/out-of-bound) OR for a reserved key
-// whose declared type/count would make the parser's own eager read abort
-// -- either way, the caller maps `false` to SYNTH_ERR_INVALID_ARG without
-// ever calling gguf_init_from_buffer on these bytes.
+// The full walk: positive validation against the exact format this family's
+// own writer produces (this section's own header comment explains why, and
+// what it replaced). Returns false for anything outside that format --
+// whether or not gguf_init_from_buffer would also refuse it, and whether or
+// not any KNOWN ggml assert applies -- and the caller maps `false` to
+// SYNTH_ERR_INVALID_ARG without ever calling gguf_init_from_buffer on these
+// bytes.
 bool prescan_buffer(const uint8_t * data, size_t size) {
     size_t offset = 0;
 
@@ -833,12 +876,18 @@ bool prescan_buffer(const uint8_t * data, size_t size) {
 
     int64_t n_tensors = 0;
     int64_t n_kv      = 0;
-    if (!prescan_read(data, size, offset, n_tensors) || n_tensors < 0 || n_tensors > kPrescanMaxTensors) {
+    // Exactly 0 (DesignInstruct) or 1 (ClonePrompt) tensor -- this writer
+    // never produces any other count.
+    if (!prescan_read(data, size, offset, n_tensors) || (n_tensors != 0 && n_tensors != 1)) {
         return false;
     }
-    if (!prescan_read(data, size, offset, n_kv) || n_kv < 0 || n_kv > kPrescanMaxKv) {
+    // Exactly kPrescanKvCountDesign or kPrescanKvCountClone metadata
+    // entries -- see those constants' own comment.
+    if (!prescan_read(data, size, offset, n_kv) || (n_kv != kPrescanKvCountDesign && n_kv != kPrescanKvCountClone)) {
         return false;
     }
+
+    bool seen[kPrescanKnownKeyCount] = {};
 
     for (int64_t index = 0; index < n_kv; ++index) {
         uint64_t key_length = 0;
@@ -855,29 +904,97 @@ bool prescan_buffer(const uint8_t * data, size_t size) {
         if (!prescan_read(data, size, offset, type_raw)) {
             return false;
         }
-        gguf_type type  = gguf_type(type_raw);
-        uint64_t  count = 1;
+        gguf_type type     = gguf_type(type_raw);
+        bool      is_array = false;
+        uint64_t  count    = 1;
         if (type == GGUF_TYPE_ARRAY) {
+            is_array                 = true;
             int32_t element_type_raw = 0;
             if (!prescan_read(data, size, offset, element_type_raw)) {
                 return false;
             }
             type = gguf_type(element_type_raw);
-            if (!prescan_read(data, size, offset, count) || count > kPrescanMaxArrayElements) {
+            if (!prescan_read(data, size, offset, count)) {
                 return false;
             }
         }
 
-        // The one reserved key ggml's own parser reads eagerly (this
-        // section's own header comment): a type or element count it would
-        // not accept aborts the process inside gguf_init_from_buffer rather
-        // than failing gracefully, so this loader refuses it BEFORE that
-        // call rather than after.
-        if (key == GGUF_KEY_GENERAL_ALIGNMENT && (type != GGUF_TYPE_UINT32 || count != 1)) {
+        // Positive validation (this section's own header comment): `key`
+        // must be one of the exact keys this writer ever emits, it must
+        // not repeat, and its declared shape must match that key's own
+        // exact type/array-ness/count -- not merely "a type ggml would not
+        // abort on". An empty key (fix round 2's own crash) is rejected
+        // here because "" is not a member of kPrescanKnownKeys, the same
+        // way "general.alignment" is rejected because this writer never
+        // emits it at all -- no per-key special case for either.
+        size_t spec_index = kPrescanKnownKeyCount;
+        for (size_t candidate = 0; candidate < kPrescanKnownKeyCount; ++candidate) {
+            if (key == kPrescanKnownKeys[candidate].key) {
+                spec_index = candidate;
+                break;
+            }
+        }
+        if (spec_index == kPrescanKnownKeyCount) {
+            return false;  // unknown key
+        }
+        if (seen[spec_index]) {
+            return false;  // duplicate key
+        }
+        seen[spec_index] = true;
+
+        const PrescanKeySpec & spec = kPrescanKnownKeys[spec_index];
+        if (type != spec.type || is_array != spec.is_array || (is_array && count != spec.count)) {
             return false;
         }
 
         if (!prescan_skip_value(data, size, offset, type, count)) {
+            return false;
+        }
+    }
+
+    // The tensor section: 0 entries, or exactly one entry named
+    // "profile.reference_tokens" with this writer's own exact shape
+    // (write_envelope: n_dims=2, ne[1]=kReferenceTokenCodebooks, type
+    // GGML_TYPE_I32, offset 0 since it is the only tensor). ne[0] (T_ref)
+    // is the one field that legitimately varies with the reference clip's
+    // own length, so it is only checked for positivity here; the
+    // max_total_frames budget check still happens later, against the real
+    // parsed tensor size, before any allocation sized from it.
+    if (n_tensors == 1) {
+        uint64_t name_length = 0;
+        if (!prescan_read(data, size, offset, name_length) || name_length > kPrescanMaxKeyLength) {
+            return false;
+        }
+        if (!prescan_has_remaining(offset, size, size_t(name_length))) {
+            return false;
+        }
+        const std::string tensor_name(reinterpret_cast<const char *>(data + offset), size_t(name_length));
+        offset += size_t(name_length);
+        if (tensor_name != kTensorReferenceTokens) {
+            return false;
+        }
+
+        uint32_t n_dims = 0;
+        if (!prescan_read(data, size, offset, n_dims) || n_dims != 2) {
+            return false;
+        }
+
+        int64_t ne0 = 0;
+        int64_t ne1 = 0;
+        if (!prescan_read(data, size, offset, ne0) || ne0 <= 0) {
+            return false;
+        }
+        if (!prescan_read(data, size, offset, ne1) || ne1 != int64_t(kReferenceTokenCodebooks)) {
+            return false;
+        }
+
+        int32_t tensor_type_raw = 0;
+        if (!prescan_read(data, size, offset, tensor_type_raw) || tensor_type_raw != int32_t(GGML_TYPE_I32)) {
+            return false;
+        }
+
+        uint64_t tensor_offset = 0;
+        if (!prescan_read(data, size, offset, tensor_offset) || tensor_offset != 0) {
             return false;
         }
     }

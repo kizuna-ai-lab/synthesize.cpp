@@ -142,6 +142,63 @@ std::vector<uint8_t> string_value_bytes(const std::string & value) {
     return bytes;
 }
 
+// ---------------------------------------------------------------------------
+// Fix round 2 (reviewer's positive-validation whitelist): generic raw KV
+// entry builders, for constructing buffers with a SPECIFIC key set/count/
+// duplicate that doesn't correspond to any real profile -- these test
+// arch/omnivoice/profile.cpp's prescan_buffer whitelist directly, through
+// the public seam, the same way round 1's arms tested its predecessor.
+// ---------------------------------------------------------------------------
+
+std::vector<uint8_t> make_header(int64_t n_tensors, int64_t n_kv) {
+    std::vector<uint8_t> bytes;
+    put_bytes(bytes, GGUF_MAGIC, 4);
+    put<uint32_t>(bytes, uint32_t(GGUF_VERSION));
+    put<int64_t>(bytes, n_tensors);
+    put<int64_t>(bytes, n_kv);
+    return bytes;
+}
+
+void put_kv_string(std::vector<uint8_t> & out, const std::string & key, const std::string & value) {
+    put_gguf_string(out, key);
+    put<int32_t>(out, int32_t(GGUF_TYPE_STRING));
+    put_gguf_string(out, value);
+}
+
+void put_kv_u32(std::vector<uint8_t> & out, const std::string & key, uint32_t value) {
+    put_gguf_string(out, key);
+    put<int32_t>(out, int32_t(GGUF_TYPE_UINT32));
+    put<uint32_t>(out, value);
+}
+
+void put_kv_u8_array32(std::vector<uint8_t> & out, const std::string & key) {
+    put_gguf_string(out, key);
+    put<int32_t>(out, int32_t(GGUF_TYPE_ARRAY));
+    put<int32_t>(out, int32_t(GGUF_TYPE_UINT8));
+    put<uint64_t>(out, uint64_t(32));
+    const std::vector<uint8_t> value(32, 0);
+    put_bytes(out, value.data(), value.size());
+}
+
+// The 8 metadata keys set_common_metadata (arch/omnivoice/profile.cpp)
+// writes for EVERY kind, in that function's own order, ending with `kind`
+// itself -- transcribed here, not guessed, the same standard fix round 2's
+// own prescan_buffer whitelist holds itself to. A buffer built from exactly
+// this plus one more (kind-appropriate) entry has the valid n_kv=9 shape
+// (DesignInstruct); a valid ClonePrompt needs three more on top (n_kv=11).
+std::vector<uint8_t> common_kv_bytes(const std::string & kind) {
+    std::vector<uint8_t> bytes;
+    put_kv_string(bytes, "general.architecture", "synthprofile");
+    put_kv_u32(bytes, "synthesize.voice_profile.format_version", 1);
+    put_kv_string(bytes, "synthesize.voice_profile.model_family", "omnivoice");
+    put_kv_string(bytes, "synthesize.voice_profile.schema", "omnivoice-clone-prompt");
+    put_kv_u32(bytes, "synthesize.voice_profile.schema_version", 1);
+    put_kv_u8_array32(bytes, "synthesize.voice_profile.compatibility_id");
+    put_kv_u8_array32(bytes, "synthesize.voice_profile.content_sha256");
+    put_kv_string(bytes, "synthesize.voice_profile.kind", kind);
+    return bytes;
+}
+
 std::shared_ptr<ClonePrompt> make_clone_prompt(uint64_t frames, int32_t fill_token, const std::string & transcript) {
     auto prompt = std::make_shared<ClonePrompt>();
     prompt->reference_tokens.assign(size_t(frames) * 8, fill_token);
@@ -499,16 +556,125 @@ int main(int argc, char ** argv) {
         SYNTH_TEST_CHECK(loaded == nullptr);
     }
 
-    // --- (f) Absurd kv_count: declares far more KV entries than
-    // prescan_buffer's own kPrescanMaxKv ceiling (64) admits, with no
-    // actual entries following -- rejected from the header alone, before
-    // the walk ever starts.
+    // --- (f) Absurd kv_count: declares far more KV entries than either of
+    // prescan_buffer's own two exact-count values (9 or 11), with no actual
+    // entries following -- rejected from the header alone, before the walk
+    // ever starts.
     {
         std::vector<uint8_t> bytes;
         put_bytes(bytes, GGUF_MAGIC, 4);
         put<uint32_t>(bytes, uint32_t(GGUF_VERSION));
         put<int64_t>(bytes, int64_t(0));        // n_tensors
         put<int64_t>(bytes, int64_t(1) << 40);  // n_kv: absurd
+        synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+    }
+
+    // =========================================================================
+    // Fix round 2 (reviewer's positive-validation whitelist): the fuzz
+    // campaign that found the empty-key crash, and the arms proving
+    // prescan_buffer's whitelist -- not merely "not obviously hostile" --
+    // now governs acceptance. Every arm again drives the PUBLIC
+    // synth_voice_profile_load_from_memory only.
+    // =========================================================================
+
+    // --- (g) Empty key: the reviewer's own minimal repro (40 bytes --
+    // "GGUF" + version 3 + n_tensors 0 + n_kv 1 + key_length 0 + type
+    // UINT32 + 4 value bytes) that reached gguf_kv's constructors and hit
+    // GGML_ASSERT(!key.empty()) (gguf.cpp:143/151/161/167) through round
+    // 1's guard, which never special-cased an EMPTY key the way it did
+    // "general.alignment". Fix round 2's whitelist rejects it because "" is
+    // not a member of the known key set -- no special case needed.
+    {
+        std::vector<uint8_t> bytes = make_header(/*n_tensors=*/0, /*n_kv=*/1);
+        put<uint64_t>(bytes, uint64_t(0));   // key_length = 0: the empty key itself
+        put<int32_t>(bytes, int32_t(GGUF_TYPE_UINT32));
+        put<uint32_t>(bytes, uint32_t(42));  // 4 arbitrary value bytes
+        SYNTH_TEST_CHECK(bytes.size() == 40);
+        synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+        // Reaching this line at all, rather than the process having already
+        // died to SIGABRT, is itself the "process survives" proof -- same
+        // as round 1's arm (a).
+    }
+
+    // --- (h) Unknown key: a well-formed DesignInstruct-shaped buffer
+    // (n_kv=9, the exact count this writer's own DesignInstruct produces)
+    // whose 9th entry is a key outside the known set entirely, in place of
+    // "instruct".
+    {
+        std::vector<uint8_t> kv = common_kv_bytes("design-instruct");
+        put_kv_string(kv, "synthesize.voice_profile.bogus", "x");
+        const std::vector<uint8_t> bytes = [&] {
+            std::vector<uint8_t> out = make_header(0, 9);
+            put_bytes(out, kv.data(), kv.size());
+            return out;
+        }();
+        synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+    }
+
+    // --- (i) Duplicate key: the same 9-entry shape, but the 9th entry
+    // repeats "kind" (already the 8th, from common_kv_bytes) instead of
+    // contributing "instruct".
+    {
+        std::vector<uint8_t> kv = common_kv_bytes("design-instruct");
+        put_kv_string(kv, "synthesize.voice_profile.kind", "design-instruct");
+        const std::vector<uint8_t> bytes = [&] {
+            std::vector<uint8_t> out = make_header(0, 9);
+            put_bytes(out, kv.data(), kv.size());
+            return out;
+        }();
+        synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+    }
+
+    // --- (j) Wrong type for a known key: "format_version" (UINT32 in every
+    // real envelope) declared as a STRING instead, in an otherwise
+    // 9-entry DesignInstruct shape.
+    {
+        std::vector<uint8_t> kv;
+        put_kv_string(kv, "general.architecture", "synthprofile");
+        put_kv_string(kv, "synthesize.voice_profile.format_version", "1");  // wrong type: STRING, not UINT32
+        put_kv_string(kv, "synthesize.voice_profile.model_family", "omnivoice");
+        put_kv_string(kv, "synthesize.voice_profile.schema", "omnivoice-clone-prompt");
+        put_kv_u32(kv, "synthesize.voice_profile.schema_version", 1);
+        put_kv_u8_array32(kv, "synthesize.voice_profile.compatibility_id");
+        put_kv_u8_array32(kv, "synthesize.voice_profile.content_sha256");
+        put_kv_string(kv, "synthesize.voice_profile.kind", "design-instruct");
+        put_kv_string(kv, "synthesize.voice_profile.instruct", "male");
+        const std::vector<uint8_t> bytes = [&] {
+            std::vector<uint8_t> out = make_header(0, 9);
+            put_bytes(out, kv.data(), kv.size());
+            return out;
+        }();
+        synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+    }
+
+    // --- (k) Bogus tensor name: an 11-entry ClonePrompt-shaped KV section
+    // (common 8 plus transcript_text/ref_rms/language_tag) with one
+    // declared tensor named something other than "profile.reference_tokens".
+    {
+        std::vector<uint8_t> kv = common_kv_bytes("clone-prompt");
+        put_kv_string(kv, "synthesize.voice_profile.transcript_text", "a");
+        put_kv_u32(kv, "synthesize.voice_profile.ref_rms", 0x3f000000u);  // 0.5f, bit pattern
+        put_kv_string(kv, "synthesize.voice_profile.language_tag", "en");
+
+        std::vector<uint8_t> bytes = make_header(/*n_tensors=*/1, /*n_kv=*/11);
+        put_bytes(bytes, kv.data(), kv.size());
+        put_gguf_string(bytes, "profile.wrong_tensor_name");
+        put<uint32_t>(bytes, uint32_t(2));  // n_dims
+        put<int64_t>(bytes, int64_t(1));    // ne[0]
+        put<int64_t>(bytes, int64_t(8));    // ne[1]
+        put<int32_t>(bytes, int32_t(GGML_TYPE_I32));
+        put<uint64_t>(bytes, uint64_t(0));  // offset
+
         synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
         SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_INVALID_ARG);
         SYNTH_TEST_CHECK(loaded == nullptr);

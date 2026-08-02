@@ -1,6 +1,6 @@
 # Testing Policy
 
-Status: Confirmed, last updated on 2026-07-31.
+Status: Confirmed, last updated on 2026-08-02.
 
 Testing is a per-slice completion gate. A new converter rule, graph stage,
 runtime control, backend path, or public Interface is not complete merely because
@@ -126,12 +126,49 @@ against `tests/tolerances/omnivoice.json`, so it enforces the committed
 thresholds rather than measuring new ones. It also carries this family's
 `structural_exactness` claim, which is not a threshold at all: every greedy
 case's 8 x T token grid must equal the oracle's byte for byte (or a committed
-alternate grid's), and that arm fails independently of the tolerance file. It
-needs the oracle payload under `build/goldens/omnivoice/` as well as the
-package and is not registered without it. Budget a few minutes of wall clock:
-the 17 greedy free-runs re-run the whole decode loop, about seven minutes for
-the twenty-case sweep on a 20-CPU machine (417-420 s measured, 453 s worst
-observed) against a `TIMEOUT` of four hours.
+alternate grid's), and that arm fails independently of the tolerance file. As
+of the Golden suite's revision 3 (Plan 3, Task 9), the gate also carries the
+Reference Audio cloning path's own encode channel -- the resampler, HuBERT
+semantic branch, DAC acoustic branch and fusion, each gated on cosine and
+max-abs, and the RVQ encode's own `structural_exactness` claim (the cloning
+path's 8 x T reference-token grid must equal the oracle's byte for byte, the
+same standard the greedy grid holds itself to). It needs the oracle payload
+under `build/goldens/omnivoice/` as well as the package and is not registered
+without it. Budget a few minutes of wall clock: the 17 greedy free-runs
+re-run the whole decode loop, about seven minutes for the twenty-case sweep
+on a 20-CPU machine (417-420 s measured, 453 s worst observed) against a
+`TIMEOUT` of four hours.
+
+`synthesize-omnivoice-public-request` needs only the package. Like its
+Qwen3-TTS counterpart, it asserts relations between runs of this port's
+public seam -- a seed reproduces, a different seed produces
+`artifact_differs`, a Reference Audio or Description Text Voice Profile
+moves the digest away from a same-seed profile-less run -- rather than
+agreement with the reference, so it carries no margin screen and no Golden
+sentinel (Plan 3, Tasks 6/14/15; 13 checks at close).
+
+`synthesize-omnivoice-profile-test` needs only the package. It round-trips a
+Voice Profile through a Serialized Profile GGUF envelope (write, reload,
+re-synthesize) for both Serialized Profile kinds and asserts byte-identical
+PCM against the original profile, alongside an 8-arm tamper matrix
+(payload/metadata corruption, cross-family mismatch, truncation, and
+out-of-range or oversized token content) that must be rejected with the
+correct status rather than silently accepted or crashed on (Plan 3, Task
+16). The untrusted-bytes hardening this test exercises -- a positive
+whitelist of exactly this project's own writer format, replacing an earlier
+blacklist of `ggml`'s own reserved-key asserts -- is recorded in
+`docs/porting/families/omnivoice.md`'s "untrusted-bytes lesson" section; its
+standing evidence is a repeatable fuzz harness, not this test alone.
+
+OmniVoice's CLI and Python-wheel Adapters (`examples/cli/` and the API
+wheel) are registered the same way as VITS's, Kokoro's, and Qwen3-TTS's:
+`synthesize-omnivoice-cli` (model-guarded, package-default Voice, no
+`--voice` flag) and the family's arm of `synthesize-python-api-wheel-test`
+(Plan 3, Task 7). Unlike Qwen3-TTS, whose CLI and wheel-smoke Adapter tests
+were never registered, OmniVoice's Adapters are covered from the same task
+that opened this family's public seam to sampling -- the C Interface is the
+only place any of this family's synthesis capability may live, and these
+tests are what confirms the Adapters add none of their own.
 
 Run the DGX Spark CUDA 13.3 Update 1 gate in a separate build tree. CUDA F32
 matrix multiplies compute at TF32 precision and there is no build option to

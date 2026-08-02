@@ -1618,3 +1618,421 @@ moves to 2 for that reason, not because any figure in it was re-measured.
 Neither `scripts/validate-omnivoice-replay.py` nor either Python unit gate
 compares the two files' `suite_version` values or asserts a literal one, so
 this is a metadata correction with no behavior change.
+
+## 2026-08-02 — Plan 3 closeout: the public sampled path, cloning, and untrusted-bytes hardening
+
+Plan 3 (Tasks 1–17, branch `omnivoice-plan-3`) closes the family's public
+sampled path, Reference Audio and Description Text Voice Profiles, their
+Serialized Profile GGUF round-trip, and the CLI/Python-wheel Adapters. This
+entry is the evidence record; `docs/porting/families/omnivoice.md` carries
+the same facts as contract prose, and
+`docs/superpowers/plans/2026-08-02-omnivoice-plan-4-carryover.md` carries
+what remains open. Sixteen tasks landed as 21 commits total (base `0b794a0`
+through `8e23f8c`); each subsection below cites the commits it reports on.
+
+### Bookkeeping fixes carried in ahead of the family's own work (Tasks 1–2)
+
+Two pre-existing gaps, unrelated to this family's own model semantics, were
+closed first because later tasks depend on the tooling they touch. Task 1
+(`a7e9169`, fix `75247ba`) corrected `tests/tolerances/qwen3-tts.json`'s
+`suite_version` (1→2, no threshold changed) and its own porting-log
+attribution, which had wrongly credited a case-count change to an
+omnivoice-specific ruling instead of commit `0b80e534` (which actually added
+`qwen3-longer-english`/`qwen3-longer-chinese`, 18→20 cases). Task 2
+(`6395a1f`) replaced two independent, uncross-checked pinned-input lists —
+`convert-omnivoice.py`'s own six-entry list and
+`dump_reference_omnivoice_pytorch.py`'s private inference from `/resolve/`
+locators — with one shared table, `scripts/omnivoice_pinned_inputs.py`; this
+closed a real coverage gap (the dumper's old five-item `required` set
+omitted `audio_tokenizer/LICENSE`) and is the digest byte-identical before
+and after (`build/goldens/omnivoice/omni-short-en/codes/grid.i32` sha256
+`60473d82…` both times). Both trees 78/78 and 79/79 respectively at each
+task's own close; format 0.
+
+### The sampler: draw order, log_prob, and the seed contract (Tasks 3–4)
+
+Task 3 (`47a32e9`, fix `a49206f`) implemented `choose_token_sampled` and
+`gumbel_perturb`. Review, run empirically against the installed upstream
+package rather than by inspection alone, found `log_prob` computed as
+`guided[chosen]` instead of upstream's own `confidence_scores =
+log_probs.max(dim=-1)[0]` (`omnivoice.py:1449`) — the two diverge on **9,026
+of 20,000 seeds** at `keep=2` on a fixture with a deliberate 0.1 guided-logit
+gap between the top two classes (theoretical P(argmax wins) ≈ 52.5%, an
+empirical ~45/55 split observed). The fix computes `log_prob` as the max
+over the FULL unfiltered `guided` array, matching upstream exactly, and a
+400-seed regression (`tests/omnivoice_sampler_test.cpp`) now asserts it
+against the plain-greedy value on every seed, proven fail-before/pass-after
+via a temporary revert. `gumbel_perturb` transcribes upstream's
+`_gumbel_sample` (`omnivoice.py:1632-1636`) as `scaled = logit /
+temperature; noise = -log(-log(uniform + 1e-10) + 1e-10); result = scaled +
+noise`, entirely in `float` — no `double` intermediate — because a
+different rounding could change which of several perturbed candidates an
+argmax picks. Both trees 79/79 after the fix; format 0.
+
+Task 4 (`fcae589`, fix `a6392ec`) wired `choose_token_sampled` into the
+decode loop's per-candidate scan and added margin-report instrumentation.
+Golden gate: **17/17 exact grids, `synthesize-omnivoice-replay-golden`
+Passed 434.53 s**. Review found the seed-wiring untested — the synthetic
+fixture's constant weights make the token grid seed-invariant by
+construction (every class ties, so `choose_token`'s strict `>` tie-break
+always lands on class 0 regardless of draw order), so a hardcoded seed
+inside `run_synthesis` and a correctly-wired one would look identical on it.
+Fix round 1 added a `varied_weights` synthetic package option (LCG-filled)
+and `check_sampled_seed_actually_drives_the_grid`: fresh `SynthesisRequest`
+per call (never reused), seed 7 reproduces itself (`7 ≡ 7`) and seed 7
+differs from seed 8 (`7 ≠ 8`) on the varied-weight package's real token
+grid. Mutation-proven at `model.cpp:518` (the stream-construction site):
+hardcoding the seed to `42` there fails the new test, reverting passes it.
+Both trees 79/79.
+
+The draw-order contract this stream-construction site now documents in code
+— codebook-major/frame-minor candidate scan; class draws (inside
+`choose_token_sampled`, ascending class-id order over top-k survivors)
+before that candidate's own position draw; a zero-budget step draws
+nothing — is the same contract `docs/porting/families/omnivoice.md`'s new
+"The sampler" section restates for the family record.
+
+### First public synthesis of the family, and the public gate (Tasks 5–6)
+
+Task 5 (`a57bff6`, fix `d670090`) opened the public seam for this family for
+the first time (previously `synthesis.not_implemented` unconditionally).
+Smoke evidence, `omnivoice-0-6b-F32.gguf`, text "This is the first real
+public synthesis of the OmniVoice family.", 94,080 PCM samples (98 native
+codec frames):
+
+| run | seed | sha256 |
+| --- | --- | --- |
+| A | 7 | `0f4292aac1f7c6bfa8449a10a3e527ad40de99a677833625fe9d1d0dd43ea7e2` |
+| B | 7 | `0f4292aac1f7c6bfa8449a10a3e527ad40de99a677833625fe9d1d0dd43ea7e2` |
+| C | 8 | `7caeb17dbc1aa9671c822b6eca03c7a44990a7b10a71b337ea1efea80e2ae52c` |
+
+Seed 7 reproduces itself exactly (A ≡ B); seed 8 differs (C ≠ A); peak
+exactly 0.5 (no-reference volume branch). Review found `tests/omnivoice_
+load_real.cpp` still asserted the removed `synthesis.not_implemented` stub
+and had never actually been run under the `integration` label — a Critical
+that would have shipped a red integration suite unnoticed. Fix round 1
+routed whitespace-only text through the public seam (proven to reach the
+FAMILY's own `SYNTH_ERR_INVALID_ARG`, not the core guard — genuinely-empty
+text is rejected earlier, before family dispatch, with no diagnostic),
+promoted `assemble_prompt_ids`'s text-end postcondition from an
+NDEBUG-inert `assert` to a release-path check with an honest
+crafted-mismatch unit case, and ran the omnivoice integration set to green:
+`synthesize-omnivoice-load-real` 4.01–4.14 s,
+`synthesize-omnivoice-replay-golden` 425.12–449.41 s. Both trees 79/79.
+
+Task 6 (`040194e`, fix `4d072e3`) registered
+`synthesize-omnivoice-public-request` — 7 checks (echo, same-seed identity,
+cross-seed distinctness, random-seed concreteness, language echo, a
+no-language arm, evidence completeness) over 7 runs. First pass: **Passed
+66.43 s**. Review, run with fault injection (a missing/failing runner, a
+stale PCM file), found check 4 (random-seed concreteness) did not exclude
+`SYNTH_SEED_RANDOM`'s own sentinel value (`UINT64_MAX`) — a resolver that
+returned the sentinel unchanged would still pass. Fix round 1 excluded it
+with a one-line comment; re-run **Passed 65.78 s**, `tests/tolerances/
+omnivoice.json`'s public stage recorded `"checks": 7, "all_passed": true`.
+
+### Adapters: CLI and Python wheel (Task 7)
+
+Task 7 (`d713ec7`) registered `synthesize-omnivoice-cli` (**Passed 30.64–
+30.84 s**, package-default voice, `--phonemes` as the unsupported-input
+arm — the one kind this package's `input_flags` lacks) and the Python wheel
+family smoke (24 kHz, 960 samples/frame, seed 7/8 reproducibility,
+`ctest -R '^synthesize-python-api-wheel-test$'` **Passed 29.02–29.36 s**),
+closing the stage-7.5 gap qwen3-tts left open (neither harness was ever
+registered for that family). `synthesize-omnivoice-public-cleanup`
+(`synth_add_cleanup_test(omnivoice … 720000 "text:Hi." "" "en")`, 720,000
+PCM samples = 750 codec frames, the package's own frame cap) **Passed
+72.99–73.21 s**. Fixing omnivoice's registration surfaced a genuine
+cross-family bug: `synth_add_cleanup_test`'s unquoted `${ARGN}` silently
+dropped omnivoice's empty voice argument, shifting `"en"` into the voice
+slot (`SYNTH_ERR_UNSUPPORTED_VOICE`). The fix (quoted, positional `foreach`
+over `ARGN`) was verified behaviorally identical for VITS, Kokoro and
+qwen3-tts by reproduction (`cmake -P`, before/after `CTestTestfile`
+comparison) before landing project-wide. Both trees 79/79; format 0 (15
+files checked).
+
+### The Audio Normalizer: vendoring libsamplerate (Task 8, ADR 0009)
+
+Task 8 (`68a0b7e` vendoring + `3eccf4c` module, fix `90d115b`) vendored
+libsamplerate **0.2.2** (`third_party/libsamplerate/`), tarball sha256
+`3258da280511d24b49d6b08615bbe824d0cacc9842b0e4caf11c52cf2b043893`,
+re-fetched and byte-compared by the reviewer independently. Kept exactly
+`src/*.c`, `src/*.h`, `include/samplerate.h`, `COPYING` (10 files); the
+`clang-format` `EXCLUDE_RE` widened to `^ggml/|^third_party/` accordingly.
+Review found the `src_simple` drain contract unchecked in code
+(`input_frames_used` never compared against the frame count actually
+passed) — a silent-crop hazard an empirical sweep does not guarantee against
+production inputs. Fix round 1 added the drain check (`input_frames_used !=
+frames → SYNTH_ERR_INTERNAL`), a symmetric `output_frames_gen` bounds guard,
+an overflow test (`frames = UINT64_MAX`, asserts untouched output), and
+three target-validation rejection tests (`target_rate=0`,
+`target_channels∈{0,3}` — load-bearing because `convert_channels` only
+implements the 2↔1 arms). Both trees 80/80 before and after; format 0 (18
+files checked).
+
+### Clone-encode oracle probes, and the Golden suite's suite_version 3 (Task 9)
+
+Task 9 (`4f9486e`), ruling by jiangzhuo 2026-08-01: three new oracle probes —
+`ref/pcm_16k.f32` ([224640] = ceil(336960 × 16000/24000), exact),
+`ref/semantic_mean.f32` ([702, 768], pre-`[::2]`-downsample), and
+`ref/fused_latent.f32` ([351, 1024], post-`fc`) — added to both clone-case
+dumps. `tests/golden/omnivoice/omnivoice-0-6b.manifest.json` and
+`tests/tolerances/omnivoice.json` both move `suite_version` 2→3; no case
+text changed, and every one of the 16 pre-existing artifacts in each clone
+case's dump is byte-identical before and after (verified by independent
+sha256 recompute), as is the unrelated `omni-short-en` control case's
+12-artifact set. Both trees 82/82; format 0.
+
+### The resampler: transcription and a kernel-math correction (Task 10)
+
+Task 10 (`7ef5728`, fix `a0814e7`) transcribed the 24→16 kHz sinc resampler
+`torchaudio.functional.resample` uses at its defaults. The implementer's
+own model — promote the float32 side to `double`, compute, round once back
+to float32 — was proven WRONG by review, which compiled the shipped kernel
+table standalone and diffed it against torchaudio's own real kernel tensor:
+**38 of 46 tap coefficients mismatched.** The corrected model is that
+PyTorch rounds the scalar constants to float32 FIRST and then computes
+entirely in float32, with no double intermediate anywhere in the kernel
+construction. Isolating one step of the construction (`t *= base_freq`)
+confirmed the mechanism directly: round-scalar-first gave 0 mismatches (0.0
+max diff) against torch's real tensor; promote-to-double gave 6 mismatches
+(up to 4.77e-07). The fix declares the kernel's float32 constants
+(`kBaseFreqF`, `kScaleF`, `kPiF`) once, rounded from their double
+counterparts, and removes every `double(...)` promotion from the
+kernel-construction expressions; the reconstructed kernel is then bit-exact
+on all 46 tap coefficients.
+
+Measured max_abs, before → after, by build config:
+
+| fixture | Release (`build/`) | RelWithDebInfo (`build-sanitize/`) |
+| --- | --- | --- |
+| `dc96` | 1.19209e-07 → **0.0** | 0.0 |
+| `impulse64` | 2.98023e-08 → **0.0** | 0.0 |
+| `mixed48` | 5.96046e-08 → 5.96046e-08 | **0.0** |
+| real signal (`ref/pcm_16k.f32`) | 1.78814e-07 → **1.19209e-07** | 0.0 |
+
+`mixed48`'s and the real signal's residual figures in Release are
+attributable to convolution accumulation ORDER, not the kernel table
+itself — both are exactly 0.0 under RelWithDebInfo. **This is a
+build-config-dependent noise floor, not a defect, and it matters for Plan
+4's future tolerance work**: a gate this tight must account for it rather
+than assume Release and sanitizer builds agree to the last bit. Gates
+tightened accordingly: `dc96`/`impulse64` `== 0.0f` exactly, `mixed48` `<=
+1e-7f`, the real-signal integration gate
+(`synthesize-omnivoice-resampler-golden`) `<= 5e-7f`. `target_length`'s
+`torch.ceil(torch.as_tensor(new_freq * length / orig_freq))` was confirmed
+to downcast to float32 BEFORE the ceiling (`torch.as_tensor` on a bare
+Python float takes torch's default dtype), transcribed as such; a sweep
+over `length ∈ [1, 3,000,000]` found zero divergence from the naive
+double-then-ceil ordering at this family's scale, so the distinction is
+correctness-by-construction here rather than an observed difference. Both
+trees 81/81 before and after; format 0 (21 files checked).
+
+### HuBERT semantic branch (Task 11)
+
+Task 11 (`b619ce6`, format fix `9b5dffe`) added the semantic branch
+(resampled 16 kHz → HuBERT → `[::2]` downsample → `SemanticEncoder`).
+Miniature fixture: 5.96e-07 max_abs (tolerance tightened to 3e-6, 5× the
+measured figure). Real-scale `ref.semantic_mean` parity, both clone cases
+identical: **max_abs 6.09234e-05, cosine 0.99999993**. Golden gate: **17/17
+grids exact, `synthesize-omnivoice-replay-golden` Passed 423.90 s**, with
+the new encode channel report-only (not yet gating — confirmed by reading
+the validator's own code, not merely by the exit code). Review confirmed
+GELU-erf (not the tanh approximation) both by config (`hidden_act:
+"gelu"` resolving to `nn.functional.gelu`) and by an empirical fixture-
+sensitivity check (227× against the wrong variant), traced the 13-hidden-
+state capture point, and confirmed the `SamePad` trim and group-norm
+variant. One Important: the task's own format-check claim was false — 572
+violations across the three new files at HEAD, because the original
+`--check-diff` run happened while those files were still untracked (`git
+diff --name-only` is blind to untracked paths — the known git-selection
+trap, in its untracked form this time rather than its unstaged form). Fix
+round: format-only, no numeric change; re-verified identical (5.96e-07,
+unchanged) after formatting. Both trees 82/82 (up from 81); format 0.
+
+### DAC acoustic encoder and reference fusion (Task 12)
+
+Task 12 (`f934612`) added the acoustic branch and the semantic/acoustic
+fusion. `codec_conv1d` gained a `stride` parameter (default 1, three new
+rejection tests for `stride ∈ {0, -1}` and one acceptance for `stride=2`).
+Two things the checkpoint's own config would have gotten wrong were
+resolved empirically rather than assumed: the downsampling/upsampling ratio
+order is `[8, 5, 4, 2, 3]` in BOTH directions — `DacConfig.__post_init__`'s
+own reversal logic (`upsampling_ratios = downsampling_ratios[::-1]`) is
+overridden by the raw config on this checkpoint, confirmed by instantiating
+the real checkpoint's config and reading `.encoder.block[i].conv1.stride`
+directly rather than trusting the class's default logic; and the 480-sample
+(`hop_length // 2`) pad upstream applies conditionally never fires for
+hop-aligned input, confirmed both symbolically (the closed-form frame count
+through ratios `[8,5,4,2,3]` reduces to exactly `T/960` for any `T` a
+multiple of 960) and against the oracle's own numbers (336,960 samples =
+351 × 960 exactly, matching `ref/fused_latent.f32`'s 351 rows unpadded).
+Miniature fixtures: acoustic 8.94e-08, fused 5.96e-08 max_abs (tolerance
+5e-7, 5× measured). Real-scale `ref.fused_latent` parity, both clone cases
+identical: **max_abs 9.32217e-05, cosine 1.00000011** (fractionally above
+1.0, the same float32 estimator artifact the deep generator probes already
+show — not a defect). Golden gate: **17/17 grids exact, Passed 426.81 s**.
+Independent review reproduction (ratio proof, fixture regeneration, binary
+artifact diff) matched the implementer's figures exactly; zero fix rounds.
+Both trees 82/82; format 0.
+
+### RVQ encode and the exact-token gate (Task 13)
+
+Task 13 (`dc42440`, fix `fc76b49`) added host-side RVQ encode.
+**Exact-token gate passed on the first run: both clone cases' encoded
+tokens matched `ref/tokens.i32` byte for byte — 8 codebooks × 351 frames =
+2,808 tokens per case, 2,808/2,808 exact, 2/2 cases.** The RVQ encode's own
+margin instrumentation (diagnostic only, never gated) measured a narrowest
+best-vs-second-best nearest-neighbor distance of **0.00239563** over the
+real reference clip. Golden gate: **Passed 433.51 s**. Review, independently
+reproducing the validator, sha256-checking four token files, and
+regenerating fixtures byte-identically, found `ref_rms` measured in the
+WRONG order: on the already hop-clipped buffer (0.12305419892072678),
+rather than upstream's own order — measure on the FULL, un-clipped buffer
+FIRST (`omnivoice.py:774`), THEN boost (`:775-776`), THEN hop-clip
+(`:816-818`). This is a systematic scale deviation on every boosted
+(quiet) reference, unobservable on the committed goldens only because the
+one pinned reference clip's true RMS (0.1229146420955658) sits above the
+0.1 boost threshold either way. Fix round 1 reordered to measure-on-full-
+buffer → boost-full-buffer → hop-clip, cited both omnivoice.py line ranges
+in the code, and added six unit cases
+(`tests/omnivoice_reference_encoder_test.cpp`) including a straddle-0.1
+regression proven fail-before/pass-after via temporary revert (buggy order:
+`ref_rms` 0.0500000007; correct order: 0.449444115, matching the expected
+full-buffer value). Tokens remained 2,808/2,808 exact and the gap unchanged
+after the fix; golden gate re-run at 682.70 s (elevated by concurrent
+unit-gate builds on the same host — a concurrent wheel-test timeout in the
+same window was contention-only, reconfirmed 82/82 in isolation). Both
+trees 82/82; format 0.
+
+Tolerance derivations committed in `tests/tolerances/omnivoice.json` for the
+three Task 9 probes, now gated (5× the observed figure, per this file's
+standing rule):
+
+| probe | observed max_abs | committed max_abs | observed min_cosine | committed min_cosine |
+| --- | --- | --- | --- | --- |
+| `ref.pcm_16k` | 1.19209e-07 | 6e-07 | 0.9999999444538425 | 0.999999 |
+| `ref.semantic_mean` | 6.09234e-05 | 4e-04 | 0.9999999293211036 | 0.999999 |
+| `ref.fused_latent` | 9.32217e-05 | 5e-04 | 1.0 (capped) | 0.999999 |
+
+### Reference Audio cloning, end to end (Task 14)
+
+Task 14 (`fdb0b41` + `7613283` + `6c792c7` + `a41784d`) wired the whole
+encode chain into `Model::synthesize` and `voice-profile.cpp`'s
+`create_from_reference`. `Model::encode_reference`'s output token grid
+equals `ref/tokens.i32` exactly; non-vacuity was proven three ways —
+matching against the real file passes, against a deliberately wrong file
+fails, and against a nonexistent path takes the documented sentinel-skip
+path (still exit 0, but a different, named code path). Measured
+`ref_rms`: 0.1229146…, matching the expected 0.1229146420955658 to within
+1e-4. Silent-reference rejection (jiangzhuo's ruling, 2026-08-01):
+`create_from_reference` refuses a `ref_rms == 0.0f` reference with
+`SYNTH_ERR_INVALID_ARG` and diagnostic `voice_profile.reference_silent`,
+proven against a real all-zero-sample fixture at the package's own minimum
+clip length.
+
+Public clone run, seed 0:
+
+| run | frames | sha256 |
+| --- | --- | --- |
+| clone, run A | 67,200 | `6d1d61f414145542c88eb8131d79e030b8dfe53c4d70c71389d5a2dad30f702c` |
+| clone, run B | 67,200 | `6d1d61f414145542c88eb8131d79e030b8dfe53c4d70c71389d5a2dad30f702c` |
+| no profile | 48,000 | `1fa36c04b3da2647f33948a094167996fb9ff2d5d890a2b0c7e7b09ffbe38db1` |
+
+Same-seed-with-profile reproduces exactly (A ≡ B); the profile run differs
+from the no-profile run in both frame count and digest, confirming the
+reference genuinely conditions output rather than being silently ignored.
+`scripts/validate-omnivoice-public.py`'s checks grew 7→10 (all 10 passed);
+integration total **36/36 passed** (1,040.89 s), with
+`synthesize-omnivoice-replay-golden` at 429.72 s and
+`synthesize-omnivoice-public-request` at 160.62 s named individually. Both
+trees 83/83; format 0.
+
+### Description Text voice design (Task 15)
+
+Task 15 (`fc657e6`) implemented `synth_voice_profile_create_from_description`
+via `resolve_instruct`, transcribing the closed attribute/accent/dialect
+vocabulary from `omnivoice/utils/voice_design.py:31-97` (48 members: 23 EN —
+13 dict entries across gender/age/pitch/style plus 10 accents — and 25 ZH —
+13 dict entries plus 12 dialects) and the validation/unification rules from
+`omnivoice/models/omnivoice.py:1492-1621`. Confirmed at source: an
+unsupported item raises with no free-text fallback anywhere in the
+function, ported as `SYNTH_ERR_INVALID_ARG` /
+`voice_profile.instruct_unknown_item` with no `difflib`-style suggestion.
+Two flagged, reviewer-adjudicated divergences: (1) a null
+`description_language` resolves to the fixed default `"en"`, never
+detected from the description's own text, per `docs/c-interface.md:568`'s
+explicit prohibition — endorsed as the doc governing over a looser brief
+paraphrase; (2) upstream's per-call `use_zh` baseline is computed from the
+TARGET TEXT being synthesized (`omnivoice.py:1068`), which does not exist at
+Voice Profile creation time, so this port substitutes the resolved
+`description_language` instead — accepted because deferring unification
+would break profile immutability. `synthesize-omnivoice-public-request`
+grew 10→13 checks (voice-design synthesis succeeds, same-seed
+reproducibility with a design profile, digest differs from a same-seed
+no-profile run), **Passed 190.98 s, 13/13**; `synthesize-omnivoice-
+profile-test` **Passed 22.91 s**. Both trees 84/84; format 0.
+
+### Serialized Profiles, the GGUF round trip, and untrusted-bytes hardening (Task 16)
+
+Task 16 (`e88ab6f`, fix rounds `dab8766` and `8e23f8c`) implemented the v1
+Serialized Profile GGUF envelope end to end. Round-trip PCM is byte-
+identical for both kinds (ClonePrompt and DesignInstruct) against the real
+package at seed 7; an 8-arm tamper matrix (payload byte flip, wrong
+compatibility id, wrong schema, wrong kind, truncation, out-of-range token,
+oversized token count, cross-family) rejects every arm with the correct
+status.
+
+Review found a Critical: untrusted bytes reaching
+`synth_voice_profile_load_from_memory` can abort the whole host process.
+A buffer declaring `general.alignment` with the wrong type reaches
+`GGML_ASSERT`s inside `gguf_init_from_reader`
+(`ggml/src/gguf.cpp:194,610,1102`) BEFORE this project's own loader
+validation runs — `ggml` is a submodule and cannot carry a local patch, so
+the fix is a raw-byte pre-scan in this project's own loader. Fix round 1
+added `prescan_buffer` as a BLACKLIST (special-case `general.alignment`,
+generous structural ceilings); proven to turn the SIGABRT into
+`SYNTH_ERR_INVALID_ARG`. Re-review, fuzzing the SAME harness (ASan,
+8,127 iterations across three campaigns) found a SECOND, different crash
+the blacklist could not have anticipated: a 40-byte buffer with a
+zero-length key sails past the length ceiling (zero is not greater than
+it) and an empty key is never `"general.alignment"`, reaching a DIFFERENT
+`GGML_ASSERT(!key.empty())` inside all four of `gguf_kv`'s value-shape
+constructors (`ggml/src/gguf.cpp:143,151,161,167`). **Lesson: blacklisting
+another library's internal asserts can never be proven complete — round 1
+closed one instance, and the fuzzer found the next one in the same
+review session.** Fix round 2 replaced the blacklist with POSITIVE
+validation against exactly the format this project's own writer ever
+produces: a closed 12-key table (`kPrescanKnownKeys`) with exact
+type/array-ness/count per key, duplicate-key rejection, an exact `n_kv`
+(9 or 11, not a ceiling), and an exact tensor-section shape. Both crash
+instances proven fixed with before/after evidence (disabled guard →
+SIGABRT/exit 134 for both; whitelist alone → `SYNTH_ERR_INVALID_ARG`, no
+ggml-side change). Standing evidence: the reviewer's own fuzz harness,
+unmodified, re-run against the whitelist fix — **8,127 iterations across
+three campaigns (single-byte mutation, random small buffers, boundary/
+extreme cases), zero crashes, zero sanitizer reports, zero hangs,
+reproduced twice.** Round-trip integration test **Passed 94.58 s**. Both
+trees 86/86 (up from 84); format 0.
+
+### Gates (Plan 3, cumulative at close)
+
+| gate | result |
+| --- | --- |
+| `cmake --build build --target synthesize-check-unit` | 86/86 passed |
+| `cmake --build build-sanitize --target synthesize-check-unit` (ASan/UBSan) | 86/86 passed |
+| `synthesize-omnivoice-replay-golden` (17/17 grids + RVQ 2/2 exact) | Passed, most recent isolated run 433.51 s |
+| `synthesize-omnivoice-resampler-golden` | Passed (`<= 5e-7f` real-signal gate) |
+| `synthesize-omnivoice-public-request` | Passed 190.98 s, 13/13 checks |
+| `synthesize-omnivoice-load-real` | Passed, ~4 s |
+| `synthesize-omnivoice-profile-test` | Passed, 94.58 s (Serialized Profile round trip) |
+| `synthesize-omnivoice-cli` | Passed 30.64–30.84 s |
+| `synthesize-omnivoice-public-cleanup` | Passed 72.99–73.21 s |
+| `synthesize-python-api-wheel-test` (omnivoice family smoke) | Passed 29.02–29.36 s |
+| `scripts/ci/clang-format.sh --check-diff` | clean (exit 0) at every task's own close |
+| untrusted-bytes fuzz (`repro_empty_key`-class harness) | 8,127 iterations, 0 crashes, 0 sanitizer reports, 0 hangs |
+
+What Plan 3 does NOT close is recorded in
+`docs/superpowers/plans/2026-08-02-omnivoice-plan-4-carryover.md`: the
+remainder of the Port Validation Suite, Quantization Profiles, Execution
+Backends, and ship.

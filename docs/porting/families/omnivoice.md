@@ -2,11 +2,13 @@
 
 Status: Confirmed 2026-08-02. Intake through the greedy synthesis core
 (slices 4–6) done: single-forward parity, exact token grids 17/17, replay
-waveform under committed tolerances (tests/tolerances/omnivoice.json). Public
-sampling and cloning (Plan 3: Reference Audio and Description Text Voice
-Profiles, and their Serialized Profile GGUF round-trip) are done as of Tasks
-14–16. The Port Validation Suite, Quantization Profiles, Execution Backends,
-Adapter registration, and ship (Plan 4) have not started.
+waveform under committed tolerances (tests/tolerances/omnivoice.json). Plan 3
+(the public sampled path, Reference Audio and Description Text Voice
+Profiles, their Serialized Profile GGUF round-trip, the CLI and Python-wheel
+Adapters, and this record's own close-out) is done as of Task 17. The
+remainder of the Port Validation Suite, Quantization Profiles, Execution
+Backends, and ship (Plan 4) have not started; the carry-over debt this plan
+leaves behind is `docs/superpowers/plans/2026-08-02-omnivoice-plan-4-carryover.md`.
 
 ## Decision
 
@@ -229,6 +231,81 @@ in synthesis. A reference port documents it as the sampler's per-codebook
 penalty; that is wrong, the penalty is the `layer_index × 5.0` term above, and
 this project must not repeat the claim.
 
+### The sampler: a port-defined draw-order contract (Plan 3, Tasks 3–4)
+
+Upstream draws one dense `rand_like` tensor over the whole logits row at once;
+this port draws one uniform per decision instead, so the ORDER those draws
+happen in is this port's own contract, not a transcription of anything
+upstream states explicitly. It is recorded once, at the single `NormalRandomStream`
+construction site (`src/arch/omnivoice/model.cpp`, immediately above the step
+loop), and restated here so it lives in the family record too:
+
+- **Candidates are visited in codebook-major, frame-minor scan order** — the
+  nested loop that builds them (`for codebook in 0..codebooks: for frame in
+  0..frames`) is the same order the draws happen in; there is no separate
+  ordering step.
+- **For each candidate, the class draws happen first.** Inside
+  `choose_token_sampled` (only reached when `class_temperature > 0`), as many
+  uniforms are drawn as survive its own top-k filter (`ceil(0.1 ×
+  vocab_size)`), one per surviving class in **ascending class-id order** —
+  never in score order, since the survivors are re-sorted by id after the
+  top-k selection specifically so the draw order does not depend on the
+  scores themselves.
+- **Then, iff `position_temperature > 0`, exactly one further draw** perturbs
+  that same candidate's already-computed score (`gumbel_perturb`, below) —
+  the position draw, consumed after any class draws for that candidate, never
+  before.
+- **A step whose budget is zero draws nothing at all.** The `if (budget == 0)
+  { continue; }` guard sits above every draw site in the per-candidate loop,
+  so a zero-budget step does not construct a candidate, run `choose_token` or
+  `choose_token_sampled`, or consume a single uniform — matching upstream's
+  own `if k <= 0: continue`, which likewise consumes no randomness for that
+  step.
+- **One stream serves the whole synthesis**, constructed once before the step
+  loop, and only if either resolved temperature is positive. A fully greedy
+  synthesis (both temperatures exactly 0) constructs no stream and therefore
+  draws nothing — the zero-RNG property the Reference Contract above already
+  states, preserved by construction rather than by a separate check.
+
+**The Gumbel perturbation, float32 throughout.** `gumbel_perturb(logit,
+temperature, uniform)` transcribes upstream's `_gumbel_sample`
+(`omnivoice.py:1632-1636`) as one value:
+
+```text
+scaled = logit / temperature
+noise  = -log(-log(uniform + 1e-10) + 1e-10)
+result = scaled + noise
+```
+
+Every operation is `float` — there is no `double` intermediate anywhere in
+this expression — and the grouping matches upstream's own line-for-line
+rather than an algebraically equivalent rearrangement, because reordering a
+floating-point expression changes its rounding, and therefore can change
+which of several perturbed candidates an argmax picks.
+
+**`log_prob` is the row's max guided log-probability, not the chosen
+candidate's own value.** `choose_token_sampled` computes `log_prob` as the
+maximum over the FULL, unfiltered `guided` array — the same value
+`choose_token`'s own argmax would report for that row — regardless of which
+survivor the Gumbel draw actually commits. This transcribes upstream's
+`confidence_scores = log_probs.max(dim=-1)[0]` at **`omnivoice.py:1449`**
+verbatim. The distinction is not cosmetic: Task 3's review proved that
+reading `guided[chosen]` instead — the value the port originally computed —
+diverges from upstream's definition on 9,026 of 20,000 seeds at `keep=2`, and
+a 400-seed regression fixture (`tests/omnivoice_sampler_test.cpp`) now pins
+`log_prob` against the plain-greedy value on every seed.
+
+**Why `class_temperature`'s upstream default is 0.0, and what that means for
+the public path.** The Reference Contract above already states it: only
+`position_temperature` defaults non-zero (5.0), so at package defaults the
+public sampled path draws POSITIONS, never CLASSES — `choose_token_sampled`
+and its class-draw/top-k machinery are reached at all only when a caller
+raises `class_temperature` above zero, which the public Interface allows but
+the shipped package's own defaults do not exercise. A port that read both
+defaults as 5.0 would sample twice where upstream samples once; this sampler
+contract is what makes that distinction concrete rather than a note in the
+Reference Contract alone.
+
 ## Port Validation Fit
 
 Greedy decoding is fully deterministic and makes no RNG call, so this family
@@ -373,6 +450,80 @@ the new text the minimum margin is **1.28e-03**, 12.8× the screen, and the port
 reproduces the oracle grid exactly. The reference audio, `ref_text`, coverage
 tags, case id and every oracle parameter are unchanged; the zh design and clone
 texts were never required to match, so no manifest relation moves.
+
+### The public sampled path carries no margin screen
+
+Margin screening above governs which GREEDY cases are adopted into the Golden
+suite, and nothing about the public sampled path (Plan 3's `class_temperature`/
+`position_temperature` draws, or cloning) is screened the same way. This is
+recorded in `tests/tolerances/omnivoice.json`'s own `public` stage: "sampled
+seed-contract cases carry no margin screen (screen rationale is oracle-parity
+knife edges; this stage claims none)."
+
+The reason is what each phase claims. The screen exists because a greedy
+Golden case claims **oracle agreement** — that this port's committed grid
+equals a specific PyTorch run's — and at 6.1e-04 max_abs step-0 logit
+divergence, some decisions are narrower than the arithmetic resolves; the
+screen keeps a case that would win or lose that agreement by luck out of the
+suite. `synthesize-omnivoice-public-request` (`docs/testing.md`) claims
+something categorically different: relations between runs of **this port
+alone** — a seed reproduces its own prior output, a different seed produces
+`artifact_differs`, a Voice Profile changes the digest from a same-seed
+profile-less run — never agreement with a PyTorch run, because **upstream
+exposes no seed parameter of any kind** for this path (Reference Contract,
+above) and so has no run of its own to agree or disagree with. A screen
+calibrated against the oracle's own logit divergence has nothing to measure
+on a path making no oracle-parity claim; applying one anyway would be
+screening a comparison this phase never makes. The 13 public-request checks
+(Task 6's base 7: echo, same-seed identity, cross-seed distinctness,
+random-seed concreteness, language echo, a no-language arm, and evidence
+completeness; Task 14's clone checks 8–10; Task 15's voice-design checks
+11–13) are this path's own gate instead.
+
+### Clone-encode parity: probes, suite revision 3, and the exact-token gate (Tasks 9–13)
+
+Cloning's own encode chain — resample, HuBERT semantic branch, DAC acoustic
+branch plus fusion, RVQ encode — needed evidence of its own before Task 14
+could wire it into `Model::synthesize`, distinct from the greedy decode
+loop's token-grid parity above. Ruling by jiangzhuo, 2026-08-01: three oracle
+probes were added (`ref/pcm_16k.f32`, `ref/semantic_mean.f32`,
+`ref/fused_latent.f32`, captured from the same clone-case dumps already
+pinned) and the Golden suite moved to **`suite_version` 3** — no case text
+changed and every existing grid and waveform is unchanged; only new probes
+were added to cases the suite already carried.
+
+Measured 2026-08-01 against both clone cases (`omni-clone-en`,
+`omni-clone-zh`), which share one reference clip and so produced **identical**
+figures on every channel below:
+
+| Probe | max_abs | Committed max_abs | Cosine deviation | Committed min_cosine |
+| --- | --- | --- | --- | --- |
+| `ref.pcm_16k` (resampler output) | 1.19209e-07 (≈ one float32 ULP) | 6e-07 | 5.56e-08 | 0.999999 |
+| `ref.semantic_mean` (HuBERT, pre-downsample) | 6.09234e-05 | 4e-04 | 7.07e-08 (cosine 0.99999993) | 0.999999 |
+| `ref.fused_latent` (DAC + fusion) | 9.32217e-05 | 5e-04 | cosine 1.00000011, capped at 1.0 | 0.999999 |
+
+`ref.pcm_16k`'s and `ref.semantic_mean`'s cosine deviations are each within
+that array's OWN self-cosine noise floor (measured by comparing the oracle's
+own probe against itself through the identical float32 estimator), and
+`ref.fused_latent`'s raw cosine sits fractionally above 1.0 — the same
+float32 summation artifact the deep generator probes already show, not a
+defect. Every committed threshold is 5× the observed figure, consistent with
+this file's rule for every other probe.
+
+**The exact-token gate.** The RVQ encode's own claim is not a tolerance at
+all: this family's `structural_exactness` requirement now covers TWO grids,
+not one — the greedy decode loop's 8×T token grid (17/17 exact, above) and,
+as of Task 13, the cloning path's own reference-encode grid. Both clone
+cases' encoded tokens matched `ref/tokens.i32` **byte for byte on the first
+run**: 8 codebooks × 351 frames = **2,808 tokens per case, exact, 2/2 cases**.
+The RVQ encode's own margin instrumentation — never gated, diagnostic only,
+and answering a different question than the decode loop's selection/argmax
+margins above (this is a nearest-neighbor codebook lookup, not a sampled
+commit) — measured a narrowest best-vs-second-best distance of
+**0.00239563** over the real reference clip: comfortably wide of a knife
+edge, and recorded here as this family's own figure per
+`tests/tolerances/omnivoice.json`'s own note that this task is where it
+lands.
 
 ## Text Frontend
 
@@ -646,6 +797,69 @@ reads unconditionally for every kind. `kind` costs nothing to add without a
 package re-cut and keeps the package's own single declared schema truthful
 for every profile it can produce.
 
+### The untrusted-bytes lesson: a whitelist, not a blacklist (Task 16)
+
+A Serialized Profile arrives at `synth_voice_profile_load_from_memory` as
+caller-supplied bytes with no prior validation, and `ggml`'s own GGUF parser
+is not written defensively against them: certain reserved metadata keys are
+read eagerly, during construction, before this project's own loader ever
+runs a single check — and a wrong-typed value there hits a `GGML_ASSERT`,
+which aborts the whole host process rather than returning an error. `ggml/`
+is a submodule and cannot carry a local patch (`ggml-patches/README.md`), so
+the only place to stop this is a pre-scan of the raw bytes in
+`arch/omnivoice/profile.cpp`'s `prescan_buffer`, run before
+`gguf_init_from_buffer` ever touches them.
+
+**Two crash instances, found by two different methods, in one review
+session.** The first: a buffer declaring `general.alignment` with the wrong
+type (anything other than a single `UINT32`) reaches
+`gguf_get_val_u32`'s own `GGML_ASSERT(get_ne() == 1)`
+(`ggml/src/gguf.cpp:1102`) and `gguf_kv::get_val`'s
+`GGML_ASSERT(type_to_gguf_type<T>::value == type)` (`ggml/src/gguf.cpp:194`)
+during `gguf_init_from_buffer`'s own alignment resolution
+(`ggml/src/gguf.cpp:610`) — proven reachable through the full public path,
+SIGABRT before fix, `SYNTH_ERR_INVALID_ARG` after. The first fix round's
+remedy was a **blacklist**: special-case `general.alignment` (require
+exactly `UINT32`, count 1) plus generous structural ceilings (at most 8
+tensors, 64 metadata entries, 256-byte keys, 256-element arrays, 1 MiB
+strings). The reviewer's own ASan fuzz harness, run unmodified against that
+fix within the same review round, found a **second, different** crash: a
+40-byte buffer with a zero-length key sails through the ceiling checks
+untouched (zero is not greater than the length ceiling) and an empty key is
+never equal to `"general.alignment"`, so it reaches a DIFFERENT
+`GGML_ASSERT(!key.empty())` inside all four of `gguf_kv`'s value-shape
+constructors (`ggml/src/gguf.cpp:143,151,161,167`) — the same abort class,
+a different trigger the blacklist's author had no way to have enumerated in
+advance.
+
+**The lesson, and why the remedy changed shape rather than grew a third
+special case.** Enumerating another library's internal asserts is
+necessarily a blacklist, and a blacklist of another library's invariants can
+never be proven complete — it can only ever answer "is this the specific bad
+thing I already know about", never "is this SOME bad thing". Fix round 2
+replaced the blacklist with **positive validation against exactly the
+format this project's own writer ever produces**: `kPrescanKnownKeys`, a
+closed table of the 12 keys `set_common_metadata` /
+`serialize_clone_prompt` / `serialize_design_instruct` can ever write, each
+with its exact declared type, array-ness and count; unknown keys, duplicate
+keys, an `n_kv` other than exactly 9 (DesignInstruct) or 11 (ClonePrompt) --
+not a ceiling -- and a tensor section other than 0 tensors or exactly one
+`profile.reference_tokens` tensor of this writer's own exact shape are all
+rejected, independent of whether `gguf_init_from_buffer` would also abort on
+the same bytes and independent of which specific asserts `ggml` happens to
+carry today. This subsumes the whole class the blacklist could only chase
+one instance at a time.
+
+**Standing evidence.** The reviewer's own fuzz harness, unmodified, re-run
+against the whitelist fix across three campaigns (single-byte mutation of a
+valid envelope, random small buffers, and boundary/extreme
+key-count/tensor-count/string-length/array-count/empty-key cases) at
+**8,127 iterations total**: zero crashes, zero sanitizer reports, zero
+hangs, reproduced twice. That number, not a proof of completeness a
+whitelist cannot offer either, is the standing evidence this hardening
+rests on, and it is what the next reviewer should re-run rather than trust
+by citation.
+
 ## Quantization Profile Shape
 
 F32 is the reference package, and this family has a measured reason to expect
@@ -676,6 +890,27 @@ exercised rather than merely present. Argmax, confidence ranking, the layer
 penalty and the top-k commit are host CPU work: they are discrete decisions,
 and the discrete-outputs placement rule keeps them and their input path off the
 accelerator.
+
+## Adapters (stage 7.5)
+
+The CLI (`examples/cli/`) and the Python wheel are adapters over
+`include/synthesize.h`, per this project's own rule that no synthesis
+capability may exist only in an adapter (`CLAUDE.md`). Task 7 registered
+both for this family: `synthesize-omnivoice-cli` (package-default voice, no
+`--voice` flag — the package's catalog carries an unnamed default and no
+preset ids; text input drives `--text`, and the unsupported-input arm is
+pointed at `--phonemes`, the one kind this package's `input_flags` lacks)
+and the Python wheel's family smoke (24 kHz, 960 samples per frame, seed 7/8
+reproducibility, no preset Voice needed). **qwen3-tts never registered
+either harness** — a stage-7.5 omission the design for this family named
+explicitly and closed rather than repeated. Fixing the omission surfaced one
+real cross-family bug rather than an omnivoice-specific one:
+`synth_add_cleanup_test`'s unquoted `${ARGN}` silently dropped an empty
+middle argument, which for omnivoice's empty-voice/named-language call shape
+shifted the language string into the voice slot; the fix (quoted,
+positional `foreach` over `ARGN`) was proven behaviorally identical for
+VITS, Kokoro and qwen3-tts before being applied project-wide, not scoped to
+this family alone.
 
 ## Decomposition
 
@@ -807,6 +1042,47 @@ adoption.
 The license column is about each port's own code. It says nothing about the
 weights, which every one of these repositories describes incorrectly or not at
 all.
+
+## Divergences Ledger (v1)
+
+A consolidated list of this port's deliberate v1 divergences from upstream,
+gathered here from where each was decided so ship-time review does not have
+to re-derive them from the sections above:
+
+1. **No pydub silence preprocessing.** Upstream's optional
+   `preprocess_prompt` (silence trimming, long-audio chunking) is not
+   ported; every clone case pins `preprocess_prompt=False` and this port
+   carries no trim stage at all. See "No pydub silence preprocessing" above.
+2. **No fade or pad on public output.** This is stronger than "the oracle
+   comparison pinned zero durations": v1's public request surface (`struct
+   synth_synthesis_params_t` and this family's `SynthesisRequest`) exposes
+   no fade-duration or pad-duration control of any kind, and no code path in
+   `Model::synthesize` applies one. Upstream's `fade_and_pad_audio` is
+   product-layer behavior this port never implements, not a switch this
+   port implements and leaves off.
+3. **HuBERT LayerDrop draws but never skips — not reproduced.** Upstream's
+   `HubertEncoder.forward` draws `torch.rand([])` every layer
+   UNCONDITIONALLY, even in eval mode, but only acts on the draw when
+   `self.training` (`skip_the_layer = self.training and dropout_probability
+   < layerdrop`); eval mode never skips regardless of what the draw says.
+   This port (`src/arch/omnivoice/reference-encoder.h`) draws nothing and
+   skips nothing — a divergence of no consequence, since eval-mode
+   upstream's own behavior is "never skip" too, and the semantic-branch
+   parity figures above (max_abs 6.09234e-05, cosine 0.99999993) are
+   measured against that same eval-mode upstream.
+4. **Description-language is never sniffed from text.** A null
+   `description_language` resolves to the fixed default `"en"`, never
+   derived from the description's own bytes, per `docs/c-interface.md:568`'s
+   explicit prohibition ("The implementation never detects the description
+   language from its text"). See Open Questions, "Voice-design instruct
+   passthrough", below.
+5. **Instruct is unified at profile-creation time, using the resolved
+   `description_language`, not upstream's per-call target-text baseline.**
+   Upstream computes its unify-to-one-language decision from the TARGET TEXT
+   being synthesized (`omnivoice.py:1068`), which does not exist yet at
+   Voice Profile creation time; this port substitutes the request's own
+   resolved `description_language` instead. See Open Questions, same
+   paragraph, for the full rationale and the three places this is recorded.
 
 ## Open Questions
 

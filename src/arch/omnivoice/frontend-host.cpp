@@ -674,12 +674,11 @@ bool assemble_prompt_ids(const TextFrontend &   frontend,
                          bool                   denoise,
                          const std::string &    language_tag,
                          const std::string &    instruct,
-                         const std::string &    ref_text,
-                         const std::string &    text,
+                         const std::string &    combined_text,
                          std::vector<int32_t> & output) {
     std::string wrapped = style_text(denoise, language_tag, instruct);
     wrapped += "<|text_start|>";
-    wrapped += combine_text(ref_text, text);
+    wrapped += combined_text;
     wrapped += "<|text_end|>";
 
     if (tokenize_wrapped_text(frontend, wrapped, output) != SYNTH_OK) {

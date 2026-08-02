@@ -54,7 +54,7 @@ double now_seconds() {
 // A context sized for a graph's headers plus the graph itself.
 class GraphRun {
   public:
-    GraphRun(const BackendPlan & plan, size_t nodes) : plan_(plan), nodes_(nodes) {
+    GraphRun(const BackendPlan & plan, size_t nodes) : plan_(plan) {
         ggml_init_params parameters{};
         parameters.mem_size = ggml_tensor_overhead() * (nodes + 256) + ggml_graph_overhead_custom(nodes, false);
         parameters.no_alloc = true;
@@ -125,7 +125,6 @@ class GraphRun {
 
   private:
     const BackendPlan &  plan_;
-    size_t               nodes_;
     ggml_context *       context_   = nullptr;
     ggml_cgraph *        graph_     = nullptr;
     ggml_backend_sched_t scheduler_ = nullptr;

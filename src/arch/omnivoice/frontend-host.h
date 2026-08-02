@@ -115,12 +115,18 @@ class DurationEstimator {
 // One call from raw request strings to the row-0 text-region ids.
 //
 // Composes: style_text(denoise, language_tag_or_empty, instruct_or_empty)
-//   + "<|text_start|>" + combine_text(ref_text, text) + "<|text_end|>"
+//   + "<|text_start|>" + combined_text + "<|text_end|>"
 // tokenized via tokenize_wrapped_text, whose special-token table is this
 // family's SpecialTokens baked into the frontend at load time (model.cpp's
 // registration) -- `tokens` is not consulted to build the wrapped string
 // itself, only to check on the way out that the composition's own contract
 // held: the assembled string always closes on the text-end marker.
+//
+// `combined_text` is the caller's own `combine_text(ref_text, text)` result,
+// taken pre-joined rather than as separate `ref_text`/`text` parameters this
+// function would combine itself: every caller (Model::synthesize) already
+// needs that join's result for its own "is there any Linguistic Input at
+// all" guard before this call, and computing it twice bought nothing.
 //
 // `language_tag`: the core's resolved BCP-47 tag verbatim (en/zh/ja are the
 // ISO codes upstream expects; empty -> literal "None" inside style_text).
@@ -135,8 +141,7 @@ bool assemble_prompt_ids(const TextFrontend &   frontend,
                          bool                   denoise,
                          const std::string &    language_tag,
                          const std::string &    instruct,
-                         const std::string &    ref_text,
-                         const std::string &    text,
+                         const std::string &    combined_text,
                          std::vector<int32_t> & output);
 
 }  // namespace synth::omnivoice

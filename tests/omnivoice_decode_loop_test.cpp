@@ -249,6 +249,13 @@ int check_reference_run(synth::omnivoice::Model & model) {
     // Three reference frames shift the target region three positions further
     // into each prompt row; the per-step refill has to land on the target and
     // nowhere near the reference tokens or the row end.
+    //
+    // Like check_no_reference_run above, `request` leaves position_temperature
+    // at its default -1.0f, which resolves to this PACKAGE's own 5.0 (see the
+    // metadata comment there) -- so the loop draws random numbers here too.
+    // The fixed seed (default 0) still makes the grid reproducible; only the
+    // no-reference run states that reproducibility property explicitly, since
+    // this fixture exists to check reference-region placement, not sampling.
     synth::omnivoice::SynthesisRequest request = base_request(4);
     request.reference_tokens                   = { 0, 1, 2, 3, 2, 1 };  // codebook-major [2 x 3]
     synth::omnivoice::SynthesisOutput output;
@@ -267,6 +274,13 @@ int check_single_step_commits_everything(synth::omnivoice::Model & model) {
     // One step means the schedule's final-step rule -- commit the entire
     // remainder -- is the only rule that fires. If it did not, a mask would
     // survive and run_synthesis would refuse rather than return this grid.
+    //
+    // `request` also samples at this package's default position_temperature
+    // (5.0, see check_no_reference_run's comment above): with only one step,
+    // every position is a "nothing was rejected" commit, so the per-candidate
+    // position draw still runs (it is unconditional on keep count) but cannot
+    // change which candidates are kept -- only the argmax margins it feeds
+    // into the (unrequested, here) margin report could show it.
     synth::omnivoice::SynthesisRequest request = base_request(6);
     request.num_step                           = 1;
     synth::omnivoice::SynthesisOutput output;

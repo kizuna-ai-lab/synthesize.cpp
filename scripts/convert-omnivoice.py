@@ -254,9 +254,6 @@ def require_config(mapping: dict[str, Any], key: str, where: str) -> Any:
     return mapping[key]
 
 
-RESOLVE_MARKER = "/resolve/"
-
-
 def pinned_digest(manifest: dict[str, Any], pin: omnivoice_pinned_inputs.PinnedInput) -> str:
     """Find the manifest's pin for `pin` via its /resolve/<revision>/ locator.
 
@@ -269,8 +266,7 @@ def pinned_digest(manifest: dict[str, Any], pin: omnivoice_pinned_inputs.PinnedI
     matches = [
         artifact for artifact in manifest["source"]["artifacts"]
         if artifact["role"] == pin.role
-        and RESOLVE_MARKER in artifact["locator"]
-        and artifact["locator"].split(RESOLVE_MARKER, 1)[1].split("/", 1)[1] == pin.relative_path
+        and omnivoice_pinned_inputs.relative_path_from_locator(artifact["locator"]) == pin.relative_path
     ]
     if len(matches) != 1:
         raise ConverterError(

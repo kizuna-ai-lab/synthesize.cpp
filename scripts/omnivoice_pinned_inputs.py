@@ -47,3 +47,33 @@ PINNED_INPUTS: list[PinnedInput] = [
 def resolve_local(weights_dir: Path, pin: PinnedInput) -> Path:
     """Where `pin` lives under a materialised weights directory."""
     return weights_dir / pin.relative_path
+
+
+# A HuggingFace resolve URL names a file's path in the weights repository
+# after the revision segment: ".../resolve/<revision>/<relative_path>".
+# `convert-omnivoice.py` and `dump_reference_omnivoice_pytorch.py` both used
+# to define this marker and split on it themselves (Plan 3 close-out,
+# task-17 triage) -- one copy each, nothing checking the two agreed.
+RESOLVE_MARKER = "/resolve/"
+
+
+def relative_path_from_locator(locator: str) -> str | None:
+    """The weights-repository relative path a HuggingFace resolve `locator` names.
+
+    Drops everything up to and including the revision segment. Returns
+    `None` if `locator` carries no "/resolve/" marker at all (a
+    source-repository artifact, e.g. the Apache LICENSE, or anything else
+    that is not a weights-repository resolve URL), or if the marker is
+    present but nothing follows the revision segment -- a truncated locator
+    that names no file. Both callers treat `None` the same as "does not
+    match this pin": a truncated locator now surfaces as zero matches
+    through the same `ConverterError`/`SystemExit` path a wrong or missing
+    locator already takes, rather than as a raw `IndexError` from indexing
+    past a one-element `split("/", 1)` result.
+    """
+    if RESOLVE_MARKER not in locator:
+        return None
+    remainder = locator.split(RESOLVE_MARKER, 1)[1]
+    if "/" not in remainder:
+        return None
+    return remainder.split("/", 1)[1]

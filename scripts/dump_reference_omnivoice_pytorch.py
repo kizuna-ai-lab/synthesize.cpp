@@ -566,10 +566,13 @@ class Pcm16kProbe:
     ``torchaudio.functional.resample`` directly is fragile (it is called by
     fully-qualified reference from inside the module, not looked up on an
     instance), so this probe instead pre-hooks HuBERT's own forward and strips
-    the known 160-sample pad back off both ends. The strip is proven rather
-    than assumed: padded_length must equal stripped_length + 320, or a
-    SystemExit stops the dump instead of silently writing a mis-aligned
-    artifact.
+    the known 160-sample pad back off both ends. The length check below is a
+    self-consistency affirmation, not an independent proof: `stripped_length`
+    is `padded_length - 2 * PAD` by construction of the slice bounds, so the
+    two can never disagree; what it actually guards is arithmetic sanity if
+    the slicing above is ever edited, not a live risk from anything this
+    dump encounters today. A `SystemExit` on disagreement stops the dump
+    rather than silently writing a mis-aligned artifact.
     """
 
     PAD = 160
@@ -675,9 +678,6 @@ class FusedLatentProbe:
 # ---------------------------------------------------------------------------
 
 
-RESOLVE_MARKER = "/resolve/"
-
-
 def verify_pinned_inputs(manifest: dict, weights_dir: pathlib.Path) -> list[str]:
     """sha256-verify every weights-repository input the manifest pins.
 
@@ -699,9 +699,7 @@ def verify_pinned_inputs(manifest: dict, weights_dir: pathlib.Path) -> list[str]
         matches = [
             artifact for artifact in manifest["source"]["artifacts"]
             if artifact["role"] == pin.role
-            and RESOLVE_MARKER in artifact["locator"]
-            and artifact["locator"].split(RESOLVE_MARKER, 1)[1].split("/", 1)[1]
-            == pin.relative_path
+            and omnivoice_pinned_inputs.relative_path_from_locator(artifact["locator"]) == pin.relative_path
         ]
         if len(matches) != 1:
             raise SystemExit(

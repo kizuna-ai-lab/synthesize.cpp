@@ -270,8 +270,22 @@ synth_status_t choose_token_sampled(const float *        cond,
     }
     // `guided` has thread-local storage duration, so it needs no capture --
     // it is already reachable from the lambda body the way a global would be.
+    // Mirrors commits_before's NaN guard below for the same reason: a NaN
+    // entry compares false against everything, including itself, so without
+    // this the plain branch would make the order non-transitive across a
+    // NaN guided value -- undefined behavior for std::partial_sort, not just
+    // a wrong order. Route NaN values after every real one; two NaN-valued
+    // classes fall through to the class-id tie-break as if they were equal.
     const auto ranks_before = [](uint32_t left, uint32_t right) {
-        return guided[left] != guided[right] ? guided[left] > guided[right] : left < right;
+        const bool left_nan  = guided[left] != guided[left];
+        const bool right_nan = guided[right] != guided[right];
+        if (left_nan != right_nan) {
+            return right_nan;
+        }
+        if (!left_nan && guided[left] != guided[right]) {
+            return guided[left] > guided[right];
+        }
+        return left < right;
     };
     std::partial_sort(order.begin(), order.begin() + keep, order.end(), ranks_before);
     // The survivors, now in ascending class-id order for the draw: a

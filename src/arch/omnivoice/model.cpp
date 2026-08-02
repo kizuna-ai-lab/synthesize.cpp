@@ -710,17 +710,20 @@ synth_status_t Model::synthesize(const PublicSynthesisParams & params, Synthesis
     // Empty or whitespace-only text is refused before any estimate is made:
     // upstream never runs a synthesis for a request that names no Linguistic
     // Input, and DurationEstimator's own floor (`max(1, int(...))`) would
-    // otherwise hand back a one-frame canvas instead of a refusal. Reusing
-    // combine_text's own stripping keeps this check's idea of "empty" the
-    // exact one assemble_prompt_ids is about to apply, rather than a second,
-    // possibly divergent, whitespace classifier.
-    if (combine_text(ref_text, params.text).empty()) {
+    // otherwise hand back a one-frame canvas instead of a refusal. Computed
+    // once, here, and handed to assemble_prompt_ids below rather than
+    // recomputed inside it: reusing combine_text's own stripping keeps this
+    // check's idea of "empty" the exact one assemble_prompt_ids applies,
+    // rather than a second, possibly divergent, whitespace classifier, and
+    // a single join is all either call needs.
+    const std::string combined_text = combine_text(ref_text, params.text);
+    if (combined_text.empty()) {
         return SYNTH_ERR_INVALID_ARG;
     }
 
     std::vector<int32_t> prompt_ids;
-    if (!assemble_prompt_ids(*impl.frontend, hparams.tokens, denoise, params.language_tag, instruct, ref_text,
-                             params.text, prompt_ids)) {
+    if (!assemble_prompt_ids(*impl.frontend, hparams.tokens, denoise, params.language_tag, instruct, combined_text,
+                             prompt_ids)) {
         // The only way assemble_prompt_ids reports false: an input byte the
         // package's frontend has no id for.
         return SYNTH_ERR_INVALID_ARG;

@@ -53,7 +53,21 @@ synth_status_t create_clone_prompt(Model &                              model,
         return SYNTH_ERR_INVALID_ARG;
     }
 
-    const std::string                         canonical_transcript = add_punctuation(transcript);
+    const std::string canonical_transcript = add_punctuation(transcript);
+    // Reject a pathological transcript HERE, at creation, rather than let it
+    // round-trip through serialize_clone_prompt only to have the loader's
+    // own prescan whitelist (kPrescanMaxStringLength below, tied to this
+    // same kMaxClonePromptTranscriptLength constant so the two can never
+    // drift) reject our OWN writer's output later with a bare INVALID_ARG
+    // (reviewer FINDING 2). A Voice Reference clip is capped at this
+    // package's own declared max_reference_frames_per_clip (20 s of audio
+    // for the shipped package), so no real transcript ever approaches this
+    // bound.
+    if (canonical_transcript.size() > kMaxClonePromptTranscriptLength) {
+        out_diagnostic_code    = "voice_profile.transcript_too_long";
+        out_diagnostic_message = "the reference transcript exceeds this package's maximum supported length";
+        return SYNTH_ERR_INVALID_ARG;
+    }
     std::vector<int32_t>                      transcript_ids;
     const std::shared_ptr<const TextFrontend> frontend = model.text_frontend();
     if (frontend == nullptr || frontend->prepare(SYNTH_INPUT_TEXT_UTF8, canonical_transcript.data(),
@@ -767,7 +781,11 @@ constexpr int64_t kPrescanKvCountDesign = 9;
 constexpr int64_t kPrescanKvCountClone  = 11;
 
 constexpr uint64_t kPrescanMaxKeyLength    = 256;
-constexpr uint64_t kPrescanMaxStringLength = 1u << 20;  // 1 MiB: far past any reasonable transcript/instruct text
+// Tied to kMaxClonePromptTranscriptLength (profile.h) rather than a second,
+// independent literal: create_clone_prompt's own creation-time cap and this
+// load-time ceiling must never drift apart, or a transcript creation accepts
+// could stop round-tripping through this exact loader (reviewer FINDING 2).
+constexpr uint64_t kPrescanMaxStringLength = kMaxClonePromptTranscriptLength;
 
 bool prescan_has_remaining(size_t offset, size_t size, size_t need) {
     return offset <= size && need <= size - offset;
@@ -1002,6 +1020,116 @@ bool prescan_buffer(const uint8_t * data, size_t size) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Loader hardening parity (reviewer FINDING 3): load_profile_from_memory
+// already revalidates `ref_rms > 0.0f`, citing creation parity, but until now
+// accepted an empty `transcript_text` and a `language_tag` creation itself
+// would refuse -- a deserialized ClonePrompt could reach a state
+// create_clone_prompt/voice-profile.cpp's create_omnivoice_profile_from_reference
+// can never produce. This is NOT redundant with creation: `data`/`data_size`
+// here are untrusted bytes that may come from anywhere (a file, a network
+// peer, a different synthesize.cpp build) and never actually passed through
+// either function's own checks, so every invariant creation enforces has to
+// be re-checked here too, not merely assumed from the fact that this file's
+// OWN writer would never produce it.
+//
+// The shape/declared-language check below is a THIRD small copy of the
+// logic voice-profile.cpp's own header comment already tracks two of
+// (synthesis-request.cpp's original, and voice-profile.cpp's own copy for
+// the Reference Audio/Description Text language step) -- that comment's own
+// count is deliberately left alone rather than bumped, because this copy
+// validates against a DIFFERENT shape: `omnivoice::ModelInfo::language_tags`,
+// this family's own plain per-package tag list (no separate regional-
+// fallback flag), not the core `synth::LanguageCapability` list the other
+// two copies share. A single hoisted helper would still need an adapter
+// between the two shapes either way, so duplicating the (small, stable)
+// shape-check logic here is not the same tradeoff that comment is about.
+bool ascii_alpha(char value) {
+    const unsigned char character = static_cast<unsigned char>(value);
+    return std::isalpha(character) != 0 && character < 128;
+}
+
+bool ascii_digit(char value) {
+    const unsigned char character = static_cast<unsigned char>(value);
+    return std::isdigit(character) != 0 && character < 128;
+}
+
+bool ascii_alnum(char value) {
+    return ascii_alpha(value) || ascii_digit(value);
+}
+
+// Verbatim copy of voice-profile.cpp's own valid_bcp47_shape.
+bool valid_bcp47_shape(const char * value, size_t size) {
+    if (value == nullptr || size < 2 || size > 63) {
+        return false;
+    }
+    size_t subtag_start = 0;
+    size_t subtag_count = 0;
+    for (size_t index = 0; index <= size; ++index) {
+        if (index != size && value[index] != '-') {
+            if (!ascii_alnum(value[index])) {
+                return false;
+            }
+            continue;
+        }
+        const size_t subtag_size = index - subtag_start;
+        if (subtag_size == 0 || subtag_size > 8) {
+            return false;
+        }
+        if (subtag_count == 0) {
+            if (subtag_size < 2) {
+                return false;
+            }
+            for (size_t item = subtag_start; item < index; ++item) {
+                if (!ascii_alpha(value[item])) {
+                    return false;
+                }
+            }
+        }
+        ++subtag_count;
+        subtag_start = index + 1;
+    }
+    return true;
+}
+
+bool equals_ascii_case(const char * value, size_t size, const std::string & expected) {
+    if (expected.size() != size) {
+        return false;
+    }
+    for (size_t index = 0; index < size; ++index) {
+        const unsigned char left  = static_cast<unsigned char>(value[index]);
+        const unsigned char right = static_cast<unsigned char>(expected[index]);
+        if (std::tolower(left) != std::tolower(right)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Exact match, then the primary subtag -- synthesize.cpp's own `shared_info`
+// always sets SYNTH_LANGUAGE_REGIONAL_FALLBACK for every omnivoice language
+// tag (there is no per-tag override at this family), so unlike
+// voice-profile.cpp's own declared_language this never needs to consult a
+// per-entry flag.
+bool declared_language_tag(const std::vector<std::string> & tags, const char * value, size_t size) {
+    for (const std::string & tag : tags) {
+        if (equals_ascii_case(value, size, tag)) {
+            return true;
+        }
+    }
+    const char * separator = static_cast<const char *>(std::memchr(value, '-', size));
+    if (separator == nullptr) {
+        return false;
+    }
+    const size_t primary = static_cast<size_t>(separator - value);
+    for (const std::string & tag : tags) {
+        if (equals_ascii_case(value, primary, tag)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 synth_status_t serialize_clone_prompt(const ClonePrompt & prompt,
@@ -1202,6 +1330,34 @@ synth_status_t load_profile_from_memory(Model &         model,
         !meta.f32("synthesize.voice_profile.ref_rms", ref_rms) ||
         !meta.string("synthesize.voice_profile.language_tag", language_tag)) {
         return SYNTH_ERR_INVALID_ARG;
+    }
+    // Loader validation is not redundant with creation just because the
+    // shapes match: `data`/`data_size` are untrusted bytes that may come
+    // from anywhere and never actually passed through
+    // create_omnivoice_profile_from_reference/create_clone_prompt's own
+    // checks, so every invariant creation enforces has to be re-checked
+    // here too (reviewer FINDING 3). Mirrors voice-profile.cpp's own Step 2
+    // ("transcript required, non-empty"): add_punctuation() only ever
+    // extends non-empty input, so an empty transcript_text here could not
+    // have come from a ClonePrompt this project's own create_clone_prompt
+    // ever built.
+    if (transcript_text.empty()) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    // Mirrors voice-profile.cpp's own Step 3 (language optional, validated
+    // when present): BCP-47 shape first, then declared-language matching
+    // against THIS Model's own declared tags -- same statuses
+    // voice-profile.cpp's create_omnivoice_profile_from_reference itself
+    // uses for the equivalent inputs.
+    if (!language_tag.empty()) {
+        if (!valid_bcp47_shape(language_tag.c_str(), language_tag.size())) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        ModelInfo info;
+        if (model.get_info(info) != SYNTH_OK ||
+            !declared_language_tag(info.language_tags, language_tag.c_str(), language_tag.size())) {
+            return SYNTH_ERR_UNSUPPORTED_LANGUAGE;
+        }
     }
     if (!(ref_rms > 0.0f)) {
         // ClonePrompt::ref_rms's own contract (profile.h): "always strictly

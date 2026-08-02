@@ -16,6 +16,7 @@
 // see byte-identical input.
 
 #include "arch/omnivoice/omnivoice.h"
+#include "arch/omnivoice/profile.h"
 #include "omnivoice_synthetic_package.h"
 #include "synthesize.h"
 #include "test-assert.h"
@@ -184,6 +185,34 @@ synth_voice_reference_params_t make_params(const synth_voice_reference_t * refer
     return params;
 }
 
+// Drives synth_voice_profile_create_from_reference with an explicit
+// (possibly out-of-contract) sample_rate/channel_count and transcript, and
+// frees the resulting profile handle itself -- every caller below only cares
+// about the returned status, and optionally the diagnostic emitted alongside
+// it. Shared by the RFE-vs-format-check ordering arms (reviewer FINDING 1)
+// and the transcript length cap arm (reviewer FINDING 2).
+synth_status_t create_reference_profile_status(synth_model_t *            model,
+                                               const std::vector<float> & pcm,
+                                               uint32_t                   sample_rate,
+                                               uint32_t                   channel_count,
+                                               const char *               transcript,
+                                               const char *               language_tag,
+                                               SeenDiagnostic *           diagnostic = nullptr) {
+    synth_voice_reference_t reference = make_reference(pcm, sample_rate, transcript, language_tag);
+    reference.channel_count           = channel_count;
+    synth_diagnostic_sink_t sink{};
+    if (diagnostic != nullptr) {
+        sink = make_sink(*diagnostic);
+    }
+    const synth_voice_reference_params_t params  = make_params(&reference, 1, diagnostic != nullptr ? &sink : nullptr);
+    synth_voice_profile_t *              profile = nullptr;
+    const synth_status_t                 status  = synth_voice_profile_create_from_reference(model, &params, &profile);
+    if (profile != nullptr) {
+        synth_voice_profile_free(profile);
+    }
+    return status;
+}
+
 // A sink `synth_synthesize` must never write through: used only by the
 // cross-model check below, whose whole point is that the call is refused
 // before any synthesis work happens.
@@ -335,6 +364,61 @@ int main(int argc, char ** argv) {
         SYNTH_TEST_CHECK(profile == nullptr);
         SYNTH_TEST_CHECK(diagnostic.seen);
         SYNTH_TEST_CHECK(diagnostic.code == "voice_profile.reference_silent");
+    }
+
+    // --- Reviewer FINDING 1: an out-of-contract sample rate or channel
+    // count is refused with SYNTH_ERR_UNSUPPORTED_INPUT BEFORE the RFE
+    // precheck ever runs, regardless of clip length. The reviewer's own
+    // probe: rate 0 always produced "reference_too_short" (INVALID_ARG);
+    // rate 4000 produced THREE different statuses depending on clip length,
+    // because reference_frame_equivalent() happily computed something
+    // plausible-looking from the invalid rate before the format check ever
+    // ran. Every arm below pairs a bad rate/channel-count with a clip at
+    // BOTH this package's minimum and maximum declared length, so a length-
+    // dependent regression cannot hide behind only one of the two -- these
+    // are exactly the reviewer's own probe values, the spec for this fix.
+    {
+        const std::vector<float> clip_min(capabilities.min_reference_frames_per_clip, 0.0f);
+        const std::vector<float> clip_max(capabilities.max_reference_frames_per_clip, 0.0f);
+
+        // rate 0.
+        SYNTH_TEST_CHECK(create_reference_profile_status(model, clip_min, 0, 1, kPinnedTranscript, "en") ==
+                         SYNTH_ERR_UNSUPPORTED_INPUT);
+        SYNTH_TEST_CHECK(create_reference_profile_status(model, clip_max, 0, 1, kPinnedTranscript, "en") ==
+                         SYNTH_ERR_UNSUPPORTED_INPUT);
+        // rate 7999: one below SYNTH_REFERENCE_SAMPLE_RATE_MIN.
+        SYNTH_TEST_CHECK(create_reference_profile_status(model, clip_min, 7999, 1, kPinnedTranscript, "en") ==
+                         SYNTH_ERR_UNSUPPORTED_INPUT);
+        SYNTH_TEST_CHECK(create_reference_profile_status(model, clip_max, 7999, 1, kPinnedTranscript, "en") ==
+                         SYNTH_ERR_UNSUPPORTED_INPUT);
+        // rate 192001: one above SYNTH_REFERENCE_SAMPLE_RATE_MAX.
+        SYNTH_TEST_CHECK(create_reference_profile_status(model, clip_min, 192001, 1, kPinnedTranscript, "en") ==
+                         SYNTH_ERR_UNSUPPORTED_INPUT);
+        SYNTH_TEST_CHECK(create_reference_profile_status(model, clip_max, 192001, 1, kPinnedTranscript, "en") ==
+                         SYNTH_ERR_UNSUPPORTED_INPUT);
+        // 3 channels: one above SYNTH_REFERENCE_CHANNELS_MAX, at this
+        // package's own valid target sample rate.
+        SYNTH_TEST_CHECK(create_reference_profile_status(model, clip_min, sample_rate, 3, kPinnedTranscript, "en") ==
+                         SYNTH_ERR_UNSUPPORTED_INPUT);
+        SYNTH_TEST_CHECK(create_reference_profile_status(model, clip_max, sample_rate, 3, kPinnedTranscript, "en") ==
+                         SYNTH_ERR_UNSUPPORTED_INPUT);
+    }
+
+    // --- Reviewer FINDING 2: a transcript over this family's transcript
+    // length cap (kMaxClonePromptTranscriptLength, arch/omnivoice/profile.h)
+    // is refused at CREATION with a named diagnostic, rather than silently
+    // accepted, serialized, and only THEN rejected by our own loader's
+    // prescan whitelist with a bare INVALID_ARG. Exactly one byte over the
+    // cap; the pinned reference clip (already exercised above) is reused
+    // since only the transcript is under test here.
+    {
+        std::string over_cap(size_t(synth::omnivoice::kMaxClonePromptTranscriptLength) + 1, 'a');
+        over_cap.back() = '.';  // already end-punctuation: add_punctuation() will not extend this further
+        SeenDiagnostic diagnostic;
+        SYNTH_TEST_CHECK(create_reference_profile_status(model, pcm, sample_rate, 1, over_cap.c_str(), "en",
+                                                         &diagnostic) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(diagnostic.seen);
+        SYNTH_TEST_CHECK(diagnostic.code == "voice_profile.transcript_too_long");
     }
 
     // --- The real clip, real transcript: profile creation succeeds through
@@ -529,6 +613,39 @@ int main(int argc, char ** argv) {
 
         synth_byte_buffer_free(buffer_a);
         synth_byte_buffer_free(buffer_b);
+        synth_voice_profile_free(original);
+        synth_voice_profile_free(reloaded);
+    }
+
+    // --- Reviewer FINDING 2, the cheap-and-valuable complement to the
+    // "one byte over the cap is refused at creation" arm above: a transcript
+    // AT the cap (not over it) round-trips through create -> serialize ->
+    // load without ever hitting the loader's own prescan whitelist --
+    // exactly the boundary kPrescanMaxStringLength and
+    // kMaxClonePromptTranscriptLength are tied together to keep passable.
+    {
+        std::string at_cap(size_t(synth::omnivoice::kMaxClonePromptTranscriptLength) - 1, 'a');
+        at_cap += '.';  // canonical_transcript.size() == kMaxClonePromptTranscriptLength exactly
+        const synth_voice_reference_t        reference = make_reference(pcm, sample_rate, at_cap.c_str(), "en");
+        const synth_voice_reference_params_t params    = make_params(&reference, 1, nullptr);
+        synth_voice_profile_t *              original  = nullptr;
+        SYNTH_TEST_CHECK(synth_voice_profile_create_from_reference(model, &params, &original) == SYNTH_OK);
+
+        synth_voice_profile_serialize_params_t serialize_params;
+        synth_voice_profile_serialize_params_init(&serialize_params, sizeof(serialize_params));
+        synth_byte_buffer_t * buffer = nullptr;
+        SYNTH_TEST_CHECK(synth_voice_profile_serialize(original, &serialize_params, &buffer) == SYNTH_OK);
+
+        synth_voice_profile_load_params_t load_params;
+        synth_voice_profile_load_params_init(&load_params, sizeof(load_params));
+        load_params.data                 = buffer->data;
+        load_params.data_size            = buffer->data_size;
+        synth_voice_profile_t * reloaded = nullptr;
+        SYNTH_TEST_CHECK(synth_voice_profile_load_from_memory(model, &load_params, &reloaded) == SYNTH_OK);
+        SYNTH_TEST_CHECK(reloaded != nullptr);
+        SYNTH_TEST_CHECK(reloaded->family_tag == synth::ProfileFamilyTag::OmnivoiceClone);
+
+        synth_byte_buffer_free(buffer);
         synth_voice_profile_free(original);
         synth_voice_profile_free(reloaded);
     }

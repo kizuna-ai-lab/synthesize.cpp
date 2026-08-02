@@ -487,6 +487,63 @@ int main(int argc, char ** argv) {
     }
 
     // =========================================================================
+    // Loader hardening parity (reviewer FINDING 3): load_profile_from_memory
+    // already revalidated ref_rms > 0 citing creation parity, but until now
+    // accepted an empty transcript_text and a language_tag creation itself
+    // refuses -- a deserialized ClonePrompt could reach a state
+    // create_clone_prompt/voice-profile.cpp's own
+    // create_omnivoice_profile_from_reference can never produce. Every arm
+    // below drives the PUBLIC synth_voice_profile_load_from_memory seam,
+    // same as the tamper matrix above.
+    // =========================================================================
+
+    // --- Empty transcript_text -> INVALID_ARG, mirroring voice-profile.cpp's
+    // own "transcript required, non-empty" check.
+    {
+        std::shared_ptr<ClonePrompt> prompt  = make_clone_prompt(2, 1, "");
+        const synth_voice_profile    profile = make_profile(model, prompt, synth::ProfileFamilyTag::OmnivoiceClone);
+        std::vector<uint8_t>         bytes;
+        SYNTH_TEST_CHECK(serialize_profile(profile, bytes) == SYNTH_OK);
+        synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+    }
+
+    // --- Malformed language_tag shape ("e", one character) -> INVALID_ARG,
+    // mirroring voice-profile.cpp's own valid_bcp47_shape check.
+    {
+        auto prompt = std::make_shared<ClonePrompt>();
+        prompt->reference_tokens.assign(2 * 8, 1);
+        prompt->transcript_text           = kTranscript;
+        prompt->ref_rms                   = 0.5f;
+        prompt->language_tag              = "e";
+        const synth_voice_profile profile = make_profile(model, prompt, synth::ProfileFamilyTag::OmnivoiceClone);
+        std::vector<uint8_t>      bytes;
+        SYNTH_TEST_CHECK(serialize_profile(profile, bytes) == SYNTH_OK);
+        synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+    }
+
+    // --- Well-formed but undeclared language_tag ("fr") -> UNSUPPORTED_LANGUAGE,
+    // mirroring voice-profile.cpp's own declared-language check. The
+    // synthetic package declares en/zh/ja only
+    // (omnivoice_synthetic_package.h's own languages.tags array).
+    {
+        auto prompt = std::make_shared<ClonePrompt>();
+        prompt->reference_tokens.assign(2 * 8, 1);
+        prompt->transcript_text           = kTranscript;
+        prompt->ref_rms                   = 0.5f;
+        prompt->language_tag              = "fr";
+        const synth_voice_profile profile = make_profile(model, prompt, synth::ProfileFamilyTag::OmnivoiceClone);
+        std::vector<uint8_t>      bytes;
+        SYNTH_TEST_CHECK(serialize_profile(profile, bytes) == SYNTH_OK);
+        synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_UNSUPPORTED_LANGUAGE);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+    }
+
+    // =========================================================================
     // Untrusted-buffer pre-scan (fix round 1, reviewer FINDING 1): a raw
     // GGUF buffer that declares GGML's own reserved key "general.alignment"
     // with the wrong type used to abort the WHOLE PROCESS inside

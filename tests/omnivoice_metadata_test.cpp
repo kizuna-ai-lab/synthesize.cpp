@@ -283,6 +283,20 @@ int run_capability_rejections() {
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.capabilities.input_flags", 0); },
                         "a text-to-speech package accepts text") == 0);
+    // Reviewer FINDING 4: this family declares text input ONLY --
+    // src/synthesize.cpp's public dispatch relies on input_kind being
+    // "guaranteed SYNTH_INPUT_TEXT_UTF8" for every omnivoice request, which
+    // is only true if the loader refuses any OTHER input_flags bit, not
+    // merely requires the TEXT bit to be present. Before this fix, a package
+    // declaring TEXT_UTF8 | TOKEN_IDS loaded successfully, which would have
+    // let a request whose input_kind is SYNTH_INPUT_TOKEN_IDS reach that
+    // dispatch and have its int32 token array read as raw UTF-8 text bytes.
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_u32(g, "synthesize.capabilities.input_flags",
+                                              SYNTH_INPUT_SUPPORT_TEXT_UTF8 | SYNTH_INPUT_SUPPORT_TOKEN_IDS);
+                         },
+                         "this family accepts text input only, no other input_flags bit") == 0);
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u64(g, "synthesize.capabilities.max_input_tokens", 0); },
                         "a zero input limit accepts nothing") == 0);

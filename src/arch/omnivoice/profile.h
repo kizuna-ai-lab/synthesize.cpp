@@ -13,6 +13,24 @@ namespace synth::omnivoice {
 
 class Model;
 
+// The maximum length, in bytes, of a ClonePrompt's canonical
+// `transcript_text` this family will ever CREATE or ACCEPT. Tied by name to
+// profile.cpp's own `kPrescanMaxStringLength` -- the Serialized Profile
+// loader's positive-validation prescan whitelist refuses any GGUF string
+// value longer than that -- so the two can never drift apart: a transcript
+// create_clone_prompt accepts here is guaranteed to round-trip through
+// serialize_clone_prompt/load_profile_from_memory without ever being
+// rejected by our OWN writer's output (reviewer FINDING 2: before this cap
+// existed, a >1 MiB transcript sailed through creation and serialization,
+// then hit the prescan's string-length ceiling on load with a bare
+// INVALID_ARG -- our own writer's output, rejected by our own reader). A
+// Voice Reference clip is capped at this family's own declared
+// `max_reference_frames_per_clip` (20 s of audio for the shipped package),
+// so no real transcript approaches this bound; it exists to give a
+// deterministic, named refusal to a pathological caller instead of a
+// silently-broken round trip.
+constexpr uint64_t kMaxClonePromptTranscriptLength = 1u << 20;  // 1 MiB
+
 // The prepared clone prompt a Reference Audio Voice Profile carries once
 // voice-profile.cpp's create_from_reference handler has validated its
 // inputs, normalized the caller's clip, and run the whole encode chain

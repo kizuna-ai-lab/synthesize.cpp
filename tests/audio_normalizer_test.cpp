@@ -106,6 +106,30 @@ int main() {
         SYNTH_TEST_CHECK(std::fabs(output_rms - input_rms) <= 0.05 * input_rms);
     }
 
+    // --- validate_reference_format: the format half of normalize_reference's
+    // own error mapping, pulled out as a separable helper (reviewer FINDING
+    // 1) so a caller -- voice-profile.cpp's
+    // create_omnivoice_profile_from_reference -- can apply it BEFORE
+    // deriving a Reference Frame Equivalent from a caller-supplied sample
+    // rate, rather than let an out-of-contract rate get shadowed by whatever
+    // the RFE math computes from it. Exercised directly here, against the
+    // named contract constants (include/synthesize.h), independent of
+    // normalize_reference's own end-to-end behavior below.
+    {
+        SYNTH_TEST_CHECK(synth::validate_reference_format(0, 1) == SYNTH_ERR_UNSUPPORTED_INPUT);
+        SYNTH_TEST_CHECK(synth::validate_reference_format(SYNTH_REFERENCE_SAMPLE_RATE_MIN - 1, 1) ==
+                         SYNTH_ERR_UNSUPPORTED_INPUT);
+        SYNTH_TEST_CHECK(synth::validate_reference_format(SYNTH_REFERENCE_SAMPLE_RATE_MAX + 1, 1) ==
+                         SYNTH_ERR_UNSUPPORTED_INPUT);
+        SYNTH_TEST_CHECK(synth::validate_reference_format(24000, 0) == SYNTH_ERR_UNSUPPORTED_INPUT);
+        SYNTH_TEST_CHECK(synth::validate_reference_format(24000, SYNTH_REFERENCE_CHANNELS_MAX + 1) ==
+                         SYNTH_ERR_UNSUPPORTED_INPUT);
+        // Boundary values are accepted (off-by-one sanity on the range check).
+        SYNTH_TEST_CHECK(synth::validate_reference_format(SYNTH_REFERENCE_SAMPLE_RATE_MIN, 1) == SYNTH_OK);
+        SYNTH_TEST_CHECK(synth::validate_reference_format(SYNTH_REFERENCE_SAMPLE_RATE_MAX,
+                                                          SYNTH_REFERENCE_CHANNELS_MAX) == SYNTH_OK);
+    }
+
     // --- Error mapping -------------------------------------------------------
     {
         const std::vector<float>   valid = { 0.1f, -0.1f, 0.2f, -0.2f };

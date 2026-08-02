@@ -101,8 +101,17 @@ bool read_capabilities(const GgufMetadata & meta, HParams & hparams) {
         std::fprintf(stderr, "omnivoice: package declares a zero input or output limit\n");
         return false;
     }
-    if ((hparams.input_flags & SYNTH_INPUT_SUPPORT_TEXT_UTF8) == 0) {
-        std::fprintf(stderr, "omnivoice: package accepts no text input\n");
+    // Exact match, not merely "the TEXT bit is present": this family declares
+    // text input ONLY (src/synthesize.cpp's public dispatch comment relies on
+    // input_kind being "guaranteed SYNTH_INPUT_TEXT_UTF8" for every omnivoice
+    // request), so a package additionally declaring, say,
+    // SYNTH_INPUT_SUPPORT_TOKEN_IDS would let a request whose input_kind is
+    // SYNTH_INPUT_TOKEN_IDS reach that dispatch and have its int32 token
+    // array read as raw UTF-8 text bytes (reviewer FINDING 4). Refused here,
+    // at load, rather than trusted at every synthesis call site downstream.
+    if (hparams.input_flags != SYNTH_INPUT_SUPPORT_TEXT_UTF8) {
+        std::fprintf(stderr, "omnivoice: package declares input_flags %u; this family accepts text input only\n",
+                     hparams.input_flags);
         return false;
     }
     // The speaking rate divides the duration estimate, and the neutral rate has

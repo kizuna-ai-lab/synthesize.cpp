@@ -863,8 +863,14 @@ synth_status_t synth_synthesize(synth_context_t *          context,
         try {
             synth::omnivoice::PublicSynthesisParams family_request;
             // input_kind is guaranteed SYNTH_INPUT_TEXT_UTF8 by this point:
-            // this family declares no other input_flags bit (see
-            // scripts/convert-omnivoice.py), and prepare_synthesis_request
+            // arch/omnivoice/weights.cpp's read_capabilities refuses to LOAD
+            // any package whose input_flags is not EXACTLY
+            // SYNTH_INPUT_SUPPORT_TEXT_UTF8 (reviewer FINDING 4 -- until that
+            // fix, this loader only checked the TEXT bit was PRESENT, so a
+            // package additionally declaring SYNTH_INPUT_SUPPORT_TOKEN_IDS
+            // would have reached this dispatch with an input_kind of
+            // SYNTH_INPUT_TOKEN_IDS and had its int32 token array read as
+            // raw UTF-8 text bytes below), and prepare_synthesis_request
             // above already refused any request kind the package does not
             // declare -- so the raw bytes behind `prepared.token_ids` (this
             // family's frontend has no prefix/suffix, so that generic

@@ -285,6 +285,23 @@ synth_status_t create_omnivoice_profile_from_reference(const synth_model_t *    
     if (samples == nullptr || frame_count == 0) {
         return SYNTH_ERR_INVALID_ARG;
     }
+    // Format precondition, checked BEFORE reference_frame_equivalent() below
+    // ever runs (reviewer FINDING 1): an out-of-contract sample
+    // rate or channel count must never be shadowed by whatever the RFE math
+    // derives from it. Before this check existed here, rate 0 always
+    // produced "reference_too_short" (INVALID_ARG) -- reference_frame_equivalent
+    // special-cases a zero rate to 0, which is always below
+    // min_frames_per_clip -- and rate 4000 produced three DIFFERENT statuses
+    // depending on clip length, because the RFE precheck happily computed
+    // something plausible-looking from the invalid rate before this ran.
+    // synth::validate_reference_format is the SAME check
+    // audio-normalizer.cpp's own normalize_reference below applies again,
+    // later, on the same inputs -- audio-normalizer.h is the authority on
+    // this range, not a second set of literals here.
+    const synth_status_t format_status = synth::validate_reference_format(sample_rate, channel_count);
+    if (format_status != SYNTH_OK) {
+        return format_status;
+    }
     const uint64_t rfe =
         synth::reference_frame_equivalent(frame_count, sample_rate, capabilities.reference_target_sample_rate);
     if (rfe > capabilities.max_frames_per_clip || rfe > capabilities.max_total_frames) {

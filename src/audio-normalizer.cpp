@@ -59,6 +59,14 @@ uint64_t reference_frame_equivalent(uint64_t input_frames, uint32_t input_rate, 
     return rounded / rate;
 }
 
+synth_status_t validate_reference_format(uint32_t input_rate, uint32_t input_channels) {
+    if (input_rate < SYNTH_REFERENCE_SAMPLE_RATE_MIN || input_rate > SYNTH_REFERENCE_SAMPLE_RATE_MAX ||
+        input_channels < 1 || input_channels > SYNTH_REFERENCE_CHANNELS_MAX) {
+        return SYNTH_ERR_UNSUPPORTED_INPUT;
+    }
+    return SYNTH_OK;
+}
+
 synth_status_t normalize_reference(const float *         pcm,
                                    uint64_t              frames,
                                    uint32_t              input_rate,
@@ -69,8 +77,9 @@ synth_status_t normalize_reference(const float *         pcm,
     if (pcm == nullptr || frames == 0) {
         return SYNTH_ERR_INVALID_ARG;
     }
-    if (input_rate < 8000 || input_rate > 192000 || input_channels < 1 || input_channels > 2) {
-        return SYNTH_ERR_UNSUPPORTED_INPUT;
+    const synth_status_t format_status = validate_reference_format(input_rate, input_channels);
+    if (format_status != SYNTH_OK) {
+        return format_status;
     }
     // A Loaded Model's own declared target format is not caller-supplied
     // input, so a malformed one is this module's own precondition failure

@@ -284,6 +284,14 @@ int main(int argc, char ** argv) {
     const double synthesis_seconds = now_seconds() - synthesis_started;
     if (status != SYNTH_OK) {
         fprintf(stderr, "synthesize -> %d\n", (int) status);
+        /* synth_synthesize_to_buffer can return a non-null *out_audio
+         * alongside a non-OK status (SYNTH_ERR_CANCELLED,
+         * SYNTH_ERR_OUTPUT_LIMIT) if samples were already collected when the
+         * error fired. Not reachable for OmniVoice today -- its cancellation
+         * and output-limit checks both fire before any audio is generated --
+         * but freeing unconditionally (a documented no-op on NULL) keeps this
+         * robust against a future OmniVoice change to synthesize mid-generation. */
+        synth_audio_buffer_free(audio);
         synth_context_free(context);
         synth_voice_profile_free(profile);
         free(reference_pcm);
@@ -291,7 +299,7 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    if (!write_pcm(out_path, audio->samples, audio->frame_count)) {
+    if (!write_pcm(out_path, audio->samples, audio->frame_count * audio->channel_count)) {
         fprintf(stderr, "cannot write %s\n", out_path);
         synth_audio_buffer_free(audio);
         synth_context_free(context);

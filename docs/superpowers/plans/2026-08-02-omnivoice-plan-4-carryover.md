@@ -151,12 +151,16 @@ rather than rediscover:
   Audio clip measures `ref_rms ≈ 0.1229`, above the 0.1 gate, and both
   committed clone goldens share it; no golden case this family is likely to
   add without deliberately sourcing a second, quieter reference clip will
-  ever exercise this branch. `tests/omnivoice_reference_encoder_test.cpp`'s
-  `check_quiet_boost_arithmetic` and `check_boost_boundaries` are the
-  coverage, and `docs/porting/families/omnivoice.md` records this
-  disposition — a future reviewer finding "no golden covers the quiet arm"
-  is rediscovering a closed question, not opening a new one, unless a
-  second reference clip is deliberately added.
+  ever exercise this branch. `tests/omnivoice_codec_test.cpp`'s
+  `check_reference_volume` is the coverage for this output-side
+  `apply_reference_volume` arm (not
+  `omnivoice_reference_encoder_test.cpp`'s `check_quiet_boost_arithmetic`/
+  `check_boost_boundaries`, which close the input-side
+  `clip_and_boost_reference` boost instead), and
+  `docs/porting/families/omnivoice.md` records this disposition — a future
+  reviewer finding "no golden covers the quiet arm" is rediscovering a
+  closed question, not opening a new one, unless a second reference clip is
+  deliberately added.
 - **Sampled-path margin screening is decided: not applicable, by design,
   not by oversight.** The greedy margin screen exists because greedy Golden
   cases claim oracle agreement at a resolution finer than this port's F32

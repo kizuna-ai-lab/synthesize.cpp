@@ -241,10 +241,11 @@ def fill_hubert(model, stream):
     missed = [
         name for name, parameter in model.named_parameters() if id(parameter) not in assigned
     ]
-    assert not missed, (
-        f"HubertModel parameters keeping their random initialization: {missed}; "
-        "the dump would not be reproducible"
-    )
+    if missed:
+        raise SystemExit(
+            f"HubertModel parameters keeping their random initialization: {missed}; "
+            "the dump would not be reproducible"
+        )
     with torch.no_grad():
         for parameter, scale, offset in assignments:
             parameter.copy_(stream.fill(parameter.numel(), scale, offset).view_as(parameter))
@@ -283,10 +284,11 @@ def fill_semantic_encoder(encoder, stream):
     missed = [
         name for name, parameter in encoder.named_parameters() if id(parameter) not in assigned
     ]
-    assert not missed, (
-        f"SemanticEncoder parameters keeping their random initialization: {missed}; "
-        "the dump would not be reproducible"
-    )
+    if missed:
+        raise SystemExit(
+            f"SemanticEncoder parameters keeping their random initialization: {missed}; "
+            "the dump would not be reproducible"
+        )
     with torch.no_grad():
         for parameter, scale, offset in assignments:
             parameter.copy_(stream.fill(parameter.numel(), scale, offset).view_as(parameter))
@@ -319,6 +321,7 @@ def main():
     final = encoded[0]  # [HIDDEN, T'']
 
     for name, tensor in (("mean", mean), ("downsampled", downsampled), ("final", final)):
+        assert tensor.numel() > 0, f"{name} is empty"
         assert torch.isfinite(tensor).all(), f"{name} is not finite"
 
     print(

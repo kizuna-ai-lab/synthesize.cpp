@@ -431,7 +431,8 @@ int check_assemble_prompt_ids() {
 
     std::vector<int32_t> actual;
     SYNTH_TEST_CHECK(synth::omnivoice::assemble_prompt_ids(*frontend, tokens, /*denoise=*/false, "en", "",
-                                                           synth::omnivoice::combine_text("", "Hi."), actual));
+                                                           synth::omnivoice::combine_text("", "Hi."),
+                                                           actual) == SYNTH_OK);
     SYNTH_TEST_CHECK(actual == expected);
 
     // Clone-shaped call: the denoise marker leads, and the combined
@@ -450,8 +451,8 @@ int check_assemble_prompt_ids() {
     clone_expected.insert(clone_expected.end(), piece.begin(), piece.end());
 
     std::vector<int32_t> clone_actual;
-    SYNTH_TEST_CHECK(
-        synth::omnivoice::assemble_prompt_ids(*frontend, tokens, /*denoise=*/true, "en", "", combined, clone_actual));
+    SYNTH_TEST_CHECK(synth::omnivoice::assemble_prompt_ids(*frontend, tokens, /*denoise=*/true, "en", "", combined,
+                                                           clone_actual) == SYNTH_OK);
     SYNTH_TEST_CHECK(clone_actual == clone_expected);
 
     // The denoise marker is the composed string's very first token: style_text
@@ -469,15 +470,19 @@ int check_assemble_prompt_ids() {
                                                              none_style) == SYNTH_OK);
     std::vector<int32_t> none_actual;
     SYNTH_TEST_CHECK(synth::omnivoice::assemble_prompt_ids(*frontend, tokens, /*denoise=*/false, "", "",
-                                                           synth::omnivoice::combine_text("", "Hi."), none_actual));
+                                                           synth::omnivoice::combine_text("", "Hi."),
+                                                           none_actual) == SYNTH_OK);
     SYNTH_TEST_CHECK(none_actual.size() >= none_style.size());
     SYNTH_TEST_CHECK(std::equal(none_style.begin(), none_style.end(), none_actual.begin()));
 
     // Tokenizer failure (an out-of-vocabulary byte in the text) is one way
-    // this function reports false.
+    // this function reports non-SYNTH_OK: the status is tokenize_wrapped_text's
+    // own, propagated verbatim -- the BPE frontend's prepare() returns
+    // SYNTH_ERR_INVALID_ARG for an unencodable span.
     std::vector<int32_t> rejected = { 999 };
-    SYNTH_TEST_CHECK(!synth::omnivoice::assemble_prompt_ids(
-        *frontend, tokens, false, "en", "", synth::omnivoice::combine_text("", "zzz not in vocab"), rejected));
+    SYNTH_TEST_CHECK(synth::omnivoice::assemble_prompt_ids(*frontend, tokens, false, "en", "",
+                                                           synth::omnivoice::combine_text("", "zzz not in vocab"),
+                                                           rejected) == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(rejected.empty());
 
     // The other way: a `tokens` whose text_end id disagrees with what the
@@ -494,8 +499,9 @@ int check_assemble_prompt_ids() {
     synth::omnivoice::SpecialTokens mismatched_tokens = tokens;
     mismatched_tokens.text_end                        = 999;
     std::vector<int32_t> mismatched                   = { 111, 222 };
-    SYNTH_TEST_CHECK(!synth::omnivoice::assemble_prompt_ids(*frontend, mismatched_tokens, false, "en", "",
-                                                            synth::omnivoice::combine_text("", "Hi."), mismatched));
+    SYNTH_TEST_CHECK(synth::omnivoice::assemble_prompt_ids(*frontend, mismatched_tokens, false, "en", "",
+                                                           synth::omnivoice::combine_text("", "Hi."),
+                                                           mismatched) == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(mismatched.empty());
     return 0;
 }

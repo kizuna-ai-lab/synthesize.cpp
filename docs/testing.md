@@ -161,7 +161,7 @@ blacklist of `ggml`'s own reserved-key asserts -- is recorded in
 standing evidence is a repeatable fuzz harness, not this test alone.
 
 OmniVoice's CLI and Python-wheel Adapters (`examples/cli/` and the API
-wheel) are registered the same way as VITS's, Kokoro's, and Qwen3-TTS's:
+wheel) are registered the same way as VITS's and Kokoro's:
 `synthesize-omnivoice-cli` (model-guarded, package-default Voice, no
 `--voice` flag) and the family's arm of `synthesize-python-api-wheel-test`
 (Plan 3, Task 7). Unlike Qwen3-TTS, whose CLI and wheel-smoke Adapter tests

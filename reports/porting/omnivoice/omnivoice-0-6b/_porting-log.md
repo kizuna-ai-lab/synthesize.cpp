@@ -1627,7 +1627,7 @@ Serialized Profile GGUF round-trip, and the CLI/Python-wheel Adapters. This
 entry is the evidence record; `docs/porting/families/omnivoice.md` carries
 the same facts as contract prose, and
 `docs/superpowers/plans/2026-08-02-omnivoice-plan-4-carryover.md` carries
-what remains open. Sixteen tasks landed as 21 commits total (base `0b794a0`
+what remains open. Seventeen tasks landed as 21 commits total (base `0b794a0`
 through `8e23f8c`); each subsection below cites the commits it reports on.
 
 ### Bookkeeping fixes carried in ahead of the family's own work (Tasks 1–2)

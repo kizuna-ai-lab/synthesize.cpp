@@ -1075,6 +1075,15 @@ sampled-seed cases, text "Sampling follows the seed."):**
   "en" unless the description contains CJK (mirror the unification rule);
   the preparation `seed` field is accepted and unused (deterministic
   preparation; recorded in the header comment).
+
+  **Amended 2026-08-03:** a null `description_language` resolves to a
+  **fixed** "en", never sniffed from the description's own text for CJK.
+  `docs/c-interface.md:568` forbids detecting a language from the text it
+  is meant to describe, and the shipped `src/voice-profile.cpp` implements
+  exactly that fixed default; there is no CJK-sniffing branch. This
+  amendment supersedes the "unless the description contains CJK (mirror the
+  unification rule)" clause above, which described a looser earlier brief
+  the shipped contract does not follow.
 - Synthesis: instruct flows into `assemble_prompt_ids`'s instruct slot;
   denoise stays false; volume = no-reference arm.
 

@@ -79,14 +79,22 @@ int check_dc96_fixture() {
     SYNTH_TEST_CHECK(actual.size() == expected.size());
     const float measured = max_abs_diff(actual, expected);
     std::cout << "dc96 max_abs = " << measured << '\n';
-    // Measured 0.0 after fix-round-1 (the scalar-promotion correction made
-    // the kernel construction bit-exact against torch's own kernel tensor,
-    // and this fixture's accumulation order happens to match too) -- was
-    // 1.19209e-07 before the fix. Asserted exactly rather than with a
-    // tolerance: a regression back to the wrong promotion model, or any
-    // other change that perturbs this fixture, should fail loudly rather
-    // than sneak under a nonzero bound.
-    SYNTH_TEST_CHECK(measured == 0.0f);
+    // Measured EXACTLY 0.0 on this host (glibc/x86-64) after fix-round-1 --
+    // the scalar-promotion correction made the kernel construction bit-exact
+    // against torch's own kernel tensor, and this fixture's accumulation
+    // order happens to match too. That bit-exactness is a real, worth-keeping
+    // result (was 1.19209e-07 before the fix) and is why this comment states
+    // it precisely rather than just widening the bound and moving on.
+    // Nonetheless the kernel is built at runtime from std::cos/std::sin
+    // (sinc_kernel, reference-encoder-host.cpp), whose final-ULP rounding is
+    // libm-dependent, not part of the float32-promotion-order contract this
+    // fixture actually guards -- so a different host's libm could legitimately
+    // move `measured` by a few ULP without that being a regression. Asserted
+    // against a tolerance a few ULP wide (1e-9f) rather than the measured-exact
+    // 0.0f: comfortably above what libm variation could plausibly produce here,
+    // comfortably below the 1.19209e-07 the real (promotion-order) regression
+    // this fixture exists to catch would reintroduce.
+    SYNTH_TEST_CHECK(measured <= 1e-9f);
     return 0;
 }
 
@@ -121,10 +129,15 @@ int check_impulse64_fixture() {
     SYNTH_TEST_CHECK(actual.size() == expected.size());
     const float measured = max_abs_diff(actual, expected);
     std::cout << "impulse64 max_abs = " << measured << '\n';
-    // Measured 0.0 after fix-round-1 (was 2.98023e-08 before the
-    // scalar-promotion correction) -- see the dc96 fixture above for why
-    // this is asserted exactly rather than with a tolerance.
-    SYNTH_TEST_CHECK(measured == 0.0f);
+    // Measured EXACTLY 0.0 on this host after fix-round-1 (was 2.98023e-08
+    // before the scalar-promotion correction) -- see the dc96 fixture above
+    // for why that measurement is worth recording precisely, and why this is
+    // asserted against a tolerance a few ULP wide (1e-9f) rather than the
+    // measured-exact 0.0f: std::cos/std::sin's final-ULP rounding is
+    // libm-dependent, comfortably below the 2.98023e-08 the real
+    // (promotion-order) regression this fixture exists to catch would
+    // reintroduce.
+    SYNTH_TEST_CHECK(measured <= 1e-9f);
     return 0;
 }
 

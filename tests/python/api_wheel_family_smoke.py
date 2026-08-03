@@ -118,7 +118,15 @@ def main():
             # unnamed-default-accepted proof for those families.
             if arguments.voice is not None:
                 try:
-                    context.synthesize_tokens(tokens, seed=7)
+                    # Through the dispatcher, not synthesize_tokens directly:
+                    # `tokens` is only non-None for a token-mode package (the
+                    # only kind that reaches this block today, since only a
+                    # token-mode package passes --voice), but a future
+                    # text-mode package that also names Voices via --voice
+                    # would otherwise call synthesize_tokens(None, ...) here
+                    # and fail with a TypeError instead of exercising the
+                    # no-default-Voice refusal this block means to check.
+                    synthesize(voice=None, seed=7)
                 except synthesize_cpp.SynthesizeError as error:
                     assert "unsupported voice" in str(error), error
                 else:

@@ -76,8 +76,16 @@ void sha256(const void * data, size_t size, uint8_t out_digest[32]) {
     uint32_t state[8];
     std::memcpy(state, kInitialHash, sizeof(state));
 
-    const auto * bytes  = static_cast<const uint8_t *>(data);
-    size_t       offset = 0;
+    const auto * bytes = static_cast<const uint8_t *>(data);
+    if (bytes == nullptr) {
+        // `bytes + offset` and the tail memcpy below are UB even at a
+        // zero-length offset when the base pointer is null. Every current
+        // caller passes a real buffer or std::string::data() (guaranteed
+        // non-null even for ""), so this is not reachable today -- it is
+        // defensive hardening for the mandatory UBSan gate.
+        size = 0;
+    }
+    size_t offset = 0;
     while (offset + 64 <= size) {
         process_block(state, bytes + offset);
         offset += 64;
@@ -90,7 +98,13 @@ void sha256(const void * data, size_t size, uint8_t out_digest[32]) {
     // either case.
     uint8_t      tail[128] = {};
     const size_t remaining = size - offset;
-    std::memcpy(tail, bytes + offset, remaining);
+    // `bytes` is null only when `size` was forced to 0 above, which makes
+    // `remaining` 0 too -- skip the copy rather than forming `bytes + offset`
+    // (pointer arithmetic on null) and calling memcpy with a null source,
+    // both UB even at a zero count.
+    if (remaining > 0) {
+        std::memcpy(tail, bytes + offset, remaining);
+    }
     tail[remaining]           = 0x80;
     const uint64_t bit_length = uint64_t(size) * 8;
     const size_t   total_len  = (remaining + 1 + 8 <= 64) ? 64 : 128;

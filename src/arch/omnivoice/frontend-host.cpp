@@ -669,21 +669,22 @@ uint64_t DurationEstimator::estimate_target_frames(const std::string & text,
 // assemble_prompt_ids
 // --------------------------------------------------------------------------
 
-bool assemble_prompt_ids(const TextFrontend &   frontend,
-                         const SpecialTokens &  tokens,
-                         bool                   denoise,
-                         const std::string &    language_tag,
-                         const std::string &    instruct,
-                         const std::string &    combined_text,
-                         std::vector<int32_t> & output) {
+synth_status_t assemble_prompt_ids(const TextFrontend &   frontend,
+                                   const SpecialTokens &  tokens,
+                                   bool                   denoise,
+                                   const std::string &    language_tag,
+                                   const std::string &    instruct,
+                                   const std::string &    combined_text,
+                                   std::vector<int32_t> & output) {
     std::string wrapped = style_text(denoise, language_tag, instruct);
     wrapped += "<|text_start|>";
     wrapped += combined_text;
     wrapped += "<|text_end|>";
 
-    if (tokenize_wrapped_text(frontend, wrapped, output) != SYNTH_OK) {
+    const synth_status_t status = tokenize_wrapped_text(frontend, wrapped, output);
+    if (status != SYNTH_OK) {
         output.clear();
-        return false;
+        return status;
     }
     // The composed string always closes on the text-end marker, and nothing
     // in `wrapped` follows it, so tokenize_wrapped_text -- which matches it
@@ -699,9 +700,9 @@ bool assemble_prompt_ids(const TextFrontend &   frontend,
     // prompt is worse than a synthesis refused before it starts.
     if (output.empty() || output.back() != int32_t(tokens.text_end)) {
         output.clear();
-        return false;
+        return SYNTH_ERR_INVALID_ARG;
     }
-    return true;
+    return SYNTH_OK;
 }
 
 }  // namespace synth::omnivoice

@@ -171,6 +171,12 @@ void put_kv_u32(std::vector<uint8_t> & out, const std::string & key, uint32_t va
     put<uint32_t>(out, value);
 }
 
+void put_kv_f32(std::vector<uint8_t> & out, const std::string & key, float value) {
+    put_gguf_string(out, key);
+    put<int32_t>(out, int32_t(GGUF_TYPE_FLOAT32));
+    put<float>(out, value);
+}
+
 void put_kv_u8_array32(std::vector<uint8_t> & out, const std::string & key) {
     put_gguf_string(out, key);
     put<int32_t>(out, int32_t(GGUF_TYPE_ARRAY));
@@ -770,10 +776,20 @@ int main(int argc, char ** argv) {
     // --- (k) Bogus tensor name: an 11-entry ClonePrompt-shaped KV section
     // (common 8 plus transcript_text/ref_rms/language_tag) with one
     // declared tensor named something other than "profile.reference_tokens".
+    //
+    // ref_rms must be written FLOAT32-tagged, matching kPrescanKnownKeys'
+    // own declared type (profile.cpp) -- a UINT32 tag here would make the
+    // per-key type check in prescan_buffer's KV loop reject the buffer
+    // first, before the tensor-info section (where the bogus name lives) is
+    // even reached, so the arm would still return SYNTH_ERR_INVALID_ARG but
+    // for the wrong reason and the name check below would go untested. With
+    // every KV entry's declared type matching its spec, the KV loop passes
+    // in full and prescan_buffer's n_tensors==1 branch is what rejects this
+    // buffer, on tensor_name != kTensorReferenceTokens specifically.
     {
         std::vector<uint8_t> kv = common_kv_bytes("clone-prompt");
         put_kv_string(kv, "synthesize.voice_profile.transcript_text", "a");
-        put_kv_u32(kv, "synthesize.voice_profile.ref_rms", 0x3f000000u);  // 0.5f, bit pattern
+        put_kv_f32(kv, "synthesize.voice_profile.ref_rms", 0.5f);
         put_kv_string(kv, "synthesize.voice_profile.language_tag", "en");
 
         std::vector<uint8_t> bytes = make_header(/*n_tensors=*/1, /*n_kv=*/11);
@@ -786,7 +802,9 @@ int main(int argc, char ** argv) {
         put<uint64_t>(bytes, uint64_t(0));  // offset
 
         synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
-        SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_INVALID_ARG);
+        const synth_status_t    status = load_bytes(model, bytes, &loaded);
+        std::fprintf(stderr, "arm (k) bogus tensor name -> status %d\n", int(status));
+        SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
         SYNTH_TEST_CHECK(loaded == nullptr);
     }
 

@@ -457,6 +457,17 @@ bool rvq_encode(const std::vector<RvqQuantizerWeights> & quantizers,
             !ggml_is_contiguous(quantizer.output_proj.bias) || !ggml_is_contiguous(quantizer.codebook)) {
             return false;
         }
+        // The host copy below (ggml_backend_tensor_get) reads each tensor's
+        // raw bytes into a float-typed destination vector, verbatim and
+        // unconverted -- a non-F32 tensor (e.g. a future quantized profile)
+        // would have its bytes silently misinterpreted as float rather than
+        // dequantized. Not reachable today (only F32 profiles ship), but
+        // quantized profiles are named Plan 4 work.
+        if (quantizer.input_proj.weight->type != GGML_TYPE_F32 || quantizer.input_proj.bias->type != GGML_TYPE_F32 ||
+            quantizer.output_proj.weight->type != GGML_TYPE_F32 || quantizer.output_proj.bias->type != GGML_TYPE_F32 ||
+            quantizer.codebook->type != GGML_TYPE_F32) {
+            return false;
+        }
         const int64_t level_concat = quantizer.input_proj.weight->ne[0];
         const int64_t level_dim    = quantizer.input_proj.weight->ne[1];
         if (level_concat <= 0 || level_dim <= 0 || quantizer.input_proj.bias->ne[0] != level_dim ||

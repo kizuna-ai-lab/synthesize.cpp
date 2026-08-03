@@ -731,11 +731,14 @@ synth_status_t Model::synthesize(const PublicSynthesisParams & params, Synthesis
     }
 
     std::vector<int32_t> prompt_ids;
-    if (!assemble_prompt_ids(*impl.frontend, hparams.tokens, denoise, params.language_tag, instruct, combined_text,
-                             prompt_ids)) {
-        // The only way assemble_prompt_ids reports false: an input byte the
-        // package's frontend has no id for.
-        return SYNTH_ERR_INVALID_ARG;
+    const synth_status_t assemble_status = assemble_prompt_ids(
+        *impl.frontend, hparams.tokens, denoise, params.language_tag, instruct, combined_text, prompt_ids);
+    if (assemble_status != SYNTH_OK) {
+        // Propagated verbatim from assemble_prompt_ids: the tokenizer's own
+        // status (e.g. SYNTH_ERR_TEXT_FRONTEND for an input byte the
+        // package's frontend has no id for), or SYNTH_ERR_INVALID_ARG for the
+        // text-end postcondition failure -- see that function's doc comment.
+        return assemble_status;
     }
     // docs/c-interface.md: "max_input_tokens is the positive hard limit on
     // the final token sequence consumed by the synthesis graph, after any
@@ -934,13 +937,17 @@ synth_status_t Model::encode_reference(const std::vector<float> & pcm_24k, int t
     // build_reference_fusion's own contract.
     const uint64_t concat = uint64_t(hparams.codec.hidden_size) + hparams.semantic.hidden_size;
     if (concat == 0 || output.fused_latent.size() % concat != 0) {
+        // Same cleared-on-error contract as decode_codes: an early return must
+        // not hand back the ref_rms/pcm_16k/semantic_mean/semantic_encoder_output/
+        // fused_latent fields Steps 1-4 already populated.
+        output = ReferenceEncoding{};
         return SYNTH_ERR_INTERNAL;
     }
     output.frames = output.fused_latent.size() / concat;
 
     if (!rvq_encode(impl.weights.quantizers, output.fused_latent, output.frames, output.tokens, &output.narrowest_gap,
                     &output.gaps)) {
-        output.tokens.clear();
+        output = ReferenceEncoding{};
         return SYNTH_ERR_INTERNAL;
     }
     output.margin_measured = true;

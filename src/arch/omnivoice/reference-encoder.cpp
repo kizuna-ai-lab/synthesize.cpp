@@ -440,6 +440,14 @@ ggml_tensor * build_semantic_branch(ggml_context *               context,
         if (!bound(hubert.feat_conv[index], false)) {
             return nullptr;
         }
+        // The declared conv_kernel is metadata; the tensor's own ne[0] is what
+        // conv1d actually runs against below. A package whose metadata and
+        // tensors disagree is rejected here rather than silently running the
+        // real (but undeclared) kernel width -- the same defensive class this
+        // catalog already applies to every other metadata/tensor pairing.
+        if (hubert.feat_conv[index].weight->ne[0] != int64_t(s.conv_kernel[index])) {
+            return nullptr;
+        }
         hidden = conv1d(context, hidden, hubert.feat_conv[index], int(s.conv_stride[index]), 0, 1);
         if (hidden == nullptr) {
             return nullptr;

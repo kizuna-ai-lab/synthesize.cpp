@@ -131,17 +131,19 @@ class DurationEstimator {
 // `language_tag`: the core's resolved BCP-47 tag verbatim (en/zh/ja are the
 // ISO codes upstream expects; empty -> literal "None" inside style_text).
 //
-// Returns false when the tokenizer itself fails (empty text was rejected
-// upstream of here), or when the result does not close on `tokens.text_end`
-// -- a release-path corruption guard against a frontend/tokens mismatch
-// (see the .cpp) rather than something a correctly-built package can
-// trigger. Either way `output` is left empty.
-bool assemble_prompt_ids(const TextFrontend &   frontend,
-                         const SpecialTokens &  tokens,
-                         bool                   denoise,
-                         const std::string &    language_tag,
-                         const std::string &    instruct,
-                         const std::string &    combined_text,
-                         std::vector<int32_t> & output);
+// Returns tokenize_wrapped_text's own status verbatim when tokenization
+// itself fails (e.g. SYNTH_ERR_TEXT_FRONTEND for an input byte the package's
+// frontend has no id for), or SYNTH_ERR_INVALID_ARG when the result does not
+// close on `tokens.text_end` -- a release-path corruption guard against a
+// frontend/tokens mismatch (see the .cpp) rather than something a
+// correctly-built package can trigger. SYNTH_OK otherwise. Either way
+// `output` is left empty on failure.
+synth_status_t assemble_prompt_ids(const TextFrontend &   frontend,
+                                   const SpecialTokens &  tokens,
+                                   bool                   denoise,
+                                   const std::string &    language_tag,
+                                   const std::string &    instruct,
+                                   const std::string &    combined_text,
+                                   std::vector<int32_t> & output);
 
 }  // namespace synth::omnivoice

@@ -390,7 +390,16 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
             return SYNTH_ERR_INVALID_ARG;
         }
     }
-    if (request.target_frames > hparams.max_output_frames) {
+    // hparams.max_output_frames is the package's declared ceiling in native
+    // PCM frames (docs/c-interface.md); request.target_frames is a codec/
+    // decoder-frame count (one committed grid column, hop_length PCM samples
+    // each). Converting the ceiling into the same codec-frame unit before
+    // comparing is the fix for PR #6's finding: the package once carried a
+    // codec-frame count directly in this PCM-frame field, and comparing the
+    // two without converting made that 960x error invisible. hop_length is
+    // validated non-zero at load (weights.cpp).
+    const uint64_t max_output_frames_codec = hparams.max_output_frames / hparams.codec.hop_length;
+    if (request.target_frames > max_output_frames_codec) {
         return SYNTH_ERR_OUTPUT_LIMIT;
     }
     const uint32_t num_step = request.num_step != 0 ? request.num_step : hparams.generation.num_step;
@@ -758,9 +767,20 @@ synth_status_t Model::synthesize(const PublicSynthesisParams & params, Synthesis
     // ceiling -- the same "request limit if nonzero, else package cap" rule
     // the core applies to `effective_frame_limit`, restated here because this
     // family settles its canvas length itself rather than being handed one.
-    const uint64_t effective_limit = params.max_output_frames != 0 ?
-                                         std::min(params.max_output_frames, hparams.max_output_frames) :
-                                         hparams.max_output_frames;
+    // `params.max_output_frames` already arrived in codec frames -- converted
+    // from the public request's native-PCM-frame limit by src/synthesize.cpp
+    // before this call -- while `hparams.max_output_frames` is the package's
+    // own ceiling in native PCM frames (docs/c-interface.md). Converting the
+    // latter into codec frames before the two are compared is the fix for PR
+    // #6's finding: the package once carried a codec-frame count directly in
+    // this PCM-frame field, so the unconverted min() silently compared a
+    // codec-frame request limit against a value that LOOKED like PCM frames
+    // but was secretly already codec frames too -- correct only by that
+    // coincidence, and wrong the moment the field held a real PCM value.
+    const uint64_t max_output_frames_codec = hparams.max_output_frames / hparams.codec.hop_length;
+    const uint64_t effective_limit         = params.max_output_frames != 0 ?
+                                                 std::min(params.max_output_frames, max_output_frames_codec) :
+                                                 max_output_frames_codec;
     if (estimated > effective_limit) {
         // A cap on the estimate, not a target for it: mirrors upstream's
         // estimator-fixes-canvas semantics rather than silently truncating a

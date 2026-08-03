@@ -2036,3 +2036,161 @@ What Plan 3 does NOT close is recorded in
 `docs/superpowers/plans/2026-08-02-omnivoice-plan-4-carryover.md`: the
 remainder of the Port Validation Suite, Quantization Profiles, Execution
 Backends, and ship.
+
+## 2026-08-03 — `max_output_frames` unit fix: a 960x package-cap error, and a re-cut
+
+PR #6's Codex review (kizuna-ai-lab/synthesize.cpp, branch `omnivoice-plan-3`)
+found that `package_contract.max_output_frames` in
+`tests/golden/omnivoice/omnivoice-0-6b.manifest.json` — and therefore in the
+shipped `omnivoice-0-6b-F32.gguf` — carried **750**, this port's own
+codec-frame ceiling (30 s at the codec's 25 Hz frame rate). `docs/c-interface.md`
+documents the field as native PCM frames, matching every sibling package
+(VITS 1,323,000; Kokoro 1,440,000; qwen3-tts 15,728,640). A caller honoring
+the documented contract read 750 as **31 milliseconds**, and
+`synth_model_get_capabilities` reported exactly that wrong number, because
+`src/synthesize.cpp`'s `shared_info` passes `hparams.max_output_frames`
+straight into the public capability struct with no conversion. Internal
+synthesis only worked by coincidence: `src/arch/omnivoice/model.cpp` compared
+its own codec-frame canvas estimate directly against the same
+`hparams.max_output_frames` field, so as long as the field held a codec-frame
+number the comparison was internally consistent — and would have broken (by
+under-enforcing, not over-enforcing) the moment it held a real PCM value,
+which is exactly what fixing only the manifest and nothing else would have
+done. The reviewer's own suggested fix (divide the package cap by hop before
+comparing, leaving the manifest at 750) was rejected for the same reason
+stated in the brief that drove this fix: `750 / 960 = 0`, which refuses every
+synthesis. The package value was what was wrong, not the comparison, or
+rather: both were wrong, in a way that cancelled out.
+
+**The corrected value is 720000** — `750 * hop_length (960)`, still 30 s at
+24 kHz, now expressed in the field's documented unit. Six places needed the
+unit made explicit, corrected, or both, beyond the manifest itself:
+
+- `scripts/convert-omnivoice.py` gained `validate_output_frame_ceiling`: a
+  package_contract whose `max_output_frames` is under one second of native
+  PCM (< `SAMPLE_RATE`), or that does not land on a whole codec-frame
+  boundary (`% HOP_LENGTH != 0`), now stops the conversion with a message
+  that names the unit, so this class of error fails at conversion time
+  rather than thirty layers away at a synthesis call. Five new unit tests in
+  `tests/python/test_convert_omnivoice.py`'s `OutputFrameCeilingTests` pin
+  it, including the literal defect (`max_output_frames: 750` refused,
+  message contains `"750"` and `"PCM"`) and a check that the real committed
+  manifest passes.
+- `src/arch/omnivoice/model.cpp` — both places that compare a codec-frame
+  quantity against `hparams.max_output_frames` (`run_synthesis`'s own ceiling
+  check, and `Model::synthesize`'s `effective_limit`) now divide the package
+  field by `hparams.codec.hop_length` first, with a comment at each site
+  naming both units and citing PR #6.
+- `src/synthesize.cpp` — the public dispatch's post-synthesis check compared
+  `synthesis.frame_count` (codec frames) against `prepared.effective_frame_limit`
+  (native PCM frames per docs/c-interface.md) directly; with the package cap
+  now correctly PCM, that comparison would never trigger again (silent
+  under-enforcement, the mirror image of the manifest's original defect). It
+  now multiplies `synthesis.frame_count` by `samples_per_frame` first
+  (overflow-guarded, matching the VITS branch's own pattern), and the stale
+  comment ("The limit is in native frames, and this family's frame is the
+  codec's hop rather than one sample") — which documented the very
+  convention that was wrong — is replaced.
+- `src/arch/omnivoice/omnivoice.h`'s `PublicSynthesisParams::max_output_frames`
+  carried the comment `// native frames; 0 = package cap`, which is actually
+  codec frames (the request-side conversion `src/synthesize.cpp` performs
+  before calling in); reworded to say so explicitly, since the ambiguity
+  between "this family's native frame" and "the contract's native PCM frame"
+  is the exact shape of the bug.
+- `tests/omnivoice_metadata_test.cpp`'s `valid_metadata()` fixture (a
+  key-for-key transcription of the real package) and its `run_valid_package`
+  assertion both moved 750 → 720000.
+- `tests/omnivoice_synthetic_package.h`'s small-layout fixture now declares
+  `16 * h.codec.hop_length` (96) rather than a bare `16`; the OUTPUT_LIMIT arm
+  in `tests/omnivoice_decode_loop_test.cpp` (`kMaxFrames + 1` against the
+  small package) is now commented to say explicitly that it exercises the
+  PCM→codec conversion inside `run_synthesis`, not merely a same-unit
+  ceiling — a dropped conversion there would have made the request pass
+  instead of refuse, silently.
+- `scripts/dump_reference_omnivoice_pytorch.py`'s `load_manifest` had an
+  independent, latent instance of the identical defect: its
+  `audio_chunk_threshold` gate compared a codec-frame quantity
+  (`audio_chunk_threshold * FRAME_RATE_HZ`) against `contract["max_output_frames"]`
+  raw. Not exercised by any committed test against the real manifest, but it
+  would have raised `ManifestError` unconditionally the moment the manifest's
+  value became a real PCM number (750 codec frames worth of threshold is
+  always less than 720000 raw). Fixed the same way: divide the contract value
+  by `SAMPLES_PER_FRAME` before comparing.
+- `tests/omnivoice_load_real.cpp` had no assertion on
+  `capabilities.max_output_frames` at all — the exact field this bug
+  corrupted was unchecked by the one integration test that already loads the
+  real package through the public C ABI. Added `kMaxOutputFrames = 750ULL *
+  kSamplesPerFrame` and `SYNTH_TEST_CHECK(capabilities.max_output_frames ==
+  kMaxOutputFrames)`, so this specific regression now has a standing gate.
+- `tests/CMakeLists.txt`'s `synth_add_cleanup_test(omnivoice ...)` call
+  already passed `720000` as its request-level `frames` argument — its own
+  comment had already reasoned in PCM-frame terms and derived 720000 from
+  "750 codec frames * 960" even while the manifest carried the wrong raw
+  value, so this line's behavior needed no change, only its comment's framing
+  (the package's declared field is no longer 750 needing conversion; it is
+  720000 directly, and 750 is now what you get by converting the other way).
+- `docs/porting/families/omnivoice.md`'s contract section is corrected
+  in place (720000 native PCM frames, 750 codec frames, with an inline dated
+  note); `docs/superpowers/plans/2026-07-30-omnivoice-plan-2-carryover.md`
+  and `docs/superpowers/plans/2026-07-31-omnivoice-plan-2-synthesis-core.md`
+  — historical, closed-out planning records that cite the pre-fix sha256 —
+  are left as the historical record with a bracketed `[superseded 2026-08-03
+  ...]` note at each of their four occurrences, rather than rewritten, for
+  the same reason this porting log is append-only: those documents correctly
+  recorded what was true when Plan 2 closed.
+
+### Re-cut, verified metadata-only
+
+Re-ran the converter exactly as its own docstring and the Plan 2 record
+above specify:
+
+```
+uv run --project scripts/envs/omnivoice --locked python \
+  scripts/convert-omnivoice.py \
+  --manifest tests/golden/omnivoice/omnivoice-0-6b.manifest.json \
+  --weights-dir models/omnivoice-0-6b \
+  --output models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf
+```
+
+| | |
+| --- | --- |
+| old sha256 | `3ecaa5e2f6fbd735296ba1cd60680c90467be22d2140dc4f208fe80111ecb9e5` |
+| new sha256 | `f6d504ffaddcbf32f80f1f6c847f075bbd5d2c7b50fe95a194ceb635772f9fa3` |
+| file size | 3,189,953,504 bytes, **unchanged** |
+| tensor count | 798, unchanged (generator 312, codec 486) |
+
+**Verified metadata-only, not merely asserted.** `cmp -l` between the old and
+new file found exactly **3 differing bytes**, at offsets 2712–2714 — the
+three low-order bytes of the `synthesize.capabilities.max_output_frames`
+little-endian u64 field (750 = `EE 02 00 …` vs 720000 = `80 FC 0A …`; bytes 3–7
+are both `00`). Every other byte in the 3.19 GB file, including the entire
+tensor payload, is bit-identical. This is a stronger claim than a tensor-by-
+tensor comparison would give: it is a proof over the whole file, not a
+sampled or shape-level check.
+
+### Gates, against the re-cut package
+
+| gate | result |
+| --- | --- |
+| `cmake --build build --target synthesize-check-unit` | 86/86 passed |
+| `cmake --build build-sanitize --target synthesize-check-unit` (ASan/UBSan) | 86/86 passed |
+| `ctest --test-dir build -L unit` | 100% tests passed, 0 tests failed out of 86 |
+| `ctest --test-dir build-sanitize -L unit` | 100% tests passed, 0 tests failed out of 86 |
+| `ctest --test-dir build -L integration` | 100% tests passed, 0 tests failed out of 36; 1150.19 s real |
+| `synthesize-omnivoice-replay-golden` | Passed, 433.21 s; **token grids exact: 17/17**, all probes within tolerance |
+| `synthesize-omnivoice-load-real` | Passed, 4.09 s — `capabilities.max_output_frames == 720000` via `synth_model_get_capabilities`, the new standing assertion |
+| `synthesize-omnivoice-public-cleanup` | Passed, 73.85 s |
+| `synthesize-omnivoice-cli` | Passed, 31.14 s |
+| `synthesize-omnivoice-profile-test` | Passed, 103.94 s |
+| `synthesize-omnivoice-resampler-golden` | Passed |
+| `synthesize-omnivoice-public-request` | Passed, 192.85 s |
+| `synthesize-python-api-wheel-test` (omnivoice family smoke) | Passed — this test failed against the pre-re-cut package with `synth_synthesize_to_buffer failed: output limit reached (15)` once the C++ side's PCM→codec conversion was in place but the package still declared 750, i.e. a 0-codec-frame ceiling (`750 / 960 = 0`); passing again after the re-cut is itself evidence the two halves of this fix are matched |
+| `scripts/ci/clang-format.sh --check-diff` | exit 0 |
+
+The 17/17 exact token grids and the probe table (worst `generator.hidden_l27`
+max_abs 0.0800781, min_cosine 0.99999979 — unchanged from every prior run of
+this suite) are the proof the re-cut changed nothing observable about
+synthesis: every number here is either identical to or within the same
+committed tolerance as the pre-fix package produced, because the only bytes
+that moved are three bytes of one metadata field the golden replay path never
+reads.

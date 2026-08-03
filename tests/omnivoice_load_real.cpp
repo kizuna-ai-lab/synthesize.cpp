@@ -39,6 +39,13 @@ constexpr uint32_t kTextVocabSize   = 151676;
 constexpr uint32_t kSampleRate      = 24000;
 constexpr float    kMinSpeakingRate = 0.5f;
 constexpr float    kMaxSpeakingRate = 2.0f;
+// docs/c-interface.md: max_output_frames is native PCM frames. This family's
+// own ceiling is 750 codec frames (30 s at the 25 Hz codec frame rate), so the
+// package declares that converted to this contract's unit: 750 * kSamplesPerFrame.
+// PR #6's review found the package once declared 750 directly here -- a
+// codec-frame count the public contract reads as 31 milliseconds -- so this is
+// exactly the value the fix must make `synth_model_get_capabilities` report.
+constexpr uint64_t kMaxOutputFrames = 750ULL * kSamplesPerFrame;
 // What the converter emitted, from its own report. The catalog derives the same
 // number from the package's hyper-parameters; the two agreeing here is the only
 // place where the converter's idea of the package and the loader's are compared
@@ -128,6 +135,12 @@ int check_public_seam(const char * model_path) {
     SYNTH_TEST_CHECK((capabilities.input_flags & SYNTH_INPUT_SUPPORT_TEXT_UTF8) != 0);
     SYNTH_TEST_CHECK(capabilities.min_speaking_rate == kMinSpeakingRate);
     SYNTH_TEST_CHECK(capabilities.max_speaking_rate == kMaxSpeakingRate);
+    // PR #6's finding, pinned directly: the public capability query must
+    // report this family's ceiling in native PCM frames, not in its own
+    // codec frames (src/synthesize.cpp's shared_info used to pass
+    // hparams.max_output_frames straight through, and the package itself
+    // once carried a codec-frame count there).
+    SYNTH_TEST_CHECK(capabilities.max_output_frames == kMaxOutputFrames);
 
     // A loaded model reports where it lives. Plan 1 runs no graph, but the
     // query is documented and answering it with a backend error would be a

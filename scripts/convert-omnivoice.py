@@ -586,6 +586,37 @@ def config_disagreements(codec_config: dict[str, Any],
     return found
 
 
+def validate_output_frame_ceiling(package: dict[str, Any]) -> None:
+    """Catch a codec-frame count written where a PCM-frame ceiling belongs.
+
+    docs/c-interface.md: `max_output_frames` is the Model Package's positive
+    hard safety limit in native PCM frames, not in this family's own codec
+    frames (one codec frame is `HOP_LENGTH` PCM frames). PR #6's review found
+    exactly this class of error already in the wild: the manifest declared
+    750, this port's codec-frame ceiling (30 s at the 25 Hz codec frame rate),
+    where 720000 native PCM frames belonged -- a value the public contract
+    reads as 31 milliseconds. A value under one second of native PCM is
+    refused outright, and a value that is not a whole number of codec frames
+    is refused too, since a PCM-frame ceiling for this family is always sized
+    in whole codec frames and a fractional one is a sign the units were
+    mixed up again.
+    """
+    max_output_frames = int(package["max_output_frames"])
+    if max_output_frames < SAMPLE_RATE:
+        raise ConverterError(
+            f"package_contract.max_output_frames is {max_output_frames}; that is under one "
+            f"second of native PCM at {SAMPLE_RATE} Hz. This field is native PCM frames, not "
+            f"this family's codec frames (hop_length {HOP_LENGTH}) -- a codec-frame count "
+            "written here silently caps every synthesis at a few dozen milliseconds"
+        )
+    if max_output_frames % HOP_LENGTH != 0:
+        raise ConverterError(
+            f"package_contract.max_output_frames {max_output_frames} is not a whole multiple "
+            f"of hop_length {HOP_LENGTH} native PCM frames; a PCM-frame ceiling for this "
+            "family should land on a codec frame boundary"
+        )
+
+
 def validate_generation_defaults(defaults: dict[str, Any]) -> None:
     for key in GENERATION_DEFAULT_KEYS:
         if key not in defaults:
@@ -797,6 +828,7 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
     writer.add_float32("synthesize.omnivoice.generation.class_temperature", float(gen_defaults["class_temperature"]))
 
     package = manifest["package_contract"]
+    validate_output_frame_ceiling(package)
     writer.add_uint32("synthesize.capabilities.input_flags", INPUT_TEXT_UTF8)
     writer.add_uint32("synthesize.capabilities.flags",
                       CAPABILITY_SPEAKING_RATE | CAPABILITY_STOCHASTIC)

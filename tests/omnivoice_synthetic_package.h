@@ -109,7 +109,14 @@ inline bool write_synthetic_package(const std::string & path, const SyntheticPac
     gguf_set_val_u32(gguf, "synthesize.capabilities.input_flags", 1u << 0);
     gguf_set_val_u32(gguf, "synthesize.capabilities.flags", (1u << 0) | (1u << 1));
     gguf_set_val_u64(gguf, "synthesize.capabilities.max_input_tokens", 64);
-    gguf_set_val_u64(gguf, "synthesize.capabilities.max_output_frames", 16);
+    // Native PCM frames (docs/c-interface.md), not this family's own codec
+    // frames: the small layout's ceiling is 16 codec frames (see
+    // omnivoice_decode_loop_test.cpp's kMaxFrames), and one codec frame here
+    // is h.codec.hop_length (6) PCM samples, so the metadata this package
+    // declares is 16 * 6 = 96. PR #6's review found the real package had this
+    // exact class of error -- a codec-frame count written directly into this
+    // PCM-frame field -- which this fixture no longer reproduces.
+    gguf_set_val_u64(gguf, "synthesize.capabilities.max_output_frames", 16 * h.codec.hop_length);
     gguf_set_val_f32(gguf, "synthesize.capabilities.min_speaking_rate", 0.5f);
     gguf_set_val_f32(gguf, "synthesize.capabilities.max_speaking_rate", 2.0f);
     gguf_set_val_u32(gguf, "synthesize.audio.sample_rate_hz", 150);

@@ -661,16 +661,17 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         "tokens:32,0,81,83,16,61,53,156,25,16,83,44,156,138,64,16,81,83,16,58" "af_heart")
     synth_add_cleanup_test(qwen3-tts "${SYNTH_QWEN3_TTS_TEST_MODEL}" 46080 "text:Hi." "aiden" "en")
     # This `frames` argument becomes `synth_request_t.max_output_frames`,
-    # which the C interface always counts in output PCM samples -- src/
-    # synthesize.cpp divides it by samples_per_frame (960 here) before
-    # comparing it against this family's own codec-frame cap. 720000 is that
-    # same division undone: the package's declared max_output_frames (750
-    # codec frames, tests/golden/omnivoice/omnivoice-0-6b.manifest.json)
-    # times 960, so it reproduces the package's own ceiling exactly rather
-    # than accidentally clamping tighter than it, and is comfortably above
-    # what the duration estimator settles on for "Hi.". The voice stays
-    # empty: OmniVoice's catalog is empty with an unnamed package default, so
-    # an unset voice_id must succeed rather than refuse.
+    # which the C interface always counts in native PCM frames (docs/c-
+    # interface.md) -- src/synthesize.cpp divides it by samples_per_frame
+    # (960 here) before comparing it against this family's own codec-frame
+    # cap. 720000 matches the package's own declared ceiling exactly
+    # (tests/golden/omnivoice/omnivoice-0-6b.manifest.json's
+    # package_contract.max_output_frames, itself 750 of this family's own
+    # codec frames at its 25 Hz frame rate), so this request does not
+    # accidentally clamp tighter than the package already does, and it is
+    # comfortably above what the duration estimator settles on for "Hi.".
+    # The voice stays empty: OmniVoice's catalog is empty with an unnamed
+    # package default, so an unset voice_id must succeed rather than refuse.
     synth_add_cleanup_test(omnivoice "${SYNTH_OMNIVOICE_TEST_MODEL}" 720000 "text:Hi." "" "en")
 
     # What a limit stop reports back. Registered because it needs the package:

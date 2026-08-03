@@ -47,6 +47,16 @@ namespace {
 // branch really runs), and sixteen frames of output headroom.
 constexpr uint32_t kCodebooks    = 2;
 constexpr int32_t  kMaskId       = 4;
+// This family's own codec/decoder-frame ceiling, NOT the raw metadata value:
+// omnivoice_synthetic_package.h declares the package's max_output_frames as
+// native PCM frames (docs/c-interface.md), 16 * hop_length (6) = 96, and
+// Model::run_synthesis / Model::synthesize both divide that PCM value by
+// hop_length before comparing against a codec-frame target_frames/estimate
+// (src/arch/omnivoice/model.cpp). kMaxFrames is already in that post-
+// conversion codec-frame unit, so every comparison below stays like-for-like;
+// PR #6's review found the package field carrying a codec-frame count
+// directly (960x too small), which is exactly the mistake a bare "16" here
+// with no comment could reintroduce silently.
 constexpr uint64_t kMaxFrames    = 16;
 constexpr uint32_t kPackageStep  = 4;
 // The synthetic codec's hop, 2 * 3 = the product of its upsampling ratios, so
@@ -335,6 +345,13 @@ int check_requests_the_loop_refuses(synth::omnivoice::Model & model) {
     SYNTH_TEST_CHECK(model.run_synthesis(base_request(0), output) == SYNTH_ERR_INVALID_ARG);
 
     // One frame past the package's declared ceiling is a limit, not a bug.
+    // `request.target_frames` (kMaxFrames + 1, codec frames) is compared
+    // inside run_synthesis against hparams.max_output_frames divided by
+    // hparams.codec.hop_length -- the package's raw PCM-frame metadata (96)
+    // converted back to codec frames (16) -- so this arm exercises that
+    // PCM-to-codec conversion directly, not merely a same-unit ceiling. A
+    // conversion silently dropped (comparing target_frames against the raw
+    // 96 instead) would make this request pass instead of refuse.
     SYNTH_TEST_CHECK(model.run_synthesis(base_request(kMaxFrames + 1), output) == SYNTH_ERR_OUTPUT_LIMIT);
 
     // A reference stream that is not a whole number of codebook rows cannot be

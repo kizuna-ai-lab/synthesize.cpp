@@ -528,6 +528,48 @@ class GenerationDefaultsTests(unittest.TestCase):
         self.assertIn("guidance_scale", str(caught.exception))
 
 
+class OutputFrameCeilingTests(unittest.TestCase):
+    """package_contract.max_output_frames must be PCM frames, not codec frames.
+
+    PR #6's review found the committed manifest itself had this exact class of
+    error: 750, this port's codec-frame ceiling (30 s at 25 Hz), written where
+    720000 native PCM frames belonged. These tests pin the guard that now
+    catches it at conversion time rather than at a synthesis call three layers
+    away.
+    """
+
+    def test_the_committed_manifest_declares_a_plausible_pcm_ceiling(self) -> None:
+        manifest = json.loads(
+            (REPO_ROOT / "tests" / "golden" / "omnivoice" / "omnivoice-0-6b.manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        convert.validate_output_frame_ceiling(manifest["package_contract"])
+
+    def test_a_codec_frame_count_is_refused(self) -> None:
+        """The exact defect: 750 codec frames mistaken for PCM frames."""
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.validate_output_frame_ceiling({"max_output_frames": 750})
+        message = str(caught.exception)
+        self.assertIn("750", message)
+        self.assertIn("PCM", message)
+
+    def test_a_value_under_one_second_of_native_pcm_is_refused(self) -> None:
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.validate_output_frame_ceiling({"max_output_frames": convert.SAMPLE_RATE - 1})
+        self.assertIn("PCM", str(caught.exception))
+
+    def test_exactly_one_second_is_accepted(self) -> None:
+        # convert.SAMPLE_RATE (24000) is a whole multiple of HOP_LENGTH (960).
+        convert.validate_output_frame_ceiling({"max_output_frames": convert.SAMPLE_RATE})
+
+    def test_a_value_not_landing_on_a_codec_frame_boundary_is_refused(self) -> None:
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.validate_output_frame_ceiling({"max_output_frames": convert.SAMPLE_RATE + 1})
+        message = str(caught.exception)
+        self.assertIn("hop_length", message)
+        self.assertIn(str(convert.HOP_LENGTH), message)
+
+
 class PinnedInputTests(unittest.TestCase):
     """Every local file the conversion reads or republishes is pinned.
 

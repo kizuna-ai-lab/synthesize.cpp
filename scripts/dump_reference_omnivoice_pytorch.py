@@ -224,13 +224,23 @@ def load_manifest(path: pathlib.Path) -> dict:
                     "instruct", "postprocess_output",
                     "audio_chunk_duration", "audio_chunk_threshold"):
             require(parameters, key, f"{where}.oracle.parameters")
+        # package_contract.max_output_frames is native PCM frames
+        # (docs/c-interface.md), but this gate's own arithmetic -- like the
+        # rest of this dumper -- is in codec frames (audio_chunk_threshold is
+        # seconds, FRAME_RATE_HZ is the codec's 25 Hz frame rate), so the
+        # contract value is converted before the two are compared. Comparing
+        # them raw is exactly the unit-mix PR #6's review caught: the manifest
+        # itself once carried a codec-frame count (750) where a PCM-frame
+        # ceiling (720000 = 750 * SAMPLES_PER_FRAME) belonged.
         threshold_frames = float(parameters["audio_chunk_threshold"]) * FRAME_RATE_HZ
-        if threshold_frames < float(contract["max_output_frames"]):
+        max_output_frames_codec = float(contract["max_output_frames"]) / SAMPLES_PER_FRAME
+        if threshold_frames < max_output_frames_codec:
             raise ManifestError(
                 f"{where}: audio_chunk_threshold {parameters['audio_chunk_threshold']} s is "
-                f"{threshold_frames:.0f} frames, below max_output_frames "
-                f"{contract['max_output_frames']}; a golden case could silently take the "
-                "chunked long-form path, which is out of scope"
+                f"{threshold_frames:.0f} codec frames, below max_output_frames "
+                f"{contract['max_output_frames']} PCM frames "
+                f"({max_output_frames_codec:.0f} codec frames); a golden case could silently "
+                "take the chunked long-form path, which is out of scope"
             )
         unknown = set(parameters) - GEN_CONFIG_KEYS - GENERATE_ARGUMENT_KEYS - DUMPER_ONLY_KEYS
         if unknown:

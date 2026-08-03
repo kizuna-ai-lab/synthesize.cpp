@@ -659,7 +659,13 @@ than run against a hardcoded fallback. A fallback is exactly the second copy
 the doctrine forbids: it would let a package cut before a defaults change
 synthesise silently under the new code's numbers.
 
-`max_output_frames` is 750, which is 30 seconds at 25 Hz. That ceiling is a
+`max_output_frames` is 720000 native PCM frames (docs/c-interface.md's
+contract unit) -- 750 of this family's own codec frames at 25 Hz, 30 seconds
+at the 24 kHz output rate. (Until 2026-08-03 the package's metadata field
+wrongly carried the codec-frame count, 750, directly; a caller honoring the
+documented PCM-frame unit read that as a 31-millisecond ceiling. PR #6's
+review caught it; `reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s
+2026-08-03 entry has the fix and the re-cut digest.) That ceiling is a
 statement about what this port validates, not about what the model can do:
 upstream's path beyond 30 seconds is long-form text chunking with cross-fade
 stitching, and that is out of scope for v1. Output post-processing — silence

@@ -945,9 +945,24 @@ synth_status_t synth_synthesize(synth_context_t *          context,
                 emit_diagnostic(prepared.diagnostics, status, "synthesis.graph_failed", synth_status_string(status));
                 return status;
             }
-            // The limit is in native frames, and this family's frame is the
-            // codec's hop rather than one sample.
-            if (synthesis.frame_count > prepared.effective_frame_limit) {
+            // `prepared.effective_frame_limit` is native PCM frames
+            // (docs/c-interface.md), and `synthesis.frame_count` is this
+            // family's own codec/decoder-frame count (samples_per_frame PCM
+            // samples each) -- converted here rather than compared directly.
+            // PR #6's finding: while the package's own max_output_frames
+            // metadata was (wrongly) written in codec frames, this comparison
+            // "worked" only because prepared.effective_frame_limit inherited
+            // that same wrong codec-frame magnitude; now that the package
+            // field is correctly PCM frames, a codec-frame count would never
+            // exceed it and this check would silently stop enforcing the
+            // limit at all.
+            if (samples_per_frame == 0 ||
+                synthesis.frame_count > std::numeric_limits<uint64_t>::max() / samples_per_frame) {
+                (void) synth::deliver_complete_audio(nullptr, 0, delivery_info, sink, out_result);
+                return SYNTH_ERR_OUTPUT_LIMIT;
+            }
+            const uint64_t synthesis_pcm_frame_count = synthesis.frame_count * samples_per_frame;
+            if (synthesis_pcm_frame_count > prepared.effective_frame_limit) {
                 (void) synth::deliver_complete_audio(nullptr, 0, delivery_info, sink, out_result);
                 return SYNTH_ERR_OUTPUT_LIMIT;
             }

@@ -98,7 +98,11 @@ GgufContext valid_metadata() {
     gguf_set_val_u32(g, "synthesize.capabilities.input_flags", 1);
     gguf_set_val_u32(g, "synthesize.capabilities.flags", 3);
     gguf_set_val_u64(g, "synthesize.capabilities.max_input_tokens", 2048);
-    gguf_set_val_u64(g, "synthesize.capabilities.max_output_frames", 750);
+    // Native PCM frames (docs/c-interface.md), not this family's own codec
+    // frames: 750 codec frames * kHopLength (960) = 720000, 30 s at 24 kHz.
+    // PR #6's review found the real package once carried 750 directly here,
+    // a codec-frame count that the public contract reads as 31 ms.
+    gguf_set_val_u64(g, "synthesize.capabilities.max_output_frames", 720000);
     gguf_set_val_f32(g, "synthesize.capabilities.min_speaking_rate", 0.5f);
     gguf_set_val_f32(g, "synthesize.capabilities.max_speaking_rate", 2.0f);
 
@@ -205,7 +209,7 @@ int run_valid_package() {
     SYNTH_TEST_CHECK(hparams.capability_flags ==
                      (SYNTH_MODEL_CAPABILITY_SPEAKING_RATE | SYNTH_MODEL_CAPABILITY_STOCHASTIC));
     SYNTH_TEST_CHECK(hparams.output_sample_rate == kSampleRate && hparams.output_channel_count == 1);
-    SYNTH_TEST_CHECK(hparams.max_input_tokens == 2048 && hparams.max_output_frames == 750);
+    SYNTH_TEST_CHECK(hparams.max_input_tokens == 2048 && hparams.max_output_frames == 720000);
     SYNTH_TEST_CHECK(hparams.min_speaking_rate == 0.5f && hparams.max_speaking_rate == 2.0f);
 
     SYNTH_TEST_CHECK(hparams.generator.layer_count == 28 && hparams.generator.hidden_size == 1024);

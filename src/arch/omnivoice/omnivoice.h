@@ -135,7 +135,10 @@ struct PublicSynthesisParams {
     const std::string * instruct      = nullptr;  // the Description Text profile's canonical instruct, if any (Task 15)
     double              speaking_rate = 1.0;
     uint64_t            seed          = 0;
-    uint64_t            max_output_frames = 0;  // native frames; 0 = package cap
+    // Codec frames (this family's own frame, hop_length native PCM samples
+    // each) -- src/synthesize.cpp converts the public request's native-PCM-
+    // frame limit into this unit before calling. 0 = package cap.
+    uint64_t            max_output_frames = 0;
     int32_t             threads           = 0;
 };
 

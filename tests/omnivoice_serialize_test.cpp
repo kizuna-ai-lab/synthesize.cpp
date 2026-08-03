@@ -544,6 +544,59 @@ int main(int argc, char ** argv) {
     }
 
     // =========================================================================
+    // Loader hardening parity, extended to DesignInstruct (Codex reviewer
+    // finding, PR #6 triage FIX 4): load_profile_from_memory used to accept
+    // a design-instruct envelope's `instruct` string verbatim -- no
+    // closed-vocabulary validation, no canonicalization -- even though the
+    // content digest is integrity-only. Every arm below builds a
+    // DesignInstruct payload DIRECTLY (bypassing resolve_instruct entirely,
+    // the same way the ClonePrompt parity block above bypasses
+    // create_clone_prompt with an empty transcript_text), serializes it
+    // through the real writer (a correct digest/compatibility_id over the
+    // bad string), then drives the PUBLIC
+    // synth_voice_profile_load_from_memory seam.
+    // =========================================================================
+
+    // --- Unknown vocabulary item -> INVALID_ARG: serialize_design_instruct
+    // writes `instruct` with no vocabulary check of its own, so an
+    // untrusted envelope naming an item outside the closed vocabulary must
+    // be caught by the loader's own parity check -- the same rejection
+    // create_from_description itself would give this exact string.
+    {
+        auto design                       = std::make_shared<DesignInstruct>();
+        design->instruct                  = "not-a-real-item";
+        const synth_voice_profile profile = make_profile(model, design, synth::ProfileFamilyTag::OmnivoiceDesign);
+        std::vector<uint8_t>      bytes;
+        SYNTH_TEST_CHECK(serialize_profile(profile, bytes) == SYNTH_OK);
+        synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+    }
+
+    // --- Valid items, non-canonical joining -> INVALID_ARG: "男" (male) and
+    // "高音调" (high pitch) are both real vocabulary items in DIFFERENT
+    // categories (gender, pitch -- no mutually-exclusive conflict), joined
+    // with the ASCII ", " separator. resolve_instruct's own splitter accepts
+    // both the ASCII comma and the full-width "，" as item separators, so
+    // this parses into the same two items create_from_description would
+    // produce from the same input -- but its own canonical OUTPUT separator
+    // for an all-Chinese result is the bare full-width "，" (no following
+    // space, contains_cjk("男，高音调") == true selects that branch), so
+    // resolve_instruct(stored) reproduces "男，高音调", not this ASCII-joined
+    // original -- exactly the "valid item, wrong joining" case the loader
+    // must refuse even though every individual item name is real.
+    {
+        auto design                       = std::make_shared<DesignInstruct>();
+        design->instruct                  = "\xE7\x94\xB7, \xE9\xAB\x98\xE9\x9F\xB3\xE8\xB0\x83";  // "男, 高音调"
+        const synth_voice_profile profile = make_profile(model, design, synth::ProfileFamilyTag::OmnivoiceDesign);
+        std::vector<uint8_t>      bytes;
+        SYNTH_TEST_CHECK(serialize_profile(profile, bytes) == SYNTH_OK);
+        synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(load_bytes(model, bytes, &loaded) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+    }
+
+    // =========================================================================
     // Untrusted-buffer pre-scan (fix round 1, reviewer FINDING 1): a raw
     // GGUF buffer that declares GGML's own reserved key "general.alignment"
     // with the wrong type used to abort the WHOLE PROCESS inside

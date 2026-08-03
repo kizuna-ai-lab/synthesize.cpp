@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 namespace {
 
@@ -272,6 +273,42 @@ int check_choose_token_sampled_log_prob_is_row_max_not_chosen_value() {
     return 0;
 }
 
+// PR #6 triage FIX 2 (MAJOR): `best` used to start at -1 and update only on
+// `score > best_score`; a row where every surviving class's Gumbel-perturbed
+// score is NaN (every `cond` entry NaN here, so build_guided's log-softmax
+// propagates NaN throughout except the mask ban's own explicit -inf) never
+// satisfies that comparison, and the pre-fix code returned token == -1.
+// generator-host.cpp then fed that -1 straight into fill_shifted_audio_ids'
+// embedding-index arithmetic: an out-of-bounds ggml_get_rows index on
+// codebook 0, a silently wrong in-range row on any later codebook. kMaskId
+// is the LAST index (19, matching check_choose_token_sampled_bans_mask's own
+// convention above) so it is not the lowest surviving class id: with keep =
+// ceil(0.1*20) = 2 survivors, the mask's own real (non-NaN) -inf value
+// outranks every NaN class regardless of magnitude, so it is one of the two
+// survivors -- but after the ascending-id re-sort the OTHER survivor (class
+// 0, the lowest NaN id) becomes the seed, not the mask, so this fixture
+// demonstrates the fixed behavior never returning -1 NOR the banned mask id.
+int check_choose_token_sampled_all_nan_perturbation_never_negative_or_mask() {
+    constexpr uint32_t kVocab  = 20;
+    constexpr uint32_t kMaskId = 19;
+    float              cond[kVocab];
+    for (uint32_t index = 0; index < kVocab; ++index) {
+        cond[index] = std::numeric_limits<float>::quiet_NaN();
+    }
+
+    for (uint64_t seed = 0; seed < 32; ++seed) {
+        synth::NormalRandomStream stream(seed);
+        int32_t                   token    = -1;
+        float                     log_prob = 0.0f;
+        SYNTH_TEST_CHECK(synth::omnivoice::choose_token_sampled(cond, nullptr, kVocab, kMaskId, 0.0f, 5.0f, stream,
+                                                                token, log_prob) == SYNTH_OK);
+        SYNTH_TEST_CHECK(token >= 0);
+        SYNTH_TEST_CHECK(uint32_t(token) < kVocab);
+        SYNTH_TEST_CHECK(token != int32_t(kMaskId));
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -282,5 +319,6 @@ int main() {
     SYNTH_TEST_CHECK(check_choose_token_sampled_guidance_consistency() == 0);
     SYNTH_TEST_CHECK(check_choose_token_sampled_zero_temperature_short_circuits() == 0);
     SYNTH_TEST_CHECK(check_choose_token_sampled_log_prob_is_row_max_not_chosen_value() == 0);
+    SYNTH_TEST_CHECK(check_choose_token_sampled_all_nan_perturbation_never_negative_or_mask() == 0);
     return 0;
 }

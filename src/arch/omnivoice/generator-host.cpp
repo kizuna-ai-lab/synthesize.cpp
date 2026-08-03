@@ -293,7 +293,20 @@ synth_status_t choose_token_sampled(const float *        cond,
     // whole row at once rather than one uniform per surviving class.
     std::sort(order.begin(), order.begin() + keep);
 
-    int32_t best       = -1;
+    // Seeded at the first survivor, not -1: mirrors choose_token's own
+    // `best = 0` convention above (a fixed default that is always a real
+    // vocabulary entry, never used as an "unset" sentinel). An all-NaN
+    // perturbed-score row -- every guided value here NaN, which any `>`
+    // comparison loses, including against another NaN -- would otherwise
+    // leave `best` at its old -1 seed, and that -1 token flows straight into
+    // fill_shifted_audio_ids' embedding-index arithmetic: an out-of-bounds
+    // ggml_get_rows index on codebook 0, a silently wrong in-range row on
+    // any later codebook. `order[0]` is always one of the `keep` surviving
+    // class ids by construction (the top-k filter above never returns an
+    // empty survivor set for a positive `keep`), so this seed is always a
+    // valid, in-range vocabulary entry -- never -1 -- regardless of how
+    // degenerate the perturbed scores below turn out to be.
+    int32_t best       = int32_t(order[0]);
     float   best_score = -std::numeric_limits<float>::infinity();
     for (uint32_t index = 0; index < keep; ++index) {
         const uint32_t class_id = order[index];

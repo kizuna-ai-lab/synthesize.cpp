@@ -614,6 +614,25 @@ int check_public_synthesize(synth::omnivoice::Model & text_model) {
     synth::omnivoice::PublicSynthesisParams blank_text;
     blank_text.text = "   ";
     SYNTH_TEST_CHECK(text_model.synthesize(blank_text, unused) == SYNTH_ERR_INVALID_ARG);
+
+    // PR #6 triage FIX 3 (MAJOR): hparams.max_input_tokens (64 for this
+    // synthetic package) was never applied to the ASSEMBLED prompt_ids,
+    // though docs/c-interface.md documents SYNTH_ERR_INPUT_TOO_LONG for
+    // exceeding it. A long `instruct` is the vector that proves this is a
+    // DIFFERENT check than the "aa" -> OUTPUT_LIMIT case above: `instruct`
+    // is threaded into assemble_prompt_ids's own style/marker wrapping, but
+    // DurationEstimator::estimate_target_frames (called further down in
+    // Model::synthesize) reads only params.text/ref_text/ref_frames --
+    // never params.instruct -- so this request's estimate stays at exactly
+    // 16 frames (this package's own ceiling, same as the "a"-alone case
+    // above), never tripping OUTPUT_LIMIT, while the assembled prompt
+    // (markers + "None" for the empty language + 100 'a' instruct
+    // characters + "a" text) comes out well past 64 ids.
+    const std::string                       long_instruct(100, 'a');  // 'a' is in ascii_text_vocab's small alphabet
+    synth::omnivoice::PublicSynthesisParams too_many_tokens;
+    too_many_tokens.text     = "a";
+    too_many_tokens.instruct = &long_instruct;
+    SYNTH_TEST_CHECK(text_model.synthesize(too_many_tokens, unused) == SYNTH_ERR_INPUT_TOO_LONG);
     return 0;
 }
 

@@ -337,7 +337,12 @@ void clip_and_boost_reference(std::vector<float> & pcm, uint32_t hop_length, flo
 // `quantizers`, `frames == 0`, an unresolved or inconsistently-shaped level
 // (an input/output projection whose widths disagree, a codebook narrower
 // than 2 rows, or a level whose own `concat` disagrees with the first
-// level's), or a `latent` size that is not exactly `concat * frames`.
+// level's), a `latent` size that is not exactly `concat * frames`, or a
+// (level, frame) whose nearest-neighbour `dist` comes out NaN for every
+// codebook row (a NaN latent value propagating through the dot products --
+// every `>` comparison against it is false, so no code is ever selected).
+// The last case is caught before the resulting `-1` code ever reaches the
+// dequantization pointer arithmetic below it.
 bool rvq_encode(const std::vector<RvqQuantizerWeights> & quantizers,
                 const std::vector<float> &               latent,
                 uint64_t                                 frames,

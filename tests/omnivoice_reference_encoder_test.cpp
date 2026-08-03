@@ -1237,6 +1237,42 @@ bool run_rvq_tie_case(ggml_backend_dev_t device) {
     return exact && narrowest_gap == 0.0f;
 }
 
+// PR #6 triage FIX 1 (CRITICAL): a NaN driven into the latent propagates
+// through every dot product in frame 0's nearest-neighbour scan, so every
+// `dist` for that frame compares false against `best_dist` and `best_code`
+// never leaves its `-1` seed. Before the guard this reached
+// `codebook.data() + size_t(best_code) * size_t(dim)` with `best_code == -1`
+// -- `size_t(-1)` is SIZE_MAX, a wild pointer, not merely a bad token. Reuses
+// fixture 1's level-0 weights (any real weight matrix propagates a NaN
+// input to a NaN `dist` for every codebook row) with frame 0's latent
+// values corrupted; `rvq_encode` must refuse (false) rather than crash, and
+// leave `tokens` cleared per its own documented contract.
+bool run_rvq_nan_case(ggml_backend_dev_t device) {
+    const RvqLevelValues values[1] = {
+        { kRvqProjectInWeight0, kRvqProjectInBias0, kRvqProjectOutWeight0, kRvqProjectOutBias0, kRvqCodebook0 },
+    };
+    RvqFixture fixture;
+    if (!build_rvq_fixture(device, 1, values, fixture)) {
+        std::printf("  rvq fixture (nan): allocation failed\n");
+        return false;
+    }
+
+    std::vector<float> latent(std::begin(kRvqLatent), std::end(kRvqLatent));
+    latent[0] = std::numeric_limits<float>::quiet_NaN();  // frame 0's first concat channel
+
+    std::vector<int32_t> tokens;
+    float                narrowest_gap = -1.0f;
+    if (synth::omnivoice::rvq_encode(fixture.quantizers, latent, kRvqFrames, tokens, &narrowest_gap)) {
+        std::printf("  rvq fixture (nan): rvq_encode should have refused a NaN-distance frame, but returned true\n");
+        return false;
+    }
+    if (!tokens.empty()) {
+        std::printf("  rvq fixture (nan): tokens should be cleared on refusal, got %zu entries\n", tokens.size());
+        return false;
+    }
+    return true;
+}
+
 // A shape rvq_encode cannot serve is refused (false) rather than crashing on
 // an unallocated tensor's data pointer -- every case below is caught by the
 // shape-validation loop BEFORE rvq_encode ever calls
@@ -1516,6 +1552,7 @@ int main() {
 
         SYNTH_TEST_CHECK(run_rvq_case(device));
         SYNTH_TEST_CHECK(run_rvq_tie_case(device));
+        SYNTH_TEST_CHECK(run_rvq_nan_case(device));
         ++exercised;
     }
     SYNTH_TEST_CHECK(exercised > 0);

@@ -2,6 +2,7 @@
 
 #include "arch/omnivoice/frontend-host.h"
 #include "arch/omnivoice/omnivoice.h"
+#include "bcp47.h"
 #include "codepoint-scan.h"
 #include "ggml.h"
 #include "gguf-metadata.h"
@@ -668,7 +669,18 @@ bool read_u8_32_array(const gguf_context * ctx, const char * key, uint8_t (&out)
 // to hash "the complete input with that one value treated as zero"
 // (docs/c-interface.md) rather than a reconstruction built from parsed
 // fields.
-bool find_u8_32_value_offset(const uint8_t * data, size_t data_size, const std::string & key, size_t & out_offset) {
+//
+// `search_size` bounds the search to the METADATA region (the caller passes
+// `gguf_get_data_offset(g)`, clamped to the buffer's own size), not the
+// whole buffer (PR #6 triage FIX 6): `content_sha256` is always a metadata
+// KV, so its on-disk encoding can never legitimately start at or past the
+// tensor-data offset. Without this bound, a caller-controlled tensor blob
+// (a clone-prompt envelope's transcript_text is metadata, not a tensor, but
+// nothing about this function's OWN contract depended on that) containing
+// this exact byte pattern ahead of the real KV entry -- possible if this
+// schema ever grows a second array-valued key sharing this key's length --
+// could be found first instead of the genuine entry.
+bool find_u8_32_value_offset(const uint8_t * data, size_t search_size, const std::string & key, size_t & out_offset) {
     std::vector<uint8_t> needle;
     put<uint64_t>(needle, uint64_t(key.size()));
     put_bytes(needle, key.data(), key.size());
@@ -677,13 +689,13 @@ bool find_u8_32_value_offset(const uint8_t * data, size_t data_size, const std::
     put<uint64_t>(needle, uint64_t(32));
 
     const uint8_t * begin = data;
-    const uint8_t * end   = data + data_size;
+    const uint8_t * end   = data + search_size;
     const uint8_t * found = std::search(begin, end, needle.begin(), needle.end());
     if (found == end) {
         return false;
     }
     const size_t value_offset = size_t(found - begin) + needle.size();
-    if (value_offset + 32 > data_size) {
+    if (value_offset + 32 > search_size) {
         return false;
     }
     out_offset = value_offset;
@@ -1110,7 +1122,10 @@ bool equals_ascii_case(const char * value, size_t size, const std::string & expe
 // always sets SYNTH_LANGUAGE_REGIONAL_FALLBACK for every omnivoice language
 // tag (there is no per-tag override at this family), so unlike
 // voice-profile.cpp's own declared_language this never needs to consult a
-// per-entry flag.
+// per-entry flag. The region-shape check itself is bcp47.h's shared
+// `is_bcp47_region_subtag` (PR #6 triage FIX 5) -- see that header's own
+// comment for why this used to be a third independent (and identically
+// incomplete) copy.
 bool declared_language_tag(const std::vector<std::string> & tags, const char * value, size_t size) {
     for (const std::string & tag : tags) {
         if (equals_ascii_case(value, size, tag)) {
@@ -1121,7 +1136,11 @@ bool declared_language_tag(const std::vector<std::string> & tags, const char * v
     if (separator == nullptr) {
         return false;
     }
-    const size_t primary = static_cast<size_t>(separator - value);
+    const size_t primary       = static_cast<size_t>(separator - value);
+    const size_t suffix_offset = primary + 1;
+    if (!synth::is_bcp47_region_subtag(value + suffix_offset, size - suffix_offset)) {
+        return false;
+    }
     for (const std::string & tag : tags) {
         if (equals_ascii_case(value, primary, tag)) {
             return true;
@@ -1296,8 +1315,19 @@ synth_status_t load_profile_from_memory(Model &         model,
     // Digest verification (docs/c-interface.md's exact rule): hash the
     // complete input with content_sha256's own 32 bytes treated as zero, and
     // compare against the value stored there.
-    size_t sha_offset = 0;
-    if (!find_u8_32_value_offset(data, data_size, kKeyContentSha256, sha_offset)) {
+    //
+    // The search is bounded to the METADATA region (PR #6 triage FIX 6):
+    // `content_sha256` is always a metadata KV, so its on-disk encoding can
+    // only ever legitimately start before `gguf_get_data_offset`, never at
+    // or past it -- unlike `data_size`, which also covers any tensor blob
+    // (a ClonePrompt's reference_tokens payload). `gguf_get_data_offset`
+    // itself has not been checked against `data_size` yet at this point in
+    // the function (that happens in the truncation guard further down, for
+    // ClonePrompt's tensor read only), so it is clamped here rather than
+    // trusted outright.
+    const size_t metadata_size = std::min(data_size, gguf_get_data_offset(g));
+    size_t       sha_offset    = 0;
+    if (!find_u8_32_value_offset(data, metadata_size, kKeyContentSha256, sha_offset)) {
         // The parse above already confirmed this key exists as a 32-element
         // uint8 array; failing to relocate it by its own on-disk encoding is
         // this loader's own defect, not a caller mistake.
@@ -1314,6 +1344,46 @@ synth_status_t load_profile_from_memory(Model &         model,
     if (!is_clone) {
         std::string instruct;
         if (!meta.string("synthesize.voice_profile.instruct", instruct)) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        // Loader hardening parity (reviewer FINDING 3), extended to the
+        // DesignInstruct kind (Codex reviewer finding): until now this
+        // string was accepted VERBATIM -- no closed-vocabulary validation,
+        // no canonicalization -- even though the content digest checked
+        // above is integrity-only (it proves the bytes are unmodified from
+        // whatever was serialized, never that they were ever a value
+        // create_from_description could produce). A crafted envelope could
+        // therefore inject arbitrary instruct text into the prompt that
+        // create_from_description itself would refuse outright.
+        // resolve_instruct() is this family's own creation-time validator/
+        // canonicalizer (voice-profile.cpp's
+        // create_omnivoice_profile_from_description calls it identically);
+        // its `use_zh` baseline is guessed here from the stored string's own
+        // script via contains_cjk, the exact same signal resolve_instruct's
+        // own internal `has_zh_output` scan uses to pick the OUTPUT
+        // separator -- a genuinely canonical string is already entirely in
+        // one script (unification has already run once, at creation time),
+        // so this guess reproduces the same baseline the writer itself
+        // resolved to, and the translation step becomes a no-op either way
+        // (looking up an already-target-language item name in the OPPOSITE
+        // direction's map never matches). Requiring
+        // `resolve_instruct(stored) == stored` on top of a bare vocabulary
+        // check additionally refuses a valid-item string in a non-canonical
+        // joining or ordering (e.g. the wrong separator for its own script)
+        // -- not something this project's own writer
+        // (serialize_design_instruct) ever emits, so a caller supplying one
+        // did not get it from this loader's own round trip. Failures map to
+        // the same status resolve_instruct's own callers use (all three of
+        // its failure paths already return SYNTH_ERR_INVALID_ARG).
+        std::shared_ptr<const DesignInstruct> canonical;
+        const char *                          diagnostic_code = nullptr;
+        std::string                           diagnostic_message;
+        const synth_status_t                  resolve_status =
+            resolve_instruct(instruct, contains_cjk(instruct), canonical, diagnostic_code, diagnostic_message);
+        if (resolve_status != SYNTH_OK) {
+            return resolve_status;
+        }
+        if (canonical->instruct != instruct) {
             return SYNTH_ERR_INVALID_ARG;
         }
         auto design      = std::make_shared<DesignInstruct>();

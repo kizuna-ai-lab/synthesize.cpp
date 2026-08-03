@@ -1,5 +1,7 @@
 #include "synthesis-request.h"
 
+#include "bcp47.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -105,7 +107,15 @@ const LanguageCapability * declared_language(const ModelInfo & info, const char 
     if (separator == nullptr) {
         return nullptr;
     }
-    const size_t primary = static_cast<size_t>(separator - value);
+    const size_t primary       = static_cast<size_t>(separator - value);
+    const size_t suffix_offset = primary + 1;
+    // Exactly one BCP-47 region subtag, nothing more -- see bcp47.h's own
+    // header comment for the confirmed contract this enforces. Without this,
+    // any suffix past the primary subtag ("en-Latn", "en-Latn-US") used to
+    // fall back too.
+    if (!is_bcp47_region_subtag(value + suffix_offset, size - suffix_offset)) {
+        return nullptr;
+    }
     for (const LanguageCapability & entry : info.languages) {
         if ((entry.flags & SYNTH_LANGUAGE_REGIONAL_FALLBACK) != 0 &&
             equals_ascii_case(value, primary, entry.tag.c_str())) {

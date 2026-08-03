@@ -578,6 +578,28 @@ bool rvq_encode(const std::vector<RvqQuantizerWeights> & quantizers,
                 }
             }
 
+            // `best_code` stays -1 only when every `dist` compared false
+            // against `best_dist` -- which a real, if unlikely, NaN latent
+            // value (this function's input comes from a graph, not from a
+            // programmer's own literal) makes possible: a NaN loses every
+            // `>` comparison, including against another NaN, so the loop
+            // above never advances off its `-1` seed. `size_t(best_code)`
+            // below would then wrap to SIZE_MAX, turning
+            // `codebook.data() + size_t(best_code) * size_t(dim)` into a
+            // wild pointer -- a real out-of-bounds read, not a merely bad
+            // token. Refused as a caller-visible failure (matching this
+            // function's own "Returns false" contract in the header) rather
+            // than asserted: a NaN reaching here is an internal-error-shaped
+            // runtime state, not a can't-happen a debug build alone should
+            // catch.
+            if (best_code < 0) {
+                tokens.clear();
+                if (out_gaps != nullptr) {
+                    out_gaps->clear();
+                }
+                return false;
+            }
+
             const size_t slot = level * size_t(frames) + size_t(frame);
             tokens[slot]      = int32_t(best_code);
             const float gap   = best_dist - second_dist;

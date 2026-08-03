@@ -1,5 +1,6 @@
 #include "arch/omnivoice/profile.h"
 #include "audio-normalizer.h"
+#include "bcp47.h"
 #include "model-handle.h"
 #include "model-info.h"
 #include "synthesize.h"
@@ -165,7 +166,10 @@ bool equals_ascii_case(const char * value, size_t size, const std::string & expe
 
 // Exact match, then the primary subtag for entries that accept a region --
 // synthesis-request.cpp's own `declared_language`, minus the "which entry
-// answered" return value this call site does not need.
+// answered" return value this call site does not need. The region-shape
+// check itself is bcp47.h's shared `is_bcp47_region_subtag` (PR #6 triage
+// FIX 5) -- see that header's own comment for why this used to be a third
+// independent (and identically incomplete) copy.
 bool declared_language(const std::vector<synth::LanguageCapability> & languages, const char * value, size_t size) {
     for (const synth::LanguageCapability & entry : languages) {
         if (equals_ascii_case(value, size, entry.tag)) {
@@ -176,7 +180,11 @@ bool declared_language(const std::vector<synth::LanguageCapability> & languages,
     if (separator == nullptr) {
         return false;
     }
-    const size_t primary = static_cast<size_t>(separator - value);
+    const size_t primary       = static_cast<size_t>(separator - value);
+    const size_t suffix_offset = primary + 1;
+    if (!synth::is_bcp47_region_subtag(value + suffix_offset, size - suffix_offset)) {
+        return false;
+    }
     for (const synth::LanguageCapability & entry : languages) {
         if ((entry.flags & SYNTH_LANGUAGE_REGIONAL_FALLBACK) != 0 && equals_ascii_case(value, primary, entry.tag)) {
             return true;
@@ -221,6 +229,24 @@ synth_status_t create_omnivoice_profile_from_reference(const synth_model_t *    
     if (reference_count > capabilities.max_reference_count) {
         emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.too_many_references",
                         "this package accepts at most one Reference Audio clip per Voice Profile");
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    // This family's own implementation only ever reads `references[0]`
+    // below -- `reference_stride` is validated (the per-descriptor
+    // struct_size floor a moment below) but never used to walk to a SECOND
+    // descriptor. That is safe today only because every OmniVoice package
+    // that exists declares `max_reference_count == 1`, so the check above
+    // already narrows `reference_count` to exactly 1 by the time this line
+    // runs (0 was refused above, `references == nullptr` too) -- but that is
+    // a PACKAGE METADATA value, not a compile-time constant of this code. A
+    // future package declaring a higher ceiling would silently drop every
+    // clip past the first rather than fusing or refusing them by name. This
+    // refusal names the real limitation in the code itself, rather than
+    // leaning on every future package happening to agree with it.
+    if (reference_count != 1) {
+        emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.multi_reference_unsupported",
+                        "this package's Voice Profile creation reads a single Reference Audio clip; it does not fuse "
+                        "or select among multiple clips");
         return SYNTH_ERR_INVALID_ARG;
     }
 

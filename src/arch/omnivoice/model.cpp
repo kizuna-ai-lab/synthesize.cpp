@@ -728,6 +728,27 @@ synth_status_t Model::synthesize(const PublicSynthesisParams & params, Synthesis
         // package's frontend has no id for.
         return SYNTH_ERR_INVALID_ARG;
     }
+    // docs/c-interface.md: "max_input_tokens is the positive hard limit on
+    // the final token sequence consumed by the synthesis graph, after any
+    // Text Frontend processing and model-owned special-token insertion ...
+    // Exceeding it returns SYNTH_ERR_INPUT_TOO_LONG." This is NOT redundant
+    // with the core's own check (synthesis-request.cpp's
+    // prepare_synthesis_request, via `info.text_frontend->prepare()`): that
+    // check tokenizes and bounds `params.text` ALONE, with none of what this
+    // family's own prompt wraps around it -- the clone transcript
+    // combine_text folded in above, and assemble_prompt_ids's own style/
+    // lang/instruct markers -- so a request could pass the core's generic
+    // pre-check yet still assemble a `prompt_ids` well past this package's
+    // real ceiling (a long `params.instruct` is the clearest way: it never
+    // reaches the core's own tokenization at all, see synthesize.cpp's own
+    // comment on why `family_request.text` is read from the raw request
+    // bytes directly). `prompt_ids` is what `run_synthesis` actually feeds
+    // the graph, so it is the one this family must bound itself --
+    // hparams.max_input_tokens is refused at load time when zero
+    // (weights.cpp), so this is always a real, positive ceiling here.
+    if (prompt_ids.size() > hparams.max_input_tokens) {
+        return SYNTH_ERR_INPUT_TOO_LONG;
+    }
 
     const DurationEstimator estimator;
     const uint64_t          estimated =

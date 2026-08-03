@@ -102,6 +102,26 @@ int main() {
     request.language_tag      = "en-US";
     request.language_tag_size = 5;
     SYNTH_TEST_CHECK(synth::prepare_synthesis_request(info, &request, prepared) == SYNTH_OK);
+    // PR #6 triage FIX 5: SYNTH_LANGUAGE_REGIONAL_FALLBACK permits ONLY a
+    // primary language plus ONE region subtag (two ASCII letters or three
+    // ASCII digits) -- not a script, variant, extension, or private-use
+    // suffix (docs/c-interface.md:341). Before this fix, this call site
+    // (like its two now-hoisted siblings) accepted ANY suffix after the
+    // first '-' as long as the primary matched: "en-Latn" (a script
+    // subtag, still a well-formed BCP-47 tag on its own) and "en-USA"
+    // (three letters, not a real ISO 3166-1 region) both used to fall back
+    // to "en" here.
+    request.language_tag      = "en-Latn";
+    request.language_tag_size = 7;
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(info, &request, prepared) == SYNTH_ERR_UNSUPPORTED_LANGUAGE);
+    request.language_tag      = "en-USA";
+    request.language_tag_size = 6;
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(info, &request, prepared) == SYNTH_ERR_UNSUPPORTED_LANGUAGE);
+    // A genuine three-ASCII-digit UN M.49 region subtag is still accepted --
+    // the fix narrows the suffix SHAPE, not its length class.
+    request.language_tag      = "en-419";
+    request.language_tag_size = 6;
+    SYNTH_TEST_CHECK(synth::prepare_synthesis_request(info, &request, prepared) == SYNTH_OK);
     request.language_tag      = "zh-CN";
     request.language_tag_size = 5;
     SYNTH_TEST_CHECK(synth::prepare_synthesis_request(info, &request, prepared) == SYNTH_ERR_UNSUPPORTED_LANGUAGE);

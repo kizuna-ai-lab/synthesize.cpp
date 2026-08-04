@@ -1,5 +1,6 @@
 #pragma once
 
+#include "arch/omnivoice/weights.h"
 #include "synthesize.h"
 #include "text-frontend.h"
 
@@ -25,6 +26,33 @@ namespace synth::omnivoice {
 // An empty `ref_text` means no reference, which is the auto-voice and
 // voice-design case; the target alone is used. This is `_combine_text`.
 std::string combine_text(const std::string & ref_text, const std::string & text);
+
+// The Voice Profile module's punctuation rule for a Reference Audio
+// transcript (Task 14), transcribed line for line from upstream's
+// `add_punctuation` (`omnivoice/utils/text.py:213-225`, END_PUNCTUATION set
+// at `text.py:38-65`):
+//   text = text.strip()
+//   if not text: return text
+//   if text[-1] not in END_PUNCTUATION:
+//       is_chinese = any("一" <= char <= "鿿" for char in text)
+//       text += "。" if is_chinese else "."
+//   return text
+// `text[-1]` tests exactly one trailing Python character (one Unicode
+// codepoint), so the set's one two-character member -- "……", a doubled
+// ideographic ellipsis -- can never be what a single trailing codepoint
+// equals; it is not transcribed as a set entry of its own because the lone
+// "…" (U+2026) member already answers "unchanged" for every text whose last
+// codepoint is part of it. `is_chinese` scans the WHOLE (stripped) text, not
+// just its last character, reusing the same CJK range `combine_text`'s
+// cleanup rule 4 tests above (`is_cjk_ideograph`).
+//
+// An empty or whitespace-only transcript returns empty, unchanged -- this is
+// upstream's own behaviour (`if not text: return text` fires after the
+// strip), not a refusal: voice-profile.cpp's "transcript required" check
+// runs on the CALLER's raw string before this function ever sees it, so an
+// empty result here only happens for a transcript that was already
+// rejected upstream of this call in the real Voice Profile path.
+std::string add_punctuation(const std::string & transcript);
 
 // Builds the style prefix that precedes the wrapped text.
 //
@@ -83,5 +111,39 @@ class DurationEstimator {
                                     uint64_t            ref_frames,
                                     float               speaking_rate) const;
 };
+
+// One call from raw request strings to the row-0 text-region ids.
+//
+// Composes: style_text(denoise, language_tag_or_empty, instruct_or_empty)
+//   + "<|text_start|>" + combined_text + "<|text_end|>"
+// tokenized via tokenize_wrapped_text, whose special-token table is this
+// family's SpecialTokens baked into the frontend at load time (model.cpp's
+// registration) -- `tokens` is not consulted to build the wrapped string
+// itself, only to check on the way out that the composition's own contract
+// held: the assembled string always closes on the text-end marker.
+//
+// `combined_text` is the caller's own `combine_text(ref_text, text)` result,
+// taken pre-joined rather than as separate `ref_text`/`text` parameters this
+// function would combine itself: every caller (Model::synthesize) already
+// needs that join's result for its own "is there any Linguistic Input at
+// all" guard before this call, and computing it twice bought nothing.
+//
+// `language_tag`: the core's resolved BCP-47 tag verbatim (en/zh/ja are the
+// ISO codes upstream expects; empty -> literal "None" inside style_text).
+//
+// Returns tokenize_wrapped_text's own status verbatim when tokenization
+// itself fails (e.g. SYNTH_ERR_TEXT_FRONTEND for an input byte the package's
+// frontend has no id for), or SYNTH_ERR_INVALID_ARG when the result does not
+// close on `tokens.text_end` -- a release-path corruption guard against a
+// frontend/tokens mismatch (see the .cpp) rather than something a
+// correctly-built package can trigger. SYNTH_OK otherwise. Either way
+// `output` is left empty on failure.
+synth_status_t assemble_prompt_ids(const TextFrontend &   frontend,
+                                   const SpecialTokens &  tokens,
+                                   bool                   denoise,
+                                   const std::string &    language_tag,
+                                   const std::string &    instruct,
+                                   const std::string &    combined_text,
+                                   std::vector<int32_t> & output);
 
 }  // namespace synth::omnivoice

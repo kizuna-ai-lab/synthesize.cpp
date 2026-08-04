@@ -21,6 +21,25 @@
 // seam, and the pair is compared for decode determinism instead of for oracle
 // parity. Which comparison a case gets is the validator's call, from which
 // grid the exact comparison matched.
+//
+// A fourth, independent channel: `--encode-reference <pcm_24k.f32>` runs the
+// WHOLE cloning-path encode chain (Model::encode_reference -- hop-clip,
+// ref_rms, quiet boost, resample to 16 kHz, the HuBERT semantic branch plus
+// the codec's own SemanticEncoder, the DAC acoustic encoder plus reference
+// fusion, THEN (Task 13) the RVQ nearest-neighbour encode) over the given
+// file and writes `pcm_16k.f32`, `semantic_mean.f32`, `fused_latent.f32`,
+// `tokens.i32` and `gaps.f32`. It is unrelated to the greedy grid/decode
+// machinery above -- it runs whenever the flag is given, independent of
+// --require. `pcm_16k.f32`/`semantic_mean.f32`/`fused_latent.f32` are GATED
+// probes as of Task 13 (max_abs + cosine, tests/tolerances/omnivoice.json);
+// `tokens.i32` is compared EXACTLY against the oracle's own `ref/tokens.i32`
+// -- no tolerance, ever -- and `gaps.f32` (the RVQ margin instrumentation,
+// one value per (level, frame) decision, the same codebook-major layout as
+// `tokens.i32`) exists only so a token mismatch can be diagnosed with the
+// (level, frame, got, want, gap) quintuple this family's own contract
+// requires, never compared on its own. A failure inside this channel is
+// caught and reported on stderr rather than aborting the process, so a defect
+// here cannot regress the three channels above it that already gate.
 
 #include "arch/omnivoice/codec-host.h"
 #include "arch/omnivoice/generator-host.h"
@@ -62,6 +81,16 @@ bool read_i32(const std::string & path, std::vector<int32_t> & values) {
         return false;
     }
     values.resize(bytes.size() / sizeof(int32_t));
+    std::memcpy(values.data(), bytes.data(), bytes.size());
+    return true;
+}
+
+bool read_f32(const std::string & path, std::vector<float> & values) {
+    std::vector<char> bytes;
+    if (!read_file(path, bytes) || bytes.size() % sizeof(float) != 0) {
+        return false;
+    }
+    values.resize(bytes.size() / sizeof(float));
     std::memcpy(values.data(), bytes.data(), bytes.size());
     return true;
 }
@@ -110,6 +139,7 @@ int main(int argc, char ** argv) {
     std::vector<std::string> positional;
     bool                     margin_report = false;
     std::string              alt_grid_path;
+    std::string              encode_reference_path;
     for (int index = 1; index < argc; ++index) {
         const std::string argument(argv[index]);
         if (argument == "--margin-report") {
@@ -124,6 +154,14 @@ int main(int argc, char ** argv) {
                 return 2;
             }
             alt_grid_path = argv[++index];
+            continue;
+        }
+        if (argument == "--encode-reference") {
+            if (index + 1 >= argc) {
+                std::fprintf(stderr, "--encode-reference needs a path\n");
+                return 2;
+            }
+            encode_reference_path = argv[++index];
             continue;
         }
         // An unrecognized flag is refused rather than parsed as a positional.
@@ -141,7 +179,7 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr,
                      "usage: %s <model.gguf> <case-dir> <out-dir> <num-step> <run-greedy 0|1> "
                      "<decode-replay 0|1> <volume peak|none> [probe-layers...] [--margin-report] "
-                     "[--alt-grid <grid.i32>]\n",
+                     "[--alt-grid <grid.i32>] [--encode-reference <pcm_24k.f32>]\n",
                      argv[0]);
         return 2;
     }
@@ -206,14 +244,75 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    // The encode-reference channel: independent of the greedy grid/decode
+    // machinery below, so it runs before that request is even assembled.
+    // pcm_16k/semantic_mean/fused_latent are gated probes as of Task 13, and
+    // tokens.i32 is the exact-token gate itself -- see this file's top
+    // comment -- but a failure inside THIS channel is still printed and left
+    // as missing artifacts rather than aborting the run: the three channels
+    // below still owe their own pass/fail regardless of whether this fourth
+    // one worked.
+    size_t encode_reference_elements = 0;
+    size_t fused_latent_elements     = 0;
+    size_t token_elements            = 0;
+    float  narrowest_gap             = 0.0f;
+    bool   margin_measured           = false;
+    if (!encode_reference_path.empty()) {
+        std::vector<float> pcm_24k;
+        if (!read_f32(encode_reference_path, pcm_24k)) {
+            std::fprintf(stderr, "cannot read --encode-reference %s\n", encode_reference_path.c_str());
+        } else {
+            synth::omnivoice::ReferenceEncoding encoding;
+            const synth_status_t                encode_status = model->encode_reference(pcm_24k, 0, encoding);
+            if (encode_status != SYNTH_OK) {
+                std::fprintf(stderr, "encode_reference -> %d\n", int(encode_status));
+            } else {
+                bool ok = true;
+                if (!write_f32(out_dir + "/pcm_16k.f32", encoding.pcm_16k)) {
+                    std::fprintf(stderr, "cannot write %s/pcm_16k.f32\n", out_dir.c_str());
+                    ok = false;
+                }
+                if (!write_f32(out_dir + "/semantic_mean.f32", encoding.semantic_mean)) {
+                    std::fprintf(stderr, "cannot write %s/semantic_mean.f32\n", out_dir.c_str());
+                    ok = false;
+                } else {
+                    encode_reference_elements = encoding.semantic_mean.size();
+                }
+                if (!write_f32(out_dir + "/fused_latent.f32", encoding.fused_latent)) {
+                    std::fprintf(stderr, "cannot write %s/fused_latent.f32\n", out_dir.c_str());
+                    ok = false;
+                } else {
+                    fused_latent_elements = encoding.fused_latent.size();
+                }
+                if (!write_i32(out_dir + "/tokens.i32", encoding.tokens)) {
+                    std::fprintf(stderr, "cannot write %s/tokens.i32\n", out_dir.c_str());
+                    ok = false;
+                } else {
+                    token_elements = encoding.tokens.size();
+                }
+                if (!write_f32(out_dir + "/gaps.f32", encoding.gaps)) {
+                    std::fprintf(stderr, "cannot write %s/gaps.f32\n", out_dir.c_str());
+                    ok = false;
+                }
+                if (ok) {
+                    narrowest_gap   = encoding.narrowest_gap;
+                    margin_measured = encoding.margin_measured;
+                }
+            }
+        }
+    }
+
     synth::omnivoice::SynthesisRequest request;
-    request.prompt_text_ids  = text_ids;
-    request.reference_tokens = reference_tokens;
-    request.target_frames    = frames;
-    request.num_step         = num_step;
-    request.probe_only       = !run_greedy;
-    request.margin_report    = margin_report;
-    request.threads          = 0;
+    request.prompt_text_ids      = text_ids;
+    request.reference_tokens     = reference_tokens;
+    request.target_frames        = frames;
+    request.num_step             = num_step;
+    request.probe_only           = !run_greedy;
+    request.margin_report        = margin_report;
+    request.threads              = 0;
+    // the replay contract is greedy; the package's own defaults sample
+    request.position_temperature = 0.0f;
+    request.class_temperature    = 0.0f;
     for (size_t index = 7; index < positional.size(); ++index) {
         request.probe_layers.push_back(uint32_t(std::atoi(positional[index].c_str())));
     }
@@ -329,18 +428,31 @@ int main(int argc, char ** argv) {
         return 2;
     }
 
+    // `null` when the encode-reference channel never measured a margin (the
+    // flag was absent, or the channel failed before reaching rvq_encode),
+    // matching margin_json's own "the key is always present" rule above.
+    char encode_margin[128];
+    if (margin_measured) {
+        std::snprintf(encode_margin, sizeof(encode_margin), "{\"narrowest_gap\": %.9g}", double(narrowest_gap));
+    } else {
+        std::snprintf(encode_margin, sizeof(encode_margin), "null");
+    }
+
     const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     std::printf(
         "{\"frames\": %llu, \"samples\": %zu, \"freerun_samples\": %zu, \"alternate_samples\": %zu, "
         "\"probe_layers\": %zu, "
         "\"generator_seconds\": %.4f, \"generator_setup_seconds\": %.4f, \"codec_seconds\": %.4f, "
         "\"placement\": {\"generator\": [%llu, %llu], \"codec\": [%llu, %llu]}, \"margin\": %s, "
+        "\"encode_reference_elements\": %zu, \"fused_latent_elements\": %zu, \"token_elements\": %zu, "
+        "\"encode_margin\": %s, "
         "\"wall_seconds\": %.4f}\n",
         (unsigned long long) frames, samples, freerun_samples, alternate_samples, output.layer_hidden.size(),
         output.generator_seconds, output.generator_setup_seconds, output.codec_seconds,
         (unsigned long long) output.generator_placement.nodes,
         (unsigned long long) output.generator_placement.accelerator_nodes,
         (unsigned long long) output.codec_placement.nodes,
-        (unsigned long long) output.codec_placement.accelerator_nodes, margin_json(output.margin).c_str(), wall);
+        (unsigned long long) output.codec_placement.accelerator_nodes, margin_json(output.margin).c_str(),
+        encode_reference_elements, fused_latent_elements, token_elements, encode_margin, wall);
     return 0;
 }

@@ -1,5 +1,7 @@
 #include "synthesis-request.h"
 
+#include "bcp47.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -105,7 +107,15 @@ const LanguageCapability * declared_language(const ModelInfo & info, const char 
     if (separator == nullptr) {
         return nullptr;
     }
-    const size_t primary = static_cast<size_t>(separator - value);
+    const size_t primary       = static_cast<size_t>(separator - value);
+    const size_t suffix_offset = primary + 1;
+    // Exactly one BCP-47 region subtag, nothing more -- see bcp47.h's own
+    // header comment for the confirmed contract this enforces. Without this,
+    // any suffix past the primary subtag ("en-Latn", "en-Latn-US") used to
+    // fall back too.
+    if (!is_bcp47_region_subtag(value + suffix_offset, size - suffix_offset)) {
+        return nullptr;
+    }
     for (const LanguageCapability & entry : info.languages) {
         if ((entry.flags & SYNTH_LANGUAGE_REGIONAL_FALLBACK) != 0 &&
             equals_ascii_case(value, primary, entry.tag.c_str())) {
@@ -191,9 +201,13 @@ synth_status_t prepare_synthesis_request(const ModelInfo &          info,
     if ((voice_id == nullptr) != (voice_size == 0) || (voice_id != nullptr && profile != nullptr)) {
         return SYNTH_ERR_INVALID_ARG;
     }
-    if (profile != nullptr) {
-        return SYNTH_ERR_UNSUPPORTED_VOICE;
-    }
+    // A profile from another model, or from a family with no Voice Profile
+    // support at all, is refused at the family branch that reads
+    // `output.voice_profile` below (src/synthesize.cpp) -- this file has no
+    // access to `synth_voice_profile`'s full definition (it would need
+    // voice-profile-handle.h for `->model`) and does not need it: threading
+    // the opaque pointer through is all a family-independent validator can
+    // do with a Voice Profile.
     uint32_t speaker_index = UINT32_MAX;
     if (voice_id != nullptr) {
         if (voice_size > std::numeric_limits<size_t>::max()) {
@@ -268,6 +282,7 @@ synth_status_t prepare_synthesis_request(const ModelInfo &          info,
         output.resolved_voice_id     = resolved.c_str();
         output.resolved_voice_size   = resolved.size();
     }
+    output.voice_profile = profile;
     return SYNTH_OK;
 }
 

@@ -17,9 +17,12 @@
 #include "arch/omnivoice/catalog.h"
 #include "arch/omnivoice/codec-host.h"
 #include "arch/omnivoice/codec.h"
+#include "arch/omnivoice/frontend-host.h"
 #include "arch/omnivoice/generator-host.h"
 #include "arch/omnivoice/generator.h"
 #include "arch/omnivoice/omnivoice.h"
+#include "arch/omnivoice/profile.h"
+#include "arch/omnivoice/reference-encoder-host.h"
 #include "arch/omnivoice/weights.h"
 #include "backend-plan.h"
 #include "bpe-frontend.h"
@@ -28,6 +31,7 @@
 #include "ggml.h"
 #include "gguf-metadata.h"
 #include "gguf.h"
+#include "random-stream.h"
 
 #include <algorithm>
 #include <chrono>
@@ -35,6 +39,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <new>
 #include <utility>
 #include <vector>
@@ -65,7 +70,7 @@ double now_seconds() {
 // A context sized for a graph's headers plus the graph itself.
 class GraphRun {
   public:
-    GraphRun(const BackendPlan & plan, size_t nodes) : plan_(plan), nodes_(nodes) {
+    GraphRun(const BackendPlan & plan, size_t nodes) : plan_(plan) {
         ggml_init_params parameters{};
         parameters.mem_size = ggml_tensor_overhead() * (nodes + 256) + ggml_graph_overhead_custom(nodes, false);
         parameters.no_alloc = true;
@@ -144,7 +149,6 @@ class GraphRun {
 
   private:
     const BackendPlan &  plan_;
-    size_t               nodes_;
     ggml_context *       context_   = nullptr;
     ggml_cgraph *        graph_     = nullptr;
     ggml_backend_sched_t scheduler_ = nullptr;
@@ -341,6 +345,7 @@ synth_status_t Model::get_info(ModelInfo & output) const {
     output.language_tags        = hparams.language_tags;
     output.frontend_present     = hparams.frontend_present;
     output.frontend_provider    = hparams.frontend_provider;
+    output.profile              = hparams.profile;
     return SYNTH_OK;
 }
 
@@ -360,6 +365,14 @@ uint32_t Model::text_vocab_size() const {
     return implementation_->hparams.generator.text_vocab_size;
 }
 
+uint32_t Model::audio_vocab_size() const {
+    return implementation_->hparams.audio.vocab_size;
+}
+
+uint32_t Model::audio_mask_id() const {
+    return implementation_->hparams.audio.mask_id;
+}
+
 synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisOutput & output) {
     output                  = SynthesisOutput{};
     Impl &          impl    = *implementation_;
@@ -377,12 +390,34 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
             return SYNTH_ERR_INVALID_ARG;
         }
     }
-    if (request.target_frames > hparams.max_output_frames) {
+    // hparams.max_output_frames is the package's declared ceiling in native
+    // PCM frames (docs/c-interface.md); request.target_frames is a codec/
+    // decoder-frame count (one committed grid column, hop_length PCM samples
+    // each). Converting the ceiling into the same codec-frame unit before
+    // comparing is the fix for PR #6's finding: the package once carried a
+    // codec-frame count directly in this PCM-frame field, and comparing the
+    // two without converting made that 960x error invisible. hop_length is
+    // validated non-zero at load (weights.cpp).
+    const uint64_t max_output_frames_codec = hparams.max_output_frames / hparams.codec.hop_length;
+    if (request.target_frames > max_output_frames_codec) {
         return SYNTH_ERR_OUTPUT_LIMIT;
     }
     const uint32_t num_step = request.num_step != 0 ? request.num_step : hparams.generation.num_step;
     const float    guidance = hparams.generation.guidance_scale;
     const int      threads  = request.threads > 0 ? request.threads : default_synthesis_threads();
+    // Negative means "the package's own default governs"; 0.0f is a
+    // meaningful value (greedy), not an unset one. See SynthesisRequest's own
+    // comment in omnivoice.h.
+    const float    pos_t =
+        request.position_temperature < 0.0f ? hparams.generation.position_temperature : request.position_temperature;
+    const float class_t =
+        request.class_temperature < 0.0f ? hparams.generation.class_temperature : request.class_temperature;
+    // A Gumbel-perturbed margin measures nothing meaningful: the report exists
+    // to screen the greedy loop's narrowest decisions, and sampling replaces
+    // "narrow" with "randomly won or lost" -- a different axis entirely.
+    if (request.margin_report && (pos_t > 0.0f || class_t > 0.0f)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
 
     PromptLayout   prompt;
     synth_status_t status = build_prompt_grid(request.prompt_text_ids, request.reference_tokens, request.target_frames,
@@ -483,6 +518,27 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     const uint64_t               row          = uint64_t(codebooks) * vocab;
     const ForwardProbeSinks      no_probes;
 
+    // ONE stream drives every draw this synthesis makes, constructed HERE --
+    // before the step loop -- iff either resolved temperature above is
+    // positive. A fully greedy synthesis (both temperatures 0) constructs no
+    // stream at all and therefore draws nothing: the family's recorded
+    // zero-RNG property.
+    //
+    // Draw-order contract: per step, still-masked candidates are visited in
+    // the scan order the nested loop below builds them in (codebook-major,
+    // frame-minor). For each candidate: the class draws happen FIRST, inside
+    // choose_token_sampled (only when class_t > 0) -- as many uniforms as
+    // survive its top-k filter, in ascending class-id order -- then, iff
+    // pos_t > 0, exactly ONE further draw perturbs that same candidate's
+    // score. A step whose budget is zero skips this whole per-candidate loop,
+    // INCLUDING every draw it would have made: upstream's `k <= 0: continue`
+    // consumes no randomness for that step either, and the `continue` below
+    // already sits above every draw site.
+    std::unique_ptr<NormalRandomStream> stream;
+    if (pos_t > 0.0f || class_t > 0.0f) {
+        stream = std::make_unique<NormalRandomStream>(request.seed);
+    }
+
     for (uint32_t step = 0; step < num_step; ++step) {
         if (step > 0) {
             // The reference tokens never move; only the target region follows
@@ -536,14 +592,34 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
                 candidate.codebook = codebook;
                 candidate.frame    = frame;
                 float log_prob     = 0.0f;
-                choose_token(cond_logits.data() + cond_offset,
-                             guidance != 0.0f ? uncond_logits.data() + uncond_offset : nullptr, vocab,
-                             hparams.audio.mask_id, guidance, candidate.token, log_prob,
-                             track_margin ? &candidate.argmax_gap : nullptr);
+                if (class_t > 0.0f) {
+                    // The class draws for this candidate: as many uniforms as
+                    // survive choose_token_sampled's own top-k filter,
+                    // consumed BEFORE this candidate's position draw below
+                    // (the draw-order contract documented where `stream` is
+                    // constructed).
+                    status = choose_token_sampled(cond_logits.data() + cond_offset,
+                                                  guidance != 0.0f ? uncond_logits.data() + uncond_offset : nullptr,
+                                                  vocab, hparams.audio.mask_id, guidance, class_t, *stream,
+                                                  candidate.token, log_prob);
+                    if (status != SYNTH_OK) {
+                        return status;
+                    }
+                } else {
+                    choose_token(cond_logits.data() + cond_offset,
+                                 guidance != 0.0f ? uncond_logits.data() + uncond_offset : nullptr, vocab,
+                                 hparams.audio.mask_id, guidance, candidate.token, log_prob,
+                                 track_margin ? &candidate.argmax_gap : nullptr);
+                }
                 // The layer penalty biases commitment toward the coarse
                 // codebooks first. (audio_codebook_weights is training-loss
                 // weighting and plays NO part here -- see the family doc.)
                 candidate.score = log_prob - float(codebook) * hparams.generation.layer_penalty_factor;
+                if (pos_t > 0.0f) {
+                    // This candidate's own position draw, consumed AFTER any
+                    // class draws above.
+                    candidate.score = gumbel_perturb(candidate.score, pos_t, stream->next_uniform());
+                }
                 candidates.push_back(candidate);
             }
         }
@@ -589,15 +665,145 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         return status;
     }
     // Decision 3 of the plan: the residual output scaling lives HERE, inside
-    // the family's synthesis path, faithful to the oracle. Auto-voice and
-    // voice-design requests take the no-reference branch; the clone branches
-    // arrive with Plan 3's reference handling, which is the only thing that can
-    // supply the reference RMS the other two arms key off -- so a Plan 2
-    // request carrying reference TOKENS still takes this branch, and the replay
-    // seam applies the oracle's own branch separately rather than reading this
-    // one.
-    apply_no_reference_volume(output.audio);
+    // the family's synthesis path, faithful to the oracle's own
+    // `_post_process_audio` three-arm branch (docs/porting/families/omnivoice.md's
+    // "One scaling survives the switches" table). Task 14 makes the choice
+    // real: `request.reference_rms` (see its own comment in omnivoice.h) is
+    // negative for auto-voice, voice-design, and every caller that predates
+    // Plan 3's cloning path -- including the replay seam, which applies the
+    // oracle's own branch itself rather than reading this one -- and
+    // non-negative only when the public seam (Model::synthesize) built this
+    // request from a Reference Audio profile, in which case
+    // apply_reference_volume's own `rms >= 0.1 -> none` / `0 < rms < 0.1 ->
+    // scale` split governs instead.
+    if (request.reference_rms >= 0.0f) {
+        apply_reference_volume(output.audio, request.reference_rms);
+    } else {
+        apply_no_reference_volume(output.audio);
+    }
     return SYNTH_OK;
+}
+
+synth_status_t Model::synthesize(const PublicSynthesisParams & params, SynthesisOutput & output) {
+    output                  = SynthesisOutput{};
+    Impl &          impl    = *implementation_;
+    const HParams & hparams = impl.hparams;
+
+    // Task 15 threads the free-text instruction through `params.instruct`;
+    // this task (14) threads Reference Audio through `params.clone`.
+    // `ref_text`/`denoise`/`ref_frames` are the clone-shaped inputs
+    // assemble_prompt_ids and DurationEstimator both expect: empty/false/0
+    // for auto-voice and voice-design, which is what makes them read as "no
+    // reference" and take their own no-reference branches (the anchor pair
+    // and the no-reference volume arm respectively) exactly as before this
+    // task.
+    const bool        has_clone  = params.clone != nullptr;
+    const std::string ref_text   = has_clone ? params.clone->transcript_text : std::string();
+    const std::string instruct   = params.instruct != nullptr ? *params.instruct : std::string();
+    const bool        denoise    = has_clone;  // the clone-only marker
+    uint64_t          ref_frames = 0;          // the reference's own frame count, T_ref
+    if (has_clone) {
+        const uint32_t codebooks = hparams.audio.num_codebooks;
+        // A ClonePrompt's reference_tokens is always an exact codebook-major
+        // multiple of num_codebooks (Model::encode_reference's own
+        // postcondition, ReferenceEncoding::tokens); a profile that
+        // disagrees is a wiring defect upstream of this call, not a runtime
+        // case a caller can trigger through the public seam (voice-profile.cpp
+        // never stores a ClonePrompt that failed encode_reference).
+        if (codebooks == 0 || params.clone->reference_tokens.size() % codebooks != 0) {
+            return SYNTH_ERR_INTERNAL;
+        }
+        ref_frames = params.clone->reference_tokens.size() / codebooks;
+    }
+
+    // Empty or whitespace-only text is refused before any estimate is made:
+    // upstream never runs a synthesis for a request that names no Linguistic
+    // Input, and DurationEstimator's own floor (`max(1, int(...))`) would
+    // otherwise hand back a one-frame canvas instead of a refusal. Computed
+    // once, here, and handed to assemble_prompt_ids below rather than
+    // recomputed inside it: reusing combine_text's own stripping keeps this
+    // check's idea of "empty" the exact one assemble_prompt_ids applies,
+    // rather than a second, possibly divergent, whitespace classifier, and
+    // a single join is all either call needs.
+    const std::string combined_text = combine_text(ref_text, params.text);
+    if (combined_text.empty()) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    std::vector<int32_t> prompt_ids;
+    const synth_status_t assemble_status = assemble_prompt_ids(
+        *impl.frontend, hparams.tokens, denoise, params.language_tag, instruct, combined_text, prompt_ids);
+    if (assemble_status != SYNTH_OK) {
+        // Propagated verbatim from assemble_prompt_ids: the tokenizer's own
+        // status (e.g. SYNTH_ERR_TEXT_FRONTEND for an input byte the
+        // package's frontend has no id for), or SYNTH_ERR_INVALID_ARG for the
+        // text-end postcondition failure -- see that function's doc comment.
+        return assemble_status;
+    }
+    // docs/c-interface.md: "max_input_tokens is the positive hard limit on
+    // the final token sequence consumed by the synthesis graph, after any
+    // Text Frontend processing and model-owned special-token insertion ...
+    // Exceeding it returns SYNTH_ERR_INPUT_TOO_LONG." This is NOT redundant
+    // with the core's own check (synthesis-request.cpp's
+    // prepare_synthesis_request, via `info.text_frontend->prepare()`): that
+    // check tokenizes and bounds `params.text` ALONE, with none of what this
+    // family's own prompt wraps around it -- the clone transcript
+    // combine_text folded in above, and assemble_prompt_ids's own style/
+    // lang/instruct markers -- so a request could pass the core's generic
+    // pre-check yet still assemble a `prompt_ids` well past this package's
+    // real ceiling (a long `params.instruct` is the clearest way: it never
+    // reaches the core's own tokenization at all, see synthesize.cpp's own
+    // comment on why `family_request.text` is read from the raw request
+    // bytes directly). `prompt_ids` is what `run_synthesis` actually feeds
+    // the graph, so it is the one this family must bound itself --
+    // hparams.max_input_tokens is refused at load time when zero
+    // (weights.cpp), so this is always a real, positive ceiling here.
+    if (prompt_ids.size() > hparams.max_input_tokens) {
+        return SYNTH_ERR_INPUT_TOO_LONG;
+    }
+
+    const DurationEstimator estimator;
+    const uint64_t          estimated =
+        estimator.estimate_target_frames(params.text, ref_text, ref_frames, float(params.speaking_rate));
+
+    // The request's own limit if it named one, else the package's declared
+    // ceiling -- the same "request limit if nonzero, else package cap" rule
+    // the core applies to `effective_frame_limit`, restated here because this
+    // family settles its canvas length itself rather than being handed one.
+    // `params.max_output_frames` already arrived in codec frames -- converted
+    // from the public request's native-PCM-frame limit by src/synthesize.cpp
+    // before this call -- while `hparams.max_output_frames` is the package's
+    // own ceiling in native PCM frames (docs/c-interface.md). Converting the
+    // latter into codec frames before the two are compared is the fix for PR
+    // #6's finding: the package once carried a codec-frame count directly in
+    // this PCM-frame field, so the unconverted min() silently compared a
+    // codec-frame request limit against a value that LOOKED like PCM frames
+    // but was secretly already codec frames too -- correct only by that
+    // coincidence, and wrong the moment the field held a real PCM value.
+    const uint64_t max_output_frames_codec = hparams.max_output_frames / hparams.codec.hop_length;
+    const uint64_t effective_limit         = params.max_output_frames != 0 ?
+                                                 std::min(params.max_output_frames, max_output_frames_codec) :
+                                                 max_output_frames_codec;
+    if (estimated > effective_limit) {
+        // A cap on the estimate, not a target for it: mirrors upstream's
+        // estimator-fixes-canvas semantics rather than silently truncating a
+        // request to whatever the limit allows.
+        return SYNTH_ERR_OUTPUT_LIMIT;
+    }
+
+    SynthesisRequest request;
+    request.prompt_text_ids = std::move(prompt_ids);
+    request.target_frames   = estimated;
+    request.seed            = params.seed;
+    request.threads         = params.threads;
+    if (has_clone) {
+        request.reference_tokens = params.clone->reference_tokens;
+        request.reference_rms    = params.clone->ref_rms;
+    }
+    // position_temperature and class_temperature stay at SynthesisRequest's
+    // own -1.0f default: the package's own defaults govern, which for the
+    // public path is what makes it sample rather than decode greedily.
+    return run_synthesis(request, output);
 }
 
 synth_status_t Model::decode_codes(const std::vector<int32_t> &      codes,
@@ -669,6 +875,82 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> &      codes,
         audio.clear();
         return SYNTH_ERR_INTERNAL;
     }
+    return SYNTH_OK;
+}
+
+synth_status_t Model::encode_reference(const std::vector<float> & pcm_24k, int threads, ReferenceEncoding & output) {
+    output                  = ReferenceEncoding{};
+    Impl &          impl    = *implementation_;
+    const HParams & hparams = impl.hparams;
+
+    if (pcm_24k.empty()) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // Step 1: ref_rms (measured on the FULL, un-clipped `pcm_24k`), the
+    // quiet-reference boost, THEN the hop-clip (tail-clip to a whole number
+    // of hop_length-sample frames) -- all in place, upstream's own order;
+    // see clip_and_boost_reference's own header comment for the line-by-line
+    // citation.
+    std::vector<float> clipped = pcm_24k;
+    clip_and_boost_reference(clipped, hparams.codec.hop_length, output.ref_rms);
+    if (clipped.empty()) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // Step 2: resample to 16 kHz for the semantic branch.
+    std::vector<float> pcm_16k;
+    if (!resample_24k_to_16k(clipped, pcm_16k)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    const int resolved_threads = threads > 0 ? threads : default_synthesis_threads();
+
+    // Step 3: the HuBERT semantic branch. The fusion's own semantic-side
+    // input is build_semantic_branch's PRIMARY return value
+    // (semantic_encoder_output), not semantic_mean, so this always asks for
+    // it regardless of whether a caller reads output.semantic_encoder_output
+    // back.
+    std::vector<float> semantic_encoder_output;
+    synth_status_t status = run_semantic_branch(*impl.backend_plan, impl.weights, hparams, pcm_16k, resolved_threads,
+                                                output.semantic_mean, &semantic_encoder_output);
+    if (status != SYNTH_OK) {
+        return status;
+    }
+
+    // Step 4: the DAC acoustic branch plus reference fusion, over the
+    // clipped+boosted 24 kHz segment -- NOT the original `pcm_24k` -- so the
+    // acoustic and semantic branches see the identical waveform samples the
+    // RVQ encode below is a function of.
+    status = run_acoustic_and_fuse(*impl.backend_plan, impl.weights, hparams, clipped, semantic_encoder_output,
+                                   resolved_threads, output.fused_latent);
+    if (status != SYNTH_OK) {
+        return status;
+    }
+    output.pcm_16k                 = std::move(pcm_16k);
+    output.semantic_encoder_output = std::move(semantic_encoder_output);
+
+    // Step 5: RVQ nearest-neighbour encode. `concat` is the RVQ's own input
+    // width (codec.hidden_size + semantic.hidden_size, catalog.cpp's own
+    // concat_width -- duplicated here as a one-line formula rather than
+    // exposed from that file's anonymous namespace) and divides
+    // fused_latent's own size exactly for any hop-aligned input, matching
+    // build_reference_fusion's own contract.
+    const uint64_t concat = uint64_t(hparams.codec.hidden_size) + hparams.semantic.hidden_size;
+    if (concat == 0 || output.fused_latent.size() % concat != 0) {
+        // Same cleared-on-error contract as decode_codes: an early return must
+        // not hand back the ref_rms/pcm_16k/semantic_mean/semantic_encoder_output/
+        // fused_latent fields Steps 1-4 already populated.
+        output = ReferenceEncoding{};
+        return SYNTH_ERR_INTERNAL;
+    }
+    output.frames = output.fused_latent.size() / concat;
+
+    if (!rvq_encode(impl.weights.quantizers, output.fused_latent, output.frames, output.tokens, &output.narrowest_gap,
+                    &output.gaps)) {
+        output = ReferenceEncoding{};
+        return SYNTH_ERR_INTERNAL;
+    }
+    output.margin_measured = true;
     return SYNTH_OK;
 }
 

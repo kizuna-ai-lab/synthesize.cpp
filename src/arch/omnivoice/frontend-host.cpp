@@ -151,6 +151,88 @@ std::string combine_text(const std::string & ref_text, const std::string & text)
     return result;
 }
 
+namespace {
+
+// Upstream's END_PUNCTUATION (omnivoice/utils/text.py:38-65), as the set of
+// codepoints `text[-1] not in END_PUNCTUATION` (text.py:220) can actually
+// test against -- see add_punctuation's own header comment for why the
+// set's one two-character member, "……", needs no entry of its own.
+constexpr uint32_t kEndPunctuation[] = {
+    0x003B,  // ;
+    0x003A,  // :
+    0x002C,  // ,
+    0x002E,  // .
+    0x0021,  // !
+    0x003F,  // ?
+    0x2026,  // … (U+2026; also covers a trailing "……")
+    0x0029,  // )
+    0x005D,  // ]
+    0x007D,  // }
+    0x0022,  // "
+    0x0027,  // '
+    0x201C,  // “
+    0x201D,  // ”
+    0x2018,  // ‘
+    0x2019,  // ’
+    0xFF1B,  // ；
+    0xFF1A,  // ：
+    0xFF0C,  // ，
+    0x3002,  // 。
+    0xFF01,  // ！
+    0xFF1F,  // ？
+    0x3001,  // 、
+    0xFF09,  // ）
+    0x3011,  // 】
+};
+
+bool is_end_punctuation(uint32_t codepoint) {
+    for (uint32_t candidate : kEndPunctuation) {
+        if (candidate == codepoint) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The last codepoint of a UTF-8 string, or 0 for an empty one. Walks back
+// over continuation bytes the same way `strip()` above does to find its own
+// last character's start.
+uint32_t last_codepoint(const std::string & text) {
+    if (text.empty()) {
+        return 0;
+    }
+    size_t start = text.size() - 1;
+    while (start > 0 && (static_cast<unsigned char>(text[start]) & 0xC0) == 0x80) {
+        --start;
+    }
+    size_t length = 0;
+    return decode_utf8(text, start, length);
+}
+
+}  // namespace
+
+std::string add_punctuation(const std::string & transcript) {
+    std::string text = strip(transcript);
+    if (text.empty()) {
+        return text;
+    }
+    if (is_end_punctuation(last_codepoint(text))) {
+        return text;
+    }
+    bool is_chinese = false;
+    for (size_t offset = 0; offset < text.size();) {
+        size_t         length    = 0;
+        const uint32_t codepoint = decode_utf8(text, offset, length);
+        if (is_cjk_ideograph(codepoint)) {
+            is_chinese = true;
+            break;
+        }
+        offset += length;
+    }
+    text += is_chinese ? "\xE3\x80\x82" /* 。 U+3002 */ : ".";
+    return text;
+}
+
 std::string style_text(bool denoise, const std::string & language_tag, const std::string & instruct) {
     // `<|denoise|>` + `<|lang_start|>{lang}<|lang_end|>` +
     // `<|instruct_start|>{instruct}<|instruct_end|>`, with "None" for an empty
@@ -581,6 +663,46 @@ uint64_t DurationEstimator::estimate_target_frames(const std::string & text,
         return static_cast<uint64_t>(kConvertible);
     }
     return static_cast<uint64_t>(truncated);
+}
+
+// --------------------------------------------------------------------------
+// assemble_prompt_ids
+// --------------------------------------------------------------------------
+
+synth_status_t assemble_prompt_ids(const TextFrontend &   frontend,
+                                   const SpecialTokens &  tokens,
+                                   bool                   denoise,
+                                   const std::string &    language_tag,
+                                   const std::string &    instruct,
+                                   const std::string &    combined_text,
+                                   std::vector<int32_t> & output) {
+    std::string wrapped = style_text(denoise, language_tag, instruct);
+    wrapped += "<|text_start|>";
+    wrapped += combined_text;
+    wrapped += "<|text_end|>";
+
+    const synth_status_t status = tokenize_wrapped_text(frontend, wrapped, output);
+    if (status != SYNTH_OK) {
+        output.clear();
+        return status;
+    }
+    // The composed string always closes on the text-end marker, and nothing
+    // in `wrapped` follows it, so tokenize_wrapped_text -- which matches it
+    // literally -- always emits its id last. build_prompt_grid (model.cpp)
+    // finds the target region by LENGTH alone; a frontend that silently
+    // dropped or reordered the closing marker would corrupt every row
+    // without tripping a status, which is exactly the failure mode this
+    // family's docs warn produces different, still-plausible speech rather
+    // than an error -- so this is enforced on the RELEASE path, not left to
+    // an assert: both trees this project builds (Release and
+    // RelWithDebInfo) define NDEBUG, which would make a plain assert() here
+    // inert in every standard build configuration, and a silently corrupted
+    // prompt is worse than a synthesis refused before it starts.
+    if (output.empty() || output.back() != int32_t(tokens.text_end)) {
+        output.clear();
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    return SYNTH_OK;
 }
 
 }  // namespace synth::omnivoice

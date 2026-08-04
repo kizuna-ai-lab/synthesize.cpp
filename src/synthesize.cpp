@@ -2,6 +2,7 @@
 
 #include "arch/kokoro/kokoro.h"
 #include "arch/omnivoice/omnivoice.h"
+#include "arch/omnivoice/profile.h"
 #include "arch/qwen3-tts/qwen3-tts.h"
 #include "arch/vits/vits.h"
 #include "audio-delivery.h"
@@ -10,9 +11,11 @@
 #include "cpu-parallelism.h"
 #include "gguf-metadata.h"
 #include "gguf.h"
+#include "model-handle.h"
 #include "model-info.h"
 #include "random-stream.h"
 #include "synthesis-request.h"
+#include "voice-profile-handle.h"
 
 #include <algorithm>
 #include <atomic>
@@ -24,20 +27,6 @@
 #include <new>
 #include <thread>
 #include <vector>
-
-// A Loaded Model is one family's model behind the family-independent info the
-// core runtime reads. Only one implementation pointer is ever set, and `info`
-// says which.
-struct synth_model {
-    synth::ModelInfo                         info;
-    std::unique_ptr<synth::vits::Model>      vits;
-    std::unique_ptr<synth::kokoro::Model>    kokoro;
-    std::unique_ptr<synth::qwen3tts::Model>  qwen3_tts;
-    std::unique_ptr<synth::omnivoice::Model> omnivoice;
-    // What only the VITS synthesis path reads; Kokoro's equivalents live behind
-    // its own seeded entry point.
-    synth::vits::ModelInfo                   vits_extras;
-};
 
 struct synth_context {
     const synth_model_t * model   = nullptr;
@@ -363,6 +352,42 @@ synth::ModelInfo shared_info(const synth::omnivoice::ModelInfo &        info,
     shared.max_output_frames    = info.max_output_frames;
     shared.min_speaking_rate    = info.min_speaking_rate;
     shared.max_speaking_rate    = info.max_speaking_rate;
+
+    // Voice Profile capabilities: REFERENCE_AUDIO (Task 14) and
+    // DESCRIPTION_TEXT (Task 15) dispatch for real; SERIALIZED_PROFILE
+    // (Task 16) now does too -- serialize/load_from_memory dispatch on
+    // family in voice-profile.cpp, backed by arch/omnivoice/profile.cpp's
+    // GGUF envelope writer/reader. docs/c-interface.md: "Any Loaded Model
+    // that creates a Profile from Reference Audio, Description Text, or
+    // Random Seed also sets SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE, because
+    // every successfully prepared v1 Profile can be serialized" -- this
+    // family creates from the first two, so it claims the third
+    // unconditionally alongside them.
+    synth::VoiceProfileInfo & profile = shared.voice_profile;
+    profile.source_flags              = SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT |
+                                        SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE;
+    profile.reference_transcript      = SYNTH_REQUIREMENT_REQUIRED;
+    profile.reference_language        = SYNTH_REQUIREMENT_OPTIONAL;
+    profile.description_language      = SYNTH_REQUIREMENT_OPTIONAL;
+    profile.reference_target_sample_rate = info.profile.reference_sample_rate;
+    profile.reference_target_channels    = info.profile.reference_channels;
+    profile.min_frames_per_clip          = info.profile.min_frames_per_clip;
+    profile.max_frames_per_clip          = info.profile.max_frames_per_clip;
+    profile.max_total_frames             = info.profile.max_total_frames;
+    profile.max_reference_count          = static_cast<uint32_t>(info.profile.max_reference_count);
+    // Best-effort: HParams::profile is already validated at load time
+    // (weights.cpp's read_profile_contract, is_sha256_hex), so this should
+    // never fail for a package that made it this far; a defect that slipped
+    // through leaves the bytes at their all-zero default rather than
+    // propagating a load failure this deep into shared_info.
+    (void) synth::decode_profile_compatibility_id(info.profile.compatibility_id_hex, profile.compatibility_id);
+    // The Serialized Profile schema identity the same v1 envelope declares
+    // (arch/omnivoice/profile.cpp's kEnvelopeSchema/kEnvelopeSchemaVersion
+    // are this exact pair, by construction -- weights.cpp's
+    // read_profile_contract already refused any package that disagrees).
+    profile.schema         = info.profile.schema;
+    profile.schema_version = info.profile.schema_version;
+
     return shared;
 }
 
@@ -835,15 +860,139 @@ synth_status_t synth_synthesize(synth_context_t *          context,
     }
 
     if (context->model->info.family == synth::ModelFamily::Omnivoice) {
-        // Plan 2 lands the diffusion loop; a loadable-but-unsynthesizable
-        // family must fail loudly rather than fall through to another
-        // family's branch.
-        emit_diagnostic(prepared.diagnostics, SYNTH_ERR_INTERNAL, "synthesis.not_implemented",
-                        "omnivoice synthesis is not implemented yet");
-        return SYNTH_ERR_INTERNAL;
+        try {
+            synth::omnivoice::PublicSynthesisParams family_request;
+            // input_kind is guaranteed SYNTH_INPUT_TEXT_UTF8 by this point:
+            // arch/omnivoice/weights.cpp's read_capabilities refuses to LOAD
+            // any package whose input_flags is not EXACTLY
+            // SYNTH_INPUT_SUPPORT_TEXT_UTF8 (reviewer FINDING 4 -- until that
+            // fix, this loader only checked the TEXT bit was PRESENT, so a
+            // package additionally declaring SYNTH_INPUT_SUPPORT_TOKEN_IDS
+            // would have reached this dispatch with an input_kind of
+            // SYNTH_INPUT_TOKEN_IDS and had its int32 token array read as
+            // raw UTF-8 text bytes below), and prepare_synthesis_request
+            // above already refused any request kind the package does not
+            // declare -- so the raw bytes behind `prepared.token_ids` (this
+            // family's frontend has no prefix/suffix, so that generic
+            // tokenization is unused here; see model.cpp's registration
+            // comment) are read straight from the request instead.
+            family_request.text.assign(static_cast<const char *>(request->input_data),
+                                       static_cast<size_t>(request->input_count));
+            family_request.language_tag.assign(
+                prepared.resolved_language_tag != nullptr ? prepared.resolved_language_tag : "",
+                size_t(prepared.resolved_language_size));
+            // `clone` (Task 14) and `instruct` (Task 15): a profile from a
+            // different model, or one that is neither of this family's own
+            // payload shapes, is refused here rather than silently ignored
+            // -- prepare_synthesis_request threads any non-null profile
+            // through without checking either property, because it has no
+            // access to synth_voice_profile's full definition
+            // (voice-profile-handle.h) to do so. The two payload shapes are
+            // mutually exclusive by construction (one synth_voice_profile_t
+            // carries exactly one family_tag), so at most one of `clone`/
+            // `instruct` is ever set below.
+            if (prepared.voice_profile != nullptr) {
+                if (prepared.voice_profile->model != context->model) {
+                    return SYNTH_ERR_UNSUPPORTED_VOICE;
+                }
+                if (prepared.voice_profile->family_tag == synth::ProfileFamilyTag::OmnivoiceClone) {
+                    family_request.clone =
+                        static_cast<const synth::omnivoice::ClonePrompt *>(prepared.voice_profile->payload.get());
+                } else if (prepared.voice_profile->family_tag == synth::ProfileFamilyTag::OmnivoiceDesign) {
+                    // Points at the DesignInstruct's own already-canonical
+                    // `instruct` member rather than copying it: the profile
+                    // (and so its payload) outlives this synchronous
+                    // synthesis call, which is all PublicSynthesisParams'
+                    // borrowed pointer needs.
+                    family_request.instruct =
+                        &static_cast<const synth::omnivoice::DesignInstruct *>(prepared.voice_profile->payload.get())
+                             ->instruct;
+                } else {
+                    return SYNTH_ERR_UNSUPPORTED_VOICE;
+                }
+            }
+            family_request.speaking_rate = double(prepared.speaking_rate);
+            family_request.seed          = actual_seed;
+            family_request.threads       = context->threads;
+
+            // Same PCM-vs-native conversion qwen3-tts needs and for the same
+            // reason: the core's limit counts output PCM frames, and this
+            // family's own limit counts codec frames of `samples_per_frame`
+            // each.
+            const uint32_t samples_per_frame = context->model->info.samples_per_frame;
+            if (prepared.requested_frame_limit != 0 && samples_per_frame != 0) {
+                family_request.max_output_frames = prepared.requested_frame_limit / samples_per_frame;
+                if (family_request.max_output_frames == 0) {
+                    // A limit smaller than one frame cannot be met by
+                    // emitting anything, and asking for zero frames would be
+                    // read as unset.
+                    return report_output_limit(delivery_info, sink, out_result);
+                }
+            } else {
+                family_request.max_output_frames = 0;  // the family applies its own package cap
+            }
+
+            synth::omnivoice::SynthesisOutput synthesis;
+            status = context->model->omnivoice->synthesize(family_request, synthesis);
+            // This family estimates and clamps its own canvas length before
+            // ever reaching run_synthesis, so -- like qwen3-tts -- its limit
+            // stop arrives here rather than at the delivering check further
+            // down.
+            if (status == SYNTH_ERR_OUTPUT_LIMIT) {
+                return report_output_limit(delivery_info, sink, out_result);
+            }
+            if (status != SYNTH_OK) {
+                emit_diagnostic(prepared.diagnostics, status, "synthesis.graph_failed", synth_status_string(status));
+                return status;
+            }
+            // `prepared.effective_frame_limit` is native PCM frames
+            // (docs/c-interface.md), and `synthesis.frame_count` is this
+            // family's own codec/decoder-frame count (samples_per_frame PCM
+            // samples each) -- converted here rather than compared directly.
+            // PR #6's finding: while the package's own max_output_frames
+            // metadata was (wrongly) written in codec frames, this comparison
+            // "worked" only because prepared.effective_frame_limit inherited
+            // that same wrong codec-frame magnitude; now that the package
+            // field is correctly PCM frames, a codec-frame count would never
+            // exceed it and this check would silently stop enforcing the
+            // limit at all.
+            if (samples_per_frame == 0 ||
+                synthesis.frame_count > std::numeric_limits<uint64_t>::max() / samples_per_frame) {
+                (void) synth::deliver_complete_audio(nullptr, 0, delivery_info, sink, out_result);
+                return SYNTH_ERR_OUTPUT_LIMIT;
+            }
+            const uint64_t synthesis_pcm_frame_count = synthesis.frame_count * samples_per_frame;
+            if (synthesis_pcm_frame_count > prepared.effective_frame_limit) {
+                (void) synth::deliver_complete_audio(nullptr, 0, delivery_info, sink, out_result);
+                return SYNTH_ERR_OUTPUT_LIMIT;
+            }
+            if (cancellation_requested(prepared)) {
+                (void) synth::deliver_complete_audio(nullptr, 0, delivery_info, sink, out_result);
+                return SYNTH_ERR_CANCELLED;
+            }
+            return synth::deliver_complete_audio(synthesis.audio.data(), synthesis.audio.size(), delivery_info, sink,
+                                                 out_result);
+        } catch (const std::bad_alloc &) {
+            emit_diagnostic(prepared.diagnostics, SYNTH_ERR_OOM, "allocation.failed",
+                            "synthesis temporary allocation failed");
+            return SYNTH_ERR_OOM;
+        } catch (...) {
+            emit_diagnostic(prepared.diagnostics, SYNTH_ERR_INTERNAL, "internal.exception",
+                            "unexpected exception during synthesis");
+            return SYNTH_ERR_INTERNAL;
+        }
     }
 
     if (context->model->info.family == synth::ModelFamily::Qwen3Tts) {
+        // This family has no Voice Profile support of its own: a profile
+        // reaching here would either be a defect in the cross-model check
+        // above (see the omnivoice branch) or a future family's own profile
+        // presented to the wrong one. Either way, silently ignoring
+        // `prepared.voice_profile` and synthesizing anyway would answer with
+        // the wrong Voice rather than the refusal the caller asked for.
+        if (prepared.voice_profile != nullptr) {
+            return SYNTH_ERR_UNSUPPORTED_VOICE;
+        }
         try {
             synth::qwen3tts::SynthesisRequest family_request;
             family_request.token_ids = prepared.token_ids;
@@ -915,6 +1064,12 @@ synth_status_t synth_synthesize(synth_context_t *          context,
     }
 
     if (context->model->info.family == synth::ModelFamily::Kokoro) {
+        // This family has no Voice Profile support of its own; see the
+        // matching guard in the Qwen3-TTS branch above for why this refuses
+        // rather than silently ignoring the profile.
+        if (prepared.voice_profile != nullptr) {
+            return SYNTH_ERR_UNSUPPORTED_VOICE;
+        }
         try {
             // A Kokoro Voice is a table row chosen by input length, so the row
             // is resolved from the final token count rather than at load time.
@@ -951,6 +1106,12 @@ synth_status_t synth_synthesize(synth_context_t *          context,
                             "unexpected exception during synthesis");
             return SYNTH_ERR_INTERNAL;
         }
+    }
+
+    // The remaining branch is VITS, which -- like Kokoro and Qwen3-TTS above
+    // -- has no Voice Profile support of its own.
+    if (prepared.voice_profile != nullptr) {
+        return SYNTH_ERR_UNSUPPORTED_VOICE;
     }
 
     try {

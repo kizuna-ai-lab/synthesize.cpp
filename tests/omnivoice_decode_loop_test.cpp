@@ -31,6 +31,7 @@
 #include "arch/omnivoice/codec-host.h"
 #include "arch/omnivoice/omnivoice.h"
 #include "omnivoice_synthetic_package.h"
+#include "random-stream.h"
 #include "test-assert.h"
 
 #include <cmath>
@@ -46,6 +47,16 @@ namespace {
 // branch really runs), and sixteen frames of output headroom.
 constexpr uint32_t kCodebooks    = 2;
 constexpr int32_t  kMaskId       = 4;
+// This family's own codec/decoder-frame ceiling, NOT the raw metadata value:
+// omnivoice_synthetic_package.h declares the package's max_output_frames as
+// native PCM frames (docs/c-interface.md), 16 * hop_length (6) = 96, and
+// Model::run_synthesis / Model::synthesize both divide that PCM value by
+// hop_length before comparing against a codec-frame target_frames/estimate
+// (src/arch/omnivoice/model.cpp). kMaxFrames is already in that post-
+// conversion codec-frame unit, so every comparison below stays like-for-like;
+// PR #6's review found the package field carrying a codec-frame count
+// directly (960x too small), which is exactly the mistake a bare "16" here
+// with no comment could reintroduce silently.
 constexpr uint64_t kMaxFrames    = 16;
 constexpr uint32_t kPackageStep  = 4;
 // The synthetic codec's hop, 2 * 3 = the product of its upsampling ratios, so
@@ -72,8 +83,16 @@ synth::omnivoice::SynthesisRequest base_request(uint64_t frames) {
 
 // Every property the committed grid must have regardless of what the weights
 // say: the right shape, the reported frame count, no surviving mask, and every
-// token a legal code.
-int check_grid(const synth::omnivoice::SynthesisOutput & output, uint64_t frames, const char * what) {
+// token a legal code. `expect_constant_argmax` additionally pins the
+// constant-weight package's degenerate argmax-0 property; callers running
+// against the varied-weights package (see SyntheticPackageOptions) pass
+// false, since that fixture's whole point is that tokens are NOT
+// predictable, and pinning a specific value there would be asserting on
+// numbers this test has no business predicting.
+int check_grid(const synth::omnivoice::SynthesisOutput & output,
+               uint64_t                                  frames,
+               const char *                              what,
+               bool                                      expect_constant_argmax = true) {
     if (output.frame_count != frames || output.codes.size() != size_t(kCodebooks) * frames) {
         std::fprintf(stderr, "%s: %llu frames and %zu codes, expected %llu and %zu\n", what,
                      (unsigned long long) output.frame_count, output.codes.size(), (unsigned long long) frames,
@@ -89,7 +108,7 @@ int check_grid(const synth::omnivoice::SynthesisOutput & output, uint64_t frames
         // Constant weights make every candidate's logits equal, so the ban on
         // the mask id leaves slot 0 as the argmax at every position. A stray
         // read would have to land on another all-0.03125 buffer to fake this.
-        if (token != 0) {
+        if (expect_constant_argmax && token != 0) {
             std::fprintf(stderr, "%s: code %zu is %d, not the constant-weight argmax 0\n", what, index, token);
             return 1;
         }
@@ -145,9 +164,14 @@ int check_no_reference_run(synth::omnivoice::Model & model, uint64_t one_forward
     // makes two per step, so it must exceed the one-forward probe run's count
     // by a wide margin rather than equal it. (The two branches' graphs differ
     // in node count -- the unconditional one has no text embedding to merge --
-    // so the total is not a clean multiple of anything.)
+    // so the total is not a clean multiple of anything.) Tightened into a
+    // WINDOW rather than a bare floor: at most kPackageStep forwards of each
+    // kind run, and the unconditional graph is strictly smaller than the
+    // conditional one, so the true total sits below "every forward were
+    // conditional-sized" -- the ceiling below -- as well as above the floor.
     SYNTH_TEST_CHECK(one_forward_nodes > 0);
     SYNTH_TEST_CHECK(output.generator_placement.nodes > one_forward_nodes * kPackageStep);
+    SYNTH_TEST_CHECK(output.generator_placement.nodes < one_forward_nodes * kPackageStep * 2);
     SYNTH_TEST_CHECK(output.generator_placement.accelerator_nodes == 0);
     if (check_waveform(output.audio, 5, /*normalised=*/true, "no-reference run") != 0) {
         return 1;
@@ -171,10 +195,15 @@ int check_no_reference_run(synth::omnivoice::Model & model, uint64_t one_forward
     synth::omnivoice::apply_no_reference_volume(rebuilt);
     SYNTH_TEST_CHECK(rebuilt == output.audio);
 
-    // Greedy decoding draws no random number, so a second run of the same
-    // request is the same grid -- and therefore the same waveform. This is the
-    // property the exact-token gate rests on, asserted where it can be asserted
-    // cheaply.
+    // This request leaves the new temperature fields at their default -1.0f,
+    // which resolves to the PACKAGE's own position_temperature (5.0, see the
+    // metadata above) -- so the loop DOES draw random numbers here. But
+    // `request.seed` also defaults (to 0), and a fixed seed draws the same
+    // sequence every time, so two runs of the same request are still the same
+    // grid -- and therefore the same waveform. This is the reproducibility
+    // property the exact-token gate rests on (a real package is not
+    // degenerate the way this fixture is, so its grid WOULD move if the seed
+    // moved), asserted here where it can be asserted cheaply.
     synth::omnivoice::SynthesisOutput again;
     SYNTH_TEST_CHECK(model.run_synthesis(request, again) == SYNTH_OK);
     SYNTH_TEST_CHECK(again.codes == output.codes);
@@ -230,6 +259,13 @@ int check_reference_run(synth::omnivoice::Model & model) {
     // Three reference frames shift the target region three positions further
     // into each prompt row; the per-step refill has to land on the target and
     // nowhere near the reference tokens or the row end.
+    //
+    // Like check_no_reference_run above, `request` leaves position_temperature
+    // at its default -1.0f, which resolves to this PACKAGE's own 5.0 (see the
+    // metadata comment there) -- so the loop draws random numbers here too.
+    // The fixed seed (default 0) still makes the grid reproducible; only the
+    // no-reference run states that reproducibility property explicitly, since
+    // this fixture exists to check reference-region placement, not sampling.
     synth::omnivoice::SynthesisRequest request = base_request(4);
     request.reference_tokens                   = { 0, 1, 2, 3, 2, 1 };  // codebook-major [2 x 3]
     synth::omnivoice::SynthesisOutput output;
@@ -248,6 +284,13 @@ int check_single_step_commits_everything(synth::omnivoice::Model & model) {
     // One step means the schedule's final-step rule -- commit the entire
     // remainder -- is the only rule that fires. If it did not, a mask would
     // survive and run_synthesis would refuse rather than return this grid.
+    //
+    // `request` also samples at this package's default position_temperature
+    // (5.0, see check_no_reference_run's comment above): with only one step,
+    // every position is a "nothing was rejected" commit, so the per-candidate
+    // position draw still runs (it is unconditional on keep count) but cannot
+    // change which candidates are kept -- only the argmax margins it feeds
+    // into the (unrequested, here) margin report could show it.
     synth::omnivoice::SynthesisRequest request = base_request(6);
     request.num_step                           = 1;
     synth::omnivoice::SynthesisOutput output;
@@ -302,6 +345,13 @@ int check_requests_the_loop_refuses(synth::omnivoice::Model & model) {
     SYNTH_TEST_CHECK(model.run_synthesis(base_request(0), output) == SYNTH_ERR_INVALID_ARG);
 
     // One frame past the package's declared ceiling is a limit, not a bug.
+    // `request.target_frames` (kMaxFrames + 1, codec frames) is compared
+    // inside run_synthesis against hparams.max_output_frames divided by
+    // hparams.codec.hop_length -- the package's raw PCM-frame metadata (96)
+    // converted back to codec frames (16) -- so this arm exercises that
+    // PCM-to-codec conversion directly, not merely a same-unit ceiling. A
+    // conversion silently dropped (comparing target_frames against the raw
+    // 96 instead) would make this request pass instead of refuse.
     SYNTH_TEST_CHECK(model.run_synthesis(base_request(kMaxFrames + 1), output) == SYNTH_ERR_OUTPUT_LIMIT);
 
     // A reference stream that is not a whole number of codebook rows cannot be
@@ -313,6 +363,293 @@ int check_requests_the_loop_refuses(synth::omnivoice::Model & model) {
     synth::omnivoice::SynthesisRequest masked_reference = base_request(4);
     masked_reference.reference_tokens                   = { 0, kMaskId };
     SYNTH_TEST_CHECK(model.run_synthesis(masked_reference, output) == SYNTH_ERR_INVALID_ARG);
+    return 0;
+}
+
+// Same seed, twice: two run_synthesis calls with the same request (seed 7,
+// position_temperature 5.0f -- so the per-candidate position draw actually
+// fires -- class_temperature 0.0f, so token CHOICE itself stays plain-greedy)
+// commit the same grid. This is the reproducibility property the replay
+// runner's pinned-zero contract and a real caller's expectations both rest
+// on: fixing the seed reproduces the output, whatever the resolved
+// temperatures are.
+int check_sampled_same_seed_identical_grid(synth::omnivoice::Model & model) {
+    synth::omnivoice::SynthesisRequest request = base_request(5);
+    request.seed                               = 7;
+    request.position_temperature               = 5.0f;
+    request.class_temperature                  = 0.0f;
+
+    synth::omnivoice::SynthesisOutput first;
+    SYNTH_TEST_CHECK(model.run_synthesis(request, first) == SYNTH_OK);
+    if (check_grid(first, 5, "sampled seed-7 run (first)") != 0) {
+        return 1;
+    }
+
+    synth::omnivoice::SynthesisOutput second;
+    SYNTH_TEST_CHECK(model.run_synthesis(request, second) == SYNTH_OK);
+    SYNTH_TEST_CHECK(second.codes == first.codes);
+    return 0;
+}
+
+// NOTE: this does NOT prove run_synthesis reads request.seed -- it predates
+// (and is now redundant with) check_sampled_seed_actually_drives_the_grid
+// below, which does, on the varied-weights package. Kept only because it
+// documents WHY the constant-weight package's `output.codes` can never show
+// a seed effect (see that comment), a fact the wiring test's own comment
+// leans on. Seed 7 vs seed 8, otherwise identical requests: this fixture's
+// `output.codes` CANNOT show the difference -- its whole point (see the file
+// header) is constant weights, which make every candidate's guided log-prob
+// tie across the entire vocabulary at every position, so choose_token's
+// argmax always lands on token 0 regardless of which candidate a
+// Gumbel-perturbed score commits first -- widening `frames` does not change
+// this, because the degeneracy is in the WEIGHTS, not the canvas size. What
+// follows only shows that two NormalRandomStreams seeded 7 and 8 draw
+// different uniforms -- true regardless of whether run_synthesis ever reads
+// its own seed argument, since these two streams are built by the test, not
+// by the loop under test.
+int check_sampled_different_seed_different_draws(synth::omnivoice::Model & model) {
+    synth::omnivoice::SynthesisRequest seed7 = base_request(5);
+    seed7.seed                               = 7;
+    seed7.position_temperature               = 5.0f;
+    seed7.class_temperature                  = 0.0f;
+    synth::omnivoice::SynthesisRequest seed8 = seed7;
+    seed8.seed                               = 8;
+
+    synth::omnivoice::SynthesisOutput output7;
+    synth::omnivoice::SynthesisOutput output8;
+    SYNTH_TEST_CHECK(model.run_synthesis(seed7, output7) == SYNTH_OK);
+    SYNTH_TEST_CHECK(model.run_synthesis(seed8, output8) == SYNTH_OK);
+    // Confirmed identical for the reason in the comment above -- a property of
+    // this fixture's degeneracy, not a regression.
+    SYNTH_TEST_CHECK(output7.codes == output8.codes);
+
+    synth::NormalRandomStream stream7(7);
+    synth::NormalRandomStream stream8(8);
+    SYNTH_TEST_CHECK(stream7.next_uniform() != stream8.next_uniform());
+    return 0;
+}
+
+// The actual wiring proof the two checks above cannot give: on the
+// constant-weight package, EVERY candidate's guided log-prob ties across the
+// whole vocabulary at every position (build_guided's log-softmax makes any
+// constant added to every entry cancel out), so choose_token's strict `>`
+// tie-break always lands on token 0 no matter which order a Gumbel-perturbed
+// score commits candidates in -- a hardcoded seed inside run_synthesis and a
+// correctly-wired one would look IDENTICAL there. This uses the
+// varied-weights package instead, where logits genuinely differ across
+// positions and vocabulary entries, so the position draw's effect on commit
+// ORDER feeds back through the canvas refill into later steps' forwards and
+// produces a genuinely different token grid. A fresh SynthesisRequest is
+// built per call (never reused, unlike the identical-grid check above): a
+// hardcoded seed would still make every call from one shared, already-seeded
+// request "look the same", which proves nothing about whether the field is
+// read at all.
+//
+// Seeds 7 and 8 are verified (see task-4-report.md's fix-round-1 section) to
+// actually diverge on this fixture as it stands; if a future change to the
+// LCG walk or the small layout ever made them coincide, the fix is a
+// different seed pair, not relaxing this assertion.
+int check_sampled_seed_actually_drives_the_grid(synth::omnivoice::Model & varied_model) {
+    auto seeded_request = [](uint64_t seed) {
+        synth::omnivoice::SynthesisRequest request = base_request(5);
+        request.seed                               = seed;
+        request.position_temperature               = 5.0f;
+        request.class_temperature                  = 0.0f;
+        return request;
+    };
+
+    synth::omnivoice::SynthesisOutput seed7_first;
+    SYNTH_TEST_CHECK(varied_model.run_synthesis(seeded_request(7), seed7_first) == SYNTH_OK);
+    if (check_grid(seed7_first, 5, "varied-weights seed-7 run (first)", /*expect_constant_argmax=*/false) != 0) {
+        return 1;
+    }
+
+    // Same seed, a SECOND fresh request object: still the same grid.
+    synth::omnivoice::SynthesisOutput seed7_second;
+    SYNTH_TEST_CHECK(varied_model.run_synthesis(seeded_request(7), seed7_second) == SYNTH_OK);
+    SYNTH_TEST_CHECK(seed7_second.codes == seed7_first.codes);
+
+    // A different seed, yet another fresh request object: a different grid.
+    synth::omnivoice::SynthesisOutput seed8;
+    SYNTH_TEST_CHECK(varied_model.run_synthesis(seeded_request(8), seed8) == SYNTH_OK);
+    if (check_grid(seed8, 5, "varied-weights seed-8 run", /*expect_constant_argmax=*/false) != 0) {
+        return 1;
+    }
+    SYNTH_TEST_CHECK(seed8.codes != seed7_first.codes);
+    return 0;
+}
+
+// The request struct's new temperature fields DEFAULT to sampling
+// (position_temperature resolves to this package's 5.0 unless overridden), so
+// a caller wanting the old Plan-2 greedy behaviour back has to ask for it
+// explicitly. This pins that asking explicitly reproduces exactly what an
+// implicit (field-less) request produces on THIS fixture -- which is why
+// tests/omnivoice_replay_real.cpp's pin to explicit 0.0f matters on a
+// non-degenerate real package, even though the two are indistinguishable
+// here.
+int check_sampled_explicit_greedy_matches_defaulted_request(synth::omnivoice::Model & model) {
+    synth::omnivoice::SynthesisRequest explicit_greedy = base_request(5);
+    explicit_greedy.position_temperature               = 0.0f;
+    explicit_greedy.class_temperature                  = 0.0f;
+
+    synth::omnivoice::SynthesisOutput explicit_output;
+    SYNTH_TEST_CHECK(model.run_synthesis(explicit_greedy, explicit_output) == SYNTH_OK);
+    if (check_grid(explicit_output, 5, "explicit greedy run") != 0) {
+        return 1;
+    }
+
+    // The plain field-less request: both new fields sit at -1.0f, so
+    // position_temperature resolves to the package's 5.0 and the loop DOES
+    // sample -- but this fixture's constant weights make every committed
+    // token argmax-0 regardless (see the file header), so the grid is
+    // unaffected. A real package is not degenerate this way, which is exactly
+    // why the replay runner pins both fields rather than relying on this
+    // equivalence.
+    synth::omnivoice::SynthesisRequest defaulted = base_request(5);
+    synth::omnivoice::SynthesisOutput  defaulted_output;
+    SYNTH_TEST_CHECK(model.run_synthesis(defaulted, defaulted_output) == SYNTH_OK);
+    SYNTH_TEST_CHECK(defaulted_output.codes == explicit_output.codes);
+    return 0;
+}
+
+// margin_report demands a resolved temperature of exactly 0 in BOTH
+// dimensions: a Gumbel-perturbed margin measures nothing meaningful, since
+// "narrow" and "random" are not the same axis. The package's own default
+// position_temperature (5.0) means even a field-less request already
+// triggers the refusal.
+int check_margin_report_refuses_positive_temperature(synth::omnivoice::Model & model) {
+    synth::omnivoice::SynthesisOutput output;
+
+    synth::omnivoice::SynthesisRequest defaulted = base_request(5);
+    defaulted.margin_report                      = true;
+    SYNTH_TEST_CHECK(model.run_synthesis(defaulted, output) == SYNTH_ERR_INVALID_ARG);
+
+    // An explicit positive class_temperature refuses too, independent of
+    // position_temperature.
+    synth::omnivoice::SynthesisRequest class_positive = base_request(5);
+    class_positive.margin_report                      = true;
+    class_positive.position_temperature               = 0.0f;
+    class_positive.class_temperature                  = 1.0f;
+    SYNTH_TEST_CHECK(model.run_synthesis(class_positive, output) == SYNTH_ERR_INVALID_ARG);
+
+    // Both temperatures explicitly zero: margin_report is legal again, and
+    // actually measures something over this request's schedule.
+    synth::omnivoice::SynthesisRequest explicit_greedy = base_request(5);
+    explicit_greedy.margin_report                      = true;
+    explicit_greedy.position_temperature               = 0.0f;
+    explicit_greedy.class_temperature                  = 0.0f;
+    SYNTH_TEST_CHECK(model.run_synthesis(explicit_greedy, output) == SYNTH_OK);
+    SYNTH_TEST_CHECK(output.margin.measured);
+    return 0;
+}
+
+// Carryover item 2: the guidance == 0 branch (the reference's own
+// `guidance_scale != 0` split) skips the unconditional forward ENTIRELY --
+// every step makes one forward instead of two. The default synthetic package
+// pins guidance_scale to 2.0 (so guidance != 0 is what every other case in
+// this file exercises), so this builds its own package with guidance_scale
+// overridden to 0.0 via the harness's new option and compares its
+// generator_placement.nodes against an identical-shape request on the
+// ordinary (guidance != 0) package: fewer forwards is directly fewer placed
+// nodes, the same counter the other checks in this file already read.
+int check_guidance_zero_skips_uncond_forward(synth::omnivoice::Model & guided_model, const std::string & scratch_dir) {
+    const std::string zero_guidance_path = scratch_dir + "/synthetic-decode-loop-zero-guidance.gguf";
+    synth::omnivoice::testing::SyntheticPackageOptions options;
+    options.guidance_scale = 0.0f;
+    SYNTH_TEST_CHECK(synth::omnivoice::testing::write_synthetic_package(zero_guidance_path, options));
+    std::unique_ptr<synth::omnivoice::Model> zero_guidance_model;
+    SYNTH_TEST_CHECK(synth::omnivoice::Model::load_cpu(zero_guidance_path, zero_guidance_model) == SYNTH_OK);
+    SYNTH_TEST_CHECK(zero_guidance_model != nullptr);
+
+    synth::omnivoice::SynthesisOutput guided_output;
+    SYNTH_TEST_CHECK(guided_model.run_synthesis(base_request(5), guided_output) == SYNTH_OK);
+
+    synth::omnivoice::SynthesisOutput zero_guidance_output;
+    SYNTH_TEST_CHECK(zero_guidance_model->run_synthesis(base_request(5), zero_guidance_output) == SYNTH_OK);
+    if (check_grid(zero_guidance_output, 5, "guidance == 0 run") != 0) {
+        return 1;
+    }
+
+    // Half the forwards (conditional only, no unconditional) means
+    // meaningfully fewer placed nodes -- not just "not more", which a broken
+    // zero-node run would also satisfy.
+    SYNTH_TEST_CHECK(zero_guidance_output.generator_placement.nodes > 0);
+    SYNTH_TEST_CHECK(zero_guidance_output.generator_placement.nodes < guided_output.generator_placement.nodes);
+    return 0;
+}
+
+// Model::synthesize (Task 5's public seam entry): the only path in this file
+// that goes from raw UTF-8 text to a delivered waveform through
+// assemble_prompt_ids and DurationEstimator, rather than driving
+// run_synthesis directly with pre-tokenized ids and a fixed frame count.
+// Needs its own package: the default synthetic vocabulary ("tok0".."tok39")
+// cannot tokenize real text at all (see SyntheticPackageOptions::
+// ascii_text_vocab), which is also why none of this file's other checks
+// exercise the frontend for real.
+int check_public_synthesize(synth::omnivoice::Model & text_model) {
+    // "a" alone is the frontend test's own boosted-floor example
+    // (omnivoice_frontend_test.cpp's check_frame_truncation): weight 1.0
+    // against the no-reference anchor's 14.1 lands the estimate at exactly
+    // 16 frames -- this package's own ceiling (kMaxFrames) -- which doubles
+    // as the boundary case: an estimate EQUAL to the limit is not a limit
+    // violation.
+    synth::omnivoice::PublicSynthesisParams request;
+    request.text = "a";
+    synth::omnivoice::SynthesisOutput output;
+    SYNTH_TEST_CHECK(text_model.synthesize(request, output) == SYNTH_OK);
+    SYNTH_TEST_CHECK(output.frame_count == kMaxFrames);
+    if (check_waveform(output.audio, kMaxFrames, /*normalised=*/true, "public synthesize") != 0) {
+        return 1;
+    }
+
+    // Same seed, same text: two independent Model::synthesize calls commit
+    // the same grid. This is the public seam's own reproducibility contract
+    // (a real package is not degenerate the way this fixture's constant
+    // weights are, so its grid would move with the seed; here it is the
+    // WIRING -- that the seed reaches run_synthesis at all -- Task 4 already
+    // proved on the varied-weights package).
+    synth::omnivoice::SynthesisOutput again;
+    SYNTH_TEST_CHECK(text_model.synthesize(request, again) == SYNTH_OK);
+    SYNTH_TEST_CHECK(again.codes == output.codes);
+    SYNTH_TEST_CHECK(again.audio == output.audio);
+
+    // "aa" doubles the weight and pushes the boosted estimate to 20 frames,
+    // past this same package's 16-frame ceiling: the limit caps the
+    // ESTIMATE before run_synthesis ever sees a request, rather than letting
+    // the loop fall short of one.
+    synth::omnivoice::PublicSynthesisParams too_long;
+    too_long.text = "aa";
+    synth::omnivoice::SynthesisOutput unused;
+    SYNTH_TEST_CHECK(text_model.synthesize(too_long, unused) == SYNTH_ERR_OUTPUT_LIMIT);
+
+    // Empty and whitespace-only text are refused before any estimate is
+    // made: DurationEstimator's own floor (`max(1, int(...))`) would
+    // otherwise hand back a one-frame canvas for a request that named no
+    // Linguistic Input at all.
+    synth::omnivoice::PublicSynthesisParams empty_text;
+    SYNTH_TEST_CHECK(text_model.synthesize(empty_text, unused) == SYNTH_ERR_INVALID_ARG);
+    synth::omnivoice::PublicSynthesisParams blank_text;
+    blank_text.text = "   ";
+    SYNTH_TEST_CHECK(text_model.synthesize(blank_text, unused) == SYNTH_ERR_INVALID_ARG);
+
+    // PR #6 triage FIX 3 (MAJOR): hparams.max_input_tokens (64 for this
+    // synthetic package) was never applied to the ASSEMBLED prompt_ids,
+    // though docs/c-interface.md documents SYNTH_ERR_INPUT_TOO_LONG for
+    // exceeding it. A long `instruct` is the vector that proves this is a
+    // DIFFERENT check than the "aa" -> OUTPUT_LIMIT case above: `instruct`
+    // is threaded into assemble_prompt_ids's own style/marker wrapping, but
+    // DurationEstimator::estimate_target_frames (called further down in
+    // Model::synthesize) reads only params.text/ref_text/ref_frames --
+    // never params.instruct -- so this request's estimate stays at exactly
+    // 16 frames (this package's own ceiling, same as the "a"-alone case
+    // above), never tripping OUTPUT_LIMIT, while the assembled prompt
+    // (markers + "None" for the empty language + 100 'a' instruct
+    // characters + "a" text) comes out well past 64 ids.
+    const std::string                       long_instruct(100, 'a');  // 'a' is in ascii_text_vocab's small alphabet
+    synth::omnivoice::PublicSynthesisParams too_many_tokens;
+    too_many_tokens.text     = "a";
+    too_many_tokens.instruct = &long_instruct;
+    SYNTH_TEST_CHECK(text_model.synthesize(too_many_tokens, unused) == SYNTH_ERR_INPUT_TOO_LONG);
     return 0;
 }
 
@@ -329,6 +666,30 @@ int main(int argc, char ** argv) {
     SYNTH_TEST_CHECK(synth::omnivoice::Model::load_cpu(path, model) == SYNTH_OK);
     SYNTH_TEST_CHECK(model != nullptr);
 
+    // A second package, weights varied via a fixed LCG walk rather than the
+    // constant fill above: see check_sampled_seed_actually_drives_the_grid
+    // for why the constant-weight package cannot prove run_synthesis reads
+    // its own seed argument.
+    const std::string varied_weights_path = std::string(argv[1]) + "/synthetic-decode-loop-varied-weights.gguf";
+    synth::omnivoice::testing::SyntheticPackageOptions varied_options;
+    varied_options.varied_weights = true;
+    SYNTH_TEST_CHECK(synth::omnivoice::testing::write_synthetic_package(varied_weights_path, varied_options));
+    std::unique_ptr<synth::omnivoice::Model> varied_model;
+    SYNTH_TEST_CHECK(synth::omnivoice::Model::load_cpu(varied_weights_path, varied_model) == SYNTH_OK);
+    SYNTH_TEST_CHECK(varied_model != nullptr);
+
+    // A third package whose vocabulary can actually tokenize text: see
+    // SyntheticPackageOptions::ascii_text_vocab. Only check_public_synthesize
+    // needs it -- every other check in this file drives run_synthesis
+    // directly with pre-tokenized ids.
+    const std::string text_capable_path = std::string(argv[1]) + "/synthetic-decode-loop-text-capable.gguf";
+    synth::omnivoice::testing::SyntheticPackageOptions text_options;
+    text_options.ascii_text_vocab = true;
+    SYNTH_TEST_CHECK(synth::omnivoice::testing::write_synthetic_package(text_capable_path, text_options));
+    std::unique_ptr<synth::omnivoice::Model> text_model;
+    SYNTH_TEST_CHECK(synth::omnivoice::Model::load_cpu(text_capable_path, text_model) == SYNTH_OK);
+    SYNTH_TEST_CHECK(text_model != nullptr);
+
     int      failures          = 0;
     uint64_t one_forward_nodes = 0;
     failures += check_probe_only_skips_the_loop(*model, one_forward_nodes);
@@ -337,5 +698,12 @@ int main(int argc, char ** argv) {
     failures += check_single_step_commits_everything(*model);
     failures += check_requests_the_loop_refuses(*model);
     failures += check_decode_codes_refuses(*model);
+    failures += check_sampled_same_seed_identical_grid(*model);
+    failures += check_sampled_different_seed_different_draws(*model);
+    failures += check_sampled_seed_actually_drives_the_grid(*varied_model);
+    failures += check_sampled_explicit_greedy_matches_defaulted_request(*model);
+    failures += check_margin_report_refuses_positive_temperature(*model);
+    failures += check_guidance_zero_skips_uncond_forward(*model, std::string(argv[1]));
+    failures += check_public_synthesize(*text_model);
     return failures == 0 ? 0 : 1;
 }

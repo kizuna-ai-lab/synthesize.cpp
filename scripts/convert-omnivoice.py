@@ -84,6 +84,7 @@ from lib.gguf_common import (  # noqa: E402
     sha256_file,
     write_json_atomic,
 )
+import omnivoice_pinned_inputs  # noqa: E402
 
 ARCH_KEY = "omnivoice"
 FORMAT_VERSION = 1
@@ -253,81 +254,62 @@ def require_config(mapping: dict[str, Any], key: str, where: str) -> Any:
     return mapping[key]
 
 
-def pinned_digest(manifest: dict[str, Any], role: str, locator_suffix: str,
-                  *, excluding: str | None = None) -> str:
+def pinned_digest(manifest: dict[str, Any], pin: omnivoice_pinned_inputs.PinnedInput) -> str:
+    """Find the manifest's pin for `pin` via its /resolve/<revision>/ locator.
+
+    A HuggingFace resolve URL names the file's path in the weights repository
+    after the revision segment; matching that path exactly (rather than a
+    locator suffix) is what lets `model.safetensors` and
+    `audio_tokenizer/model.safetensors` -- both `role == "checkpoint"` -- pick
+    out different artifacts with no separate exclusion rule.
+    """
     matches = [
         artifact for artifact in manifest["source"]["artifacts"]
-        if artifact["role"] == role
-        and artifact["locator"].endswith(locator_suffix)
-        and (excluding is None or excluding not in artifact["locator"])
+        if artifact["role"] == pin.role
+        and omnivoice_pinned_inputs.relative_path_from_locator(artifact["locator"]) == pin.relative_path
     ]
     if len(matches) != 1:
         raise ConverterError(
-            f"the manifest names {len(matches)} {role} artifacts ending in "
-            f"{locator_suffix!r}; exactly one is required to pin the conversion"
+            f"the manifest names {len(matches)} {pin.role} artifacts resolving to "
+            f"{pin.relative_path!r}; exactly one is required to pin the conversion"
         )
     return matches[0]["sha256"]
 
 
-@dataclass(frozen=True)
-class PinnedInput:
-    """A file the manifest pins by digest, and where its pin lives."""
-
-    label: str
-    path: Path
-    role: str
-    locator_suffix: str
-    excluding: str | None = None
-
-
-def pinned_inputs(weights_dir: Path) -> tuple[PinnedInput, ...]:
-    """Every local file the conversion reads or republishes.
-
-    The codec's LICENSE belongs here and not merely in the copy step. It is
-    republished beside the artifact and its digest is recorded in the report as
-    authoritative, so a locally edited grant would be carried into the package
-    and vouched for. Hashing the copy against its own source is a tautology
-    after `shutil.copyfile`; the manifest is the only outside witness.
-    """
-    return (
-        PinnedInput("generator", weights_dir / "model.safetensors",
-                    "checkpoint", "/model.safetensors", "/audio_tokenizer/"),
-        PinnedInput("codec", weights_dir / "audio_tokenizer" / "model.safetensors",
-                    "checkpoint", "/audio_tokenizer/model.safetensors"),
-        PinnedInput("config", weights_dir / "config.json",
-                    "config", "/config.json", "/audio_tokenizer/"),
-        PinnedInput("codec_config", weights_dir / "audio_tokenizer" / "config.json",
-                    "config", "/audio_tokenizer/config.json"),
-        PinnedInput("tokenizer", weights_dir / "tokenizer.json",
-                    "frontend-resource", "/tokenizer.json"),
-        PinnedInput("codec_license", weights_dir / "audio_tokenizer" / "LICENSE",
-                    "license", "/audio_tokenizer/LICENSE"),
-    )
-
-
-def verify_pinned_inputs(manifest: dict[str, Any],
-                         inputs: Iterable[PinnedInput]) -> dict[str, str]:
+def verify_pinned_inputs(
+    manifest: dict[str, Any], weights_dir: Path,
+    inputs: Iterable[omnivoice_pinned_inputs.PinnedInput] | None = None,
+) -> dict[str, str]:
     """Hash every input against its manifest pin before anything is read.
 
     Runs first, so a missing or altered input costs nothing rather than being
-    discovered after a 3.2 GB file has been written.
+    discovered after a 3.2 GB file has been written. `inputs` defaults to
+    `omnivoice_pinned_inputs.PINNED_INPUTS` -- every local file the conversion
+    reads or republishes, including the codec's LICENSE, which belongs here
+    and not merely in the copy step: it is republished beside the artifact and
+    its digest is recorded in the report as authoritative, so a locally edited
+    grant would be carried into the package and vouched for. Hashing the copy
+    against its own source is a tautology after `shutil.copyfile`; the
+    manifest is the only outside witness.
     """
+    if inputs is None:
+        inputs = omnivoice_pinned_inputs.PINNED_INPUTS
     digests: dict[str, str] = {}
-    for entry in inputs:
-        if not entry.path.is_file():
+    for pin in inputs:
+        local = omnivoice_pinned_inputs.resolve_local(weights_dir, pin)
+        if not local.is_file():
             raise ConverterError(
-                f"{entry.path} is missing; the manifest pins it and the conversion cannot "
+                f"{local} is missing; the manifest pins it and the conversion cannot "
                 "proceed without it"
             )
-        digest = sha256_file(entry.path)
-        expected = pinned_digest(manifest, entry.role, entry.locator_suffix,
-                                 excluding=entry.excluding)
+        digest = sha256_file(local)
+        expected = pinned_digest(manifest, pin)
         if digest != expected:
             raise ConverterError(
-                f"{entry.path}: the local file hashes to {digest} but the manifest pins "
+                f"{local}: the local file hashes to {digest} but the manifest pins "
                 f"{expected}; converting it would produce a package nothing validated"
             )
-        digests[entry.label] = digest
+        digests[pin.sha256_key] = digest
     return digests
 
 
@@ -604,6 +586,37 @@ def config_disagreements(codec_config: dict[str, Any],
     return found
 
 
+def validate_output_frame_ceiling(package: dict[str, Any]) -> None:
+    """Catch a codec-frame count written where a PCM-frame ceiling belongs.
+
+    docs/c-interface.md: `max_output_frames` is the Model Package's positive
+    hard safety limit in native PCM frames, not in this family's own codec
+    frames (one codec frame is `HOP_LENGTH` PCM frames). PR #6's review found
+    exactly this class of error already in the wild: the manifest declared
+    750, this port's codec-frame ceiling (30 s at the 25 Hz codec frame rate),
+    where 720000 native PCM frames belonged -- a value the public contract
+    reads as 31 milliseconds. A value under one second of native PCM is
+    refused outright, and a value that is not a whole number of codec frames
+    is refused too, since a PCM-frame ceiling for this family is always sized
+    in whole codec frames and a fractional one is a sign the units were
+    mixed up again.
+    """
+    max_output_frames = int(package["max_output_frames"])
+    if max_output_frames < SAMPLE_RATE:
+        raise ConverterError(
+            f"package_contract.max_output_frames is {max_output_frames}; that is under one "
+            f"second of native PCM at {SAMPLE_RATE} Hz. This field is native PCM frames, not "
+            f"this family's codec frames (hop_length {HOP_LENGTH}) -- a codec-frame count "
+            "written here silently caps every synthesis at a few dozen milliseconds"
+        )
+    if max_output_frames % HOP_LENGTH != 0:
+        raise ConverterError(
+            f"package_contract.max_output_frames {max_output_frames} is not a whole multiple "
+            f"of hop_length {HOP_LENGTH} native PCM frames; a PCM-frame ceiling for this "
+            "family should land on a codec frame boundary"
+        )
+
+
 def validate_generation_defaults(defaults: dict[str, Any]) -> None:
     for key in GENERATION_DEFAULT_KEYS:
         if key not in defaults:
@@ -815,6 +828,7 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
     writer.add_float32("synthesize.omnivoice.generation.class_temperature", float(gen_defaults["class_temperature"]))
 
     package = manifest["package_contract"]
+    validate_output_frame_ceiling(package)
     writer.add_uint32("synthesize.capabilities.input_flags", INPUT_TEXT_UTF8)
     writer.add_uint32("synthesize.capabilities.flags",
                       CAPABILITY_SPEAKING_RATE | CAPABILITY_STOCHASTIC)
@@ -995,7 +1009,7 @@ def main() -> int:
 
     # Every pinned input -- weights, both configs, the tokenizer and the codec's
     # LICENSE -- is verified before a single tensor is read.
-    digests = verify_pinned_inputs(manifest, pinned_inputs(weights))
+    digests = verify_pinned_inputs(manifest, weights)
 
     config = load_json(weights / "config.json")
     codec_config = load_json(weights / "audio_tokenizer" / "config.json")

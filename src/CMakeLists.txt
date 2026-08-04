@@ -1,6 +1,8 @@
 add_library(synthesize
     audio-delivery.cpp
+    audio-normalizer.cpp
     gguf-metadata.cpp
+    sha256.cpp
     backend-device.cpp
     backend-module.cpp
     backend-plan.cpp
@@ -28,6 +30,9 @@ add_library(synthesize
     arch/omnivoice/generator.cpp
     arch/omnivoice/generator-host.cpp
     arch/omnivoice/model.cpp
+    arch/omnivoice/profile.cpp
+    arch/omnivoice/reference-encoder.cpp
+    arch/omnivoice/reference-encoder-host.cpp
     arch/omnivoice/weights.cpp
     arch/kokoro/catalog.cpp
     arch/kokoro/decoder.cpp
@@ -71,7 +76,7 @@ target_include_directories(synthesize
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_link_libraries(synthesize PRIVATE $<BUILD_INTERFACE:ggml>)
+target_link_libraries(synthesize PRIVATE $<BUILD_INTERFACE:ggml> synth-libsamplerate)
 target_compile_definitions(synthesize PRIVATE SYNTH_BUILDING_LIBRARY)
 
 if(SYNTH_GGML_BACKEND_DL)

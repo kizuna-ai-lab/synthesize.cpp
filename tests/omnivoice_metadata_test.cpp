@@ -98,7 +98,11 @@ GgufContext valid_metadata() {
     gguf_set_val_u32(g, "synthesize.capabilities.input_flags", 1);
     gguf_set_val_u32(g, "synthesize.capabilities.flags", 3);
     gguf_set_val_u64(g, "synthesize.capabilities.max_input_tokens", 2048);
-    gguf_set_val_u64(g, "synthesize.capabilities.max_output_frames", 750);
+    // Native PCM frames (docs/c-interface.md), not this family's own codec
+    // frames: 750 codec frames * kHopLength (960) = 720000, 30 s at 24 kHz.
+    // PR #6's review found the real package once carried 750 directly here,
+    // a codec-frame count that the public contract reads as 31 ms.
+    gguf_set_val_u64(g, "synthesize.capabilities.max_output_frames", 720000);
     gguf_set_val_f32(g, "synthesize.capabilities.min_speaking_rate", 0.5f);
     gguf_set_val_f32(g, "synthesize.capabilities.max_speaking_rate", 2.0f);
 
@@ -205,7 +209,7 @@ int run_valid_package() {
     SYNTH_TEST_CHECK(hparams.capability_flags ==
                      (SYNTH_MODEL_CAPABILITY_SPEAKING_RATE | SYNTH_MODEL_CAPABILITY_STOCHASTIC));
     SYNTH_TEST_CHECK(hparams.output_sample_rate == kSampleRate && hparams.output_channel_count == 1);
-    SYNTH_TEST_CHECK(hparams.max_input_tokens == 2048 && hparams.max_output_frames == 750);
+    SYNTH_TEST_CHECK(hparams.max_input_tokens == 2048 && hparams.max_output_frames == 720000);
     SYNTH_TEST_CHECK(hparams.min_speaking_rate == 0.5f && hparams.max_speaking_rate == 2.0f);
 
     SYNTH_TEST_CHECK(hparams.generator.layer_count == 28 && hparams.generator.hidden_size == 1024);
@@ -283,6 +287,20 @@ int run_capability_rejections() {
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.capabilities.input_flags", 0); },
                         "a text-to-speech package accepts text") == 0);
+    // Reviewer FINDING 4: this family declares text input ONLY --
+    // src/synthesize.cpp's public dispatch relies on input_kind being
+    // "guaranteed SYNTH_INPUT_TEXT_UTF8" for every omnivoice request, which
+    // is only true if the loader refuses any OTHER input_flags bit, not
+    // merely requires the TEXT bit to be present. Before this fix, a package
+    // declaring TEXT_UTF8 | TOKEN_IDS loaded successfully, which would have
+    // let a request whose input_kind is SYNTH_INPUT_TOKEN_IDS reach that
+    // dispatch and have its int32 token array read as raw UTF-8 text bytes.
+    SYNTH_TEST_CHECK(expect_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_u32(g, "synthesize.capabilities.input_flags",
+                                              SYNTH_INPUT_SUPPORT_TEXT_UTF8 | SYNTH_INPUT_SUPPORT_TOKEN_IDS);
+                         },
+                         "this family accepts text input only, no other input_flags bit") == 0);
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u64(g, "synthesize.capabilities.max_input_tokens", 0); },
                         "a zero input limit accepts nothing") == 0);

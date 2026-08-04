@@ -159,6 +159,7 @@ if(SYNTH_BUILD_SHARED AND UNIX AND NOT APPLE)
     set_tests_properties(synthesize-shared-exports PROPERTIES LABELS "unit;abi")
 endif()
 
+synth_add_unit_test(synthesize-sha256-test sha256_test.cpp)
 synth_add_unit_test(synthesize-kokoro-metadata-test kokoro_metadata_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-metadata-test qwen3_tts_metadata_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-bpe-test qwen3_tts_bpe_test.cpp)
@@ -174,7 +175,10 @@ synth_add_unit_test(synthesize-omnivoice-catalog-test omnivoice_catalog_test.cpp
 synth_add_unit_test(synthesize-omnivoice-frontend-test omnivoice_frontend_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-generator-test omnivoice_generator_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-generator-host-test omnivoice_generator_host_test.cpp)
+synth_add_unit_test(synthesize-omnivoice-sampler-test omnivoice_sampler_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-codec-test omnivoice_codec_test.cpp)
+synth_add_unit_test(synthesize-omnivoice-resampler-test omnivoice_resampler_test.cpp)
+synth_add_unit_test(synthesize-omnivoice-reference-encoder-test omnivoice_reference_encoder_test.cpp)
 synth_add_unit_test(synthesize-kokoro-lstm-test kokoro_lstm_test.cpp)
 synth_add_unit_test(synthesize-kokoro-catalog-test kokoro_catalog_test.cpp)
 synth_add_unit_test(synthesize-kokoro-plbert-test kokoro_plbert_test.cpp)
@@ -228,7 +232,9 @@ synth_add_unit_test(synthesize-backend-device-internal-test backend_device_inter
 synth_add_unit_test(synthesize-backend-plan-test backend_plan_test.cpp)
 synth_add_unit_test(synthesize-text-frontend-test text_frontend_test.cpp)
 synth_add_unit_test(synthesize-synthesis-request-test synthesis_request_test.cpp)
+synth_add_unit_test(synthesize-model-info-test model_info_test.cpp)
 synth_add_unit_test(synthesize-audio-delivery-test audio_delivery_test.cpp)
+synth_add_unit_test(synthesize-audio-normalizer-test audio_normalizer_test.cpp)
 synth_add_unit_test(synthesize-vits-runner-voice-test vits_runner_voice_test.cpp)
 add_executable(synthesize-qwen3-tts-quantization-policy-test
     qwen3_tts_quantization_policy_test.cpp
@@ -312,17 +318,50 @@ target_link_libraries(synthesize-omnivoice-decode-loop-test PRIVATE synthesize g
 add_test(NAME synthesize-omnivoice-decode-loop-test
     COMMAND synthesize-omnivoice-decode-loop-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-synthetic)
 synth_register_unit_target(synthesize-omnivoice-decode-loop-test)
+# Description Text profiles (Task 15): a genuine unit test against a
+# synthetic package (its own fixtures subdirectory, not
+# omnivoice-synthetic's -- write_synthetic_package's own file, not one this
+# other suite's tests could race against). Nothing here touches the
+# frontend or a tensor -- resolve_instruct is pure string processing and
+# create_from_description never reaches the frontend either -- so the
+# heavier model-guarded harness tests/omnivoice_profile_test.cpp uses for
+# Task 14's Reference Audio path (a real forward pass) buys nothing here.
+add_executable(synthesize-omnivoice-design-test omnivoice_design_test.cpp)
+target_include_directories(synthesize-omnivoice-design-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(synthesize-omnivoice-design-test PRIVATE synthesize ggml)
+add_test(NAME synthesize-omnivoice-design-test
+    COMMAND synthesize-omnivoice-design-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-design)
+synth_register_unit_target(synthesize-omnivoice-design-test)
+# Serialized Voice Profiles (Task 16): the GGUF envelope round trip and
+# tamper matrix, against a synthetic package -- its own fixtures
+# subdirectory, not omnivoice-synthetic's or omnivoice-design's, for the
+# same race-avoidance reason those two already keep separate ones.
+add_executable(synthesize-omnivoice-serialize-test omnivoice_serialize_test.cpp)
+target_include_directories(synthesize-omnivoice-serialize-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(synthesize-omnivoice-serialize-test PRIVATE synthesize ggml)
+add_test(NAME synthesize-omnivoice-serialize-test
+    COMMAND synthesize-omnivoice-serialize-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-serialize)
+synth_register_unit_target(synthesize-omnivoice-serialize-test)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-synthetic)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-design)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-serialize)
 set_tests_properties(
     synthesize-omnivoice-metadata-test
     synthesize-omnivoice-catalog-test
     synthesize-omnivoice-frontend-test
     synthesize-omnivoice-generator-test
     synthesize-omnivoice-generator-host-test
+    synthesize-omnivoice-sampler-test
     synthesize-omnivoice-codec-test
+    synthesize-omnivoice-resampler-test
+    synthesize-omnivoice-reference-encoder-test
     synthesize-omnivoice-model-errors-test
     synthesize-omnivoice-load-synthetic-test
     synthesize-omnivoice-decode-loop-test
+    synthesize-omnivoice-design-test
+    synthesize-omnivoice-serialize-test
     PROPERTIES LABELS "unit;omnivoice")
 set_tests_properties(
     synthesize-vits-text-encoder-host-test
@@ -396,6 +435,10 @@ endif()
 add_executable(synthesize-qwen3-tts-public-real qwen3_tts_public_real.c)
 target_link_libraries(synthesize-qwen3-tts-public-real PRIVATE synthesize)
 synth_register_integration_target(synthesize-qwen3-tts-public-real)
+
+add_executable(synthesize-omnivoice-public-real omnivoice_public_real.c)
+target_link_libraries(synthesize-omnivoice-public-real PRIVATE synthesize)
+synth_register_integration_target(synthesize-omnivoice-public-real)
 
 add_executable(synthesize-qwen3-tts-replay-real qwen3_tts_replay_real.cpp)
 target_include_directories(synthesize-qwen3-tts-replay-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -520,6 +563,33 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                 LABELS "integration;cli;kokoro"
                 TIMEOUT 600)
         endif()
+        if(EXISTS "${SYNTH_OMNIVOICE_TEST_MODEL}")
+            # OmniVoice's catalog is empty but carries an unnamed package
+            # default (voices.mode "profile-sources", has_package_default
+            # true, zero preset ids), so unlike Kokoro above the CLI runs with
+            # NO --voice flag. Its package also declares text_utf8 as the
+            # only supported input kind -- no token-ids, no phonemes -- so
+            # SYNTH_TEXT drives --text instead of SYNTH_TOKEN_IDS driving
+            # --token-ids, and the unsupported-input arm is pointed at
+            # --phonemes (the kind this package's input_flags lacks) rather
+            # than the --text VITS/Kokoro use for the same purpose (the kind
+            # their own input_flags lack).
+            add_test(NAME synthesize-omnivoice-cli
+                COMMAND ${CMAKE_COMMAND}
+                    -DSYNTH_CLI=$<TARGET_FILE:synthesize-cli>
+                    -DSYNTH_MODEL=${SYNTH_OMNIVOICE_TEST_MODEL}
+                    -DSYNTH_TEXT="Sampling follows the seed."
+                    -DSYNTH_UNSUPPORTED_FLAG=--phonemes
+                    -DSYNTH_UNSUPPORTED_VALUE="HH EH L OW"
+                    -DSYNTH_OUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/fixtures/cli-real-omnivoice
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/check-cli-real.cmake)
+            set_tests_properties(synthesize-omnivoice-cli PROPERTIES
+                LABELS "integration;cli;omnivoice"
+                # Three real forward passes (mask-predict denoising plus codec
+                # decode) measured at ~31s total on the 20-CPU development
+                # host; 1200s is headroom for a slower or busier machine.
+                TIMEOUT 1200)
+        endif()
     endif()
     # The repeated-run and resource-cleanup gate docs/backends.md requires of a
     # claimed backend, which no family had in code: every manifest declares
@@ -547,21 +617,40 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         if(NOT EXISTS "${model}")
             return()
         endif()
+        # An empty optional trailing argument (OmniVoice's voice: its catalog
+        # has no preset to name) cannot survive an unquoted ${ARGN} expansion
+        # -- CMake's argument splitter silently drops empty list elements
+        # there, which would shift a language tag into the voice slot
+        # instead. foreach(IN LISTS ...) does not lose it, so the two
+        # optional slots are read out positionally and re-quoted individually
+        # below, which does preserve an empty one.
+        set(voice "")
+        set(language "")
+        set(_synth_cleanup_optional_index 0)
+        foreach(_synth_cleanup_optional IN LISTS ARGN)
+            if(_synth_cleanup_optional_index EQUAL 0)
+                set(voice "${_synth_cleanup_optional}")
+            elseif(_synth_cleanup_optional_index EQUAL 1)
+                set(language "${_synth_cleanup_optional}")
+            endif()
+            math(EXPR _synth_cleanup_optional_index "${_synth_cleanup_optional_index} + 1")
+        endforeach()
         add_test(NAME synthesize-${family}-public-cleanup
             COMMAND synthesize-public-cleanup-test
-                ${model} ${_synth_cleanup_cycles} ${frames} ${input} ${ARGN})
+                "${model}" "${_synth_cleanup_cycles}" "${frames}" "${input}" "${voice}" "${language}")
         set_tests_properties(synthesize-${family}-public-cleanup PROPERTIES
             LABELS "integration;abi;${family}"
             TIMEOUT 900)
     endfunction()
 
     # `max_output_frames` does not mean the same thing to each family: VITS and
-    # Kokoro compare it against the PCM frame count, Qwen3-TTS against its own
-    # codec frames. So these numbers are not comparable and none is a default.
-    # VITS reads its tokens from the Golden payload rather than a literal: its
-    # frontend is a symbol map, and an arbitrary id sequence makes the duration
-    # predictor ask for more frames than any limit allows. Kokoro's come from the
-    # sequence its own lifecycle test already synthesizes.
+    # Kokoro compare it against the PCM frame count, Qwen3-TTS and OmniVoice
+    # against their own codec frames. So these numbers are not comparable and
+    # none is a default. VITS reads its tokens from the Golden payload rather
+    # than a literal: its frontend is a symbol map, and an arbitrary id
+    # sequence makes the duration predictor ask for more frames than any limit
+    # allows. Kokoro's come from the sequence its own lifecycle test already
+    # synthesizes.
     set(_synth_vits_cleanup_tokens
         "${CMAKE_SOURCE_DIR}/build/goldens/vits/vits-ljspeech/ljs-minimal/input/token_ids.i32")
     if(EXISTS "${_synth_vits_cleanup_tokens}")
@@ -571,6 +660,19 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     synth_add_cleanup_test(kokoro "${SYNTH_KOKORO_TEST_MODEL}" 131072
         "tokens:32,0,81,83,16,61,53,156,25,16,83,44,156,138,64,16,81,83,16,58" "af_heart")
     synth_add_cleanup_test(qwen3-tts "${SYNTH_QWEN3_TTS_TEST_MODEL}" 46080 "text:Hi." "aiden" "en")
+    # This `frames` argument becomes `synth_request_t.max_output_frames`,
+    # which the C interface always counts in native PCM frames (docs/c-
+    # interface.md) -- src/synthesize.cpp divides it by samples_per_frame
+    # (960 here) before comparing it against this family's own codec-frame
+    # cap. 720000 matches the package's own declared ceiling exactly
+    # (tests/golden/omnivoice/omnivoice-0-6b.manifest.json's
+    # package_contract.max_output_frames, itself 750 of this family's own
+    # codec frames at its 25 Hz frame rate), so this request does not
+    # accidentally clamp tighter than the package already does, and it is
+    # comfortably above what the duration estimator settles on for "Hi.".
+    # The voice stays empty: OmniVoice's catalog is empty with an unnamed
+    # package default, so an unset voice_id must succeed rather than refuse.
+    synth_add_cleanup_test(omnivoice "${SYNTH_OMNIVOICE_TEST_MODEL}" 720000 "text:Hi." "" "en")
 
     # What a limit stop reports back. Registered because it needs the package:
     # docs/c-interface.md makes an output limit one of four cases that must fill
@@ -605,6 +707,82 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             TIMEOUT 600)
     endif()
 
+    # Reference Audio profiles end to end (Plan 3's Task 14): the public
+    # create_from_reference dispatch against the real package and its pinned
+    # reference clip. Guarded on the wav too -- a locally-materialized asset
+    # like the model itself (models/ is gitignored), not something every
+    # checkout has merely because the model does.
+    set(_synth_omnivoice_reference_wav
+        "${CMAKE_SOURCE_DIR}/models/omnivoice-reference-audio/seedtts_ref_en_1.wav")
+    if(EXISTS "${SYNTH_OMNIVOICE_TEST_MODEL}" AND EXISTS "${_synth_omnivoice_reference_wav}")
+        add_executable(synthesize-omnivoice-profile-test omnivoice_profile_test.cpp)
+        target_include_directories(synthesize-omnivoice-profile-test PRIVATE
+            ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+        target_link_libraries(synthesize-omnivoice-profile-test PRIVATE synthesize ggml)
+        synth_register_integration_target(synthesize-omnivoice-profile-test)
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-profile")
+        add_test(NAME synthesize-omnivoice-profile-test
+            COMMAND synthesize-omnivoice-profile-test
+                ${SYNTH_OMNIVOICE_TEST_MODEL}
+                ${_synth_omnivoice_reference_wav}
+                ${CMAKE_SOURCE_DIR}/build/goldens/omnivoice/omni-clone-en/ref/tokens.i32
+                ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-profile)
+        set_tests_properties(synthesize-omnivoice-profile-test PROPERTIES
+            LABELS "integration;omnivoice;abi"
+            # One real encode_reference pass (HuBERT semantic branch, DAC
+            # acoustic encoder, RVQ) over ~14 s of audio, the silent-clip
+            # case's own pass over exactly 1 s, and -- since Task 16's
+            # Serialized Profile round trip -- four more full synthesize
+            # calls through the 0.6B-parameter generator (original and
+            # reloaded, ClonePrompt and DesignInstruct, each a real
+            # denoising-loop decode, not just an encode). 600s covered the
+            # pre-Task-16 shape comfortably.
+            #
+            # Fix round 1 (reviewer FINDING 3): the round-trip text was
+            # originally a full sentence per call; measured wall time (this
+            # binary run directly, unconstrained, uncontended) was
+            # 134-246s on a plain build and ~2700s under the sanitizer
+            # build (docs/testing.md's required gate for any C/C++
+            # inference change -- ASan/UBSan instrumentation on this much
+            # real generator work is substantially slower, not just
+            # differently-behaved). ~2700s would already have exceeded the
+            # 1800s ceiling this task's own first round chose, so the
+            # round-trip text was shortened to "Hi." (the same minimal text
+            # this file's own cleanup-test invocation already exercises
+            # successfully against this real package) to cut real,
+            # unnecessary cost rather than only widen the ceiling: the
+            # byte-identity claim under test needs matching output, not a
+            # long one. Re-measured after that change: 93.87s plain,
+            # ~1808s (30:07.97) sanitizer -- a real reduction, but not
+            # enough on its own to fit inside 1800s with any margin, so the
+            # ceiling below still needs raising. 3600s leaves roughly 2x
+            # headroom over the slower, sanitizer-build measurement,
+            # consistent with this project's own convention for other
+            # real-model integration gates in this same file (several
+            # already sit at 1800/3600/7200/14400s).
+            TIMEOUT 3600)
+    endif()
+
+    # The resampler's real-signal gate: the same
+    # synthesize-omnivoice-resampler-test binary the unit gate already built
+    # (registered unconditionally above with no arguments), re-invoked here
+    # with the golden directory as argv[1] so its sentinel-guarded branch
+    # loads ref/pcm_24k.f32 and ref/pcm_16k.f32 and asserts max_abs against
+    # the oracle. Needs only the (uncommitted) oracle payload, not the
+    # package itself -- unlike every other golden gate in this file, there is
+    # no model here to check for.
+    set(_synth_omnivoice_resampler_golden_sentinel
+        "${CMAKE_SOURCE_DIR}/build/goldens/omnivoice/omni-clone-en/ref/pcm_16k.f32")
+    if(EXISTS "${_synth_omnivoice_resampler_golden_sentinel}")
+        add_test(
+            NAME synthesize-omnivoice-resampler-golden
+            COMMAND synthesize-omnivoice-resampler-test
+                "${CMAKE_SOURCE_DIR}/build/goldens/omnivoice/omni-clone-en")
+        set_tests_properties(synthesize-omnivoice-resampler-golden PROPERTIES
+            LABELS "integration;omnivoice"
+            TIMEOUT 60)
+    endif()
+
     # OmniVoice's replay validator runs with --check, so it is a gate against
     # the committed tolerances rather than a measurement -- and its exact-token
     # arm fails any greedy case whose grid is not the oracle's, tolerance file
@@ -633,6 +811,26 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         set_tests_properties(synthesize-omnivoice-replay-golden PROPERTIES
             LABELS "integration;omnivoice;golden"
             TIMEOUT 14400
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    endif()
+
+    # OmniVoice's public-request validator needs no oracle payload -- it
+    # asserts relations between runs of this port's public seam (seed echo,
+    # same-seed byte identity, cross-seed artifact_differs), not agreement
+    # with the reference -- so it is model-guarded only, unlike the golden
+    # gate above which also needs the (uncommitted) oracle sentinel.
+    if(EXISTS "${SYNTH_OMNIVOICE_TEST_MODEL}")
+        add_test(
+            NAME synthesize-omnivoice-public-request
+            COMMAND ${SYNTH_UV_EXECUTABLE} run
+                --project ${CMAKE_SOURCE_DIR}/scripts/envs/omnivoice
+                --locked python ${CMAKE_SOURCE_DIR}/scripts/validate-omnivoice-public.py
+                --model ${SYNTH_OMNIVOICE_TEST_MODEL}
+                --runner $<TARGET_FILE:synthesize-omnivoice-public-real>
+                --profile F32 --backend cpu)
+        set_tests_properties(synthesize-omnivoice-public-request PROPERTIES
+            LABELS "integration;omnivoice;abi"
+            TIMEOUT 1800
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
     endif()
 

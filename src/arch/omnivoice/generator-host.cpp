@@ -1,6 +1,9 @@
 #include "arch/omnivoice/generator-host.h"
 
+#include "random-stream.h"
+
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -119,21 +122,28 @@ void log_softmax(const float * input, uint32_t count, float * output) {
     }
 }
 
-}  // namespace
+// The guided combination shared by `choose_token` and `choose_token_sampled`:
+// log_softmax -> combine -> log_softmax -> mask ban. `guided` must already be
+// sized to the vocabulary (its size is the only place vocab_size comes from
+// here); this is the one place either caller computes the guided array, so
+// the two decode paths cannot drift apart from each other.
+//
+// Carryover item 1: `uncond` may be nullptr only when guidance_scale == 0
+// (the reference's own `guidance_scale != 0` branch). This used to be prose
+// on choose_token's header comment alone; asserting it here enforces the
+// same contract for both callers instead of documenting it once and hoping.
+void build_guided(const float *        cond,
+                  const float *        uncond,
+                  uint32_t             mask_id,
+                  float                guidance_scale,
+                  std::vector<float> & guided) {
+    assert(!(guidance_scale != 0.0f && uncond == nullptr) &&
+           "choose_token contract: uncond must be non-null when guidance_scale != 0");
+    const uint32_t vocab_size = uint32_t(guided.size());
 
-void choose_token(const float * cond,
-                  const float * uncond,
-                  uint32_t      vocab_size,
-                  uint32_t      mask_id,
-                  float         guidance_scale,
-                  int32_t &     token,
-                  float &       log_prob,
-                  float *       runner_up_gap) {
     thread_local std::vector<float> cond_lp;
     thread_local std::vector<float> uncond_lp;
-    thread_local std::vector<float> guided;
     cond_lp.resize(vocab_size);
-    guided.resize(vocab_size);
 
     log_softmax(cond, vocab_size, cond_lp.data());
     if (guidance_scale != 0.0f && uncond != nullptr) {
@@ -151,12 +161,27 @@ void choose_token(const float * cond,
     }
 
     // The mask id is banned AFTER the combination, so the model can never
-    // commit a mask; everything else competes. Guarded: this function is
+    // commit a mask; everything else competes. Guarded: this helper is
     // unit-tested standalone with toy vocabularies, and a reader's guarantee
     // that mask_id < vocab_size does not apply here.
     if (mask_id < vocab_size) {
         guided[mask_id] = -std::numeric_limits<float>::infinity();
     }
+}
+
+}  // namespace
+
+void choose_token(const float * cond,
+                  const float * uncond,
+                  uint32_t      vocab_size,
+                  uint32_t      mask_id,
+                  float         guidance_scale,
+                  int32_t &     token,
+                  float &       log_prob,
+                  float *       runner_up_gap) {
+    thread_local std::vector<float> guided;
+    guided.resize(vocab_size);
+    build_guided(cond, uncond, mask_id, guidance_scale, guided);
 
     int32_t best         = 0;
     float   best_value   = -std::numeric_limits<float>::infinity();
@@ -180,6 +205,121 @@ void choose_token(const float * cond,
                              best_value - second_value :
                              std::numeric_limits<float>::infinity();
     }
+}
+
+float gumbel_perturb(float logit, float temperature, float uniform) {
+    // Upstream's `_gumbel_sample` (omnivoice.py:1632-1636), one value: scaled
+    // = logit / temperature; g = -log(-log(u + 1e-10) + 1e-10); result =
+    // scaled + g. Float32 throughout -- no double intermediate anywhere in
+    // this expression, and the grouping matches upstream's line-for-line
+    // rather than an algebraically equivalent rearrangement, because a
+    // reordering changes the rounding and therefore which token an argmax
+    // over several perturbed values picks.
+    const float scaled = logit / temperature;
+    const float noise  = -std::log(-std::log(uniform + 1e-10f) + 1e-10f);
+    return scaled + noise;
+}
+
+synth_status_t choose_token_sampled(const float *        cond,
+                                    const float *        uncond,
+                                    uint32_t             vocab_size,
+                                    uint32_t             mask_id,
+                                    float                guidance_scale,
+                                    float                class_temperature,
+                                    NormalRandomStream & stream,
+                                    int32_t &            token,
+                                    float &              log_prob) {
+    if (class_temperature == 0.0f) {
+        // Matches upstream's `if class_temperature > 0.0` split exactly: no
+        // top-k filter, no stream draws, the existing greedy path decides.
+        choose_token(cond, uncond, vocab_size, mask_id, guidance_scale, token, log_prob);
+        return SYNTH_OK;
+    }
+
+    thread_local std::vector<float> guided;
+    guided.resize(vocab_size);
+    build_guided(cond, uncond, mask_id, guidance_scale, guided);
+
+    // Upstream's `confidence_scores = log_probs.max(dim=-1)[0]`
+    // (omnivoice.py:1449): the position confidence is the max of the FULL
+    // guided array (post mask-ban, pre top-k filter) -- the same value
+    // choose_token's own argmax would report for this row -- regardless of
+    // which survivor the Gumbel draw below actually picks. It is computed
+    // from `pred_tokens`, not from it: reading `guided[token]` instead would
+    // silently swap in the chosen survivor's value whenever the draw did not
+    // land on the row's true argmax, which is common once keep > 1.
+    float full_max = -std::numeric_limits<float>::infinity();
+    for (uint32_t index = 0; index < vocab_size; ++index) {
+        full_max = std::max(full_max, guided[index]);
+    }
+
+    // Upstream's `_filter_top_k`: keep = ceil(0.1 * vocab_size) largest
+    // guided values (the mask entry is already -inf from build_guided's ban,
+    // so it can never be among them). Computed as integer ceiling division
+    // by 10 rather than double(0.1) * vocab_size, so the result is exact for
+    // every integer vocab_size instead of depending on how 0.1's binary
+    // rounding happens to fall relative to a .5 boundary.
+    const uint32_t keep = std::min((vocab_size + 9) / 10, vocab_size);
+
+    // Ties break toward the lower class id, matching this port's argmax
+    // first-maximal convention elsewhere (see choose_token above).
+    thread_local std::vector<uint32_t> order;
+    order.resize(vocab_size);
+    for (uint32_t index = 0; index < vocab_size; ++index) {
+        order[index] = index;
+    }
+    // `guided` has thread-local storage duration, so it needs no capture --
+    // it is already reachable from the lambda body the way a global would be.
+    // Mirrors commits_before's NaN guard below for the same reason: a NaN
+    // entry compares false against everything, including itself, so without
+    // this the plain branch would make the order non-transitive across a
+    // NaN guided value -- undefined behavior for std::partial_sort, not just
+    // a wrong order. Route NaN values after every real one; two NaN-valued
+    // classes fall through to the class-id tie-break as if they were equal.
+    const auto ranks_before = [](uint32_t left, uint32_t right) {
+        const bool left_nan  = guided[left] != guided[left];
+        const bool right_nan = guided[right] != guided[right];
+        if (left_nan != right_nan) {
+            return right_nan;
+        }
+        if (!left_nan && guided[left] != guided[right]) {
+            return guided[left] > guided[right];
+        }
+        return left < right;
+    };
+    std::partial_sort(order.begin(), order.begin() + keep, order.end(), ranks_before);
+    // The survivors, now in ascending class-id order for the draw: a
+    // port-defined order, since upstream draws one dense `rand_like` over the
+    // whole row at once rather than one uniform per surviving class.
+    std::sort(order.begin(), order.begin() + keep);
+
+    // Seeded at the first survivor, not -1: mirrors choose_token's own
+    // `best = 0` convention above (a fixed default that is always a real
+    // vocabulary entry, never used as an "unset" sentinel). An all-NaN
+    // perturbed-score row -- every guided value here NaN, which any `>`
+    // comparison loses, including against another NaN -- would otherwise
+    // leave `best` at its old -1 seed, and that -1 token flows straight into
+    // fill_shifted_audio_ids' embedding-index arithmetic: an out-of-bounds
+    // ggml_get_rows index on codebook 0, a silently wrong in-range row on
+    // any later codebook. `order[0]` is always one of the `keep` surviving
+    // class ids by construction (the top-k filter above never returns an
+    // empty survivor set for a positive `keep`), so this seed is always a
+    // valid, in-range vocabulary entry -- never -1 -- regardless of how
+    // degenerate the perturbed scores below turn out to be.
+    int32_t best       = int32_t(order[0]);
+    float   best_score = -std::numeric_limits<float>::infinity();
+    for (uint32_t index = 0; index < keep; ++index) {
+        const uint32_t class_id = order[index];
+        const float    uniform  = stream.next_uniform();
+        const float    score    = gumbel_perturb(guided[class_id], class_temperature, uniform);
+        if (score > best_score) {
+            best_score = score;
+            best       = int32_t(class_id);
+        }
+    }
+    token    = best;
+    log_prob = full_max;
+    return SYNTH_OK;
 }
 
 bool commits_before(const MaskedCandidate & left, const MaskedCandidate & right) {

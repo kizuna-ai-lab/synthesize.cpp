@@ -11,15 +11,57 @@
 #include "omnivoice_small_layout.h"
 
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <vector>
 
 namespace synth::omnivoice::testing {
 
 struct SyntheticPackageOptions {
-    bool omit_frontend_vocab  = false;
-    bool omit_frontend_merges = false;
+    bool  omit_frontend_vocab  = false;
+    bool  omit_frontend_merges = false;
+    // 2.0 matches the small layout's transcribed default (see
+    // omnivoice_decode_loop_test.cpp's file header): non-zero, so the
+    // unconditional branch runs by default, matching every existing caller.
+    // Override to 0.0f to exercise the loop's `guidance == 0` branch, which
+    // skips the unconditional forward entirely.
+    float guidance_scale       = 2.0f;
+    // Constant fill (the default, false) is what makes every candidate's
+    // guided log-prob tie across the ENTIRE vocabulary at every position --
+    // deliberate elsewhere in this file (check_grid's argmax-0 property), but
+    // it also means no seed or draw sequence can ever show up in a committed
+    // grid, so a test that needs to prove run_synthesis actually READS
+    // request.seed (rather than, say, hardcoding a constant) cannot use the
+    // default package. Set this to true to fill every generator/codec weight
+    // tensor with a fixed, non-constant, reproducible LCG walk instead, so
+    // logits genuinely vary across positions and vocabulary entries.
+    bool  varied_weights       = false;
+    // The default vocabulary ("tok0".."tok39") is fine for every existing
+    // test: they all drive run_synthesis with pre-tokenized ids and never
+    // ask the frontend to tokenize actual text. Model::synthesize (Task 5)
+    // does ask that -- it assembles a prompt from raw UTF-8 -- and this
+    // family's byte-level frontend can only name a byte the vocabulary
+    // spells out (see bpe-frontend.cpp's byte_to_codepoint: printable ASCII
+    // remaps to itself). Set this to true to spell ids [0, 5) as the literal
+    // characters "N", "o", "n", "e", "a" instead: enough to tokenize the
+    // "None" style_text substitutes for an empty language or instruction,
+    // plus "a"/"aa" test text, without touching the marker ids at [30, 39]
+    // those tests never look up by character.
+    bool  ascii_text_vocab     = false;
 };
+
+// A tiny deterministic LCG -- not synth::NormalRandomStream, which is
+// production code belonging to a synthesis' own draw contract, not to a test
+// fixture's weights. Only used when SyntheticPackageOptions::varied_weights
+// is set. The output is scaled to a modest range: two transformer layers of
+// wide, unscaled random weights would risk overflow inside the attention
+// softmax, and nothing here needs realism, only variety.
+inline float lcg_next_weight(uint64_t & state) {
+    state                      = state * 6364136223846793005ULL + 1442695040888963407ULL;
+    const uint32_t bits        = uint32_t(state >> 32);
+    const float    unit_signed = float(bits) / float(0xFFFFFFFFu) * 2.0f - 1.0f;  // [-1, 1]
+    return unit_signed * 0.1f;                                                    // [-0.1, 0.1]
+}
 
 inline void set_string_array(gguf_context * g, const char * key, const std::vector<std::string> & values) {
     std::vector<const char *> pointers;
@@ -67,7 +109,14 @@ inline bool write_synthetic_package(const std::string & path, const SyntheticPac
     gguf_set_val_u32(gguf, "synthesize.capabilities.input_flags", 1u << 0);
     gguf_set_val_u32(gguf, "synthesize.capabilities.flags", (1u << 0) | (1u << 1));
     gguf_set_val_u64(gguf, "synthesize.capabilities.max_input_tokens", 64);
-    gguf_set_val_u64(gguf, "synthesize.capabilities.max_output_frames", 16);
+    // Native PCM frames (docs/c-interface.md), not this family's own codec
+    // frames: the small layout's ceiling is 16 codec frames (see
+    // omnivoice_decode_loop_test.cpp's kMaxFrames), and one codec frame here
+    // is h.codec.hop_length (6) PCM samples, so the metadata this package
+    // declares is 16 * 6 = 96. PR #6's review found the real package had this
+    // exact class of error -- a codec-frame count written directly into this
+    // PCM-frame field -- which this fixture no longer reproduces.
+    gguf_set_val_u64(gguf, "synthesize.capabilities.max_output_frames", 16 * h.codec.hop_length);
     gguf_set_val_f32(gguf, "synthesize.capabilities.min_speaking_rate", 0.5f);
     gguf_set_val_f32(gguf, "synthesize.capabilities.max_speaking_rate", 2.0f);
     gguf_set_val_u32(gguf, "synthesize.audio.sample_rate_hz", 150);
@@ -78,7 +127,7 @@ inline bool write_synthetic_package(const std::string & path, const SyntheticPac
     gguf_set_val_u32(gguf, "synthesize.voice.preset_count", 0);
 
     gguf_set_val_u32(gguf, "synthesize.omnivoice.generation.num_step", 4);
-    gguf_set_val_f32(gguf, "synthesize.omnivoice.generation.guidance_scale", 2.0f);
+    gguf_set_val_f32(gguf, "synthesize.omnivoice.generation.guidance_scale", options.guidance_scale);
     gguf_set_val_f32(gguf, "synthesize.omnivoice.generation.t_shift", 0.1f);
     gguf_set_val_f32(gguf, "synthesize.omnivoice.generation.layer_penalty_factor", 5.0f);
     gguf_set_val_f32(gguf, "synthesize.omnivoice.generation.position_temperature", 5.0f);
@@ -152,10 +201,17 @@ inline bool write_synthetic_package(const std::string & path, const SyntheticPac
     gguf_set_val_u32(gguf, "synthesize.frontend.contract_version", 1);
     if (!options.omit_frontend_vocab) {
         // make_bpe_frontend requires only a non-empty dense table; loading does
-        // not tokenize, so token text is arbitrary here.
-        std::vector<std::string> vocab;
+        // not tokenize, so token text is arbitrary here -- except when
+        // ascii_text_vocab asks for ids that a real tokenize call can
+        // actually resolve (see the option's own comment).
+        static const char * const kAsciiPrefix[] = { "N", "o", "n", "e", "a" };
+        std::vector<std::string>  vocab;
         for (uint32_t index = 0; index < h.generator.text_vocab_size; ++index) {
-            vocab.push_back("tok" + std::to_string(index));
+            if (options.ascii_text_vocab && index < std::size(kAsciiPrefix)) {
+                vocab.emplace_back(kAsciiPrefix[index]);
+            } else {
+                vocab.push_back("tok" + std::to_string(index));
+            }
         }
         set_string_array(gguf, "synthesize.omnivoice.frontend.vocab", vocab);
     }
@@ -163,7 +219,11 @@ inline bool write_synthetic_package(const std::string & path, const SyntheticPac
         set_string_array(gguf, "synthesize.omnivoice.frontend.merges", { "tok1 tok2" });
     }
 
-    // --- Tensors: the small layout with real F32 payloads.
+    // --- Tensors: the small layout with real F32 payloads. One LCG state
+    // walks across every tensor's every element (rather than resetting per
+    // tensor), so varied_weights produces a genuinely varied pattern rather
+    // than the same short repeating sequence in every tensor.
+    uint64_t lcg_state = 0x2545f4914f6cdd1dULL;  // an arbitrary fixed seed
     for (const Entry & entry : entries) {
         ggml_tensor * tensor = ggml_new_tensor(context, GGML_TYPE_F32, int(entry.ne.size()), entry.ne.data());
         if (tensor == nullptr) {
@@ -174,7 +234,9 @@ inline bool write_synthetic_package(const std::string & path, const SyntheticPac
         ggml_set_name(tensor, entry.name.c_str());
         float * data = static_cast<float *>(tensor->data);
         for (int64_t index = 0; index < ggml_nelements(tensor); ++index) {
-            data[index] = 0.03125f;  // any finite constant; loading never computes
+            // any finite constant; loading never computes -- unless
+            // varied_weights asks for a real seed effect to be observable.
+            data[index] = options.varied_weights ? lcg_next_weight(lcg_state) : 0.03125f;
         }
         gguf_add_tensor(gguf, tensor);
     }

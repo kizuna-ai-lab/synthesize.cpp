@@ -25,7 +25,7 @@
 - **Exact-token equality is the gate for slices 5–6.** A greedy golden case passes `structural_exactness` only when the port's committed 8×T grid equals the oracle's `codes/grid.i32` **exactly** — it is never a threshold, and the tolerance file never carries a token-grid entry.
 - **Tolerances are inputs, not outputs.** `tests/tolerances/omnivoice.json` is populated once, from the first working pair, reviewed, and committed **before** support is declared (docs/port-validation.md discipline). A validator's `--check` refuses to run against an absent cell; no task may weaken a committed threshold to accept its own output.
 - **Pinned artifacts this plan compares against:**
-  - Package GGUF `models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf`, sha256 `3ecaa5e2f6fbd735296ba1cd60680c90467be22d2140dc4f208fe80111ecb9e5` (post-license-ruling cut; `general.license = "other"`).
+  - Package GGUF `models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf`, sha256 `3ecaa5e2f6fbd735296ba1cd60680c90467be22d2140dc4f208fe80111ecb9e5` (post-license-ruling cut; `general.license = "other"`) [superseded 2026-08-03 by `f6d504ffaddcbf32f80f1f6c847f075bbd5d2c7b50fe95a194ceb635772f9fa3`, a metadata-only re-cut fixing a `max_output_frames` unit error; see the porting log's 2026-08-03 entry].
   - Weights revision `WEIGHTS_REV = c5fdb5ccb189668d56333f77ba2629f4cd7535f4`; source revision `OMNI_REV = 468e927ba3716cd8dd86421148dfb3046e9f9d7b` (package 0.2.1).
   - Oracle invocation, always: `uv run --project scripts/envs/omnivoice --locked python …` (F32 on CPU).
   - Oracle artifacts under `build/goldens/omnivoice/<case-id>/` (all 20 cases dumped; raw little-endian f32/i32, no headers; shapes in each case's `metadata.json`).
@@ -495,7 +495,7 @@ uv run --project scripts/envs/omnivoice --locked python scripts/convert-omnivoic
 sha256sum models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf
 ```
 
-Expected: sha256 still `3ecaa5e2f6fbd735296ba1cd60680c90467be22d2140dc4f208fe80111ecb9e5`. Review the regenerated report diff (`git diff reports/convert/omnivoice/`) — bookkeeping only; commit it if it changed.
+Expected: sha256 still `3ecaa5e2f6fbd735296ba1cd60680c90467be22d2140dc4f208fe80111ecb9e5`. Review the regenerated report diff (`git diff reports/convert/omnivoice/`) — bookkeeping only; commit it if it changed. [Superseded 2026-08-03: re-running this exact command against a corrected manifest (`max_output_frames` 750 → 720000) now produces `f6d504ffaddcbf32f80f1f6c847f075bbd5d2c7b50fe95a194ceb635772f9fa3`; see the porting log's 2026-08-03 entry.]
 
 - [ ] **Step 5: Commit**
 
@@ -3910,7 +3910,7 @@ EOF
 - [ ] `cmake --build build --target synthesize-check-unit` and the sanitizer build both green; `ctest -L unit` green.
 - [ ] `ctest -R synthesize-omnivoice-python-unit` green with the defaults test RUNNING (not skipped); `ctest -R synthesize-golden-manifest-contract` and `-R synthesize-vits-python-unit` green.
 - [ ] `ctest -R synthesize-omnivoice-replay-golden` green: 17/17 exact token grids, every probe inside `tests/tolerances/omnivoice.json`, all nodes on CPU.
-- [ ] The package GGUF still hashes `3ecaa5e2f6fbd735296ba1cd60680c90467be22d2140dc4f208fe80111ecb9e5`; every oracle binary artifact byte-identical through the Task 2 re-dump (or the recorded supersession).
+- [ ] The package GGUF still hashes `3ecaa5e2f6fbd735296ba1cd60680c90467be22d2140dc4f208fe80111ecb9e5` [superseded 2026-08-03 by `f6d504ffaddcbf32f80f1f6c847f075bbd5d2c7b50fe95a194ceb635772f9fa3`, a metadata-only re-cut; see the porting log's 2026-08-03 entry]; every oracle binary artifact byte-identical through the Task 2 re-dump (or the recorded supersession).
 - [ ] `synth_synthesize`'s omnivoice branch still returns `synthesis.not_implemented` — the public seam was NOT opened.
 - [ ] `_porting-log.md` narrates slices 4–6 with dates, worst-tables, and wall clocks; the family doc's status line, scaling decision, and item-15 record lines are in.
 - [ ] Report to jiangzhuo with the evidence above; pushing the branch or opening any PR remains jiangzhuo's call.

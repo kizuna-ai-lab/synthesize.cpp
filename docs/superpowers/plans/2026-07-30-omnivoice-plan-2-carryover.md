@@ -97,7 +97,12 @@ history only).
 - The 88-entry script range table is pinned by `static_assert`; the plan's "87"
   was wrong.
 - Package GGUF (post-license-ruling) sha256:
-  `3ecaa5e2f6fbd735296ba1cd60680c90467be22d2140dc4f208fe80111ecb9e5`;
+  `3ecaa5e2f6fbd735296ba1cd60680c90467be22d2140dc4f208fe80111ecb9e5`
+  [superseded 2026-08-03 by `f6d504ffaddcbf32f80f1f6c847f075bbd5d2c7b50fe95a194ceb635772f9fa3`,
+  a metadata-only re-cut fixing a `max_output_frames` unit error (750 codec
+  frames written where 720000 native PCM frames belonged); see the porting
+  log's 2026-08-03 entry -- the digest above was correct as of this plan's own
+  close and is left as the historical record];
   `general.license = "other"` per jiangzhuo's 2026-07-30 ruling (no invented
   CC version in machine-readable fields; ship-card frontmatter is a separate,
   later decision).

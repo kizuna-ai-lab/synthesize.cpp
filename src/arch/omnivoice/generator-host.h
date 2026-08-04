@@ -6,6 +6,10 @@
 #include <string>
 #include <vector>
 
+namespace synth {
+class NormalRandomStream;
+}
+
 namespace synth::omnivoice {
 
 // The host side of the mask-predict decode loop: the prompt grid, the commit
@@ -69,7 +73,12 @@ std::vector<uint64_t> commit_schedule(uint64_t total_mask, uint32_t num_step, do
 // double log-softmax is the reference's, not an accident. The mask id is
 // banned AFTER the combination; `token` is the argmax over what remains and
 // `log_prob` its guided log-probability. `uncond` may be nullptr only when
-// guidance_scale == 0 (the reference's `guidance_scale != 0` branch).
+// guidance_scale == 0 (the reference's `guidance_scale != 0` branch) -- this
+// is asserted, not just documented: the shared `build_guided` helper behind
+// both this function and `choose_token_sampled` refuses
+// `guidance_scale != 0.0f && uncond == nullptr`. The project's unit harness
+// has no death-test mechanism, so the assert's presence is reviewed rather
+// than exercised by a test that expects it to fire.
 //
 // A non-null `runner_up_gap` receives `log_prob` minus the second-highest
 // guided value over the same post-ban vocabulary: how much slack the argmax
@@ -85,6 +94,58 @@ void choose_token(const float * cond,
                   int32_t &     token,
                   float &       log_prob,
                   float *       runner_up_gap = nullptr);
+
+// Upstream's `_gumbel_sample` (omnivoice/models/omnivoice.py:1632-1636),
+// applied to one value: scaled = logit / temperature; g = -log(-log(u +
+// 1e-10) + 1e-10); result = scaled + g. Float32 throughout -- the port's
+// tests pin the exact expression shape, not just a tolerance, because a
+// double intermediate or a reordering of the sum changes which token an
+// argmax over several perturbed values picks. `uniform` comes from this
+// port's own seeded stream; upstream's `_gumbel_sample` has no seed
+// parameter of its own, so the seed contract here is this port's, not a
+// transcription.
+float gumbel_perturb(float logit, float temperature, float uniform);
+
+// The class-branch companion to `choose_token`, transcribing upstream's
+// `if class_temperature > 0.0: ... _gumbel_sample(filtered, class_temperature
+// ).argmax(-1)` split (omnivoice.py:1443-1448). `class_temperature == 0.0`
+// short-circuits to the plain greedy `choose_token` -- no top-k filter, no
+// stream draws -- matching upstream's own branch exactly.
+//
+// Otherwise: builds the same guided array `choose_token` would (shared via
+// `build_guided`, so the two paths cannot drift), applies upstream's
+// `_filter_top_k` (keep the `ceil(0.1 * vocab_size)` largest guided values;
+// the mask id is already -inf from the ban inside `build_guided`, so it can
+// never survive), then draws one uniform per SURVIVING class from `stream`,
+// in ascending class-id order -- a port-defined draw order, since upstream
+// draws a dense `rand_like` over the whole row at once and this port does
+// not reproduce that shape. `token` is the argmax of
+// `gumbel_perturb(guided[c], class_temperature, u_c)` over the survivors
+// (ties keep the lower class id, matching this port's argmax first-maximal
+// convention elsewhere).
+//
+// `log_prob` is upstream's `confidence_scores = log_probs.max(dim=-1)[0]`
+// (omnivoice.py:1449): the max over the FULL guided array (post mask-ban,
+// pre top-k filter) -- the same value `choose_token` would report as its own
+// argmax's log_prob for this row -- NOT `guided[token]`. Upstream computes
+// this confidence from `log_probs` independently of which token
+// `pred_tokens` names, so whenever the Gumbel draw picks a survivor other
+// than the row's true argmax (routine once more than one class survives the
+// filter), `log_prob` and the guided value of the chosen `token` diverge by
+// design and must not be conflated.
+//
+// Preconditions identical to `choose_token`, including the
+// `guidance_scale != 0.0f && uncond == nullptr` assert (carryover item 1,
+// now enforced for both paths through the shared `build_guided`).
+synth_status_t choose_token_sampled(const float *        cond,
+                                    const float *        uncond,
+                                    uint32_t             vocab_size,
+                                    uint32_t             mask_id,
+                                    float                guidance_scale,
+                                    float                class_temperature,
+                                    NormalRandomStream & stream,
+                                    int32_t &            token,
+                                    float &              log_prob);
 
 // One still-masked canvas position, scored. `score` is the guided log-prob
 // minus codebook * layer_penalty_factor -- the bias that commits coarse

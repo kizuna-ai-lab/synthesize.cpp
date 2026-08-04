@@ -178,6 +178,28 @@ int check_choose_token_unguided() {
     return 0;
 }
 
+// guidance_scale == 0.0f && uncond == nullptr is the one combination the
+// choose_token contract explicitly allows -- everything else pairing a null
+// uncond with a nonzero guidance_scale is now an assert inside the shared
+// build_guided helper (Task 3's carryover item 1: the header comment used to
+// be the only place this rule lived; the assert is not currently exercised
+// by anything short of a death-test harness, which this project's unit
+// runner does not have, so its presence is reviewed by hand rather than
+// tripped by a test). This case exists to pin the legal combination
+// explicitly, separate from check_choose_token_unguided incidentally using
+// it: this is the assert's precondition being satisfied, not just a
+// convenient fixture.
+int check_choose_token_zero_guidance_null_uncond_is_legal() {
+    const float cond[kToyVocab] = { 0.2f, -0.5f, 1.5f, 0.0f };
+
+    int32_t token    = -1;
+    float   log_prob = 0.0f;
+    synth::omnivoice::choose_token(cond, nullptr, kToyVocab, kToyMaskId, 0.0f, token, log_prob);
+    SYNTH_TEST_CHECK(token == 2);
+    SYNTH_TEST_CHECK(std::isfinite(log_prob));
+    return 0;
+}
+
 // The runner-up gap the margin report screens on: the distance between the
 // argmax and the best entry that lost to it, over the POST-ban vocabulary.
 int check_choose_token_runner_up_gap() {
@@ -456,6 +478,7 @@ int main() {
     SYNTH_TEST_CHECK(check_choose_token_guided() == 0);
     SYNTH_TEST_CHECK(check_choose_token_bans_mask() == 0);
     SYNTH_TEST_CHECK(check_choose_token_unguided() == 0);
+    SYNTH_TEST_CHECK(check_choose_token_zero_guidance_null_uncond_is_legal() == 0);
     SYNTH_TEST_CHECK(check_choose_token_runner_up_gap() == 0);
     SYNTH_TEST_CHECK(check_commits_before_matches_select_commits() == 0);
     SYNTH_TEST_CHECK(check_select_commits() == 0);

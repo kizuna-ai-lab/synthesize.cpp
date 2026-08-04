@@ -31,6 +31,23 @@ Without --check this script measures; with --check it gates against
 tests/tolerances/omnivoice.json (profiles.<PROFILE>.stages.<STAGE>), refusing
 to run when the cell is absent -- a threshold the suite writes for itself
 proves nothing.
+
+The two clone cases additionally carry an encode-reference channel: the
+runner's `--encode-reference` runs the WHOLE cloning-path encode chain over
+`ref/pcm_24k.f32` -- resample to 16 kHz, the HuBERT semantic branch plus the
+codec's own SemanticEncoder, the DAC acoustic encoder plus reference fusion,
+then (Task 13) the RVQ nearest-neighbour encode. `ref.pcm_16k`/
+`ref.semantic_mean`/`ref.fused_latent` are ordinary GATED probes as of Task
+13 -- folded into `measurements`/`worst` exactly like the generator probes
+above, so they participate in --check like everything else. `ref.tokens` is
+NOT a tolerance probe and never will be: it is this family's
+structural_exactness for the cloning path, compared for EXACT equality
+against `ref/tokens.i32` unconditionally (before and independent of
+--check), and a mismatch is a structural failure printing the
+(level, frame, got, want, gap) quintuple for every differing position, the
+gap read back from the runner's own `gaps.f32` (the RVQ margin
+instrumentation, written only for this diagnosis -- it is never itself
+compared).
 """
 from __future__ import annotations
 
@@ -43,7 +60,34 @@ import subprocess
 import numpy as np
 
 PROBE_LAYERS = (0, 7, 14, 21, 27)
-VOLUME_BY_BRANCH = {"peak_normalise_to_0.5": "peak", "none": "none"}
+# "scale_by_ref_rms_over_0.1" (the quiet-reference arm, Task 14's
+# apply_reference_volume) is recorded here for a FUTURE golden case, not a
+# wired-up comparison: the runner (tests/omnivoice_replay_real.cpp) has no
+# "quiet" volume argument and no way to learn the numeric ref_rms to scale
+# by, because no case exercises the branch today -- the two committed clone
+# cases both measure ref_rms ~0.123, above the 0.1 gate, and the pinned
+# reference wav cannot be swapped for a quieter one without re-cutting the
+# golden. If a future case's oracle ever DOES report this branch, this
+# mapping keeps the failure legible: the runner refuses the unrecognized
+# "quiet" token with a plain usage error instead of this script silently
+# mapping the branch to nothing and comparing against the wrong waveform.
+# Closing carryover item 7
+# (docs/superpowers/plans/2026-08-01-omnivoice-plan-3-sampling-cloning.md)
+# does not mean building that runner path before anything can reach it; the
+# coverage for the scaling formula itself is
+# tests/omnivoice_codec_test.cpp:check_reference_volume, a real unit fixture.
+VOLUME_BY_BRANCH = {"peak_normalise_to_0.5": "peak", "none": "none", "scale_by_ref_rms_over_0.1": "quiet"}
+
+# The RVQ's own codebook count, fixed for this family (kCodebooks in
+# tests/omnivoice_replay_real.cpp); tokens.i32/gaps.f32 are both
+# `NUM_CODEBOOKS * frames` codebook-major arrays.
+NUM_CODEBOOKS = 8
+
+# The maximum number of mismatching (level, frame) positions to print in
+# full: a genuinely broken RVQ encode could differ everywhere, and printing
+# thousands of quintuples would bury the ones that matter without adding
+# anything a reader could not already infer from the count.
+MAX_TOKEN_MISMATCH_DETAIL = 20
 
 # The margin below which a candidate golden case is a coin flip rather than a
 # demonstration; docs/porting/families/omnivoice.md carries the derivation.
@@ -186,6 +230,33 @@ def compare_grid(admissible: list[tuple[str, np.ndarray]], actual: np.ndarray) -
             "admissible": [name for name, _ in admissible]}
 
 
+def compare_tokens_exact(expected: np.ndarray, actual: np.ndarray, gaps: np.ndarray | None) -> dict:
+    """The cloning path's own structural_exactness: NO tolerance, ever.
+
+    `expected`/`actual` are `NUM_CODEBOOKS * frames` codebook-major (level l,
+    frame t at `l * frames + t`, tokens.i32's own layout). `gaps`, when not
+    None and shaped like `expected`, is the runner's own `gaps.f32` -- the RVQ
+    margin instrumentation, read back here ONLY to annotate a mismatch with
+    the gap the wrong decision was made by, never compared on its own.
+    """
+    if expected.shape != actual.shape:
+        return {"shape_mismatch": [list(expected.shape), list(actual.shape)]}
+    if expected.size % NUM_CODEBOOKS != 0:
+        raise SystemExit(f"ref.tokens holds {expected.size} values, not a whole {NUM_CODEBOOKS}-codebook grid")
+    frames = expected.size // NUM_CODEBOOKS
+    mismatches = np.flatnonzero(expected != actual)
+    if mismatches.size == 0:
+        return {"exact": True, "elements": int(expected.size)}
+    detail = []
+    for flat_index in mismatches[:MAX_TOKEN_MISMATCH_DETAIL]:
+        level, frame = divmod(int(flat_index), frames)
+        gap = float(gaps[flat_index]) if gaps is not None and gaps.shape == expected.shape else None
+        detail.append({"level": level, "frame": int(frame), "got": int(actual[flat_index]),
+                       "want": int(expected[flat_index]), "gap": gap})
+    return {"exact": False, "elements": int(expected.size), "mismatches": int(mismatches.size),
+            "truncated": int(mismatches.size) > MAX_TOKEN_MISMATCH_DETAIL, "detail": detail}
+
+
 def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
     case_id = case["id"]
     oracle = oracle_root / case_id
@@ -227,6 +298,13 @@ def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
             raise SystemExit(f"{case_id}: {len(alternates)} alternate grids, but the runner "
                              f"takes one --alt-grid; the free-run waveform channel needs widening")
         command += ["--alt-grid", str(arguments.manifest.parent / alternates[0]["file"])]
+    # The encode-reference channel: only the two clone cases dump the
+    # pcm_24k/semantic_mean pair this needs, so its presence in the manifest's
+    # own artifact list -- not --require -- decides whether this case carries
+    # it. Independent of the greedy grid/decode machinery above.
+    has_encode_reference = "ref.pcm_24k" in names and "ref.semantic_mean" in names
+    if has_encode_reference:
+        command += ["--encode-reference", str(oracle / "ref/pcm_24k.f32")]
     finished = subprocess.run(command, capture_output=True)
     if finished.returncode != 0:
         stderr = finished.stderr.decode("utf-8", "replace")
@@ -300,9 +378,45 @@ def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
             freerun = {"mode": "not-compared", "grid": None,
                        "reason": "the free-run grid matched no admissible grid"}
 
+    # The three encode-reference probes are ordinary GATED measurements as of
+    # Task 13 -- folded into `measurements` itself, exactly like the generator
+    # probes above, so --check's tolerance gate covers them without a second
+    # code path. A produced file that is missing or empty compares against an
+    # empty array, which compare()'s own shape check turns into a
+    # shape_mismatch the main loop already treats as a failure -- no separate
+    # "missing" status is needed the way the pre-Task-13 report-only version
+    # carried.
+    has_pcm16k_reference = has_encode_reference and "ref.pcm_16k" in names
+    if has_pcm16k_reference:
+        produced_path = work / "pcm_16k.f32"
+        produced = read_f32(produced_path) if produced_path.is_file() else np.empty(0, dtype=np.float32)
+        measurements["ref.pcm_16k"] = compare(read_f32(oracle / "ref/pcm_16k.f32"), produced)
+    if has_encode_reference:
+        produced_path = work / "semantic_mean.f32"
+        produced = read_f32(produced_path) if produced_path.is_file() else np.empty(0, dtype=np.float32)
+        measurements["ref.semantic_mean"] = compare(read_f32(oracle / "ref/semantic_mean.f32"), produced)
+    has_fused_reference = has_encode_reference and "ref.fused_latent" in names
+    if has_fused_reference:
+        produced_path = work / "fused_latent.f32"
+        produced = read_f32(produced_path) if produced_path.is_file() else np.empty(0, dtype=np.float32)
+        measurements["ref.fused_latent"] = compare(read_f32(oracle / "ref/fused_latent.f32"), produced)
+
+    # ref.tokens: this family's cloning-path structural_exactness. NEVER a
+    # tolerance probe -- compared unconditionally, like the greedy grid above,
+    # before and independent of --check.
+    has_tokens_reference = has_encode_reference and "ref.tokens" in names
+    tokens = None
+    if has_tokens_reference:
+        expected_tokens = read_i32(oracle / "ref/tokens.i32")
+        tokens_path = work / "tokens.i32"
+        produced_tokens = read_i32(tokens_path) if tokens_path.is_file() else np.empty(0, dtype=np.int32)
+        gaps_path = work / "gaps.f32"
+        gaps = read_f32(gaps_path) if gaps_path.is_file() and gaps_path.stat().st_size else None
+        tokens = compare_tokens_exact(expected_tokens, produced_tokens, gaps)
+
     return {"case": case_id, "status": "ok", "greedy": greedy, "stats": stats,
             "measurements": measurements, "grid": grid, "finite_pcm": finite,
-            "freerun": freerun, "margin": stats.get("margin")}
+            "freerun": freerun, "margin": stats.get("margin"), "tokens": tokens}
 
 
 def main(argv=None) -> int:
@@ -382,6 +496,29 @@ def main(argv=None) -> int:
         if placement["generator"][1] != 0 or placement["codec"][1] != 0:
             failures += 1
             print(f"{result['case']}: nodes left the CPU: {placement}")
+        # ref.tokens: structural_exactness, compared unconditionally (before
+        # and independent of --check), the same rule the greedy grid above
+        # follows. A mismatch prints the (level, frame, got, want, gap)
+        # quintuple for every differing position (capped; see
+        # MAX_TOKEN_MISMATCH_DETAIL) -- what a genuine RVQ arithmetic
+        # knife-edge is diagnosed with, per this family's own dual-
+        # admissibility process. NEVER widened into a tolerance: a mismatch
+        # here is either a defect in the port or a witness that needs
+        # jiangzhuo's ruling, not a number this file learns to accept.
+        tokens = result.get("tokens")
+        if tokens is not None:
+            if "shape_mismatch" in tokens:
+                structural_failures += 1
+                print(f"{result['case']}: ref.tokens shape mismatch {tokens['shape_mismatch']}")
+            elif not tokens["exact"]:
+                structural_failures += 1
+                print(f"{result['case']}: ref.tokens differ at {tokens['mismatches']} "
+                      f"of {tokens['elements']} positions"
+                      + (f" (showing the first {MAX_TOKEN_MISMATCH_DETAIL})" if tokens["truncated"] else ""))
+                for item in tokens["detail"]:
+                    gap_text = f"{item['gap']:.6g}" if item["gap"] is not None else "unavailable"
+                    print(f"    level {item['level']} frame {item['frame']} "
+                          f"got {item['got']} want {item['want']} gap {gap_text}")
 
     compared = [result for result in results if result["status"] == "ok"]
     print(f"\n{'probe':32} {'max_abs':>12} {'min_cosine':>12}")
@@ -391,6 +528,18 @@ def main(argv=None) -> int:
     if exact:
         good = sum(1 for r in exact if r["grid"]["exact"])
         print(f"token grids exact: {good}/{len(exact)}")
+    ref_exact = [r for r in compared if r.get("tokens") is not None]
+    if ref_exact:
+        good = sum(1 for r in ref_exact if r["tokens"].get("exact"))
+        print(f"ref.tokens exact: {good}/{len(ref_exact)}")
+    # The RVQ margin instrumentation's own headline, the real-clip counterpart
+    # to the miniature fixtures' asserted gaps: never gated (diagnostic only),
+    # but worth surfacing the same way the greedy loop's own margin is above.
+    encode_margins = [r["stats"]["encode_margin"] for r in compared
+                      if r["stats"].get("encode_margin") is not None]
+    if encode_margins:
+        narrowest_encode_gap = min(margin["narrowest_gap"] for margin in encode_margins)
+        print(f"narrowest RVQ encode gap: {narrowest_encode_gap:.6g}")
     # The free-run waveform channel's own headline: how many cases carried it as
     # oracle parity, and how many only as decode determinism. The split is the
     # number a reader has to see, because the second kind is the weaker claim.

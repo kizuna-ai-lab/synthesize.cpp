@@ -1,7 +1,7 @@
 {
   "$schema": "../../../docs/schemas/synthesize-golden-manifest-v1.schema.json",
   "schema": "synthesize-golden-manifest-v1",
-  "suite_version": 2,
+  "suite_version": 3,
   "family": "omnivoice",
   "variant": "omnivoice-0-6b",
   "source": {
@@ -88,7 +88,7 @@
       2.0
     ],
     "max_input_tokens": 2048,
-    "max_output_frames": 750
+    "max_output_frames": 720000
   },
   "tolerance_file": "tests/tolerances/omnivoice.json",
   "case_artifact_root": "build/goldens/omnivoice",
@@ -1992,6 +1992,21 @@
             "format": "f32le"
           },
           {
+            "name": "ref.pcm_16k",
+            "path": "ref/pcm_16k.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "ref.semantic_mean",
+            "path": "ref/semantic_mean.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "ref.fused_latent",
+            "path": "ref/fused_latent.f32",
+            "format": "f32le"
+          },
+          {
             "name": "prompt.token_grid",
             "path": "input/prompt_grid.i32",
             "format": "i32le"
@@ -2141,6 +2156,21 @@
           {
             "name": "ref.semantic_hidden",
             "path": "ref/semantic_hidden.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "ref.pcm_16k",
+            "path": "ref/pcm_16k.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "ref.semantic_mean",
+            "path": "ref/semantic_mean.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "ref.fused_latent",
+            "path": "ref/fused_latent.f32",
             "format": "f32le"
           },
           {

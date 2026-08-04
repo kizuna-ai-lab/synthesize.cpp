@@ -29,6 +29,13 @@ struct PreparedSynthesisRequest {
     uint32_t                        speaker_index          = UINT32_MAX;
     const char *                    resolved_voice_id      = nullptr;
     uint64_t                        resolved_voice_size    = 0;
+    // The request's Voice Profile, threaded through opaquely: this file never
+    // dereferences it (that would need the full `synth_voice_profile`
+    // definition this translation unit does not have, and does not need --
+    // only `synth_synthesize`'s per-family branches do, in synthesize.cpp).
+    // Null unless the request named one; a profile from a different model is
+    // rejected at the family branch that reads this, not here.
+    const synth_voice_profile_t *   voice_profile          = nullptr;
 };
 
 synth_status_t prepare_synthesis_request(const ModelInfo &          info,

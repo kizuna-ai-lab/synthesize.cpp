@@ -2,7 +2,7 @@
   "schema": "synthesize-tolerances-v1",
   "family": "qwen3-tts",
   "variant": "qwen3-tts-12hz-0-6b-customvoice",
-  "suite_version": 1,
+  "suite_version": 2,
   "status": "thresholds-committed-and-enforced",
   "reference_stage": "source-bf16-oracle-vs-f32-cpu",
   "case_count": 20,

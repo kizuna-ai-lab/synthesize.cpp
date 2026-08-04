@@ -222,6 +222,51 @@ if(NOT SYNTH_INTERNAL_RELEASE_CUDA_PLATFORM STREQUAL "")
         VERBATIM)
 endif()
 
+# third_party/libsamplerate: libsamplerate 0.2.2 vendored verbatim (ADR 0009:
+# docs/adr/0009-pin-reference-audio-normalization.md), statically compiled
+# into the private Audio Normalizer Module (src/audio-normalizer.cpp). Never
+# edit the vendored sources; configure them only through the compile
+# definitions below. Provenance and the exact kept file subset are recorded in
+# third_party/libsamplerate/VENDORED.md.
+add_library(synth-libsamplerate OBJECT
+    third_party/libsamplerate/src/samplerate.c
+    third_party/libsamplerate/src/src_sinc.c
+    third_party/libsamplerate/src/src_linear.c
+    third_party/libsamplerate/src/src_zoh.c
+)
+target_include_directories(synth-libsamplerate
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libsamplerate/include
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libsamplerate/src
+)
+target_compile_definitions(synth-libsamplerate PRIVATE
+    # ADR 0009 pins SRC_SINC_BEST_QUALITY only; Medium and Fast stay disabled.
+    # Zero-order-hold and Linear are compiled in regardless, because
+    # samplerate.c's converter dispatch calls their constructors
+    # unconditionally rather than behind an ENABLE_* guard.
+    ENABLE_SINC_BEST_CONVERTER
+    # This tree is never run through its own ./configure or CMake, so no
+    # generated config.h ever exists. HAVE_CONFIG_H is intentionally left
+    # undefined, which means the vendored sources' own
+    # "#ifdef HAVE_CONFIG_H / #include config.h" guards never fire; these are
+    # the handful of macros the sources otherwise read unconditionally.
+    HAVE_STDBOOL_H
+    PACKAGE="libsamplerate"
+    VERSION="0.2.2"
+)
+set_target_properties(synth-libsamplerate PROPERTIES
+    POSITION_INDEPENDENT_CODE ON)
+if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    # Vendored code; our own warning flags are not its contract to satisfy.
+    # Scoped to this target only, never applied globally.
+    target_compile_options(synth-libsamplerate PRIVATE -w)
+endif()
+find_library(SYNTH_LIBM_LIBRARY m)
+if(SYNTH_LIBM_LIBRARY)
+    target_link_libraries(synth-libsamplerate PUBLIC ${SYNTH_LIBM_LIBRARY})
+endif()
+
 add_subdirectory(src)
 
 if(SYNTH_BUILD_PYTHON_PROVIDER)

@@ -28,6 +28,7 @@
 #include "bpe-frontend.h"
 #include "test-assert.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -125,6 +126,85 @@ int check_combine_text() {
     // the raw string for truthiness before stripping it, so the join happens
     // and the leading space is then collapsed away by the strip of the whole.
     SYNTH_TEST_CHECK(synth::omnivoice::combine_text(" ", "text") == " text");
+    return 0;
+}
+
+// --------------------------------------------------------------------------
+// add_punctuation
+// --------------------------------------------------------------------------
+
+// Every expected string below was cross-checked against the pinned package
+// (scripts/envs/omnivoice/.venv, omnivoice/utils/text.py at source revision
+// 468e927ba3716cd8dd86421148dfb3046e9f9d7b): `add_punctuation` run directly
+// against each `transcript` reproduces `expected` byte for byte.
+int check_add_punctuation() {
+    // No trailing punctuation: English gets ".", Chinese gets "。" -- and the
+    // Chinese test scans the WHOLE string, not just its last character.
+    SYNTH_TEST_CHECK(synth::omnivoice::add_punctuation("Hello world") == "Hello world.");
+    SYNTH_TEST_CHECK(synth::omnivoice::add_punctuation("\xe6\xac\xa2\xe8\xbf\x8e\xe4\xbd\xbf\xe7\x94\xa8") ==
+                     "\xe6\xac\xa2\xe8\xbf\x8e\xe4\xbd\xbf\xe7\x94\xa8\xe3\x80\x82");
+    // Mixed script: one CJK ideograph anywhere in the (stripped) text is
+    // enough to select the Chinese mark, even with Latin text and a Latin
+    // trailing character.
+    SYNTH_TEST_CHECK(synth::omnivoice::add_punctuation("hello \xe4\xbd\xa0\xe5\xa5\xbd") ==
+                     "hello \xe4\xbd\xa0\xe5\xa5\xbd\xe3\x80\x82");
+
+    // Already terminated: every END_PUNCTUATION member (text.py:38-65) is a
+    // no-op. Each row is `text[-1]` unchanged from what `strip()` leaves it,
+    // whether that codepoint is one or several bytes.
+    struct AlreadyTerminated {
+        const char * text;
+    };
+
+    constexpr AlreadyTerminated kAlreadyTerminated[] = {
+        { "hello;" },
+        { "hello:" },
+        { "hello," },
+        { "hello." },
+        { "hello!" },
+        { "hello?" },
+        // … U+2026
+        { "hello\xe2\x80\xa6" },
+        { "hello)" },
+        { "hello]" },
+        { "hello}" },
+        { "hello\"" },
+        { "hello'" },
+        // “ ” ‘ ’
+        { "hello\xe2\x80\x9c" },
+        { "hello\xe2\x80\x9d" },
+        { "hello\xe2\x80\x98" },
+        { "hello\xe2\x80\x99" },
+        // ； ： ， 。 ！ ？ 、 ） 】 (fullwidth / CJK punctuation)
+        { "hello\xef\xbc\x9b" },
+        { "hello\xef\xbc\x9a" },
+        { "hello\xef\xbc\x8c" },
+        { "hello\xe3\x80\x82" },
+        { "hello\xef\xbc\x81" },
+        { "hello\xef\xbc\x9f" },
+        { "hello\xe3\x80\x81" },
+        { "hello\xef\xbc\x89" },
+        { "hello\xe3\x80\x91" },
+        // The set's one two-character member, "……" (a doubled U+2026):
+        // unreachable through `text[-1]` on its own two-character identity,
+        // but its trailing codepoint IS the lone "…" member above, so a text
+        // ending in it is unchanged for that reason.
+        { "hello\xe2\x80\xa6\xe2\x80\xa6" },
+    };
+    for (const AlreadyTerminated & item : kAlreadyTerminated) {
+        SYNTH_TEST_CHECK(synth::omnivoice::add_punctuation(item.text) == item.text);
+    }
+
+    // Empty, and whitespace-only (which strips to empty): upstream's own
+    // `if not text: return text` fires AFTER the strip, so both come back
+    // empty rather than gaining a mark of their own.
+    SYNTH_TEST_CHECK(synth::omnivoice::add_punctuation("").empty());
+    SYNTH_TEST_CHECK(synth::omnivoice::add_punctuation("   ").empty());
+
+    // Leading/trailing whitespace is stripped before the check and before the
+    // mark is appended -- the mark lands immediately after the trimmed text.
+    SYNTH_TEST_CHECK(synth::omnivoice::add_punctuation("  trailing space  ") == "trailing space.");
+
     return 0;
 }
 
@@ -294,6 +374,135 @@ int check_nonverbal_split() {
     std::vector<int32_t> empty;
     SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, "", empty) == SYNTH_OK);
     SYNTH_TEST_CHECK(empty.empty());
+    return 0;
+}
+
+// --------------------------------------------------------------------------
+// assemble_prompt_ids
+// --------------------------------------------------------------------------
+
+// Composition, not tokenization: check_nonverbal_split already proves the
+// frontend tokenizes a wrapped string correctly, so this fixture exists only
+// to let style_text/combine_text/tokenize_wrapped_text run for real, each
+// character mapping to exactly one id and no merge rule to muddy which ids
+// the hand-built expectation and the call under test share.
+int check_assemble_prompt_ids() {
+    synth::BpeFrontendConfig config;
+    config.provider_id      = "synthesize.qwen_bpe";
+    config.contract_version = 1;
+    config.vocab            = { "H", "i", ".", "N", "o", "n", "e", "S", "m", "c", "a", "l", "t", "u", "r", kSpace };
+    config.special_tokens   = {
+        { "<|denoise|>",        100 },
+        { "<|lang_start|>",     101 },
+        { "<|lang_end|>",       102 },
+        { "<|instruct_start|>", 103 },
+        { "<|instruct_end|>",   104 },
+        { "<|text_start|>",     105 },
+        { "<|text_end|>",       106 },
+    };
+    std::unique_ptr<synth::TextFrontend> frontend;
+    SYNTH_TEST_CHECK(synth::make_bpe_frontend(config, frontend) == SYNTH_OK);
+    SYNTH_TEST_CHECK(frontend != nullptr);
+
+    synth::omnivoice::SpecialTokens tokens;
+    tokens.denoise        = 100;
+    tokens.lang_start     = 101;
+    tokens.lang_end       = 102;
+    tokens.instruct_start = 103;
+    tokens.instruct_end   = 104;
+    tokens.text_start     = 105;
+    tokens.text_end       = 106;
+
+    // Plain request: style_text ids + text_start + tokenize("Hi.") + text_end,
+    // built from the same three helpers this file already exercises on their
+    // own, concatenated by hand rather than re-derived from scratch.
+    std::vector<int32_t> expected;
+    std::vector<int32_t> piece;
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, synth::omnivoice::style_text(false, "en", ""),
+                                                             piece) == SYNTH_OK);
+    expected = piece;
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, "<|text_start|>", piece) == SYNTH_OK);
+    expected.insert(expected.end(), piece.begin(), piece.end());
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, synth::omnivoice::combine_text("", "Hi."),
+                                                             piece) == SYNTH_OK);
+    expected.insert(expected.end(), piece.begin(), piece.end());
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, "<|text_end|>", piece) == SYNTH_OK);
+    expected.insert(expected.end(), piece.begin(), piece.end());
+
+    std::vector<int32_t> actual;
+    SYNTH_TEST_CHECK(synth::omnivoice::assemble_prompt_ids(*frontend, tokens, /*denoise=*/false, "en", "",
+                                                           synth::omnivoice::combine_text("", "Hi."),
+                                                           actual) == SYNTH_OK);
+    SYNTH_TEST_CHECK(actual == expected);
+
+    // Clone-shaped call: the denoise marker leads, and the combined
+    // (space-joined) reference-plus-text follows the text_start marker.
+    std::vector<int32_t> clone_expected;
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, synth::omnivoice::style_text(true, "en", ""),
+                                                             piece) == SYNTH_OK);
+    clone_expected = piece;
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, "<|text_start|>", piece) == SYNTH_OK);
+    clone_expected.insert(clone_expected.end(), piece.begin(), piece.end());
+    const std::string combined = synth::omnivoice::combine_text("Some call me nature.", "Hi.");
+    SYNTH_TEST_CHECK(combined == "Some call me nature. Hi.");
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, combined, piece) == SYNTH_OK);
+    clone_expected.insert(clone_expected.end(), piece.begin(), piece.end());
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, "<|text_end|>", piece) == SYNTH_OK);
+    clone_expected.insert(clone_expected.end(), piece.begin(), piece.end());
+
+    std::vector<int32_t> clone_actual;
+    SYNTH_TEST_CHECK(synth::omnivoice::assemble_prompt_ids(*frontend, tokens, /*denoise=*/true, "en", "", combined,
+                                                           clone_actual) == SYNTH_OK);
+    SYNTH_TEST_CHECK(clone_actual == clone_expected);
+
+    // The denoise marker is the composed string's very first token: style_text
+    // places it before the language slot whenever `denoise` is set.
+    std::vector<int32_t> denoise_marker;
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, "<|denoise|>", denoise_marker) == SYNTH_OK);
+    SYNTH_TEST_CHECK(clone_actual.size() >= denoise_marker.size());
+    SYNTH_TEST_CHECK(std::equal(denoise_marker.begin(), denoise_marker.end(), clone_actual.begin()));
+
+    // Empty language and empty instruct both fall to the literal "None": the
+    // resulting ids start with exactly what style_text("", "") tokenizes to,
+    // rather than a hand-rederived guess at what "None" spells.
+    std::vector<int32_t> none_style;
+    SYNTH_TEST_CHECK(synth::omnivoice::tokenize_wrapped_text(*frontend, synth::omnivoice::style_text(false, "", ""),
+                                                             none_style) == SYNTH_OK);
+    std::vector<int32_t> none_actual;
+    SYNTH_TEST_CHECK(synth::omnivoice::assemble_prompt_ids(*frontend, tokens, /*denoise=*/false, "", "",
+                                                           synth::omnivoice::combine_text("", "Hi."),
+                                                           none_actual) == SYNTH_OK);
+    SYNTH_TEST_CHECK(none_actual.size() >= none_style.size());
+    SYNTH_TEST_CHECK(std::equal(none_style.begin(), none_style.end(), none_actual.begin()));
+
+    // Tokenizer failure (an out-of-vocabulary byte in the text) is one way
+    // this function reports non-SYNTH_OK: the status is tokenize_wrapped_text's
+    // own, propagated verbatim -- the BPE frontend's prepare() returns
+    // SYNTH_ERR_INVALID_ARG for an unencodable span.
+    std::vector<int32_t> rejected = { 999 };
+    SYNTH_TEST_CHECK(synth::omnivoice::assemble_prompt_ids(*frontend, tokens, false, "en", "",
+                                                           synth::omnivoice::combine_text("", "zzz not in vocab"),
+                                                           rejected) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(rejected.empty());
+
+    // The other way: a `tokens` whose text_end id disagrees with what the
+    // FRONTEND actually emits for "<|text_end|>" (still 106 -- the frontend
+    // fixture above is untouched). This is the release-path corruption guard
+    // firing on a frontend/tokens mismatch, the failure mode a dropped or
+    // renumbered closing marker would otherwise produce silently (see the
+    // .cpp's comment on the composed string always closing on text_end).
+    // Cheapest trigger available with the existing fixture: no real package
+    // can misconfigure this -- SpecialTokens and the frontend's special
+    // tokens are read from the same GGUF metadata at load time -- but a
+    // regression that changed one without the other is exactly what this
+    // guards against.
+    synth::omnivoice::SpecialTokens mismatched_tokens = tokens;
+    mismatched_tokens.text_end                        = 999;
+    std::vector<int32_t> mismatched                   = { 111, 222 };
+    SYNTH_TEST_CHECK(synth::omnivoice::assemble_prompt_ids(*frontend, mismatched_tokens, false, "en", "",
+                                                           synth::omnivoice::combine_text("", "Hi."),
+                                                           mismatched) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(mismatched.empty());
     return 0;
 }
 
@@ -496,8 +705,10 @@ int check_frame_truncation() {
 
 int main() {
     SYNTH_TEST_CHECK(check_combine_text() == 0);
+    SYNTH_TEST_CHECK(check_add_punctuation() == 0);
     SYNTH_TEST_CHECK(check_style_text() == 0);
     SYNTH_TEST_CHECK(check_nonverbal_split() == 0);
+    SYNTH_TEST_CHECK(check_assemble_prompt_ids() == 0);
     SYNTH_TEST_CHECK(check_char_weights() == 0);
     SYNTH_TEST_CHECK(check_estimates_match_oracle() == 0);
     SYNTH_TEST_CHECK(check_boost_curve() == 0);

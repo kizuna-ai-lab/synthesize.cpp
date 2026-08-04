@@ -205,11 +205,20 @@ function(synth_family_smoke label model tokens sample_rate samples_per_frame voi
     if(seed_changes_length)
         set(seed_arguments --seed-changes-length)
     endif()
+    # VITS and Kokoro pass token ids through this function's required `tokens`
+    # parameter. A package whose only supported input kind is text_utf8
+    # (OmniVoice) has no token ids to pass, so its text arrives as an eighth,
+    # optional argument instead, and `tokens` for it stays "" and unused.
+    set(input_arguments --tokens "${tokens}")
+    if(ARGC GREATER 7)
+        list(GET ARGN 0 _synth_family_text)
+        set(input_arguments --text "${_synth_family_text}")
+    endif()
     execute_process(
         COMMAND ${_synth_venv_python}
             ${SYNTH_SOURCE_DIR}/tests/python/api_wheel_family_smoke.py
             --model "${model}"
-            --tokens "${tokens}"
+            ${input_arguments}
             --sample-rate "${sample_rate}"
             --samples-per-frame "${samples_per_frame}"
             ${voice_arguments}
@@ -229,3 +238,12 @@ synth_family_smoke("VITS"
 synth_family_smoke("Kokoro"
     "${SYNTH_SOURCE_DIR}/models/kokoro-v1-0/kokoro-v1-0-F16.gguf"
     "0,50,83,54,156,31,3,16,65,156,87,123,54,46,5,0" 24000 600 "af_heart" FALSE)
+# OmniVoice's package supports only text_utf8 input (no token ids), and its
+# catalog is empty with an unnamed package default, so this passes no --voice
+# the way VITS above does not either -- the whole call running with
+# voice=None IS the "unnamed default succeeds" proof (see the smoke script's
+# comment on the refusal block). Its length also does not move with the seed:
+# the duration estimator is a deterministic function of the text, not a draw.
+synth_family_smoke("OmniVoice"
+    "${SYNTH_SOURCE_DIR}/models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf"
+    "" 24000 960 "" FALSE "Sampling follows the seed.")

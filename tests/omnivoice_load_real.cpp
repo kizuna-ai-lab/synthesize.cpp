@@ -8,10 +8,13 @@
 // wrongly, a key the converter spells differently, or a vocabulary the frontend
 // cannot build all surface here and nowhere earlier.
 //
-// The public half also proves the family is reachable and *bounded*: the
-// synthesis stub must be what answers a request, because a family that fell
-// through to another family's branch would produce audio from the wrong model
-// rather than an error.
+// The public half also proves the family is reachable and *bounded*: an
+// invalid request must be refused by THIS family's own validation, because a
+// family that fell through to another family's branch would produce audio
+// from the wrong model rather than an error. It deliberately does not pay
+// for a real synthesis (that is Plan 3's own public driver and Task 6's
+// registered gate) -- an empty Linguistic Input is enough to prove the
+// public seam reaches this family's code and refuses there, for free.
 
 #include "arch/omnivoice/catalog.h"
 #include "arch/omnivoice/omnivoice.h"
@@ -36,6 +39,13 @@ constexpr uint32_t kTextVocabSize   = 151676;
 constexpr uint32_t kSampleRate      = 24000;
 constexpr float    kMinSpeakingRate = 0.5f;
 constexpr float    kMaxSpeakingRate = 2.0f;
+// docs/c-interface.md: max_output_frames is native PCM frames. This family's
+// own ceiling is 750 codec frames (30 s at the 25 Hz codec frame rate), so the
+// package declares that converted to this contract's unit: 750 * kSamplesPerFrame.
+// PR #6's review found the package once declared 750 directly here -- a
+// codec-frame count the public contract reads as 31 milliseconds -- so this is
+// exactly the value the fix must make `synth_model_get_capabilities` report.
+constexpr uint64_t kMaxOutputFrames = 750ULL * kSamplesPerFrame;
 // What the converter emitted, from its own report. The catalog derives the same
 // number from the package's hyper-parameters; the two agreeing here is the only
 // place where the converter's idea of the package and the loader's are compared
@@ -86,8 +96,9 @@ void print_info_line(const synth::omnivoice::ModelInfo & info) {
     std::cout << line << '\n';
 }
 
-// A sink that must never be written to: this family cannot synthesize yet, and
-// a chunk arriving here would mean some other family's branch answered.
+// A sink that must never be written to: the request below names no
+// Linguistic Input, so a chunk arriving here would mean either the new
+// empty-input guard failed to fire or some other family's branch answered.
 synth_sink_result_t SYNTH_CALL refuse_audio(void * user_data, const synth_audio_chunk_t * chunk) {
     (void) chunk;
     *static_cast<bool *>(user_data) = true;
@@ -124,6 +135,12 @@ int check_public_seam(const char * model_path) {
     SYNTH_TEST_CHECK((capabilities.input_flags & SYNTH_INPUT_SUPPORT_TEXT_UTF8) != 0);
     SYNTH_TEST_CHECK(capabilities.min_speaking_rate == kMinSpeakingRate);
     SYNTH_TEST_CHECK(capabilities.max_speaking_rate == kMaxSpeakingRate);
+    // PR #6's finding, pinned directly: the public capability query must
+    // report this family's ceiling in native PCM frames, not in its own
+    // codec frames (src/synthesize.cpp's shared_info used to pass
+    // hparams.max_output_frames straight through, and the package itself
+    // once carried a codec-frame count there).
+    SYNTH_TEST_CHECK(capabilities.max_output_frames == kMaxOutputFrames);
 
     // A loaded model reports where it lives. Plan 1 runs no graph, but the
     // query is documented and answering it with a backend error would be a
@@ -159,8 +176,17 @@ int check_public_seam(const char * model_path) {
     SYNTH_TEST_CHECK(synth_context_create(model, &context) == SYNTH_OK);
 
     // A request naming no Voice, which only an empty catalog with a package
-    // default accepts — the public consequence of has_package_default.
-    const char *   text = "Hello.";
+    // default accepts — the public consequence of has_package_default. The
+    // text itself is whitespace-only rather than truly empty: an
+    // `input_count` of zero is refused by prepare_synthesis_request's own
+    // generic guard before any family branch ever runs (see
+    // src/synthesis-request.cpp), which would prove nothing about this
+    // family's own code. Three spaces has a nonzero byte count, so the
+    // request reaches this family's branch in src/synthesize.cpp and
+    // Model::synthesize's own "no Linguistic Input" guard (Plan 3's Task 5)
+    // -- cheap and graph-free, unlike a real synthesis, but still proof that
+    // this family's own code is what answers.
+    const char *   text = "   ";
     SeenDiagnostic diagnostic;
     bool           wrote_audio = false;
 
@@ -183,13 +209,17 @@ int check_public_seam(const char * model_path) {
 
     synth_result_t result;
     synth_result_init(&result, sizeof(result));
-    // Plan 2 lands the diffusion loop. Until then this must be an explicit
-    // refusal from this family's own branch — not audio, and not another
-    // family's answer.
-    SYNTH_TEST_CHECK(synth_synthesize(context, &request, &sink, &result) == SYNTH_ERR_INTERNAL);
+    // A request naming no Linguistic Input at all is refused by this
+    // family's own validation (Model::synthesize's empty/whitespace guard,
+    // which runs before any estimate or graph work) -- not audio, and not
+    // another family's answer. src/synthesize.cpp's omnivoice branch maps
+    // any non-OK, non-OUTPUT_LIMIT status through the generic
+    // "synthesis.graph_failed" diagnostic, the same path every other
+    // family's graph failure takes.
+    SYNTH_TEST_CHECK(synth_synthesize(context, &request, &sink, &result) == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(!wrote_audio);
     SYNTH_TEST_CHECK(diagnostic.seen);
-    SYNTH_TEST_CHECK(diagnostic.code == "synthesis.not_implemented");
+    SYNTH_TEST_CHECK(diagnostic.code == "synthesis.graph_failed");
 
     synth_context_free(context);
     synth_model_free(model);

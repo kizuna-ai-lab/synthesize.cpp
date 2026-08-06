@@ -1,11 +1,14 @@
 # OmniVoice Family Selection and Port Plan
 
-Status: Confirmed 2026-08-02. Intake through the greedy synthesis core
+Status: Confirmed 2026-08-06. Intake through the greedy synthesis core
 (slices 4–6) done: single-forward parity, exact token grids 17/17, replay
 waveform under committed tolerances (tests/tolerances/omnivoice.json). Plan 3
 (the public sampled path, Reference Audio and Description Text Voice
 Profiles, their Serialized Profile GGUF round-trip, the CLI and Python-wheel
-Adapters, and this record's own close-out) is done as of Task 17. The
+Adapters, and this record's own close-out) is done as of Task 17. Plan 4's
+Quantization Profile measurement is done and its answer is negative: both
+candidate profiles were produced and both fail the clone path's exact-token
+gate, so this family ships F32-only (see the quantization section). The
 remainder of the Port Validation Suite, Quantization Profiles, Execution
 Backends, and ship (Plan 4) have not started; the carry-over debt this plan
 leaves behind is `docs/superpowers/plans/2026-08-02-omnivoice-plan-4-carryover.md`.
@@ -1400,9 +1403,18 @@ placement evidence proves the committed token grids bit-identical to CPU; one
 port measured CUDA-F32 token-exact and Metal-F32 at 83%, which is encouraging
 and not evidence. Stage 7 decides.
 
-**Quantized profiles against the argmax cascade.** Whether any profile below
-F32 survives the exact-token gates is an open measurement, not an expectation.
-Stage 6 decides, and a failing profile is simply not shipped.
+**Quantized profiles against the argmax cascade.** ~~Whether any profile below
+F32 survives the exact-token gates is an open measurement, not an
+expectation.~~ **Answered 2026-08-06: no profile below F32 survives, and this
+family ships F32-only.** Q8_MIXED and F16 were both produced and measured; both
+keep the greedy grids exact (17/17 — the generator stays F32 and greedy decode
+never reads the codec's encoder half) and both break the clone path's RVQ
+grids, at 1023 and 103 of 2808 positions respectively. The measurement
+narrative and its full tables are in this document's quantization section and
+the porting log. The structural reason is recorded there too: 93.8% of the
+quantizable weight is the clone-encode path feeding a discrete
+nearest-neighbour decision, so the tensors worth quantizing are exactly the
+ones that cannot be.
 
 **The Gumbel replay seam.** Implemented only if a sampled-path parity case
 proves it necessary; the seed contract covers the public sampled path

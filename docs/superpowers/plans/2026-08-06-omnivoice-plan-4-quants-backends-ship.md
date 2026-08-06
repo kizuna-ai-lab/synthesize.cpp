@@ -173,34 +173,72 @@ to `Unknown`):
 - [ ] **Step 4:** Run → PASS. Both unit gates.
 - [ ] **Step 5:** Commit (footer; format check final with literal exit code).
 
-### Task 2: Wire the classifier into the offline quantizer
+### Task 2: The packed-convolution runtime branch and the tool wiring
+
+**Amended 2026-08-06, before execution.** The original Task 2 said "do not add
+omnivoice to the packing whitelist" on the belief that `quantize.cpp:186-189`
+gates packing itself. A focused investigation (prompted by Task 1's review)
+established that reading is wrong: **packing runs unconditionally whenever
+`TensorLayout::PackedMatrix` is set**; the `kokoro || qwen3-tts` list gates only
+the `matrix_family` *demotion heuristic*, which VITS is excluded from because
+`ggml_n_dims` collapses trailing unit dims and would wrongly un-pack its conv
+kernels. VITS's packed path is live and end-to-end tested
+(`tests/synthesize_quantize_test.cpp` packs `decoder.post.weight` `[7,32,1]` →
+Q8_0 `[224,1,1]` and round-trips it). The task below is rewritten accordingly.
+
+The investigation also produced the number that makes this task necessary:
+of Task 1's 158 MatrixWeight tensors, **73 are consumed by a plain matmul**
+(HuBERT's per-layer `q/k/v/out_proj` and `inter_dense`/`output_dense`, plus
+`feature_projection.projection`) and would quantize with no new runtime code,
+while **85 are consumed through `ggml_im2col`** (32 `acoustic_decoder`, 36
+`acoustic_encoder`, 6 `feat_conv.1-6`, 11 `encoder_semantic`) and would
+`GGML_ABORT` at runtime today, because `ggml_compute_forward_im2col` accepts
+only F16/F32 destination types while this family's conv builders pass the
+weight's own type. Quantizing only the 73 saves ≈239 MiB; quantizing all 158
+saves ≈464 MiB. This task takes the second path, because the fix is a
+transcription of a pattern two sibling families already ship.
 
 **Files:**
+- Modify: `src/arch/omnivoice/codec.cpp` (`codec_conv1d`),
+  `src/arch/omnivoice/reference-encoder.cpp` (`conv1d`)
 - Modify: `tools/synthesize-quantize/{policy.cpp,quantize.cpp}`
-- Modify: `tests/` — whatever suite covers the quantizer today (find it:
-  grep for `synthesize-quantize` in `tests/CMakeLists.txt`)
+- Modify: `tests/omnivoice_codec_test.cpp`,
+  `tests/omnivoice_reference_encoder_test.cpp`, and the quantizer's own suite
+  (`tests/synthesize_quantize_test.cpp`)
 
 **Interfaces:**
 - Consumes: Task 1's `classify_tensor`.
-- Produces: `resolve_omnivoice_target_spec` in the tool's dispatch, reached
-  when `general.architecture == "omnivoice"`.
+- Produces: `resolve_omnivoice_target_spec` in the tool's dispatch, and a
+  packed-weight arm in both dense conv builders.
 
-- [ ] **Step 1:** Read `quantize.cpp:118-134`'s dispatch and `policy.cpp`'s two
-  inline resolvers plus Kokoro's out-of-line one. Follow the Kokoro shape
-  (out-of-line, in the family directory) — it is the precedent that keeps tool
-  and runtime honest.
-- [ ] **Step 2: The packing whitelist.** `quantize.cpp:186-189` packs
-  `[ne0*ne1, ne2]` for `kokoro || qwen3-tts` only, deliberately as a family
-  whitelist rather than a shape rule, because `ggml_n_dims` collapses trailing
-  unit dims and VITS's `[7,32,1]` tensor would be mistaken for a matrix.
-  OmniVoice has exactly that hazard (`codec.acoustic_decoder.conv2.weight` is
-  `[7,32,1]`) — **do not add omnivoice to the whitelist**, and add a comment
-  at the whitelist naming omnivoice as the third family deliberately excluded
-  and why.
-- [ ] **Step 3:** Add the dispatch branch; verify the tool now refuses nothing
-  it should accept and still aborts on an unrecognized tensor name (that abort
-  is the policy's completeness guarantee — do not soften it).
-- [ ] **Step 4:** Unit gates; commit.
+- [ ] **Step 1: Read the two precedents in full** —
+  `src/arch/vits/operations.cpp:14-45` and
+  `src/arch/kokoro/operations.cpp:46-79`. The pattern: when
+  `ggml_is_quantized(kernel->type)`, build a dummy F32 tensor purely to give
+  `ggml_im2col` its shape, pass `GGML_TYPE_F32` as im2col's destination type,
+  and use the quantized kernel directly as the 2-D `mul_mat` operand (it is
+  already flattened by the tool's packing step).
+- [ ] **Step 2: Failing tests first.** Extend the codec and reference-encoder
+  suites with a packed-weight case per builder: a Q8_0 kernel of the shape the
+  tool would emit must produce the same result as its F32 twin within a
+  quantization-appropriate tolerance (measure it; do not guess a threshold).
+  Run → FAIL (today the builders abort or mis-type).
+- [ ] **Step 3:** Port the branch into `codec_conv1d` and the reference
+  encoder's `conv1d`. **`grouped_conv1d` needs nothing**: its only caller is
+  `pos_conv_embed`, which Task 1 classifies permanently Sensitive precisely
+  because per-group `ggml_view_3d` slicing does not survive packing — state
+  that in a comment so the omission reads as deliberate.
+- [ ] **Step 4:** Add the tool's dispatch branch for `omnivoice`
+  (`quantize.cpp:118-134`), out-of-line in the family directory per the Kokoro
+  precedent. Verify the tool still aborts on an unrecognized tensor name —
+  that abort is the policy's completeness guarantee; do not soften it.
+- [ ] **Step 5:** Decide and document whether omnivoice belongs in the
+  `matrix_family` demotion list. `codec.acoustic_decoder.conv2.weight` is
+  `[7,32,1]`, exactly the shape whose trailing unit dim `ggml_n_dims`
+  collapses — so the same reasoning that excludes VITS applies here. Verify by
+  running the tool and checking that tensor's emitted layout, rather than
+  reasoning alone.
+- [ ] **Step 6:** Both unit gates; the omnivoice integration subset; commit.
 
 ### Task 3: Produce and validate the Q8_0 codec profile
 

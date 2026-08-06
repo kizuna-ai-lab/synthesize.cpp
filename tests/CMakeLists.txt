@@ -346,9 +346,23 @@ target_link_libraries(synthesize-omnivoice-serialize-test PRIVATE synthesize ggm
 add_test(NAME synthesize-omnivoice-serialize-test
     COMMAND synthesize-omnivoice-serialize-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-serialize)
 synth_register_unit_target(synthesize-omnivoice-serialize-test)
+# Task 8 (Plan 4): the per-family Execution Backend gate in
+# src/synthesize.cpp's synth_model_load, against a synthetic package -- its
+# own fixtures subdirectory for the same race-avoidance reason the other
+# synthetic-package suites keep separate ones. A genuine unit test: the
+# refusal happens before device resolution, so it holds with no CUDA device
+# present at all.
+add_executable(synthesize-omnivoice-backend-test omnivoice_backend_test.cpp)
+target_include_directories(synthesize-omnivoice-backend-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(synthesize-omnivoice-backend-test PRIVATE synthesize ggml)
+add_test(NAME synthesize-omnivoice-backend-test
+    COMMAND synthesize-omnivoice-backend-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-backend)
+synth_register_unit_target(synthesize-omnivoice-backend-test)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-synthetic)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-design)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-serialize)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-backend)
 set_tests_properties(
     synthesize-omnivoice-metadata-test
     synthesize-omnivoice-catalog-test
@@ -366,6 +380,7 @@ set_tests_properties(
     synthesize-omnivoice-design-test
     synthesize-omnivoice-serialize-test
     synthesize-omnivoice-serialize-writer-agreement-test
+    synthesize-omnivoice-backend-test
     PROPERTIES LABELS "unit;omnivoice")
 set_tests_properties(
     synthesize-vits-text-encoder-host-test

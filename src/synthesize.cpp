@@ -569,11 +569,15 @@ synth_status_t synth_model_load(const char *                      model_path,
                             "the package does not declare an architecture this build supports");
             return family_status;
         }
-        ggml_backend_dev_t   selected_device   = nullptr;
-        // Both families claim the same execution backends today; when they
-        // diverge this becomes a per-family question.
-        const bool           backend_supported = backend == SYNTH_BACKEND_AUTO || backend == SYNTH_BACKEND_CPU ||
-                                                 backend == SYNTH_BACKEND_CPU_ACCEL || backend == SYNTH_BACKEND_CUDA;
+        ggml_backend_dev_t selected_device = nullptr;
+        // AUTO is never checked against a family's backend set: it always
+        // resolves to CPU (docs/backends.md's v1 Selection Policy) and every
+        // family places real work there. Only an EXPLICIT request is a claim
+        // this family might not be able to back up -- see
+        // family_supports_explicit_backend (model-info.h) for why OmniVoice
+        // diverges from the other three here.
+        const bool         backend_supported =
+            backend == SYNTH_BACKEND_AUTO || synth::family_supports_explicit_backend(family, backend);
         const synth_status_t selection_status =
             backend_supported ? synth::resolve_requested_device(backend, device_index, &selected_device) :
                                 SYNTH_ERR_BACKEND;

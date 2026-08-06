@@ -1,0 +1,360 @@
+// OmniVoice's tensor->role classifier for quantization.
+//
+// This classifier is the single source of truth shared by the offline
+// quantizer and the runtime's catalog, so what it decides is a package
+// contract, not an implementation detail. Real tensor names and shapes below
+// are read out of src/arch/omnivoice/catalog.cpp's own registration (cross-
+// checked against reports/porting/omnivoice/omnivoice-0-6b/tensor-inventory.json,
+// the real checkpoint's tensor shapes) rather than invented, so a mismatch
+// between this test and the catalog's actual layout would show up as a
+// spurious failure here rather than a name this classifier silently mishandles.
+//
+// Two things beyond the per-tensor cases matter more than any single one of
+// them: the completeness case proves every tensor the real catalog can ever
+// register resolves to something other than Unknown, and the count case
+// proves the family's headline "158 tensors quantized" number is what the
+// catalog actually contains rather than a number nobody re-derived.
+
+#include "arch/omnivoice/catalog.h"
+#include "arch/omnivoice/quantization.h"
+#include "arch/omnivoice/weights.h"
+#include "omnivoice_small_layout.h"
+#include "test-assert.h"
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+using synth::omnivoice::classify_tensor;
+using synth::omnivoice::QuantRole;
+using synth::omnivoice::testing::Entry;
+
+namespace {
+
+QuantRole classify(const std::string & name, std::vector<int64_t> shape) {
+    int64_t ne[4] = { 1, 1, 1, 1 };
+    for (size_t axis = 0; axis < shape.size() && axis < 4; ++axis) {
+        ne[axis] = shape[axis];
+    }
+    return classify_tensor(name, ne);
+}
+
+uint64_t count_role(const std::vector<Entry> & entries, QuantRole role) {
+    uint64_t count = 0;
+    for (const Entry & entry : entries) {
+        if (classify(entry.name, entry.ne) == role) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+std::vector<Entry> filter_prefix(const std::vector<Entry> & entries, const std::string & prefix) {
+    std::vector<Entry> out;
+    for (const Entry & entry : entries) {
+        if (entry.name.compare(0, prefix.size(), prefix) == 0) {
+            out.push_back(entry);
+        }
+    }
+    return out;
+}
+
+// The real checkpoint's topology and widths, read out of
+// reports/porting/omnivoice/omnivoice-0-6b/tensor-inventory.json: 28 generator
+// layers, 8 codebooks, five upsampling blocks at ratios {8,5,4,2,3}, 12 HuBERT
+// layers over 7 feature convolutions. The generator's own widths do not affect
+// any classification (the ruling makes it Sensitive whatever its shape), so
+// they are carried through for a realistic package rather than because the
+// classifier needs them.
+synth::omnivoice::HParams real_hparams() {
+    synth::omnivoice::HParams h;
+    h.model_variant        = "omnivoice-0-6b";
+    h.quantization_profile = synth::omnivoice::QuantizationProfile::F32;
+
+    h.generator.layer_count          = 28;
+    h.generator.hidden_size          = 1024;
+    h.generator.attention_head_count = 16;
+    h.generator.key_value_head_count = 8;
+    h.generator.head_dim             = 128;
+    h.generator.intermediate_size    = 3072;
+    h.generator.text_vocab_size      = 151676;
+    h.generator.rms_norm_eps         = 1e-6f;
+    h.generator.rope_theta           = 1000000.0f;
+
+    h.audio.num_codebooks = 8;
+    h.audio.vocab_size    = 1025;
+    h.audio.mask_id       = 1024;
+
+    h.codec.sample_rate          = 16000;
+    h.codec.hop_length           = 960;
+    h.codec.frame_rate_hz        = 16.6667f;
+    h.codec.decoder_hidden_size  = 1024;
+    h.codec.encoder_hidden_size  = 64;
+    h.codec.hidden_size          = 256;
+    h.codec.codebook_dim         = 64;
+    h.codec.codebook_size        = 1024;
+    h.codec.semantic_sample_rate = 16000;
+    h.codec.upsampling_ratios    = { 8, 5, 4, 2, 3 };
+
+    h.semantic.hidden_size          = 768;
+    h.semantic.layer_count          = 12;
+    h.semantic.attention_head_count = 12;
+    h.semantic.intermediate_size    = 3072;
+    h.semantic.layer_norm_eps       = 1e-5f;
+    h.semantic.conv_dim             = { 512, 512, 512, 512, 512, 512, 512 };
+    h.semantic.conv_kernel          = { 10, 3, 3, 3, 3, 2, 2 };
+    h.semantic.conv_stride          = { 5, 2, 2, 2, 2, 2, 2 };
+    return h;
+}
+
+int check_generator_is_always_sensitive() {
+    // Real shapes, read out of tensor-inventory.json. Several of these look
+    // exactly like a matrix a profile would otherwise quantize -- that is the
+    // point: the ruling is "whatever its shape".
+    SYNTH_TEST_CHECK(classify("llm.embed_tokens.weight", { 1024, 151676 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("llm.layers.0.input_layernorm.weight", { 1024 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("llm.layers.0.self_attn.q_proj.weight", { 1024, 2048 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("llm.layers.0.self_attn.k_proj.weight", { 1024, 1024 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("llm.layers.0.self_attn.q_norm.weight", { 128 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("llm.layers.27.mlp.down_proj.weight", { 3072, 1024 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("llm.norm.weight", { 1024 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("audio_embeddings.weight", { 1024, 8200 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("audio_heads.weight", { 1024, 8200 }) == QuantRole::Sensitive);
+    return 0;
+}
+
+int check_rvq_and_concat_projections_are_sensitive() {
+    // codec.quantizer.*: matches qwen3-tts's own RVQ rule (policy.cpp:258-265).
+    SYNTH_TEST_CHECK(classify("codec.quantizer.quantizers.0.project_in.weight", { 1024, 64 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.quantizer.quantizers.0.project_in.bias", { 64 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.quantizer.quantizers.0.project_out.weight", { 64, 1024 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.quantizer.quantizers.0.project_out.bias", { 1024 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.quantizer.quantizers.7.codebook.embed", { 64, 1024 }) == QuantRole::Sensitive);
+
+    // codec.fc / codec.fc2: the concatenation projection and its inverse.
+    SYNTH_TEST_CHECK(classify("codec.fc.weight", { 1024, 1024 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.fc.bias", { 1024 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.fc2.weight", { 1024, 256 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.fc2.bias", { 256 }) == QuantRole::Sensitive);
+
+    // "fc2" must not be reached by a "fc" prefix that stops short of the full
+    // token, nor the reverse -- a substring classifier would conflate them.
+    SYNTH_TEST_CHECK(classify("codec.fc21.weight", { 1024, 1024 }) == QuantRole::Unknown);
+    SYNTH_TEST_CHECK(classify("codec.fcx.weight", { 1024, 1024 }) == QuantRole::Unknown);
+    return 0;
+}
+
+int check_transpose_weight_override() {
+    // codec.acoustic_decoder.block.<i>.conv_t1.weight: the standing
+    // transposed-convolution override (policy.cpp:390-395). Real shape at
+    // block 0 (ratio 8, so kernel 16, width 1024 narrowing to 512).
+    SYNTH_TEST_CHECK(classify("codec.acoustic_decoder.block.0.conv_t1.weight", { 16, 512, 1024 }) ==
+                     QuantRole::TransposeWeight);
+    SYNTH_TEST_CHECK(classify("codec.acoustic_decoder.block.4.conv_t1.weight", { 6, 32, 64 }) ==
+                     QuantRole::TransposeWeight);
+    // Its bias is still a bias -- Sensitive, not TransposeWeight.
+    SYNTH_TEST_CHECK(classify("codec.acoustic_decoder.block.0.conv_t1.bias", { 512 }) == QuantRole::Sensitive);
+
+    // The encoder has no conv_t1 at all -- its resampling convolution is a
+    // regular strided one named "conv1", not "conv_t1". A classifier that
+    // matched "acoustic_decoder" as a substring prefix of "acoustic_encoder"
+    // (or vice versa), or that matched "conv1" against the "conv_t1" pattern,
+    // would misfile this as a decoder tensor or a transpose weight.
+    SYNTH_TEST_CHECK(classify("codec.acoustic_encoder.block.0.conv1.weight", { 16, 64, 128 }) ==
+                     QuantRole::MatrixWeight);
+    return 0;
+}
+
+int check_structural_exceptions() {
+    // codec.acoustic_encoder.conv1.weight: reads the raw mono waveform, so its
+    // packed row is kernel * in = 7 * 1 = 7 -- real shape from the checkpoint.
+    SYNTH_TEST_CHECK(classify("codec.acoustic_encoder.conv1.weight", { 7, 1, 64 }) == QuantRole::Sensitive);
+
+    // codec.semantic_model.feat_conv.0.conv.weight: the HuBERT feature
+    // extractor's own raw-waveform convolution, packed row 10 * 1 = 10.
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.feat_conv.0.conv.weight", { 10, 1, 512 }) == QuantRole::Sensitive);
+    // Every later feature convolution reads the previous layer's 512-wide
+    // output, not the raw waveform, so only index 0 is an exception.
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.feat_conv.1.conv.weight", { 3, 512, 512 }) ==
+                     QuantRole::MatrixWeight);
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.feat_conv.6.conv.weight", { 2, 512, 512 }) ==
+                     QuantRole::MatrixWeight);
+
+    // codec.semantic_model.encoder.pos_conv_embed.conv.weight: grouped by
+    // sixteen and sliced per group by ggml_view_3d in reference-encoder.cpp's
+    // grouped_conv1d. Its packed row (128 * 48 = 6144) is itself divisible by
+    // 32, proving the exception is about the grouped view, not the size.
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.encoder.pos_conv_embed.conv.weight", { 128, 48, 768 }) ==
+                     QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.encoder.pos_conv_embed.conv.bias", { 768 }) ==
+                     QuantRole::Sensitive);
+    return 0;
+}
+
+int check_snake_alphas_and_biases_are_sensitive() {
+    SYNTH_TEST_CHECK(classify("codec.acoustic_decoder.block.0.res_unit1.snake1.alpha", { 1, 512, 1 }) ==
+                     QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.acoustic_decoder.snake1.alpha", { 1, 32, 1 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.acoustic_encoder.snake1.alpha", { 1, 2048, 1 }) == QuantRole::Sensitive);
+
+    SYNTH_TEST_CHECK(classify("codec.acoustic_decoder.conv1.bias", { 1024 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.acoustic_encoder.block.0.conv1.bias", { 128 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.encoder.layers.0.attn.q_proj.bias", { 768 }) ==
+                     QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.encoder_semantic.conv_blocks.0.conv.bias", { 768 }) == QuantRole::Sensitive);
+    return 0;
+}
+
+int check_one_dimensional_norms_are_sensitive() {
+    // All five norm sites in the codec, by name -- the feature group norm,
+    // the feature projection's norm, each encoder layer's two norms, and the
+    // encoder's own exit norm.
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.feat_conv.0.layer_norm.weight", { 512 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.feat_conv.0.layer_norm.bias", { 512 }) == QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.feature_projection.layer_norm.weight", { 512 }) ==
+                     QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.encoder.layers.0.layer_norm.weight", { 768 }) ==
+                     QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.encoder.layers.0.final_layer_norm.weight", { 768 }) ==
+                     QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.encoder.layer_norm.weight", { 768 }) == QuantRole::Sensitive);
+    // Its neighbor, the feature projection's matrix, is not a norm and is not
+    // named "layer_norm" -- it must still resolve to MatrixWeight.
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.feature_projection.projection.weight", { 512, 768 }) ==
+                     QuantRole::MatrixWeight);
+    return 0;
+}
+
+int check_everything_else_under_the_four_codec_modules_is_matrix_weight() {
+    // codec.acoustic_decoder.
+    SYNTH_TEST_CHECK(classify("codec.acoustic_decoder.conv1.weight", { 7, 256, 1024 }) == QuantRole::MatrixWeight);
+    SYNTH_TEST_CHECK(classify("codec.acoustic_decoder.block.0.res_unit1.conv1.weight", { 7, 512, 512 }) ==
+                     QuantRole::MatrixWeight);
+    SYNTH_TEST_CHECK(classify("codec.acoustic_decoder.block.0.res_unit1.conv2.weight", { 1, 512, 512 }) ==
+                     QuantRole::MatrixWeight);
+    // The mono exit convolution: ne = [7, 32, 1], the exact shape
+    // Task 2's packing whitelist calls out as a ggml_n_dims hazard for a
+    // *different* mechanism (trailing-unit-dimension collapse). This
+    // classifier never derives a role from ne, so that hazard does not apply
+    // here -- the name alone says this is a plain convolution weight.
+    SYNTH_TEST_CHECK(classify("codec.acoustic_decoder.conv2.weight", { 7, 32, 1 }) == QuantRole::MatrixWeight);
+
+    // codec.acoustic_encoder.
+    SYNTH_TEST_CHECK(classify("codec.acoustic_encoder.block.0.res_unit1.conv1.weight", { 7, 64, 64 }) ==
+                     QuantRole::MatrixWeight);
+    SYNTH_TEST_CHECK(classify("codec.acoustic_encoder.conv2.weight", { 3, 2048, 256 }) == QuantRole::MatrixWeight);
+
+    // codec.semantic_model.
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.encoder.layers.0.attn.q_proj.weight", { 768, 768 }) ==
+                     QuantRole::MatrixWeight);
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.encoder.layers.0.ff.inter_dense.weight", { 768, 3072 }) ==
+                     QuantRole::MatrixWeight);
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.encoder.layers.0.ff.output_dense.weight", { 3072, 768 }) ==
+                     QuantRole::MatrixWeight);
+
+    // codec.encoder_semantic.
+    SYNTH_TEST_CHECK(classify("codec.encoder_semantic.conv.weight", { 3, 768, 768 }) == QuantRole::MatrixWeight);
+    SYNTH_TEST_CHECK(classify("codec.encoder_semantic.conv_blocks.0.res_units.0.conv1.weight", { 3, 768, 768 }) ==
+                     QuantRole::MatrixWeight);
+    SYNTH_TEST_CHECK(classify("codec.encoder_semantic.conv_blocks.1.conv.weight", { 3, 768, 768 }) ==
+                     QuantRole::MatrixWeight);
+    return 0;
+}
+
+int check_unknown_outside_the_catalog() {
+    for (const std::string & name : {
+             std::string(""),
+             std::string("codec"),
+             std::string("llm"),
+             std::string("codec.acoustic_decoderx.conv1.weight"),
+             std::string("codec.acoustic_decoder"),
+             std::string("codec.quantizerx.quantizers.0.project_in.weight"),
+             std::string("codec.unknown_module.conv.weight"),
+             // The exact stray name omnivoice_catalog_test.cpp uses to prove
+             // the runtime's own sweep rejects an unresolved tensor.
+             std::string("codec.decoder_semantic.conv1.weight"),
+             std::string("voice.af_heart"),
+         }) {
+        SYNTH_TEST_CHECK(classify(name, {}) == QuantRole::Unknown);
+    }
+    return 0;
+}
+
+// Walks the small synthetic package's full registration -- structurally
+// faithful to the real catalog at reduced widths (omnivoice_small_layout.h) --
+// and asserts nothing classifies as Unknown. This is the test that would catch
+// a future catalog addition escaping the policy silently: a new tensor name
+// the classifier does not recognize resolves to Unknown here immediately,
+// rather than only failing much later when a package built from it refuses to
+// load. The small layout is enough for this: completeness depends only on
+// which *name patterns* the catalog can register, and the small layout
+// exercises every one of them (every module, every per-layer and per-block
+// site) at reduced counts, not reduced variety. It is also the cheapest
+// faithful source already in the test tree.
+int check_completeness_against_the_small_layout() {
+    const synth::omnivoice::HParams h       = synth::omnivoice::testing::small_hparams();
+    const std::vector<Entry>        entries = synth::omnivoice::testing::expected_entries(h);
+    SYNTH_TEST_CHECK(!entries.empty());
+    for (const Entry & entry : entries) {
+        SYNTH_TEST_CHECK(classify(entry.name, entry.ne) != QuantRole::Unknown);
+    }
+    return 0;
+}
+
+// The count that matters for the family's headline "codec-only" claim: how
+// many of the real 798-tensor package's tensors are actually quantized.
+// Unlike the completeness case, this one needs the *real* topology and
+// widths, not the small layout's -- the count is a property of how many
+// blocks, layers and feature convolutions the real checkpoint has, not of
+// name patterns alone. `real_hparams()` above is that topology, read out of
+// the real checkpoint's own tensor inventory (see the file comment).
+//
+// 158 is the number verified against catalog.cpp for this task; it is
+// asserted once, below, and every other figure here is derived from the
+// catalog through classify_tensor rather than restated.
+int check_matrix_weight_count() {
+    const synth::omnivoice::HParams h       = real_hparams();
+    const std::vector<Entry>        entries = synth::omnivoice::testing::expected_entries(h);
+
+    // The catalog's own arithmetic and this test's hand-built entry list are
+    // two independent statements of the same 798-tensor package; they must
+    // agree before the role counts below mean anything.
+    SYNTH_TEST_CHECK(entries.size() == synth::omnivoice::expected_tensor_count(h));
+    SYNTH_TEST_CHECK(entries.size() == 798);
+
+    constexpr uint64_t kExpectedMatrixWeightCount = 158;
+    const uint64_t     matrix_weight_count        = count_role(entries, QuantRole::MatrixWeight);
+    SYNTH_TEST_CHECK(matrix_weight_count == kExpectedMatrixWeightCount);
+
+    // The per-module breakdown behind the total: the two DAC halves, HuBERT,
+    // and the codec's own semantic encoder. 32 + 36 + 79 + 11 = 158.
+    SYNTH_TEST_CHECK(count_role(filter_prefix(entries, "codec.acoustic_decoder."), QuantRole::MatrixWeight) == 32);
+    SYNTH_TEST_CHECK(count_role(filter_prefix(entries, "codec.acoustic_encoder."), QuantRole::MatrixWeight) == 36);
+    SYNTH_TEST_CHECK(count_role(filter_prefix(entries, "codec.semantic_model."), QuantRole::MatrixWeight) == 79);
+    SYNTH_TEST_CHECK(count_role(filter_prefix(entries, "codec.encoder_semantic."), QuantRole::MatrixWeight) == 11);
+
+    // Every tensor lands somewhere, and only one block per decoder upsampling
+    // ratio is a transpose weight.
+    SYNTH_TEST_CHECK(count_role(entries, QuantRole::Unknown) == 0);
+    SYNTH_TEST_CHECK(count_role(entries, QuantRole::TransposeWeight) == h.codec.upsampling_ratios.size());
+    SYNTH_TEST_CHECK(count_role(entries, QuantRole::MatrixWeight) + count_role(entries, QuantRole::TransposeWeight) +
+                         count_role(entries, QuantRole::Sensitive) ==
+                     entries.size());
+    return 0;
+}
+
+}  // namespace
+
+int main() {
+    SYNTH_TEST_CHECK(check_generator_is_always_sensitive() == 0);
+    SYNTH_TEST_CHECK(check_rvq_and_concat_projections_are_sensitive() == 0);
+    SYNTH_TEST_CHECK(check_transpose_weight_override() == 0);
+    SYNTH_TEST_CHECK(check_structural_exceptions() == 0);
+    SYNTH_TEST_CHECK(check_snake_alphas_and_biases_are_sensitive() == 0);
+    SYNTH_TEST_CHECK(check_one_dimensional_norms_are_sensitive() == 0);
+    SYNTH_TEST_CHECK(check_everything_else_under_the_four_codec_modules_is_matrix_weight() == 0);
+    SYNTH_TEST_CHECK(check_unknown_outside_the_catalog() == 0);
+    SYNTH_TEST_CHECK(check_completeness_against_the_small_layout() == 0);
+    SYNTH_TEST_CHECK(check_matrix_weight_count() == 0);
+    return 0;
+}

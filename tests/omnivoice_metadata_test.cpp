@@ -253,8 +253,11 @@ int run_valid_package() {
     return 0;
 }
 
-// A package cut to the codec-only Quantization Profile is read the same as
-// any other, its profile string just resolving to a different enumerator.
+// A package cut to a codec-only Quantization Profile is read the same as any
+// other, its profile string just resolving to a different enumerator. Both
+// Q8_MIXED and F16 are measured profiles (Plan 4 Task 3) even though neither
+// ships -- see docs/porting/families/omnivoice.md's "Quantization Profile
+// Shape" -- so the metadata reader accepts both regardless.
 int run_quantization_profile_acceptance() {
     GgufContext context = valid_metadata();
     SYNTH_TEST_CHECK(context != nullptr);
@@ -262,6 +265,13 @@ int run_quantization_profile_acceptance() {
     synth::omnivoice::HParams hparams;
     SYNTH_TEST_CHECK(synth::omnivoice::read_hparams(context.get(), hparams) == SYNTH_OK);
     SYNTH_TEST_CHECK(hparams.quantization_profile == synth::omnivoice::QuantizationProfile::Q8Mixed);
+
+    GgufContext f16_context = valid_metadata();
+    SYNTH_TEST_CHECK(f16_context != nullptr);
+    gguf_set_val_str(f16_context.get(), "synthesize.quantization.profile", "F16");
+    synth::omnivoice::HParams f16_hparams;
+    SYNTH_TEST_CHECK(synth::omnivoice::read_hparams(f16_context.get(), f16_hparams) == SYNTH_OK);
+    SYNTH_TEST_CHECK(f16_hparams.quantization_profile == synth::omnivoice::QuantizationProfile::F16);
     return 0;
 }
 

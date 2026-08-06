@@ -59,12 +59,15 @@ bool read_quantization(const GgufMetadata & meta, HParams & hparams) {
         return false;
     }
     // The checkpoint stores F32 in both halves, so F32 is also the source
-    // profile. Q8_MIXED is Plan 4's codec-only Quantization Profile -- see
-    // quantization.h's QuantRole for which tensors it actually touches.
+    // profile. Q8_MIXED and F16 are Plan 4's codec-only Quantization
+    // Profiles -- see quantization.h's QuantRole for which tensors they
+    // actually touch.
     if (profile == "F32") {
         hparams.quantization_profile = QuantizationProfile::F32;
     } else if (profile == "Q8_MIXED") {
         hparams.quantization_profile = QuantizationProfile::Q8Mixed;
+    } else if (profile == "F16") {
+        hparams.quantization_profile = QuantizationProfile::F16;
     } else {
         std::fprintf(stderr, "omnivoice: unsupported quantization profile %s\n", profile.c_str());
         return false;

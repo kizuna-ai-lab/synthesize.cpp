@@ -11,13 +11,21 @@ struct gguf_context;
 namespace synth::omnivoice {
 
 // F32 is the source profile: the checkpoint stores both halves in it, and the
-// converter never produces anything else. Q8Mixed is Plan 4's codec-only
-// Quantization Profile -- every generator tensor and the RVQ stay at F32
-// regardless (src/arch/omnivoice/quantization.h's QuantRole), so this enum
-// governs the codec's own matrix weights only.
+// converter never produces anything else. Q8Mixed and F16 are Plan 4's
+// codec-only Quantization Profiles -- every generator tensor and the RVQ
+// stay at F32 regardless (src/arch/omnivoice/quantization.h's QuantRole), so
+// this enum governs the codec's own matrix weights only. Q8Mixed packs a
+// MatrixWeight conv kernel's [kernel, in, out] into a flattened
+// [kernel * in, out] row before quantizing; F16 does not -- the tool's
+// profile table gives it TensorLayout::Native (tools/synthesize-quantize/
+// policy.cpp:14-24), so an F16 MatrixWeight tensor keeps its native
+// three-axis shape, just halved, and never exercises the packed-shape branch
+// catalog.cpp's find() or reference-encoder.cpp's feat_conv check carry for
+// Q8Mixed.
 enum class QuantizationProfile : uint32_t {
     F32,
     Q8Mixed,
+    F16,
 };
 
 // The mask-predict generator: a Qwen3 block stack run bidirectionally over the

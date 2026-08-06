@@ -1047,16 +1047,141 @@ that would plausibly produce this exact grid.
 
 **Status: BLOCKED, not shipped.** Per this section's own opening rule, a
 profile that fails the exact-token gate is not shipped, and no perceptual
-claim substitutes for it. The choice between narrowing the profile's scope
-(e.g. excluding `codec.semantic_model`/`codec.acoustic_encoder`, which feed
-the clone-only encode path, while still quantizing `codec.acoustic_decoder`,
-which the greedy/public synthesis path alone exercises) and dropping the
-profile is jiangzhuo's and the controller's, not this task's — see Plan 4's
-own carry-over ledger for where that decision lands. No tolerance cell for
-Q8_MIXED is committed in `tests/tolerances/omnivoice.json`: the exact-token
-check is unconditional and independent of `--check`, so a tolerance cell
-would not make the grid pass and would misrepresent a blocked profile as
-measured-and-ready.
+claim substitutes for it. No tolerance cell for Q8_MIXED is committed in
+`tests/tolerances/omnivoice.json`: the exact-token check is unconditional and
+independent of `--check`, so a tolerance cell would not make the grid pass
+and would misrepresent a blocked profile as measured-and-ready. jiangzhuo's
+ruling on what to try next is the following subsection.
+
+### F16 (Plan 4 Task 3 continuation): also codec-only, also BLOCKED
+
+jiangzhuo's ruling: measure F16 codec-only before concluding anything about
+quantization for this family — a genuinely different measurement, not a
+retry of Q8_MIXED. The tool's profile table gives F16
+`TensorLayout::Native` (`tools/synthesize-quantize/policy.cpp:14-24`): it
+does not pack, and `ggml_compute_forward_im2col` accepts an F16 destination
+natively, so F16 needs none of Task 2's packed-branch machinery on the
+convolution path — every MatrixWeight tensor keeps its native shape and only
+halves its type, running through the existing (unmodified) builders. F16's
+per-weight relative error is roughly an order of magnitude below Q8_0's
+(≈2⁻¹⁰ against Q8_0's ≈1/127), which is the whole question for a
+nearest-neighbour decision that Q8_MIXED missed by a distance gap of 1.51.
+**Q8_MIXED itself stays blocked and unshipped; it was not revisited.**
+
+**Package.** `omnivoice-0-6b-F16.gguf` from the same committed F32 source,
+sha256 `530b2b85…0b955fa`, 2,858,422,240 bytes (2726.0 MiB) against the
+source's 3,189,953,504 bytes — a 10.4% reduction, close to but not exactly
+the ≈316 MiB naive estimate (158 tensors halving is 316,166,912 bytes of
+tensor data by construction — F32 bytes minus half of F32 bytes for exactly
+the same 158 tensors Q8_MIXED touched — the file-size delta differs slightly
+because GGUF per-tensor alignment padding scales with tensor count and
+boundary position, not with the bytes saved per tensor). Confirmed by
+dumping tensor types rather than assumed: **exactly the same 158 of 798
+tensors** change type as under Q8_MIXED (the classifier is shared), each
+F32 → F16 in place, native shape unchanged — Native layout does not read the
+classifier's roles any differently than PackedMatrix did, only what it does
+with a MatrixWeight tensor once classified. Tensor-data bytes: 3,184,565,636
+→ 2,853,034,948 (−331,530,688 bytes, −316.2 MiB — matching the naive
+estimate almost exactly at the tensor-data level, confirming the file-size
+gap above is padding-only).
+
+**The load path.** `QuantizationProfile` gained an `F16` enumerator
+alongside `F32`/`Q8Mixed` (`weights.h`, `weights.cpp`'s `read_quantization`,
+`model.cpp`'s `get_info`); `catalog.cpp`'s `expected_type()` gained the
+matching case (`MatrixWeight` → `GGML_TYPE_F16`, else F32) — the same
+`classify_tensor` dispatch Q8Mixed already uses, so no second classifier
+exists to drift from the first. **No third gap.** F16 never enters the
+packed-shape branch in `catalog.cpp`'s `find()` (gated on `Q8Mixed`
+specifically) or the packed arm of `reference-encoder.cpp`'s `feat_conv`
+check (gated on `ggml_is_quantized`, which F16 is not) — a direct
+single-case run of `Model::encode_reference` against the F16 package
+succeeded on the first try, with none of Q8_MIXED's silent-failure history.
+Regression coverage: `omnivoice_catalog_test.cpp`'s `check_f16_resolution`/
+`check_f16_rejections` (a full synthetic package under `F16`, no
+block-size-driven width changes needed since nothing packs) and
+`omnivoice_metadata_test.cpp`'s `run_quantization_profile_acceptance`
+(extended to cover `"F16"` alongside `"Q8_MIXED"`).
+
+**THE GATE. FAILED, but far more narrowly than Q8_MIXED.** Same command,
+`--profile F16`, fresh `--work` directory:
+
+```
+token grids exact: 17/17
+ref.tokens exact: 0/2
+narrowest RVQ encode gap: 0.00306702
+```
+
+17/17 greedy grids exact, for the identical structural reason as Q8_MIXED
+(generator and RVQ are Sensitive/F32 under every profile). **Both clone
+cases' RVQ encode grids are still NOT exact** — `omni-clone-en` and
+`omni-clone-zh` each mismatch at **103 of 2808 positions (3.7%)**, roughly a
+tenth of Q8_MIXED's 1023, consistent with F16's roughly-10x-smaller
+per-weight error. First 20 of 103 (both cases identical):
+
+| codebook | frame | got | want | gap |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 57 | 555 | 846 | 0.2024 |
+| 1 | 25 | 442 | 278 | 0.4197 |
+| 1 | 128 | 77 | 503 | 0.2124 |
+| 1 | 155 | 658 | 991 | 0.1527 |
+| 2 | 4 | 518 | 597 | 0.6510 |
+| 2 | 57 | 613 | 597 | 4.8593 |
+| 2 | 128 | 11 | 52 | 1.0621 |
+| 2 | 155 | 39 | 130 | 27.4781 |
+| 2 | 264 | 618 | 109 | 0.9983 |
+| 2 | 348 | 228 | 508 | 0.6170 |
+| 3 | 6 | 485 | 626 | 1.7481 |
+| 3 | 7 | 202 | 975 | 0.0298 |
+| 3 | 25 | 821 | 670 | 24.8352 |
+| 3 | 27 | 706 | 395 | 0.3370 |
+| 3 | 49 | 414 | 165 | 0.2210 |
+| 3 | 54 | 101 | 596 | 0.0313 |
+| 3 | 57 | 113 | 884 | 14.2502 |
+| 3 | 102 | 559 | 685 | 0.1507 |
+| 3 | 105 | 305 | 930 | 0.1803 |
+| 3 | 128 | 926 | 91 | 2.4834 |
+
+Unlike Q8_MIXED's mismatches, this set is a genuine MIX: several gaps
+(0.0298, 0.0313, 0.1507, 0.1527, 0.1803, 0.2024, 0.2124, 0.2210) sit in the
+same range as a legitimately narrow greedy-decode margin, consistent with
+ordinary F16 rounding tipping a close nearest-neighbour call — but others
+(27.4781, 24.8352, 14.2502, 4.8593) are not narrow by any reading, the same
+signature of real accumulated error Q8_MIXED showed, just smaller. This is
+not a single mechanism to explain away with one story; it is 103 positions
+of varying character, and the gate does not average them.
+
+**`audio.pcm` cosine, the second thing this measurement was for.** F32
+baseline 0.99999986; **F16 0.99999743**; Q8_MIXED 0.99775438. F16's decode
+side is close to two more nines than Q8_MIXED's — a real difference, and by
+itself arguably an acceptable production number — but it does not rescue the
+clone path, which is where both profiles actually fail. `ref.semantic_mean`
+max_abs 6.09e-05 (F32) → 0.00795197 (F16) → 0.342867 (Q8_MIXED);
+`ref.fused_latent` max_abs 9.32e-05 (F32) → 0.129286 (F16) → 3.73227
+(Q8_MIXED) — F16 sits consistently between the other two, roughly an order
+of magnitude closer to F32 than Q8_MIXED on every channel, exactly the
+predicted relationship, and still not close enough to pass the encode grid.
+
+**Margins.** Every greedy-case margin reproduces the F32 baseline exactly
+under F16 too, for the identical reason as Q8_MIXED (the generator never
+changes) — the same table in the Q8_MIXED section above applies unchanged
+and is not repeated here.
+
+**Status: BLOCKED, not shipped. This family ships F32-only.** Two codec-only
+Quantization Profiles were measured against the exact-token gate and both
+failed the cloning path's RVQ encode grid — not by the same mechanism or
+magnitude, but neither is a knife-edge margin call eligible for dual
+admissibility. No tolerance cell for F16 is committed, for the same reason as
+Q8_MIXED. No per-profile golden gate is registered for either profile: a
+permanently-red registered test is not an acceptable end state for the
+branch, and the measured evidence for both is recorded here and in
+`reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md` instead. If a
+future task wants to revisit quantization for this family, narrowing scope
+to exclude `codec.semantic_model`/`codec.acoustic_encoder` (which feed only
+the clone-only encode path) while still quantizing `codec.acoustic_decoder`
+(which the greedy/public synthesis path alone exercises) is the untried
+option both measurements point toward — untried here because re-scoping the
+profile to make a grid pass is exactly what this task's own gate discipline
+prohibits doing unilaterally.
 
 ## GGML Operator Surface
 

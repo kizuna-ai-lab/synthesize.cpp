@@ -129,16 +129,17 @@ set(SYNTH_QWEN3_TTS_TEST_MODEL
     "${CMAKE_SOURCE_DIR}/models/qwen3-tts-12hz-0-6b-customvoice/qwen3-tts-12hz-0-6b-customvoice-BF16.gguf"
     CACHE FILEPATH "Local Qwen3-TTS BF16 GGUF used by integration tests")
 # F32 is this family's source profile: the checkpoint stores F32 in both the
-# generator and the codec halves, so it is the package a port is checked against.
+# generator and the codec halves, so it is the package a port is checked
+# against. Plan 4 Task 3 measured both Q8_MIXED and F16 codec-only
+# Quantization Profiles against the exact-token gate and both failed the
+# cloning path's RVQ encode grid (docs/porting/families/omnivoice.md's
+# "Quantization Profile Shape"), so this family ships F32-only -- no
+# per-profile test-model variable or golden gate exists for either, on
+# purpose: a permanently failing registered gate is not an acceptable branch
+# state, and the measured evidence for both is recorded in that doc and in
+# reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md instead.
 set(SYNTH_OMNIVOICE_TEST_MODEL "${CMAKE_SOURCE_DIR}/models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf"
     CACHE FILEPATH "Local OmniVoice F32 GGUF used by integration tests")
-# Q8_MIXED is this family's codec-only Quantization Profile (Plan 4 Task 3):
-# every generator tensor and the RVQ stay at the reference dtype regardless
-# (src/arch/omnivoice/quantization.h), so only the codec's own matrix weights
-# differ from the F32 package above.
-set(SYNTH_OMNIVOICE_Q8_MIXED_TEST_MODEL
-    "${CMAKE_SOURCE_DIR}/models/omnivoice-0-6b/omnivoice-0-6b-Q8_MIXED.gguf"
-    CACHE FILEPATH "Local OmniVoice Q8_MIXED GGUF used by integration tests")
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/SynthesizeReleaseCudaPolicy.cmake)
 synth_validate_release_cuda_targets()

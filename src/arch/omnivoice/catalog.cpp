@@ -254,6 +254,14 @@ class Resolver {
                 // recognise, which the type check below still catches as a
                 // mismatch against whatever the tensor actually is.
                 return classify_tensor(name, ne) == QuantRole::MatrixWeight ? GGML_TYPE_Q8_0 : GGML_TYPE_F32;
+            case QuantizationProfile::F16:
+                // Same split as Q8Mixed, halved rather than packed: the
+                // tool's profile table gives F16 TensorLayout::Native
+                // (tools/synthesize-quantize/policy.cpp:14-24), so a
+                // MatrixWeight conv kernel keeps its native three-axis shape
+                // here -- the packed-shape branch in find() below is gated on
+                // Q8Mixed specifically and never triggers for this profile.
+                return classify_tensor(name, ne) == QuantRole::MatrixWeight ? GGML_TYPE_F16 : GGML_TYPE_F32;
         }
         return GGML_TYPE_F32;
     }
@@ -264,6 +272,8 @@ class Resolver {
                 return "F32";
             case QuantizationProfile::Q8Mixed:
                 return "Q8_MIXED";
+            case QuantizationProfile::F16:
+                return "F16";
         }
         return "unknown";
     }

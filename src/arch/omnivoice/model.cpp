@@ -20,9 +20,21 @@
 // (Plan 4) adds the twin that makes that possible -- Model::Impl::codec_context
 // and codec_buffer, present only when the primary backend is not the CPU. See
 // the comment above its construction in Model::load for the exact tensor
-// groups and their byte cost, and catalog.h's build_model_weights for how the
-// catalog binds against them. With no accelerator the twin is null and every
-// path here runs exactly as Plan 2 left it.
+// groups and their byte cost, and catalog.h's bind_decode_weights for how the
+// catalog binds against them.
+//
+// codec.quantizer is read by BOTH directions -- the decode graph's dequantize
+// sum and encode_reference's own host-side RVQ nearest-neighbour argmax
+// (rvq_encode) -- which a first draft of this task missed: it let the twin
+// re-resolve overwrite the one ModelWeights every reader shared, so
+// rvq_encode would have started reading a CUDA-resident tensor through
+// ggml_backend_tensor_get the moment Task 11 gave this family a CUDA primary.
+// Fixed by never mutating `weights` for the twin at all: `Model::Impl` carries
+// `weights` (bound to the package, read by every host-side caller including
+// rvq_encode) and a separate `decode_weights` (bind_decode_weights's own
+// output, read only by decode_codes) side by side. With no accelerator the
+// twin is null, `decode_weights` is an exact copy of `weights`, and every path
+// here runs exactly as Plan 2 left it.
 
 #include "arch/omnivoice/catalog.h"
 #include "arch/omnivoice/codec-host.h"
@@ -215,8 +227,11 @@ void read_floats(const ggml_tensor * tensor, std::vector<float> & output) {
 // dequantization sum, fc2, and the DAC decoder. This is deliberately narrower
 // than a blanket `codec.` prefix (qwen3-tts's own twin filter, where it is
 // correct because nothing else under `codec.` there is CPU-held) -- see
-// catalog.h's build_model_weights for the full group/byte-cost accounting and
-// why the rest of `codec.` must NOT be twinned.
+// catalog.h's bind_decode_weights for the full group/byte-cost accounting and
+// why the rest of `codec.` must NOT be twinned. Note that `codec.quantizer.`
+// being movable here is about which CONTEXT its twin lives in, not which
+// ModelWeights reads it -- rvq_encode reads the same group through a
+// different, never-mutated binding; see that same comment.
 constexpr const char * kDecodePathPrefixes[] = {
     "codec.acoustic_decoder.",
     "codec.quantizer.",
@@ -331,13 +346,23 @@ struct Model::Impl {
     // and the clone-encode chain's outputs both bottom out in a discrete
     // decision (a sampled code; a host-side RVQ argmax), so docs/backends.md
     // holds them and everything reading them on the CPU regardless of what the
-    // primary backend is. See catalog.h's build_model_weights and this file's
-    // placement comment for the tensor groups and byte cost.
+    // primary backend is. See catalog.h's build_model_weights/bind_decode_weights
+    // and this file's placement comment for the tensor groups and byte cost.
     ggml_context *                      codec_context  = nullptr;
     ggml_backend_buffer_t               codec_buffer   = nullptr;
     HParams                             hparams;
     std::shared_ptr<const TextFrontend> frontend;
+    // `weights` is bound against `weights_context` alone, ALWAYS -- every
+    // host-side reader (rvq_encode via encode_reference, the generator) reads
+    // this and only this, so it can never be made to read a twin. `decode_weights`
+    // is bind_decode_weights's own output: identical to `weights` in every
+    // field when `codec_context` is null (no accelerator; see catalog.h's own
+    // header comment on that function for the second-consumer trap this split
+    // closes), and diverging only in quantizers/fc2/acoustic_decoder -- bound
+    // to the twin instead -- when one exists. Only Model::decode_codes reads
+    // `decode_weights`.
     ModelWeights                        weights;
+    ModelWeights                        decode_weights;
 
     ~Impl() {
         if (weights_buffer != nullptr) {
@@ -896,7 +921,12 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> &      codes,
     if (!run.ok()) {
         return SYNTH_ERR_OOM;
     }
-    ggml_tensor * wave = build_codec_decoder(run.context(), t_codes, impl.weights, hparams);
+    // decode_weights, not weights: the only reader of the twin-bound
+    // quantizer/fc2/acoustic_decoder pointers when one exists. impl.weights
+    // stays CPU-resident for encode_reference's own rvq_encode call, which
+    // must never read through this same graph's binding -- see catalog.h's
+    // bind_decode_weights for why the two cannot share one ModelWeights.
+    ggml_tensor * wave = build_codec_decoder(run.context(), t_codes, impl.decode_weights, hparams);
     if (wave == nullptr) {
         return SYNTH_ERR_INTERNAL;
     }
@@ -1048,12 +1078,12 @@ synth_status_t Model::load(const std::string &      path,
         }
         // Twins of the codec's decode path, so it can run on the primary
         // backend while the generator and the clone-encode chain stay on the
-        // CPU. Declared before binding, because the catalog binds the decode
-        // path against them when present. Filtered to is_decode_path_tensor's
-        // three prefixes rather than every `codec.` tensor -- see this file's
-        // placement comment and catalog.h's build_model_weights for why the
-        // rest of the codec (332 tensors, ~612 MiB in this checkpoint's F32
-        // GGUF) must stay off the twin.
+        // CPU. Declared before binding, because bind_decode_weights below
+        // binds the decode path against them when present. Filtered to
+        // is_decode_path_tensor's three prefixes rather than every `codec.`
+        // tensor -- see this file's placement comment and catalog.h's
+        // bind_decode_weights for why the rest of the codec (332 tensors,
+        // ~612 MiB in this checkpoint's F32 GGUF) must stay off the twin.
         const bool split = implementation->backend_plan->primary() != implementation->backend_plan->cpu_backend();
         if (split) {
             ggml_init_params twin_params{};
@@ -1076,8 +1106,19 @@ synth_status_t Model::load(const std::string &      path,
                 ggml_set_name(twin, tensor->name);
             }
         }
-        status = build_model_weights(implementation->weights_context, implementation->codec_context,
-                                     implementation->hparams, implementation->weights);
+        // `weights` is bound against the package alone -- ALWAYS, whether or
+        // not `codec_context` exists -- so the host clone-encode chain
+        // (rvq_encode, reached through encode_reference) can never be handed a
+        // twin pointer. `decode_weights` is the separate, twin-aware binding
+        // only Model::decode_codes reads; see catalog.h's own header comment
+        // on bind_decode_weights for the second-consumer trap this split
+        // exists to close.
+        status = build_model_weights(implementation->weights_context, implementation->hparams, implementation->weights);
+        if (status != SYNTH_OK) {
+            return status;
+        }
+        status = bind_decode_weights(implementation->codec_context, implementation->hparams, implementation->weights,
+                                     implementation->decode_weights);
         if (status != SYNTH_OK) {
             return status;
         }

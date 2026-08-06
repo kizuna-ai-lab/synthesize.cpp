@@ -33,12 +33,18 @@ enum class ModelFamily {
 // work on CPU, so AUTO is accepted before this function is ever reached rather
 // than by adding a case here.
 //
-// OmniVoice is CPU-only until Task 11 lands its CUDA codec path
-// (src/arch/omnivoice/model.cpp: "Placement: everything is CPU ... One CPU
-// buffer, no twin"); an explicit CUDA request against an OmniVoice package
-// must be refused rather than silently placing weights on CPU while
-// `synth_model_get_device` reports CUDA. VITS, Kokoro, and Qwen3-TTS already
-// place real graph work on CUDA (docs/backends.md) and keep exactly that.
+// OmniVoice is CPU-only until Task 11 lands its CUDA codec path. Task 9 (Plan
+// 4) already gave the codec's decode path an accelerator twin
+// (src/arch/omnivoice/model.cpp's `Model::Impl::codec_context`), but that twin
+// is only ever built when `BackendPlan::primary()` is not the CPU backend --
+// and nothing here yet resolves a non-CPU primary for this family, since this
+// function still returns false for `Omnivoice`/`SYNTH_BACKEND_CUDA` below.
+// The twin therefore stays null and every graph still runs on
+// `create_cpu_scheduler` over CPU-resident weights; an explicit CUDA request
+// against an OmniVoice package must be refused here rather than silently
+// placing weights on CPU while `synth_model_get_device` reports CUDA. VITS,
+// Kokoro, and Qwen3-TTS already place real graph work on CUDA
+// (docs/backends.md) and keep exactly that.
 //
 // CPU_ACCEL keeps CPU as the primary backend and only adds optional
 // host-memory accelerators (BLAS/AMX), degrading to plain CPU when none is

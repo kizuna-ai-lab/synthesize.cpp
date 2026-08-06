@@ -150,8 +150,11 @@ bool resample_24k_to_16k(const std::vector<float> & input, std::vector<float> & 
 // output is continuous, but what reads it -- rvq_encode's host-side
 // nearest-neighbour argmax (this header, below) -- is a discrete decision, so
 // docs/backends.md's discrete-outputs rule holds the whole chain on the CPU
-// the same way it holds the generator there. catalog.h's build_model_weights
-// documents the tensor groups this reasoning keeps off the accelerator twin.
+// the same way it holds the generator there. catalog.h's bind_decode_weights
+// documents the tensor groups this reasoning keeps off the accelerator twin --
+// including `codec.quantizer.*` itself, which rvq_encode below reads through
+// `ModelWeights::quantizers` on a binding (`Model::Impl::weights`) that is
+// never the twin, regardless of what Model::decode_codes's own binding does.
 //
 // `pcm_16k` is PRE-pad (see reference-encoder.h). `semantic_mean` receives
 // the mean over all hidden states BEFORE the stride-2 downsample -- the

@@ -165,21 +165,24 @@ struct ModelWeights {
     SemanticEncoderWeights           encoder_semantic;
 };
 
-// Resolves the whole catalog against a loaded package.
+// Resolves the whole catalog against a loaded package. Always against
+// `context` alone -- see bind_decode_weights below for the codec's
+// accelerator twin, which is a materially different binding from this one and
+// not a variant of it.
 //
 // Every shape is derived from the package's own hyper-parameters rather than
 // hardcoded, so a package whose metadata and tensors disagree is refused here
 // instead of producing wrong audio later. Afterwards the package is swept: a
 // tensor the catalog never asked for is an error, not something to ignore,
 // because a name nobody resolves is a name nobody checked.
-//
-// `codec_context`, when non-null, holds same-named twins of the codec's DECODE
-// path ONLY -- not every `codec.` tensor, unlike qwen3-tts's own twin (which
-// mirrors its whole codec half because nothing else there is CPU-held).
-// Byte counts below are this checkpoint's F32 sizes, from the per-tensor
-// `bytes` field of reports/convert/omnivoice/omnivoice-0-6b-F32.json -- the
-// same file this catalog's layout comment above cites as ground truth for
-// names.
+synth_status_t build_model_weights(ggml_context * context, const HParams & hparams, ModelWeights & weights);
+
+// Binds the codec's DECODE path against an accelerator twin -- narrower than
+// qwen3-tts's own twin, which mirrors its whole codec half because nothing
+// else under `codec.` there is CPU-held. Byte counts below are this
+// checkpoint's F32 sizes, from the per-tensor `bytes` field of
+// reports/convert/omnivoice/omnivoice-0-6b-F32.json -- the same file this
+// catalog's layout comment above cites as ground truth for names.
 //
 //   MOVABLE (read only by build_codec_decoder, via Model::decode_codes):
 //     codec.acoustic_decoder.*   110 tensors   77.20 MiB
@@ -203,16 +206,35 @@ struct ModelWeights {
 // moves ~616 MiB to the primary backend that no primary-side graph ever
 // reads.
 //
-// When present, the three movable groups are resolved a SECOND time against
-// `codec_context`, which overwrites `weights`'s pointers for them to point at
-// the twins instead of the package's own tensors -- qwen3-tts's own
-// resolve-twice pattern (its catalog.cpp, build_model_weights). The sweep
-// below still covers `context` alone: a twin is a placement detail, not a
-// tensor the package carries.
-synth_status_t build_model_weights(ggml_context *  context,
-                                   ggml_context *  codec_context,
-                                   const HParams & hparams,
-                                   ModelWeights &  weights);
+// THE SECOND-CONSUMER TRAP (found in review of this task's first draft, which
+// had this function overwrite `weights`'s own quantizer/fc2/acoustic_decoder
+// pointers in place -- docs/backends.md:114-119's own worked case): unlike
+// every other movable group, `codec.quantizer.*` is not read by the decode
+// graph alone. rvq_encode (reference-encoder-host.h), the CPU-held clone
+// ENCODE direction's host-side nearest-neighbour argmax, reads the exact same
+// projections and codebook through `ModelWeights::quantizers` too. Overwriting
+// `weights.quantizers` to point at the twin would have made that host loop
+// silently issue `ggml_backend_tensor_get` against a CUDA-resident tensor on
+// every cloning request the moment Task 11 lands a CUDA primary -- correct
+// (that call is backend-aware, not a raw `->data` dereference) but exactly the
+// violation docs/backends.md's "give any group a second view" sentence warns
+// against: a stage that must stay off the accelerator quietly paying a
+// per-request PCIe round trip for weights that were supposed to be
+// CPU-resident, with no test or comment anywhere naming it as intentional.
+//
+// The fix: `weights` (built by build_model_weights above) is NEVER mutated
+// here. `decode_weights` starts as a copy of it -- so every non-movable field,
+// and every movable field when `codec_context` is null, is pointer-identical
+// to `weights`'s own -- and only its quantizers/fc2/acoustic_decoder are
+// re-resolved against `codec_context` when present. The host clone-encode
+// path keeps reading `weights` (CPU, always); only Model::decode_codes reads
+// `decode_weights` (the twin, when one exists). Neither consumer can silently
+// read the other's copy: the invariant tests/omnivoice_catalog_test.cpp's
+// check_twin_resolution pins by pointer identity in both directions.
+synth_status_t bind_decode_weights(ggml_context *       codec_context,
+                                   const HParams &      hparams,
+                                   const ModelWeights & weights,
+                                   ModelWeights &       decode_weights);
 
 // The number of tensors a package for these hyper-parameters must contain.
 // Exposed so a caller can size a context before resolving anything.

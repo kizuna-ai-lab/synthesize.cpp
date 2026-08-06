@@ -2,13 +2,18 @@
 // run. src/synthesize.cpp's synth_model_load used to compute
 // `backend_supported` as one family-independent expression accepting
 // AUTO/CPU/CPU_ACCEL/CUDA for every family, with a comment noting that when
-// families diverge this becomes a per-family question -- they have: OmniVoice
-// places every graph on `create_cpu_scheduler` over one CPU-resident weights
-// buffer with no accelerator twin (src/arch/omnivoice/model.cpp's "Placement:
-// everything is CPU ... One CPU buffer, no twin"), so an explicit CUDA
-// request against it must be refused rather than silently loaded onto CPU
-// while `synth_model_get_device` reports CUDA
-// (docs/backends.md: "a backend that is present is not a backend that ran").
+// families diverge this becomes a per-family question -- they have. This gate
+// is independent of Task 9's later work: that task gave the codec's decode
+// path an accelerator twin (src/arch/omnivoice/model.cpp's
+// `Model::Impl::codec_context`), but nothing yet requests a non-CPU primary
+// for OmniVoice (`family_supports_explicit_backend`'s `Omnivoice` case, in
+// src/model-info.h, still returns false for `SYNTH_BACKEND_CUDA` -- Task 11's
+// job), so the twin stays null and every graph still runs on
+// `create_cpu_scheduler` over CPU-resident weights exactly as when this test
+// was written. An explicit CUDA request against an OmniVoice package must
+// therefore be refused rather than silently loaded onto CPU while
+// `synth_model_get_device` reports CUDA (docs/backends.md: "a backend that is
+// present is not a backend that ran").
 //
 // This runs entirely against a synthetic package through the PUBLIC
 // synth_model_load seam (the function that actually contained the defect),

@@ -1202,6 +1202,148 @@ penalty and the top-k commit are host CPU work: they are discrete decisions,
 and the discrete-outputs placement rule keeps them and their input path off the
 accelerator.
 
+## Execution Backends (stage 7)
+
+Measured 2026-08-07 on the DGX Spark/GB10 development host (native `sm_121a`,
+CUDA 13.3.73, the standard `dev-dgx-spark` preset -- GGML CUDA unified-memory
+fallback stays off, per `docs/backends.md`'s CUDA Unified Memory Policy; the
+research-only `dev-dgx-spark-uvm` preset was not used and would not qualify this
+claim if it had been). The evidence and the exact commands are in
+`reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`; this section
+summarizes the outcome the family card and `family_supports_explicit_backend`
+(`src/model-info.h`) now rely on.
+
+### The codec moves, the generator does not
+
+This resolves the "Generator on CUDA" Open Question below, and confirms the
+qwen3-tts precedent this family always intended to follow: the codec's own
+RVQ token selection is upstream of the generator's next step (every frame's
+codes feed back into the canvas the next denoising step reads), so
+`docs/backends.md`'s discrete-outputs rule holds the *generator* -- the whole
+mask-predict denoising loop, all `num_step` iterations -- and its entire input
+path on the CPU, unconditionally, exactly as it did before this task. Only the
+codec's decode graph (the acoustic decoder, the RVQ dequantizer, and the final
+projection -- Task 9's 152-tensor, 84.24 MiB "movable" partition) moves.
+
+Swept all twenty golden cases with `--accelerate`
+(`scripts/validate-omnivoice-replay.py --accelerate --profile F32 --backend
+CUDA --stage replay`):
+
+- **Every codec node left the CPU and every generator node did not, across the
+  whole suite, not just on average.** Aggregated over all twenty cases: codec
+  8,440 of 8,440 nodes off the CPU; generator 0 of 880,032. Docs/backends.md
+  Validation Gate 5 (device placement) and the discrete-outputs rule are both
+  satisfied by the same count.
+- **All seventeen greedy cases' token grids stayed byte-exact against the CPU
+  baseline (17/17), and both cloning cases' RVQ-encode token grids too (2/2,
+  8×351 = 2,808 tokens each).** This is the gate the brief called
+  non-negotiable: a flip here would mean the codec twin or its placement was
+  wrong, not that sampling drifted, because the generator that draws the codes
+  never left the CPU. None flipped.
+- The waveform is the one artifact that does move, because it is what the
+  accelerated codec's TF32 arithmetic actually touches: `audio.pcm`/
+  `audio.pcm_freerun` worst cosine 0.9999963545175866 (deviation ≈3.65e-6,
+  against CPU-only's ≈1.7e-7) and worst max_abs 0.007008261978626251 on a
+  0.5-peak signal -- committed to `tests/tolerances/omnivoice.json`'s new
+  `backends.CUDA.stages.replay` cell at min_cosine 0.999981 / max_abs 0.04
+  (five times the measured deviation, this family's own established rounding
+  convention). Every deep generator probe and every reference-encode probe
+  (`ref.pcm_16k`/`ref.semantic_mean`/`ref.fused_latent`) stayed within the
+  same noise floor the CPU-only file already documents (≈1e-7), because
+  nothing upstream of the codec moved.
+- On the suite's longest case (`omni-long-boundary`, 719 frames, same case
+  `docs/testing.md`'s CPU golden-gate timeout budget is measured against): the
+  codec itself is 9.68× faster (4.3069 s → 0.4451 s), but because the held
+  generator is 98.9% of wall time on this case, the end-to-end effect is a
+  3.4% reduction (267.30 s → 258.48 s; real-time factor 9.294 → 8.987). This
+  is the opposite shape from Kokoro and VITS's own CUDA rows in
+  `docs/backends.md`'s per-family cost table: there, holding a *minority*
+  stage off an otherwise-GPU-primary graph is a tax; here, moving a free
+  *minority* stage off an otherwise-CPU-primary graph is a small, bounded
+  saving. `docs/backends.md`'s own per-family table carries the row and the
+  reasoning for the inversion.
+
+### Operational evidence (`docs/backends.md`'s Validation Gate 5)
+
+Latency and real-time factor, measured through the public seam
+(`tests/omnivoice_public_real.c`, now carrying the `[cpu|cuda]` backend
+positional qwen3-tts's driver always had -- Plan 4's accumulated requirement 2;
+before this task the flag was accepted by
+`scripts/validate-omnivoice-public.py` and never reached the runner, which
+would have made a CUDA sweep a false green): one seed-0 request of
+"Sampling follows the seed." (45,120 PCM frames) loads in 2.0015 s / 2.0356 s
+and synthesizes in 15.2393 s / 15.3927 s, CPU vs. CUDA -- the codec's share of
+this particular request is too small to separate from run-to-run noise, which
+is consistent with the longer case's own 1.6 percent codec share above.
+
+**Peak memory is not separately measurable on this hardware the way it is on
+discrete hardware, and reporting a bare number would claim more than it means
+(Plan 4's accumulated requirement 4).** qwen3-tts's own CUDA evidence read
+memory the same way discrete hardware is read -- an `nvidia-smi` resident
+figure, treated as a second budget on top of host RAM. That recipe does not
+transfer to DGX Spark/GB10: CPU and GPU physically share one DRAM pool here,
+and this is not an inference, it is what this family's own public Interface
+reports when asked. `synth_model_get_device()` on this host returns the CUDA
+device with `SYNTH_DEVICE_MEMORY_SHARED` set and `memory_total` =
+130,594,721,792 bytes -- bit-identical to what the CPU device entry reports as
+system memory total, sourced from the CUDA runtime rather than from
+`nvidia-smi` (`docs/backends.md`'s CUDA Unified Memory Policy already commits
+the project to that source; `nvidia-smi -q -d MEMORY`'s own aggregate query
+independently confirms the reason, returning "Not Supported" for this device's
+Total/Reserved/Used/Free). A shared-memory flag on the standard, non-UVM
+`dev-dgx-spark` preset is a hardware-topology fact, not a sign that GGML's UVM
+fallback is enabled -- it is not, here.
+
+So there is no second budget to report a peak against. What is real and
+measured instead: `/usr/bin/time -v` on `omni-medium-en` (307 frames, same
+binary, same host) reports Maximum resident set size 4,071,432 kB on CPU and
+4,071,436 kB with `--accelerate` -- a 4 kB difference, i.e. no measurable host
+RSS growth from moving the codec to CUDA, because host RSS accounting does not
+count the device-mapped allocation at all. That allocation is real and bounded,
+just invisible to RSS: `nvidia-smi --query-compute-apps` (which returns real
+numbers on this box even though the aggregate query does not) shows this
+process holding 254 MiB right after load -- the CUDA context plus the 84.24 MiB
+mirrored decode-path weights -- rising to 1,167 MiB transiently while the
+codec's own compute buffers are live on the suite's largest case, then falling
+back. Total physical commitment is host RSS plus this per-process figure, both
+drawn from the identical pool `SYNTH_DEVICE_MEMORY_SHARED` names; there is no
+sense in which the GPU figure is "on top of" host RAM the way a discrete
+card's VRAM would be.
+
+### Repeated-run and resource cleanup (Validation Gate 6)
+
+`tests/public_cleanup_test.cpp`'s CUDA arm is generic across families
+(Task 8's fix round 1 made it assert the family's actual claim either way), so
+it went live for OmniVoice the moment `family_supports_explicit_backend`
+flipped -- no test code changed for this family. Twelve cycles each, a short
+"Hi." request: post-free resident floor 367,268 → 367,268 KB on CPU (+0 KB)
+and 563,632 → 563,632 KB on CUDA (+0 KB). No leak on either backend.
+
+### The positive assertion (accumulated requirement 1)
+
+The cleanup test above tolerates a forgotten backend-claim flip by design --
+a correct refusal and a silently-wrong claim are observationally identical to
+it. Two independent checks close that gap for this task specifically, both
+querying `synth_model_get_device()` directly rather than trusting `SYNTH_OK`:
+`tests/omnivoice_backend_test.cpp`'s `check_explicit_cuda` (a synthetic
+package, unit-level, asserts `device.kind == "cuda"` after an explicit CUDA
+load) and `scripts/validate-omnivoice-public.py`'s new check 14 (the real
+0.6B package, integration-level, same assertion after a real
+`synth_synthesize_to_buffer` call). Both passed.
+
+### The claim
+
+`family_supports_explicit_backend(ModelFamily::Omnivoice, SYNTH_BACKEND_CUDA)`
+returns `true` as of this task, after all of the above rather than before it
+(accumulated requirement 3): the replay runner calls `Model::load` directly and
+bypasses the public seam Task 8's refusal lives behind, so the sweep measured
+real placement on real hardware while the seam still said no. Every
+`docs/backends.md` Validation Gate this family/backend combination owes is
+now satisfied: same cases as the CPU baseline (1), tensor agreement within
+committed tolerances (2), finite correctly-shaped PCM (3), twenty cases (4),
+proven placement with latency/RTF/memory (5), and clean repeated-run cycles
+(6). Publication and the support matrix are separate, later questions.
+
 ## Adapters (stage 7.5)
 
 The CLI (`examples/cli/`) and the Python wheel are adapters over
@@ -1397,11 +1539,21 @@ to re-derive them from the sections above:
 
 ## Open Questions
 
-**Generator on CUDA.** The codec moves first, following the qwen3-tts
+~~**Generator on CUDA.** The codec moves first, following the qwen3-tts
 codec-on-CUDA precedent. Placing the generator on CUDA is claimed only if
 placement evidence proves the committed token grids bit-identical to CPU; one
 port measured CUDA-F32 token-exact and Metal-F32 at 83%, which is encouraging
-and not evidence. Stage 7 decides.
+and not evidence. Stage 7 decides.~~ **Answered 2026-08-07 by Stage 7 (see the
+Execution Backends section above): the generator does not move, and is not
+claimed to.** The codec's RVQ token selection feeds the generator's next step,
+so `docs/backends.md`'s discrete-outputs rule holds the generator and its
+whole input path on the CPU regardless of backend, the same way it always has
+-- this was never a live candidate for the CUDA-F32-token-exact test the
+question describes, because moving it would put a discrete decision's own
+input path on the accelerator. Only the codec (152 tensors, downstream of
+every sampled token rather than upstream of one) moved, and the twenty-case
+sweep held all seventeen greedy grids and both cloning grids byte-exact
+against the CPU baseline.
 
 **Quantized profiles against the argmax cascade.** ~~Whether any profile below
 F32 survives the exact-token gates is an open measurement, not an

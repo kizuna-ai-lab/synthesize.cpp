@@ -1,6 +1,6 @@
 # Execution Backend Policy
 
-Status: Confirmed, last updated on 2026-07-29.
+Status: Confirmed, last updated on 2026-08-07.
 
 ## Shared Inference Graph
 
@@ -105,18 +105,39 @@ so its cost is per family and has to be measured rather than assumed:
 | --- | --- | --- | --- | --- |
 | Kokoro | PL-BERT, duration predictor | 89.2 of 352.8 MB | 1.5 s → 2.9 s, +95 % | 3.2× real time |
 | VITS | text encoder, duration predictor | 27.5 of 113.2 MB | 1.09 s → 1.39 s, +29 % | 7.6× real time |
+| OmniVoice | the whole generator (mask-predict denoising, every step) | 84.24 of 3042.2 MiB | 267.30 s → 258.48 s, −3.4 % (719-frame case) | 8.99× real time |
 
 Kokoro is the more expensive of the two because its LSTMs are unrolled in the
 graph, so the duration stage is 26,916 nodes and all of it moves. VITS is cheaper
 because its discrete path is one graph and the HiFi-GAN decoder, which dominates,
 never leaves the primary backend.
 
-The mechanism generalizes and the second family needed no rework: identify the
+The mechanism generalizes, and the second family needed no rework: identify the
 weight groups the discrete path reads, mirror them, give any group a second view
 when a continuous stage reads the same tensors from the primary buffer, and switch
-that stage's scheduler. For an autoregressive codec language model, where every
-sampled token feeds the next step, the held portion would be most of the model,
-and that trade has to be measured before such a family is accepted.
+that stage's scheduler. OmniVoice (Plan 4 Task 11) is the case this section used to
+describe only as a prediction -- "an autoregressive [decision loop] where every
+sampled token feeds the next step, the held portion would be most of the model" --
+and the table row above is what that measured to. It also runs the mechanism
+**inverted** from Kokoro and VITS, which is worth stating plainly rather than
+letting the shared column headers imply a shared direction: for Kokoro and VITS,
+primary is the accelerator and the discrete stage's weights get a second,
+CPU-resident copy so the hold is enforceable without a five-times-slower mixed
+scheduler. For OmniVoice, primary is CPU -- the discrete decision (the codec's own
+RVQ token selection, drawn once per generator step and fed back into the next one)
+means the *generator* is what is held, and it was already CPU-only before this
+task, by construction, not by a new mirroring decision. What Task 11 mirrors is the
+other direction: 152 codec-decoder tensors (84.24 of the model's 3042.2 MiB) get a
+second, accelerator-resident copy so the codec's own decode -- the one stage
+downstream of every sampled token rather than upstream of one -- can leave the CPU.
+So "Cost" reads as a saving here, not a tax: moving the free 1.6 percent of wall
+time (the codec, on the suite's longest case) off the CPU is a small net win
+precisely because the held majority dominates, which is the reverse of Kokoro and
+VITS's shape, where holding a minority off the accelerator was the expensive part.
+Twenty golden cases at `--accelerate`: every one of 8,440 codec nodes left the CPU
+and every one of 880,032 generator nodes did not, and all seventeen greedy cases'
+token grids stayed byte-exact against the CPU baseline -- full figures in
+`docs/porting/families/omnivoice.md`'s Execution Backends section.
 
 ## Operator Choice Is Part Of The Backend Contract
 

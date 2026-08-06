@@ -844,6 +844,36 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     # and in reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md instead
     # of as a failing gate here.
 
+    # Plan 4 Task 11's CUDA sweep, same manifest and sentinel as the CPU gate
+    # above -- only the requested backend and the tolerance cell it checks
+    # against change. --accelerate moves the codec's decode graph onto the
+    # primary CUDA device (Task 9's accelerator twin) while the generator and
+    # its whole input path stay on the CPU (docs/backends.md's discrete-
+    # outputs rule); the validator's own placement check fails the gate if
+    # either half lands wrong, and its exact-token arm is unaffected by
+    # --accelerate -- the generator never moves, so the seventeen greedy
+    # grids and both cloning grids owe the same byte-exact match the CPU gate
+    # does. Same TIMEOUT rationale as the CPU gate: the held generator is
+    # what dominates wall time here (docs/porting/families/omnivoice.md's
+    # Execution Backends section measured the codec at 1.6 percent of it on
+    # the suite's longest case), so this sweep costs about what the CPU one
+    # does rather than benefiting from the accelerator.
+    if(SYNTH_CUDA AND EXISTS "${SYNTH_OMNIVOICE_TEST_MODEL}" AND EXISTS "${_synth_omnivoice_golden_sentinel}")
+        add_test(
+            NAME synthesize-omnivoice-replay-golden-cuda
+            COMMAND ${SYNTH_UV_EXECUTABLE} run
+                --project ${CMAKE_SOURCE_DIR}/scripts/envs/omnivoice
+                --locked python ${CMAKE_SOURCE_DIR}/scripts/validate-omnivoice-replay.py
+                --manifest ${CMAKE_SOURCE_DIR}/tests/golden/omnivoice/omnivoice-0-6b.manifest.json
+                --model ${SYNTH_OMNIVOICE_TEST_MODEL}
+                --runner $<TARGET_FILE:synthesize-omnivoice-replay-real>
+                --accelerate --check --profile F32 --backend CUDA --stage replay)
+        set_tests_properties(synthesize-omnivoice-replay-golden-cuda PROPERTIES
+            LABELS "integration;omnivoice;golden;cuda"
+            TIMEOUT 14400
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    endif()
+
     # OmniVoice's public-request validator needs no oracle payload -- it
     # asserts relations between runs of this port's public seam (seed echo,
     # same-seed byte identity, cross-seed artifact_differs), not agreement
@@ -860,6 +890,26 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                 --profile F32 --backend cpu)
         set_tests_properties(synthesize-omnivoice-public-request PROPERTIES
             LABELS "integration;omnivoice;abi"
+            TIMEOUT 1800
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    endif()
+
+    # Plan 4 Task 11: the same public-request relations driven with
+    # --backend cuda, now that tests/omnivoice_public_real.c actually forwards
+    # it (accumulated requirement 2 -- before this task the flag reached only
+    # the report dict). Check 14 (this stage's own positive assertion,
+    # accumulated requirement 1) only runs in this CUDA arm.
+    if(SYNTH_CUDA AND EXISTS "${SYNTH_OMNIVOICE_TEST_MODEL}")
+        add_test(
+            NAME synthesize-omnivoice-public-request-cuda
+            COMMAND ${SYNTH_UV_EXECUTABLE} run
+                --project ${CMAKE_SOURCE_DIR}/scripts/envs/omnivoice
+                --locked python ${CMAKE_SOURCE_DIR}/scripts/validate-omnivoice-public.py
+                --model ${SYNTH_OMNIVOICE_TEST_MODEL}
+                --runner $<TARGET_FILE:synthesize-omnivoice-public-real>
+                --profile F32 --backend cuda)
+        set_tests_properties(synthesize-omnivoice-public-request-cuda PROPERTIES
+            LABELS "integration;omnivoice;abi;cuda"
             TIMEOUT 1800
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
     endif()

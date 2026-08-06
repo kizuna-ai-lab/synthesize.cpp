@@ -47,6 +47,13 @@ golden case's own pinned instruct:
     profile at all: the instruct conditions the output rather than being
     silently ignored.
 
+A fourteenth, CUDA-only (Plan 4 Task 11):
+
+14. `--backend cuda`: `synth_model_get_device` reports "cuda" after the load
+    that check 1's run made -- the positive assertion accumulated requirement
+    1 asks for, since the public-cleanup test cannot tell a forgotten
+    backend-claim flip from a correct refusal by itself.
+
 The public phase claims relations only -- it does not compare against the
 oracle's own clone or design waveform (that is the replay gate's job, gated
 by an uncommitted oracle payload) -- and the free-running greedy grid claim
@@ -164,12 +171,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--report", type=pathlib.Path, default=None)
     # The Quantization Profile and Execution Backend this run covers, recorded
     # rather than inferred: the tolerance grid is keyed on them, and a run
-    # that does not say which cell it filled cannot fill one. "cuda" is
-    # accepted (Plan 4 Task 10) so a future report can name the cell Task 11's
-    # sweep fills; the runner behind this validator (tests/omnivoice_public_
-    # real.cpp) has no backend selector of its own yet, unlike qwen3-tts's --
-    # this flag is metadata for the report only, same as --profile, not a
-    # request forwarded to the runner's command line.
+    # that does not say which cell it filled cannot fill one. Plan 4 Task 11
+    # makes this a real request rather than report metadata: the runner
+    # (tests/omnivoice_public_real.c) now carries the same [cpu|cuda]
+    # positional qwen3-tts's driver always had (accumulated requirement 2 --
+    # an accepted-but-ignored flag here would give the CUDA sweep a false
+    # green, since every check below would still have been driven by a CPU
+    # run).
     parser.add_argument("--profile", default="F32")
     parser.add_argument("--backend", default="cpu", choices=("cpu", "cuda"))
     return parser.parse_args()
@@ -180,11 +188,13 @@ def synthesize(arguments: argparse.Namespace, name: str, language: str | None, s
               instruct: str | None = None) -> dict | None:
     target = arguments.work / f"{name}.pcm"
     target.parent.mkdir(parents=True, exist_ok=True)
-    # <model.gguf> <out.pcm> <language-tag|-> <seed|random>; no voice-id
-    # positional (the Preset Voice Catalog is empty) and no backend selector
-    # (this family's only backend is CPU) -- see tests/omnivoice_public_real.c.
+    # <model.gguf> <out.pcm> <language-tag|-> <seed|random> [max-frames] [cpu|cuda];
+    # no voice-id positional (the Preset Voice Catalog is empty) -- see
+    # tests/omnivoice_public_real.c. max-frames is pinned to "0" (the
+    # runner's own "keep the request default" value) purely to hold the
+    # backend selector's slot open at positional 5.
     command = [str(arguments.runner), str(arguments.model), str(target), language if language is not None else "-",
-               seed]
+               seed, "0", arguments.backend]
     if reference_f32 is not None:
         command += ["--reference", str(reference_f32), "--transcript", transcript]
     if instruct is not None:
@@ -372,6 +382,23 @@ def main() -> int:
         design_a["digest"] != design_no_profile["digest"],
         f"design {design_a['digest'][:16]} vs no-profile {design_no_profile['digest'][:16]}",
     )
+
+    # Check 14 (Plan 4 Task 11, CUDA only): accumulated requirement 1's
+    # positive assertion. The public-cleanup test tolerates a forgotten
+    # backend-claim flip -- a correct refusal (SYNTH_ERR_BACKEND before the
+    # flip) and a claim that silently loaded onto the wrong device are not
+    # distinguishable from a passing test alone -- so this run has to ask the
+    # loaded model directly what device it landed on rather than trusting
+    # that requesting CUDA and getting SYNTH_OK back means CUDA ran.
+    # CPU-backend runs skip it: "resolved_device is cpu" is not a claim this
+    # family needs proving, and running the check unconditionally would give
+    # it the same weight for a request that never asked for the accelerator.
+    if arguments.backend == "cuda":
+        record(
+            "resolved_device reports cuda after a successful CUDA-backend load",
+            seed0a.get("resolved_device") == "cuda",
+            f"requested cuda, synth_model_get_device reported {seed0a.get('resolved_device')!r}",
+        )
 
     if arguments.report is not None:
         arguments.report.parent.mkdir(parents=True, exist_ok=True)

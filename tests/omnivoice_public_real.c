@@ -13,11 +13,22 @@
  *
  * An adapter, not a test: it asserts nothing and prints what it observed.
  * The relations and their meaning live in scripts/validate-omnivoice-public.py.
- * Transcribed from tests/qwen3_tts_public_real.c, with two differences that
- * follow directly from this family's shape: no voice-id positional (the
+ * Transcribed from tests/qwen3_tts_public_real.c, with one difference that
+ * follows directly from this family's shape: no voice-id positional (the
  * Preset Voice Catalog is empty and the package default is unnamed
- * auto-voice) and no backend selector (Plan 2's placement note: every graph
- * in this family runs on the CPU).
+ * auto-voice).
+ *
+ * Plan 4 Task 11 adds the optional `[cpu|cuda]` backend positional
+ * qwen3-tts's own driver already carries. Before this, `--backend cuda` on
+ * scripts/validate-omnivoice-public.py was accepted but INERT: the flag
+ * landed in the report dict and never reached this process, so a CUDA claim
+ * could report a false green against a run that was actually CPU the whole
+ * time. `resolved_device` in the printed JSON is this driver's own positive
+ * assertion (accumulated requirement 1): a forgotten backend-claim flip and a
+ * correct refusal both leave `synth_model_load` failing the same way, so
+ * nothing downstream of a successful load can tell them apart by absence
+ * alone -- the field says what `synth_model_get_device` reports AFTER a
+ * successful load actually happened, not merely that one was requested.
  */
 
 #include "synthesize.h"
@@ -123,7 +134,7 @@ int main(int argc, char ** argv) {
     }
     if (positional_count < 4) {
         fprintf(stderr,
-                "usage: %s <model.gguf> <out.pcm> <language-tag|-> <seed|random> [max-frames] [threads] "
+                "usage: %s <model.gguf> <out.pcm> <language-tag|-> <seed|random> [max-frames] [cpu|cuda] [threads] "
                 "[--reference <pcm.f32> --transcript <text>] [--instruct <text>]\n",
                 argv[0]);
         return 2;
@@ -147,11 +158,24 @@ int main(int argc, char ** argv) {
     const size_t text_size = fread(text, 1, sizeof text - 1, stdin);
     text[text_size]        = '\0';
 
-    /* No backend selector: this family has no accelerator path yet (see the
-     * placement note at the top of src/arch/omnivoice/model.cpp), so the
-     * default the params initializer chooses is the only one there is. */
+    /* Selected through the public enum, mirroring qwen3-tts's own driver
+     * (tests/qwen3_tts_public_real.c): this phase validates the seam a
+     * caller actually has, so which device the core resolves CUDA to is
+     * part of what is under test. Defaults to "cpu" so every pre-Task-11
+     * caller of this positional slot -- there were none, since it did not
+     * exist -- and every caller that still omits it keeps the old behavior. */
+    const char * backend_text = positional_count > 5 ? positional[5] : "cpu";
+
     synth_model_load_params_t load_params;
     synth_model_load_params_init(&load_params, sizeof load_params);
+    if (strcmp(backend_text, "cuda") == 0) {
+        load_params.backend = SYNTH_BACKEND_CUDA;
+    } else if (strcmp(backend_text, "cpu") == 0) {
+        load_params.backend = SYNTH_BACKEND_CPU;
+    } else {
+        fprintf(stderr, "unknown backend %s\n", backend_text);
+        return 2;
+    }
 
     const double    load_started = now_seconds();
     synth_model_t * model        = NULL;
@@ -159,6 +183,28 @@ int main(int argc, char ** argv) {
     const double    load_seconds = now_seconds() - load_started;
     if (status != SYNTH_OK) {
         fprintf(stderr, "load -> %d\n", (int) status);
+        return 1;
+    }
+
+    /* Accumulated requirement 1 (Plan 4 progress.md): the amended cleanup
+     * test tolerates a forgotten backend-claim flip, because a correct
+     * refusal and a forgotten flip both leave `synth_model_load` failing the
+     * same way. Nothing downstream of THIS load succeeding can be trusted to
+     * prove the claim by itself, so this driver asks the model directly what
+     * device it actually landed on and prints it unconditionally --
+     * `resolved_device` is not a diagnostic, it is the assertion. A caller
+     * that requested "cuda" and gets back "cpu" here has found the exact bug
+     * this requirement exists to catch. `memory_total`/`memory_shared` ride
+     * along because they are this same query's other two fields and because
+     * they are this family's own answer to the UMA peak-memory question
+     * (docs/c-interface.md's SYNTH_DEVICE_MEMORY_SHARED, not nvidia-smi,
+     * which the Interface deliberately never parses). */
+    synth_backend_device_t resolved_device;
+    synth_backend_device_init(&resolved_device, sizeof resolved_device);
+    status = synth_model_get_device(model, &resolved_device);
+    if (status != SYNTH_OK) {
+        fprintf(stderr, "get_device -> %d\n", (int) status);
+        synth_model_free(model);
         return 1;
     }
 
@@ -239,9 +285,11 @@ int main(int argc, char ** argv) {
     }
 
     /* 0 keeps whatever the context chose for itself, which is what an
-     * embedder that never calls the setter gets. */
-    if (positional_count > 5) {
-        status = synth_context_set_threads(context, (int32_t) strtol(positional[5], NULL, 10));
+     * embedder that never calls the setter gets. Positional 6, after the new
+     * [cpu|cuda] slot at 5 -- qwen3-tts's own driver orders them the same way
+     * (max-frames, backend, threads). */
+    if (positional_count > 6) {
+        status = synth_context_set_threads(context, (int32_t) strtol(positional[6], NULL, 10));
         if (status != SYNTH_OK) {
             fprintf(stderr, "set_threads -> %d\n", (int) status);
             synth_context_free(context);
@@ -311,11 +359,14 @@ int main(int argc, char ** argv) {
     printf(
         "{\"status\": %d, \"frames\": %llu, \"sample_rate\": %u, \"actual_seed\": \"%llu\", "
         "\"load_seconds\": %.4f, \"synthesis_seconds\": %.4f, \"threads\": %d, "
-        "\"resolved_language\": \"%.*s\"}\n",
+        "\"resolved_language\": \"%.*s\", \"resolved_device\": \"%s\", "
+        "\"device_memory_total\": %llu, \"device_memory_shared\": %s}\n",
         (int) status, (unsigned long long) audio->frame_count, audio->sample_rate,
         (unsigned long long) result.actual_seed, load_seconds, synthesis_seconds, (int) threads_used,
         (int) result.resolved_language_tag_size,
-        result.resolved_language_tag == NULL ? "" : result.resolved_language_tag);
+        result.resolved_language_tag == NULL ? "" : result.resolved_language_tag,
+        resolved_device.kind == NULL ? "" : resolved_device.kind, (unsigned long long) resolved_device.memory_total,
+        (resolved_device.flags & SYNTH_DEVICE_MEMORY_SHARED) != 0 ? "true" : "false");
 
     synth_audio_buffer_free(audio);
     synth_context_free(context);

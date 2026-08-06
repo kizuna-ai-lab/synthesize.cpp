@@ -33,17 +33,25 @@ enum class ModelFamily {
 // work on CPU, so AUTO is accepted before this function is ever reached rather
 // than by adding a case here.
 //
-// OmniVoice is CPU-only until Task 11 lands its CUDA codec path. Task 9 (Plan
-// 4) already gave the codec's decode path an accelerator twin
-// (src/arch/omnivoice/model.cpp's `Model::Impl::codec_context`), but that twin
-// is only ever built when `BackendPlan::primary()` is not the CPU backend --
-// and nothing here yet resolves a non-CPU primary for this family, since this
-// function still returns false for `Omnivoice`/`SYNTH_BACKEND_CUDA` below.
-// The twin therefore stays null and every graph still runs on
-// `create_cpu_scheduler` over CPU-resident weights; an explicit CUDA request
-// against an OmniVoice package must be refused here rather than silently
-// placing weights on CPU while `synth_model_get_device` reports CUDA. VITS,
-// Kokoro, and Qwen3-TTS already place real graph work on CUDA
+// OmniVoice claims CUDA as of Plan 4 Task 11, AFTER the evidence rather than
+// before it (accumulated requirement 3): the replay runner
+// (tests/omnivoice_replay_real.cpp) calls Model::load directly and bypasses
+// this seam entirely, so the sweep measured real placement on the actual GB10
+// device while this function still said false. Task 9 gave the codec's
+// decode path an accelerator twin (src/arch/omnivoice/model.cpp's
+// `Model::Impl::codec_context`), built whenever `BackendPlan::primary()` is
+// not the CPU backend; Task 10 taught the runner and the validator to check
+// where the nodes actually landed; Task 11 is the sweep itself. Twenty golden
+// cases, `--accelerate`: every codec node (8,440 of 8,440 across the suite)
+// left the CPU, every generator node (880,032 of 880,032) did not, and the
+// seventeen greedy cases' token grids stayed byte-exact against the CPU
+// baseline -- docs/backends.md's discrete-outputs rule holding under TF32
+// exactly as it must, since the generator is what draws the codes and it
+// never moved. Only the codec's own waveform shows CUDA's TF32 arithmetic
+// (tests/tolerances/omnivoice.json's `backends.CUDA` cell). Full figures:
+// docs/porting/families/omnivoice.md's Execution Backends section.
+//
+// VITS, Kokoro, and Qwen3-TTS already place real graph work on CUDA
 // (docs/backends.md) and keep exactly that.
 //
 // CPU_ACCEL keeps CPU as the primary backend and only adds optional
@@ -61,7 +69,7 @@ inline bool family_supports_explicit_backend(ModelFamily family, synth_backend_r
         case SYNTH_BACKEND_CPU_ACCEL:
             return true;
         case SYNTH_BACKEND_CUDA:
-            return family != ModelFamily::Omnivoice;
+            return true;
         default:
             return false;
     }

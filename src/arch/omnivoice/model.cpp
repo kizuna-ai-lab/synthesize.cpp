@@ -6,13 +6,23 @@
 // catalog and the frontend meet, and it is worth closing on the real package
 // before any graph exists to blame a wrong number on.
 //
-// Placement: everything is CPU. This family's canvas is a table of sampled
-// codes, so docs/backends.md's discrete-output rule holds the generator and its
-// whole input path on the CPU; the codec reads a committed grid and could move,
-// but Plan 2 has no measurement to move it on, so it runs on the CPU scheduler
-// like everything else. The weights therefore live in one CPU buffer with no
-// accelerator twin — the seam qwen3-tts carries for its codec half arrives with
-// the stage that can use it.
+// Placement: the generator and its whole input path stay on the CPU always --
+// this family's canvas is a table of sampled codes, and docs/backends.md's
+// discrete-outputs rule holds the generator and everything feeding it there on
+// every Execution Backend. The clone-encode chain (reference-encoder-host.cpp)
+// stays on the CPU too, unconditionally: its own output is continuous, but
+// what reads it -- rvq_encode's host-side nearest-neighbour argmax -- is a
+// discrete decision, the same rule one step removed.
+//
+// Only the codec's DECODE half can run on an accelerator: decode_codes's
+// committed code grid is the last discrete value on that path, so
+// build_codec_decoder's RVQ-sum/fc2/DAC-decoder graph is free to move. Task 9
+// (Plan 4) adds the twin that makes that possible -- Model::Impl::codec_context
+// and codec_buffer, present only when the primary backend is not the CPU. See
+// the comment above its construction in Model::load for the exact tensor
+// groups and their byte cost, and catalog.h's build_model_weights for how the
+// catalog binds against them. With no accelerator the twin is null and every
+// path here runs exactly as Plan 2 left it.
 
 #include "arch/omnivoice/catalog.h"
 #include "arch/omnivoice/codec-host.h"
@@ -111,15 +121,14 @@ class GraphRun {
     uint64_t accelerator_nodes = 0;
 
     // `on_primary` places the graph on the primary backend rather than the CPU.
-    // NO Plan-2 caller passes it: the generator may not (its output is a
-    // sampled code, and docs/backends.md's discrete-outputs rule holds it and
-    // its whole input path on the CPU), and the codec -- the one stage that
-    // could -- takes the false default here too, because Plan 2 has no
-    // measurement to move it on. The parameter is kept as the seam stage 7
-    // needs to move a stage without reworking this class, matching the
-    // qwen3-tts precedent; that rule is what will decide which stages may ever
-    // pass true. See the placement note at the top of this file, which says the
-    // same thing about today's state.
+    // Only Model::decode_codes ever passes true, and only when a codec twin
+    // exists (Model::Impl::codec_context != nullptr): its output is the last
+    // discrete value on the decode path, so the DAC decoder graph downstream
+    // of it is free to move. The generator never passes it -- its own output
+    // is a sampled code, and docs/backends.md's discrete-outputs rule holds it
+    // and its whole input path on the CPU -- and generator_branch_forward
+    // below calls run() at the false default accordingly. See the placement
+    // note at the top of this file for the full accounting.
     synth_status_t run(ggml_tensor * output, const char * stage, int threads, bool on_primary = false) {
         if (!ok() || output == nullptr) {
             return SYNTH_ERR_INTERNAL;
@@ -200,6 +209,27 @@ class Persistent {
 void read_floats(const ggml_tensor * tensor, std::vector<float> & output) {
     output.resize(size_t(ggml_nelements(tensor)));
     ggml_backend_tensor_get(tensor, output.data(), 0, ggml_nbytes(tensor));
+}
+
+// The three name prefixes build_codec_decoder actually reads: the RVQ
+// dequantization sum, fc2, and the DAC decoder. This is deliberately narrower
+// than a blanket `codec.` prefix (qwen3-tts's own twin filter, where it is
+// correct because nothing else under `codec.` there is CPU-held) -- see
+// catalog.h's build_model_weights for the full group/byte-cost accounting and
+// why the rest of `codec.` must NOT be twinned.
+constexpr const char * kDecodePathPrefixes[] = {
+    "codec.acoustic_decoder.",
+    "codec.quantizer.",
+    "codec.fc2.",
+};
+
+bool is_decode_path_tensor(const char * name) {
+    for (const char * prefix : kDecodePathPrefixes) {
+        if (std::strncmp(name, prefix, std::strlen(prefix)) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // Which probe buffers a forward should fill; empty = no probes.
@@ -296,6 +326,15 @@ struct Model::Impl {
     ggml_context *                      weights_context = nullptr;
     std::unique_ptr<BackendPlan>        backend_plan;
     ggml_backend_buffer_t               weights_buffer = nullptr;
+    // Twins of the codec's decode path on the primary backend, present only
+    // when that is not the CPU. Every other stage has no twin: the generator's
+    // and the clone-encode chain's outputs both bottom out in a discrete
+    // decision (a sampled code; a host-side RVQ argmax), so docs/backends.md
+    // holds them and everything reading them on the CPU regardless of what the
+    // primary backend is. See catalog.h's build_model_weights and this file's
+    // placement comment for the tensor groups and byte cost.
+    ggml_context *                      codec_context  = nullptr;
+    ggml_backend_buffer_t               codec_buffer   = nullptr;
     HParams                             hparams;
     std::shared_ptr<const TextFrontend> frontend;
     ModelWeights                        weights;
@@ -303,6 +342,12 @@ struct Model::Impl {
     ~Impl() {
         if (weights_buffer != nullptr) {
             ggml_backend_buffer_free(weights_buffer);
+        }
+        if (codec_buffer != nullptr) {
+            ggml_backend_buffer_free(codec_buffer);
+        }
+        if (codec_context != nullptr) {
+            ggml_free(codec_context);
         }
         if (weights_context != nullptr) {
             ggml_free(weights_context);
@@ -833,7 +878,11 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> &      codes,
         return SYNTH_ERR_OOM;
     }
     ggml_tensor * t_codes = ggml_new_tensor_2d(inputs.context(), GGML_TYPE_I32, int64_t(frame_count), int64_t(groups));
-    if (!inputs.commit(impl.backend_plan->cpu_backend())) {
+    // On the primary backend whenever the decode graph will be, so the graph
+    // reads this leaf without a cross-backend copy -- qwen3-tts's own rule for
+    // its codec's inputs (Model::decode_codes there).
+    if (!inputs.commit(impl.codec_context != nullptr ? impl.backend_plan->primary() :
+                                                       impl.backend_plan->cpu_backend())) {
         return SYNTH_ERR_OOM;
     }
     // The committed grid is codebook-major [c * frames + t], which IS the
@@ -852,7 +901,8 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> &      codes,
         return SYNTH_ERR_INTERNAL;
     }
     const double started = now_seconds();
-    status               = run.run(wave, "omnivoice.codec", threads > 0 ? threads : default_synthesis_threads());
+    status               = run.run(wave, "omnivoice.codec", threads > 0 ? threads : default_synthesis_threads(),
+                                   impl.codec_context != nullptr);
     if (status != SYNTH_OK) {
         return status;
     }
@@ -996,7 +1046,38 @@ synth_status_t Model::load(const std::string &      path,
         if (status != SYNTH_OK) {
             return status;
         }
-        status = build_model_weights(implementation->weights_context, implementation->hparams, implementation->weights);
+        // Twins of the codec's decode path, so it can run on the primary
+        // backend while the generator and the clone-encode chain stay on the
+        // CPU. Declared before binding, because the catalog binds the decode
+        // path against them when present. Filtered to is_decode_path_tensor's
+        // three prefixes rather than every `codec.` tensor -- see this file's
+        // placement comment and catalog.h's build_model_weights for why the
+        // rest of the codec (332 tensors, ~612 MiB in this checkpoint's F32
+        // GGUF) must stay off the twin.
+        const bool split = implementation->backend_plan->primary() != implementation->backend_plan->cpu_backend();
+        if (split) {
+            ggml_init_params twin_params{};
+            twin_params.mem_size          = ggml_tensor_overhead() * 256;
+            twin_params.no_alloc          = true;
+            implementation->codec_context = ggml_init(twin_params);
+            if (implementation->codec_context == nullptr) {
+                return SYNTH_ERR_OOM;
+            }
+            for (ggml_tensor * tensor = ggml_get_first_tensor(implementation->weights_context); tensor != nullptr;
+                 tensor               = ggml_get_next_tensor(implementation->weights_context, tensor)) {
+                if (!is_decode_path_tensor(tensor->name)) {
+                    continue;
+                }
+                ggml_tensor * twin =
+                    ggml_new_tensor(implementation->codec_context, tensor->type, ggml_n_dims(tensor), tensor->ne);
+                if (twin == nullptr) {
+                    return SYNTH_ERR_OOM;
+                }
+                ggml_set_name(twin, tensor->name);
+            }
+        }
+        status = build_model_weights(implementation->weights_context, implementation->codec_context,
+                                     implementation->hparams, implementation->weights);
         if (status != SYNTH_OK) {
             return status;
         }
@@ -1031,8 +1112,9 @@ synth_status_t Model::load(const std::string &      path,
             implementation->frontend = std::shared_ptr<const TextFrontend>(std::move(frontend));
         }
 
-        // One CPU buffer, no twin; see the placement note at the top of this
-        // file.
+        // Every graph reads the package's own tensors when there is no twin,
+        // so the weights live in the CPU backend's buffer regardless of the
+        // primary; see the placement note at the top of this file.
         implementation->weights_buffer = ggml_backend_alloc_ctx_tensors(implementation->weights_context,
                                                                         implementation->backend_plan->cpu_backend());
         if (implementation->weights_buffer == nullptr) {
@@ -1042,6 +1124,26 @@ synth_status_t Model::load(const std::string &      path,
         status = stream_tensor_data(path, implementation->gguf, implementation->weights_context, "omnivoice");
         if (status != SYNTH_OK) {
             return status;
+        }
+        if (implementation->codec_context != nullptr) {
+            implementation->codec_buffer =
+                ggml_backend_alloc_ctx_tensors(implementation->codec_context, implementation->backend_plan->primary());
+            if (implementation->codec_buffer == nullptr) {
+                return SYNTH_ERR_OOM;
+            }
+            ggml_backend_buffer_set_usage(implementation->codec_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+            // Copy after streaming, so the twins carry what the package holds.
+            std::vector<unsigned char> scratch;
+            for (ggml_tensor * twin = ggml_get_first_tensor(implementation->codec_context); twin != nullptr;
+                 twin               = ggml_get_next_tensor(implementation->codec_context, twin)) {
+                const ggml_tensor * source = ggml_get_tensor(implementation->weights_context, twin->name);
+                if (source == nullptr || ggml_nbytes(source) != ggml_nbytes(twin)) {
+                    return SYNTH_ERR_GGUF;
+                }
+                scratch.resize(ggml_nbytes(source));
+                ggml_backend_tensor_get(source, scratch.data(), 0, scratch.size());
+                ggml_backend_tensor_set(twin, scratch.data(), 0, scratch.size());
+            }
         }
 
         output = std::unique_ptr<Model>(new Model(std::move(implementation)));

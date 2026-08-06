@@ -145,10 +145,13 @@ bool resample_24k_to_16k(const std::vector<float> & input, std::vector<float> & 
 // exposed from that file, which is anonymous-namespace-local to model.cpp).
 //
 // Placement is CPU-only, unconditionally: `plan.create_cpu_scheduler` is the
-// scheduler this calls, matching Model::decode_codes's own "no measurement to
-// move it" note -- cloning preparation is a once-per-request cost, not a
-// per-step one, so there is nothing here Plan 2's placement work needs to
-// revisit.
+// scheduler this calls, and always will be, regardless of what Model::load's
+// codec twin (Task 9, Plan 4) does for the decode path. This branch's own
+// output is continuous, but what reads it -- rvq_encode's host-side
+// nearest-neighbour argmax (this header, below) -- is a discrete decision, so
+// docs/backends.md's discrete-outputs rule holds the whole chain on the CPU
+// the same way it holds the generator there. catalog.h's build_model_weights
+// documents the tensor groups this reasoning keeps off the accelerator twin.
 //
 // `pcm_16k` is PRE-pad (see reference-encoder.h). `semantic_mean` receives
 // the mean over all hidden states BEFORE the stride-2 downsample -- the
@@ -187,7 +190,8 @@ synth_status_t run_semantic_branch(const BackendPlan &        plan,
 // once per cloning request.
 //
 // Placement is CPU-only, unconditionally, matching run_semantic_branch's own
-// "no measurement to move it" rule.
+// reasoning above: its weights (codec.acoustic_encoder, codec.fc) have no
+// accelerator twin either, for the same discrete-argmax reason.
 //
 // `semantic_encoder_output.size()` must be an exact multiple of
 // `hparams.semantic.hidden_size` (the frame count is inferred from that

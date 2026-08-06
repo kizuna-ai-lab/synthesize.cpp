@@ -71,7 +71,7 @@ int check_resolution(const synth::omnivoice::HParams & h, const std::vector<Entr
     Context                        context = make_context();
     synth::omnivoice::ModelWeights weights;
     populate(context.get(), entries, nullptr);
-    SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_OK);
+    SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_OK);
 
     // The count the catalog resolves and the count derived by arithmetic are two
     // independent statements of the same package, so they must agree.
@@ -129,7 +129,7 @@ int check_resolution(const synth::omnivoice::HParams & h, const std::vector<Entr
 
 int check_rejections(const synth::omnivoice::HParams & h, const std::vector<Entry> & entries) {
     synth::omnivoice::ModelWeights weights;
-    SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(nullptr, h, weights) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(nullptr, nullptr, h, weights) == SYNTH_ERR_INVALID_ARG);
 
     // Any single missing entry is a package defect. One is taken from each
     // region so a whole region cannot go unresolved unnoticed.
@@ -151,7 +151,7 @@ int check_rejections(const synth::omnivoice::HParams & h, const std::vector<Entr
             }
             return false;
         });
-        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
     }
 
     // A shape that disagrees with the declared hyper-parameters.
@@ -171,7 +171,7 @@ int check_rejections(const synth::omnivoice::HParams & h, const std::vector<Entr
             }
             return false;
         });
-        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
     }
 
     // A transposed convolution stored in a plain convolution's order. The two
@@ -187,7 +187,7 @@ int check_rejections(const synth::omnivoice::HParams & h, const std::vector<Entr
             }
             return false;
         });
-        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
     }
 
     // This profile carries the checkpoint through unchanged, so every tensor is
@@ -203,7 +203,7 @@ int check_rejections(const synth::omnivoice::HParams & h, const std::vector<Entr
             }
             return false;
         });
-        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
     }
 
     // A trailing axis the catalog does not expect, so a silently reshaped tensor
@@ -218,7 +218,7 @@ int check_rejections(const synth::omnivoice::HParams & h, const std::vector<Entr
             }
             return false;
         });
-        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
     }
 
     // A tensor nobody looks up is a tensor nobody checks. This is what would
@@ -230,7 +230,7 @@ int check_rejections(const synth::omnivoice::HParams & h, const std::vector<Entr
         populate(context.get(), entries, nullptr);
         ggml_tensor * stray = ggml_new_tensor_1d(context.get(), GGML_TYPE_F32, 4);
         ggml_set_name(stray, "codec.decoder_semantic.conv1.weight");
-        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
     }
 
     // The quantizer's width is the acoustic and semantic widths added together
@@ -242,7 +242,8 @@ int check_rejections(const synth::omnivoice::HParams & h, const std::vector<Entr
         synth::omnivoice::ModelWeights parsed;
         other.semantic.hidden_size = h.semantic.hidden_size + 16;
         populate(context.get(), entries, nullptr);
-        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), other, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), nullptr, other, parsed) ==
+                         SYNTH_ERR_GGUF);
     }
 
     // Hyper-parameters the resolver would have to index past: refused rather
@@ -253,7 +254,106 @@ int check_rejections(const synth::omnivoice::HParams & h, const std::vector<Entr
         synth::omnivoice::ModelWeights parsed;
         other.semantic.conv_kernel.pop_back();
         populate(context.get(), entries, nullptr);
-        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), other, parsed) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), nullptr, other, parsed) ==
+                         SYNTH_ERR_GGUF);
+    }
+    return 0;
+}
+
+// Task 9's own filter, restated independently here rather than reused from
+// model.cpp: the same "second, independent statement of the contract"
+// argument this file's header comment already makes about `expected_entries`
+// applies just as much to the twin's own prefix list.
+bool is_decode_path_entry(const Entry & entry) {
+    for (const char * prefix : { "codec.acoustic_decoder.", "codec.quantizer.", "codec.fc2." }) {
+        if (entry.name.rfind(prefix, 0) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The twin context: build_model_weights must bind the three movable groups
+// against it when present, and leave every other codec field bound to the
+// package -- the trap this whole task exists to avoid mirroring past.
+int check_twin_resolution(const synth::omnivoice::HParams & h, const std::vector<Entry> & entries) {
+    Context context = make_context();
+    populate(context.get(), entries, nullptr);
+
+    std::vector<Entry> twin_entries;
+    for (const Entry & entry : entries) {
+        if (is_decode_path_entry(entry)) {
+            twin_entries.push_back(entry);
+        }
+    }
+    // 59 at this synthetic package's reduced widths: 47 acoustic_decoder (2
+    // upsampling blocks, kPerDacBlock's own 21-per-block plus the 2+1+2
+    // entry/exit tensors) + 10 quantizer (2 codebooks * 5) + 2 fc2. The real
+    // package's numbers -- 110/40/2, catalog.h's own MOVABLE accounting -- are
+    // this same arithmetic at h.codec.upsampling_ratios.size() == 5 and
+    // h.audio.num_codebooks == 8.
+    SYNTH_TEST_CHECK(twin_entries.size() == 59);
+
+    Context twin = make_context();
+    populate(twin.get(), twin_entries, nullptr);
+
+    synth::omnivoice::ModelWeights weights;
+    SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), twin.get(), h, weights) == SYNTH_OK);
+
+    // The three movable groups are bound to the twin, not the package.
+    SYNTH_TEST_CHECK(weights.quantizers[0].codebook ==
+                     ggml_get_tensor(twin.get(), "codec.quantizer.quantizers.0.codebook.embed"));
+    SYNTH_TEST_CHECK(weights.quantizers[0].codebook !=
+                     ggml_get_tensor(context.get(), "codec.quantizer.quantizers.0.codebook.embed"));
+    SYNTH_TEST_CHECK(weights.fc2.weight == ggml_get_tensor(twin.get(), "codec.fc2.weight"));
+    SYNTH_TEST_CHECK(weights.fc2.weight != ggml_get_tensor(context.get(), "codec.fc2.weight"));
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight ==
+                     ggml_get_tensor(twin.get(), "codec.acoustic_decoder.conv1.weight"));
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight !=
+                     ggml_get_tensor(context.get(), "codec.acoustic_decoder.conv1.weight"));
+
+    // Every other codec field stays bound to the package: the twin never
+    // carries them, and a filter that mirrored them too -- qwen3-tts's own
+    // blanket `codec.` prefix, copied without narrowing -- would move weight
+    // the CPU-held clone-encode chain reads to an accelerator no primary-side
+    // graph shares with it.
+    SYNTH_TEST_CHECK(weights.fc.weight == ggml_get_tensor(context.get(), "codec.fc.weight"));
+    SYNTH_TEST_CHECK(weights.acoustic_encoder.conv1.weight ==
+                     ggml_get_tensor(context.get(), "codec.acoustic_encoder.conv1.weight"));
+    SYNTH_TEST_CHECK(weights.semantic_model.feat_conv[0].weight ==
+                     ggml_get_tensor(context.get(), "codec.semantic_model.feat_conv.0.conv.weight"));
+    SYNTH_TEST_CHECK(weights.encoder_semantic.conv.weight ==
+                     ggml_get_tensor(context.get(), "codec.encoder_semantic.conv.weight"));
+
+    // A twin missing one of the movable tensors is refused, the same as a
+    // missing package tensor.
+    {
+        std::vector<Entry> incomplete;
+        for (const Entry & entry : twin_entries) {
+            if (entry.name != "codec.fc2.bias") {
+                incomplete.push_back(entry);
+            }
+        }
+        Context                        broken_twin = make_context();
+        synth::omnivoice::ModelWeights parsed;
+        populate(broken_twin.get(), incomplete, nullptr);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), broken_twin.get(), h, parsed) ==
+                         SYNTH_ERR_GGUF);
+    }
+
+    // A twin whose movable tensor disagrees in shape is refused too.
+    {
+        Context                        broken_twin = make_context();
+        synth::omnivoice::ModelWeights parsed;
+        populate(broken_twin.get(), twin_entries, [](const Entry & entry, Entry & effective, ggml_type &) {
+            if (entry.name == "codec.acoustic_decoder.conv1.weight") {
+                effective.ne[0] += 1;
+                return true;
+            }
+            return false;
+        });
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), broken_twin.get(), h, parsed) ==
+                         SYNTH_ERR_GGUF);
     }
     return 0;
 }
@@ -347,7 +447,7 @@ int check_q8_mixed_resolution() {
     populate_typed(context.get(), entries);
 
     synth::omnivoice::ModelWeights weights;
-    SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_OK);
+    SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_OK);
 
     // A packed convolution kernel: its row is kernel * in_channels, flattened
     // out of the logical three-axis shape.
@@ -396,7 +496,7 @@ int check_q8_mixed_rejections() {
         Context                        context = make_context();
         synth::omnivoice::ModelWeights weights;
         populate_typed(context.get(), entries);
-        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_ERR_GGUF);
     }
 
     // A packed convolution whose row does not match kernel * in_channels.
@@ -410,7 +510,7 @@ int check_q8_mixed_rejections() {
         Context                        context = make_context();
         synth::omnivoice::ModelWeights weights;
         populate_typed(context.get(), entries);
-        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_ERR_GGUF);
     }
 
     // The generator stays exact under every profile; a halved generator
@@ -426,7 +526,7 @@ int check_q8_mixed_rejections() {
         Context                        context = make_context();
         synth::omnivoice::ModelWeights weights;
         populate_typed(context.get(), entries);
-        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_ERR_GGUF);
     }
     return 0;
 }
@@ -461,7 +561,7 @@ int check_f16_resolution() {
     populate_typed(context.get(), entries);
 
     synth::omnivoice::ModelWeights weights;
-    SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_OK);
+    SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_OK);
 
     // A MatrixWeight conv kernel: F16, native (unpacked) three-axis shape.
     SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->type == GGML_TYPE_F16);
@@ -508,7 +608,7 @@ int check_f16_rejections() {
         Context                        context = make_context();
         synth::omnivoice::ModelWeights weights;
         populate_typed(context.get(), entries);
-        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_ERR_GGUF);
     }
 
     // The generator stays exact under every profile; a halved generator
@@ -523,7 +623,7 @@ int check_f16_rejections() {
         Context                        context = make_context();
         synth::omnivoice::ModelWeights weights;
         populate_typed(context.get(), entries);
-        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_ERR_GGUF);
     }
     return 0;
 }
@@ -536,6 +636,7 @@ int main() {
 
     SYNTH_TEST_CHECK(check_resolution(h, entries) == 0);
     SYNTH_TEST_CHECK(check_rejections(h, entries) == 0);
+    SYNTH_TEST_CHECK(check_twin_resolution(h, entries) == 0);
     SYNTH_TEST_CHECK(check_real_package_count() == 0);
     SYNTH_TEST_CHECK(check_q8_mixed_resolution() == 0);
     SYNTH_TEST_CHECK(check_q8_mixed_rejections() == 0);

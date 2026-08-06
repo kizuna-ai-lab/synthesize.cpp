@@ -553,7 +553,10 @@ uint64_t expected_tensor_count(const HParams & hparams) {
            encoder_semantic;
 }
 
-synth_status_t build_model_weights(ggml_context * context, const HParams & hparams, ModelWeights & weights) {
+synth_status_t build_model_weights(ggml_context *  context,
+                                   ggml_context *  codec_context,
+                                   const HParams & hparams,
+                                   ModelWeights &  weights) {
     if (context == nullptr) {
         return SYNTH_ERR_INVALID_ARG;
     }
@@ -574,9 +577,30 @@ synth_status_t build_model_weights(ggml_context * context, const HParams & hpara
         return SYNTH_ERR_GGUF;
     }
 
+    // The twin re-resolve, when a twin context exists: ONLY the three
+    // decode-path groups (see this function's header comment for the
+    // group/byte accounting) are looked up a second time, against
+    // `codec_context` rather than `context`, which overwrites `weights`'s
+    // quantizer/fc2/acoustic_decoder pointers to point at the twins. Every
+    // other field -- fc, acoustic_encoder, semantic_model, encoder_semantic --
+    // keeps pointing at the package's own tensors in `context`, because the
+    // clone-encode chain that reads them never runs anywhere else.
+    if (codec_context != nullptr) {
+        Resolver twins(codec_context, hparams);
+        if (!resolve_quantizers(twins, hparams, weights.quantizers)) {
+            return SYNTH_ERR_GGUF;
+        }
+        twins.linear("codec.fc2", concat, hparams.codec.hidden_size, weights.fc2);
+        if (!twins.ok() || !resolve_acoustic_decoder(twins, hparams, weights.acoustic_decoder)) {
+            return SYNTH_ERR_GGUF;
+        }
+    }
+
     // A tensor nobody looked up is a tensor nobody checked, so the package is
     // swept rather than trusted. This also catches a catalog that resolved the
-    // same name twice and left another unread.
+    // same name twice and left another unread. Covers `context` alone: a twin
+    // is a placement detail and not a tensor the package carries, so it plays
+    // no part in this sweep.
     for (ggml_tensor * tensor = ggml_get_first_tensor(context); tensor != nullptr;
          tensor               = ggml_get_next_tensor(context, tensor)) {
         if (resolver.resolved().count(tensor->name) == 0) {

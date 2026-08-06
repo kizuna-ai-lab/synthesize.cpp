@@ -173,9 +173,46 @@ struct ModelWeights {
 // tensor the catalog never asked for is an error, not something to ignore,
 // because a name nobody resolves is a name nobody checked.
 //
-// Plan 1 is CPU-only, so there is no accelerator-twin context parameter yet; the
-// backends stage adds that seam once there is a placement to make.
-synth_status_t build_model_weights(ggml_context * context, const HParams & hparams, ModelWeights & weights);
+// `codec_context`, when non-null, holds same-named twins of the codec's DECODE
+// path ONLY -- not every `codec.` tensor, unlike qwen3-tts's own twin (which
+// mirrors its whole codec half because nothing else there is CPU-held).
+// Byte counts below are this checkpoint's F32 sizes, from the per-tensor
+// `bytes` field of reports/convert/omnivoice/omnivoice-0-6b-F32.json -- the
+// same file this catalog's layout comment above cites as ground truth for
+// names.
+//
+//   MOVABLE (read only by build_codec_decoder, via Model::decode_codes):
+//     codec.acoustic_decoder.*   110 tensors   77.20 MiB
+//     codec.quantizer.*           40 tensors    6.03 MiB
+//     codec.fc2.*                  2 tensors    1.00 MiB
+//                                 ---           84.24 MiB total
+//
+//   NOT MOVABLE (read only by the CPU-held clone-encode chain --
+//   reference-encoder.cpp, via reference-encoder-host.cpp):
+//     codec.acoustic_encoder.*   110 tensors  195.75 MiB
+//     codec.semantic_model.*     209 tensors  360.00 MiB
+//     codec.encoder_semantic.*    13 tensors   56.26 MiB
+//     codec.fc.*                   2 tensors    4.00 MiB
+//                                 ---          616.01 MiB total
+//
+// The NOT MOVABLE half's own output is continuous, but what reads it --
+// rvq_encode's host-side nearest-neighbour argmax (reference-encoder-host.h)
+// -- is a discrete decision, so docs/backends.md's discrete-outputs rule holds
+// that whole chain on the CPU the same as the generator. Twinning it anyway,
+// the way a filter copied from qwen3-tts's blanket `codec.` prefix would,
+// moves ~616 MiB to the primary backend that no primary-side graph ever
+// reads.
+//
+// When present, the three movable groups are resolved a SECOND time against
+// `codec_context`, which overwrites `weights`'s pointers for them to point at
+// the twins instead of the package's own tensors -- qwen3-tts's own
+// resolve-twice pattern (its catalog.cpp, build_model_weights). The sweep
+// below still covers `context` alone: a twin is a placement detail, not a
+// tensor the package carries.
+synth_status_t build_model_weights(ggml_context *  context,
+                                   ggml_context *  codec_context,
+                                   const HParams & hparams,
+                                   ModelWeights &  weights);
 
 // The number of tensors a package for these hyper-parameters must contain.
 // Exposed so a caller can size a context before resolving anything.

@@ -1033,6 +1033,13 @@ def main() -> int:
         duplicates = sorted({n for n in names if names.count(n) > 1})
         raise ConverterError(f"tensor names collide after prefixing: {duplicates}")
 
+    # Copied and pin-checked before the GGUF write below, not after: a missing
+    # or altered license file (already ruled out for existence and digest by
+    # `verify_pinned_inputs` above, but re-checked here against its own copy)
+    # must cost nothing rather than being discovered after the multi-gigabyte
+    # write that follows.
+    licenses = carry_licenses(weights, args.output, project_root, digests["codec_license"])
+
     with atomic_output_path(args.output) as staging:
         writer = GGUFWriter(str(staging), ARCH_KEY)
         add_metadata(writer, manifest, config, codec_config, tokenizer_json, gen_defaults,
@@ -1044,7 +1051,6 @@ def main() -> int:
         writer.write_tensors_to_file()
         writer.close()
 
-    licenses = carry_licenses(weights, args.output, project_root, digests["codec_license"])
     verify_gguf(args.output, conversion.outputs)
 
     by_dtype: dict[str, int] = {}

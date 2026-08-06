@@ -21,6 +21,7 @@ import sys
 import tempfile
 import unittest
 
+import numpy as np
 import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -814,6 +815,147 @@ class LicenseCarriageTests(unittest.TestCase):
             with self.assertRaises(convert.ConverterError) as caught:
                 convert.carry_licenses(root / "weights", output, Path.cwd(), "0" * 64)
             self.assertIn("LICENSE", str(caught.exception))
+
+
+class VerifyGgufShapeTests(unittest.TestCase):
+    """Carry-over item 7 (Plan 1's Task 3): `verify_gguf` must catch a shape
+    change, not merely an element-count change.
+
+    A tensor written transposed keeps the same element count -- a 2x3 array
+    and its 3x2 transpose both hold six F32 values -- so a check built on
+    `np.prod(shape) == size` cannot tell them apart. `verify_gguf` compares
+    the full GGML shape tuple instead. These tests write a real tensor
+    through `GGUFWriter`, the same object the converter itself uses, then
+    feed `verify_gguf` an `OutputTensor` that names the same tensor but
+    disagrees about its shape while agreeing about its element count.
+    """
+
+    def write_minimal_gguf(self, path: Path, name: str, array: np.ndarray) -> None:
+        writer = convert.GGUFWriter(str(path), convert.ARCH_KEY)
+        writer.add_tensor(name, array, raw_dtype=convert.GGMLQuantizationType.F32)
+        writer.write_header_to_file()
+        writer.write_kv_data_to_file()
+        writer.write_tensors_to_file()
+        writer.close()
+
+    def test_a_matching_shape_and_dtype_is_accepted(self) -> None:
+        """Positive control: proves the harness itself is sound."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.gguf"
+            array = np.arange(6, dtype=np.float32).reshape(2, 3)
+            self.write_minimal_gguf(path, "x", array)
+            outputs = [convert.OutputTensor("x", array, convert.GGMLQuantizationType.F32, "test")]
+            convert.verify_gguf(path, outputs)  # must not raise
+
+    def test_a_transposed_same_element_count_tensor_is_caught(self) -> None:
+        """The exact defect: 2x3 and 3x2 both hold six F32 values."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.gguf"
+            written = np.arange(6, dtype=np.float32).reshape(2, 3)
+            self.write_minimal_gguf(path, "x", written)
+
+            transposed = np.ascontiguousarray(written.T)  # (3, 2): same 6 elements, wrong shape
+            self.assertEqual(transposed.size, written.size, "the harness must keep counts equal")
+            outputs = [
+                convert.OutputTensor("x", transposed, convert.GGMLQuantizationType.F32, "test")
+            ]
+
+            with self.assertRaises(convert.ConverterError) as caught:
+                convert.verify_gguf(path, outputs)
+            self.assertIn("shape", str(caught.exception))
+
+    def test_an_element_count_only_check_would_have_missed_it(self) -> None:
+        """Documents why the fix matters: the pre-fix rule this replaced was
+        `int(np.prod(tensor.shape)) != output.array.size` (see
+        scripts/convert-qwen3-tts.py's `verify_gguf`, which still runs it).
+        That rule cannot distinguish the transposed tensor from the one that
+        was actually written.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.gguf"
+            written = np.arange(6, dtype=np.float32).reshape(2, 3)
+            self.write_minimal_gguf(path, "x", written)
+
+            reader = convert.GGUFReader(str(path))
+            tensor = {t.name: t for t in reader.tensors}["x"]
+            transposed = np.ascontiguousarray(written.T)
+
+            # The old, insufficient rule sees no problem:
+            self.assertEqual(int(np.prod(tensor.shape)), transposed.size)
+            # ...yet the shapes genuinely disagree, which is what the current
+            # (fixed) check in `verify_gguf` catches instead.
+            self.assertNotEqual(
+                tuple(int(d) for d in tensor.shape), tuple(reversed(transposed.shape))
+            )
+
+
+class ConverterEntryPointOrderingTests(unittest.TestCase):
+    """Carry-over item 7 (Plan 1's Task 3), step 2: a missing license must
+    cost nothing, not a multi-gigabyte GGUF write.
+
+    `main()`'s `verify_pinned_inputs` call already covers all six pinned
+    inputs -- including the codec's LICENSE -- before a single tensor is
+    read, and `carry_licenses` (the license-copy step) now runs ahead of the
+    `atomic_output_path` block too. This drives `main()` itself through its
+    real `sys.argv` seam, so it is the wiring that gets tested rather than
+    any one guard function in isolation: a future edit that reorders
+    `main()` again, or drops the license from the pinned set, would be
+    caught here without needing a full conversion to notice.
+
+    The five non-license pinned inputs are ordinary bytes, not real weights;
+    nothing downstream of `verify_pinned_inputs` is ever reached because the
+    missing license is the first fatal problem -- which is exactly the
+    property under test.
+    """
+
+    def build_weights_missing_license(self, root: Path) -> tuple[Path, dict[str, object]]:
+        """Every pinned input present and digest-matching except the license."""
+        weights = root / "weights"
+        artifacts = []
+        for pin in omnivoice_pinned_inputs.PINNED_INPUTS:
+            if pin.sha256_key == "codec_license":
+                continue  # deliberately absent
+            local = omnivoice_pinned_inputs.resolve_local(weights, pin)
+            local.parent.mkdir(parents=True, exist_ok=True)
+            payload = f"payload for {pin.sha256_key}\n".encode()
+            local.write_bytes(payload)
+            artifacts.append({
+                "role": pin.role,
+                "locator": f"https://example.invalid/resolve/rev/{pin.relative_path}",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            })
+        manifest = {"family": convert.ARCH_KEY, "source": {"artifacts": artifacts}}
+        return weights, manifest
+
+    def test_a_missing_license_fails_before_any_output_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            weights, manifest = self.build_weights_missing_license(root)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            output_path = root / "out" / "model.gguf"
+
+            argv = [
+                "convert-omnivoice.py",
+                "--manifest", str(manifest_path),
+                "--weights-dir", str(weights),
+                "--output", str(output_path),
+            ]
+            saved_argv = sys.argv
+            sys.argv = argv
+            try:
+                with self.assertRaises(convert.ConverterError) as caught:
+                    convert.main()
+            finally:
+                sys.argv = saved_argv
+
+            self.assertIn("LICENSE", str(caught.exception))
+            self.assertFalse(output_path.exists(), "the GGUF must not exist after this failure")
+            self.assertFalse(
+                output_path.parent.exists(),
+                "the output directory is only created inside atomic_output_path, which this "
+                "failure must never reach",
+            )
 
 
 class ReportShapeTests(unittest.TestCase):

@@ -99,6 +99,26 @@ QuantRole classify_codec_matrix_region(const std::vector<std::string_view> & tok
     // Three tensors are Sensitive for reasons specific to their shape or to
     // how this runtime reads them, named individually rather than folded
     // into a generic rule -- a future reader must not "fix" any of them.
+    //
+    // A caveat that applies to every *other* MatrixWeight tensor returned
+    // below, not just these three: ggml_compute_forward_im2col
+    // (ggml/src/ggml-cpu/ops.cpp, ~6369-6386) aborts on any destination type
+    // besides F16/F32, and this family's conv1d builders (codec.cpp's
+    // codec_conv1d, reference-encoder.cpp's conv1d) currently pass the
+    // weight's own type as that destination -- so all 85 conv1d-consumed
+    // MatrixWeight tensors here (the 32 acoustic_decoder + 36
+    // acoustic_encoder + 6 feat_conv.1-6 + 11 encoder_semantic convolutions;
+    // the semantic_model attention/feed-forward Linears are mul_mat directly
+    // and unaffected) abort at the first synthesis under a profile that
+    // packs them, until that is fixed. VITS and Kokoro already carry the
+    // remedy -- a packed branch that passes GGML_TYPE_F32 as im2col's
+    // destination and feeds the quantized kernel straight into mul_mat as
+    // its already-2-D operand (src/arch/vits/operations.cpp:37-43,
+    // src/arch/kokoro/operations.cpp:46-79) -- and Plan 4's Task 2 ports it
+    // into this family's two conv1d builders. This classifier still calls
+    // these tensors MatrixWeight: the role is about how a tensor is *read*
+    // (through a matrix multiply, so packing it is not incoherent), not
+    // about whether every consumer already handles a packed one.
     if (name == "codec.acoustic_encoder.conv1.weight") {
         // Reads the raw mono reference waveform, so its packed row is
         // kernel * in_channels = 7 * 1 = 7: seven elements, never a multiple
@@ -109,18 +129,31 @@ QuantRole classify_codec_matrix_region(const std::vector<std::string_view> & tok
     }
     if (name == "codec.semantic_model.feat_conv.0.conv.weight") {
         // The HuBERT feature extractor's first convolution also reads a raw
-        // single-channel waveform, so its packed row is kernel * in_channels
-        // = 10 * 1 = 10 -- again never a multiple of 32, for the same reason.
+        // single-channel waveform, so in_channels=1 is architectural here
+        // too. Its kernel width, though, is hparams.semantic.conv_kernel[0]
+        // (10 for this checkpoint) -- a hyperparameter, not an architectural
+        // constant like the encoder case above. The packed row (kernel * 1)
+        // happens not to divide 32 for this checkpoint's width; the
+        // exception is named by tensor rather than derived from that
+        // arithmetic, so a differently-configured checkpoint would not
+        // silently reclassify it. Conservative either way: packing a single
+        // narrow-input convolution buys little regardless of its kernel
+        // width.
         return QuantRole::Sensitive;
     }
     if (name == "codec.semantic_model.encoder.pos_conv_embed.conv.weight") {
         // Grouped by sixteen. reference-encoder.cpp's grouped_conv1d slices
-        // this kernel per group with ggml_view_3d, which walks the tensor's
-        // native [kernel, in, out] layout; a block-quantized or packed
-        // layout has no such view to offer it. Its packed row (128 * 48 =
-        // 6144) is itself divisible by 32, so nothing about its size would
-        // otherwise stop a future reader from "optimizing" it away -- the
-        // grouped view this runtime takes of it is the whole reason.
+        // this kernel per group with ggml_view_3d over the tensor's native
+        // [kernel, in, out] layout -- a view that is well-formed on a
+        // quantized tensor (ggml_view_impl has no type restriction here; each
+        // slice is a whole output-channel plane at an exact nb[2] multiple).
+        // The real blocker is what a block-quantized *matrix* weight is
+        // stored as once packed: a flattened 2-D [kernel * in, out] matrix
+        // with no separate in-axis left to slice per group, so
+        // grouped_conv1d has nothing 3-D to view once this tensor is packed.
+        // Its packed row (128 * 48 = 6144) is itself divisible by 32, so
+        // nothing about its size would otherwise stop a future reader from
+        // "optimizing" it away -- the grouped view is the whole reason.
         return QuantRole::Sensitive;
     }
 

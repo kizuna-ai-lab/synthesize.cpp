@@ -493,7 +493,21 @@ ggml_tensor * build_semantic_branch(ggml_context *               context,
         // tensors disagree is rejected here rather than silently running the
         // real (but undeclared) kernel width -- the same defensive class this
         // catalog already applies to every other metadata/tensor pairing.
-        if (hubert.feat_conv[index].weight->ne[0] != int64_t(s.conv_kernel[index])) {
+        //
+        // Under a profile that packs this tensor, ne[0] is
+        // kernel * in_channels rather than the kernel width alone -- the same
+        // packed-row fact semantic_encoder_res_unit's own comment above names
+        // for why THIS function derives padding from a literal instead of
+        // ne[0]. feat_conv[0] reads the raw single-channel waveform and stays
+        // Sensitive/unpacked under every profile (quantization.h), so
+        // `in_channels` is 1 there regardless of what this loop computes for
+        // it; every later index's in_channels is the previous layer's own
+        // width.
+        const int64_t feat_conv_in_channels = index == 0 ? 1 : int64_t(s.conv_dim[index - 1]);
+        const bool    feat_conv_packed      = ggml_is_quantized(hubert.feat_conv[index].weight->type);
+        const int64_t feat_conv_expected_shape =
+            feat_conv_packed ? int64_t(s.conv_kernel[index]) * feat_conv_in_channels : int64_t(s.conv_kernel[index]);
+        if (hubert.feat_conv[index].weight->ne[0] != feat_conv_expected_shape) {
             return nullptr;
         }
         hidden = conv1d(context, hidden, hubert.feat_conv[index], int(s.conv_stride[index]), 0, 1);

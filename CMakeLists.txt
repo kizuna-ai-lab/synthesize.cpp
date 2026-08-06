@@ -132,6 +132,13 @@ set(SYNTH_QWEN3_TTS_TEST_MODEL
 # generator and the codec halves, so it is the package a port is checked against.
 set(SYNTH_OMNIVOICE_TEST_MODEL "${CMAKE_SOURCE_DIR}/models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf"
     CACHE FILEPATH "Local OmniVoice F32 GGUF used by integration tests")
+# Q8_MIXED is this family's codec-only Quantization Profile (Plan 4 Task 3):
+# every generator tensor and the RVQ stay at the reference dtype regardless
+# (src/arch/omnivoice/quantization.h), so only the codec's own matrix weights
+# differ from the F32 package above.
+set(SYNTH_OMNIVOICE_Q8_MIXED_TEST_MODEL
+    "${CMAKE_SOURCE_DIR}/models/omnivoice-0-6b/omnivoice-0-6b-Q8_MIXED.gguf"
+    CACHE FILEPATH "Local OmniVoice Q8_MIXED GGUF used by integration tests")
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/SynthesizeReleaseCudaPolicy.cmake)
 synth_validate_release_cuda_targets()

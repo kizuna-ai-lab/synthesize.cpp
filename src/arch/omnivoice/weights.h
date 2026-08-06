@@ -10,10 +10,14 @@ struct gguf_context;
 
 namespace synth::omnivoice {
 
-// Plan 1 carries the source profile only; quantization profiles are a stage-6
-// decision and extend this enum then.
+// F32 is the source profile: the checkpoint stores both halves in it, and the
+// converter never produces anything else. Q8Mixed is Plan 4's codec-only
+// Quantization Profile -- every generator tensor and the RVQ stay at F32
+// regardless (src/arch/omnivoice/quantization.h's QuantRole), so this enum
+// governs the codec's own matrix weights only.
 enum class QuantizationProfile : uint32_t {
     F32,
+    Q8Mixed,
 };
 
 // The mask-predict generator: a Qwen3 block stack run bidirectionally over the

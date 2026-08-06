@@ -253,6 +253,18 @@ int run_valid_package() {
     return 0;
 }
 
+// A package cut to the codec-only Quantization Profile is read the same as
+// any other, its profile string just resolving to a different enumerator.
+int run_quantization_profile_acceptance() {
+    GgufContext context = valid_metadata();
+    SYNTH_TEST_CHECK(context != nullptr);
+    gguf_set_val_str(context.get(), "synthesize.quantization.profile", "Q8_MIXED");
+    synth::omnivoice::HParams hparams;
+    SYNTH_TEST_CHECK(synth::omnivoice::read_hparams(context.get(), hparams) == SYNTH_OK);
+    SYNTH_TEST_CHECK(hparams.quantization_profile == synth::omnivoice::QuantizationProfile::Q8Mixed);
+    return 0;
+}
+
 int run_identity_rejections() {
     SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "general.architecture", "qwen3-tts"); },
                                      "another family's package is not this family's") == 0);
@@ -268,6 +280,7 @@ int run_identity_rejections() {
 
     // F32 is this family's only source profile: the checkpoint stores F32
     // throughout, so a BF16 package would describe weights that never existed.
+    // Q8_MIXED is Plan 4's codec-only Quantization Profile and is accepted.
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "synthesize.quantization.profile", "BF16"); },
                         "BF16 is not a profile this family cuts") == 0);
@@ -665,6 +678,7 @@ int main() {
     synth::omnivoice::HParams hparams;
     SYNTH_TEST_CHECK(synth::omnivoice::read_hparams(nullptr, hparams) == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(run_valid_package() == 0);
+    SYNTH_TEST_CHECK(run_quantization_profile_acceptance() == 0);
     SYNTH_TEST_CHECK(run_identity_rejections() == 0);
     SYNTH_TEST_CHECK(run_capability_rejections() == 0);
     SYNTH_TEST_CHECK(run_generation_rejections() == 0);

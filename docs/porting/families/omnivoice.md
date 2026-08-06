@@ -881,6 +881,183 @@ reference dtype — the consensus of the two reusable ports and of this project'
 own qwen3-tts and Kokoro policy. Profiles are measured for this family, not
 inherited.
 
+### Q8_MIXED (Plan 4 Task 3): codec-only, and BLOCKED on the exact-token gate
+
+By jiangzhuo's ruling of 2026-08-06, this family's Quantization Profile is
+codec-only: every generator tensor (`llm.*`, `audio_embeddings.weight`,
+`audio_heads.weight`) and the RVQ (`codec.quantizer.*`, `codec.fc`,
+`codec.fc2`) stay at the reference dtype regardless of shape, for the reason
+this section's opening paragraph already states. `src/arch/omnivoice/
+quantization.h`'s `QuantRole` is the single classifier the offline quantizer
+(`tools/synthesize-quantize`) and the runtime catalog (`catalog.cpp`) both
+read, so an offline packing decision and a load-time expectation cannot
+drift. The profile is named `Q8_MIXED`, not a family-specific name: the
+quantizer's profile table (`tools/synthesize-quantize/policy.cpp:14-24`) is
+shared across every family, and each family's own `resolve_<family>_target_spec`
+function is what makes "Q8_MIXED" mean something different per family —
+exactly as it already does for VITS, Kokoro and Qwen3-TTS. There is no
+family-specific name to invent.
+
+**Package.** Produced from the committed `omnivoice-0-6b-F32.gguf`
+(sha256 `f6d504ff…f9fa3`) with `synthesize-quantize INPUT OUTPUT --quant
+Q8_MIXED`: `omnivoice-0-6b-Q8_MIXED.gguf`, sha256
+`b020933f…4b671e`, 2,703,016,576 bytes (2577.8 MiB) against the source's
+3,189,953,504 bytes (3042.2 MiB) — a 15.3% reduction. 158 of 798 tensors
+quantize to Q8_0; the tensor-data byte total (excluding GGUF header/padding
+overhead) moves from 3,184,565,636 to 2,697,629,938 bytes, group by group:
+
+| Group | F32 bytes | Q8_MIXED bytes | Tensors | Q8_0'd |
+| --- | ---: | ---: | ---: | --- |
+| generator (`llm.*`, audio tables) | 2,450,309,120 | 2,450,309,120 | 312 | none (Sensitive) |
+| `codec.quantizer` + `fc`/`fc2` | 11,574,272 | 11,574,272 | 44 | none (Sensitive) |
+| `codec.acoustic_decoder` | 80,952,452 | 50,943,986 | 110 | most matrix weights |
+| `codec.acoustic_encoder` | 205,257,984 | 54,617,344 | 110 | most matrix weights |
+| `codec.semantic_model` (HuBERT) | 377,483,264 | 114,511,872 | 209 | most Linears/convs |
+| `codec.encoder_semantic` | 58,988,544 | 15,673,344 | 13 | most convs |
+
+**A load-path bug found and fixed, orthogonal to the gate result below.**
+`build_semantic_branch`'s own cross-check that a `feat_conv[index]` tensor's
+`ne[0]` agrees with the package's declared `conv_kernel[index]`
+(`src/arch/omnivoice/reference-encoder.cpp`) compared the tensor's raw
+`ne[0]` against the bare kernel width unconditionally. That is only
+`feat_conv[index]`'s real row when the tensor is unpacked; once Q8_MIXED
+packs `feat_conv[1..6]` (every feat_conv but index 0, which reads the raw
+single-channel waveform and stays Sensitive), `ne[0]` becomes
+`kernel * in_channels` — 1536 for `feat_conv[1]` on this checkpoint
+(kernel 3 × HuBERT's 512-wide `conv_dim[0]`), never 3 — so the unfixed check
+refused the packed package outright: `Model::encode_reference` returned
+`SYNTH_ERR_INTERNAL` for every request, silently, with exit code 0. Task 2's
+own packed-conv work (`conv1d` in this same file) already carried the correct
+packed dispatch for the *convolution itself*; this ONE cross-check, a
+redundant defense against a mismatched package, was the one spot it missed —
+caught only because a first pass at this task's own replay run reused the
+F32 run's `--work` directory and returned suspiciously bit-identical
+`ref.semantic_mean`/`ref.fused_latent` figures under a profile that should
+have perturbed them, which is what prompted checking the runner's own stderr
+directly. Fixed by deriving the expected shape from whether the tensor is
+`ggml_is_quantized`, exactly `catalog.cpp`'s own packed-shape acceptance
+logic; regression-tested by `omnivoice_reference_encoder_test.cpp`'s new
+`check_packed_feat_conv1`, which builds `feat_conv[1]` both ways from
+identical raw weights (mirroring `check_packed_encoder_semantic_conv`'s own
+pattern for `encoder_semantic.conv`, the tensor that pattern already covered
+and which is why this one slipped through) and separately asserts a
+wrong-shaped packed tensor is still refused. **This fix is independent of
+the profile decision below and should ship regardless**: a package that
+legitimately packs `feat_conv[1..6]` could not load its reference-encode path
+at all before it.
+
+**THE GATE. FAILED.** Re-run with the fix in place,
+`scripts/validate-omnivoice-replay.py --require all --margin-report --profile
+Q8_MIXED --backend CPU --stage replay --model
+omnivoice-0-6b-Q8_MIXED.gguf`, fresh `--work` directory:
+
+```
+token grids exact: 17/17
+ref.tokens exact: 0/2
+narrowest RVQ encode gap: 0.0102997
+```
+
+The 17 greedy grids are exact — expected, and for a structural reason rather
+than luck: the entire generator and the RVQ stay F32/Sensitive under this
+profile, so the decode loop's logits are bit-for-bit identical to the F32
+package's, and every one of that run's own margins (below) reproduces the
+F32 baseline to the last measured digit. **Both clone cases' RVQ encode
+grids are NOT exact**: `omni-clone-en` and `omni-clone-zh` (which share one
+reference clip and so produce identical figures) each mismatch at **1023 of
+2808 positions (36.4%)**. This is not a knife-edge margin call the way the
+greedy screen's sub-threshold pair are — the mismatch gaps at the diverging
+positions run from 0.53 to 27.29 (RVQ nearest-neighbor distance units),
+against an F32 baseline whose narrowest best-vs-second-best gap over the
+whole clip was 0.00239563. First 20 of 1023 differing positions (both cases
+identical; codebook and frame index the same layout `ref/tokens.i32` uses):
+
+| codebook | frame | got | want | gap |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 3 | 554 | 26 | 1.5105 |
+| 0 | 7 | 841 | 554 | 2.8479 |
+| 0 | 9 | 423 | 26 | 0.7493 |
+| 0 | 23 | 719 | 364 | 1.7428 |
+| 0 | 38 | 532 | 708 | 4.1221 |
+| 0 | 54 | 554 | 835 | 3.6883 |
+| 0 | 55 | 207 | 26 | 1.1656 |
+| 0 | 57 | 555 | 846 | 17.7489 |
+| 0 | 58 | 653 | 515 | 2.4443 |
+| 0 | 59 | 87 | 619 | 0.6864 |
+| 0 | 60 | 730 | 923 | 27.2859 |
+| 0 | 62 | 923 | 555 | 11.7191 |
+| 0 | 67 | 923 | 423 | 10.9085 |
+| 0 | 70 | 569 | 459 | 7.2939 |
+| 0 | 83 | 950 | 675 | 0.5335 |
+| 0 | 87 | 389 | 644 | 19.3942 |
+| 0 | 91 | 97 | 243 | 0.6600 |
+| 0 | 102 | 389 | 872 | 4.1656 |
+| 0 | 117 | 11 | 916 | 5.2944 |
+| 0 | 125 | 423 | 26 | 0.9558 |
+
+The generator probes reproduce the F32 baseline exactly (structural, not
+approximate); the codec-side probes that go through the quantized
+`semantic_model`/`acoustic_encoder` move by orders of magnitude —
+`ref.semantic_mean` max_abs 6.09e-05 → 0.342867, `ref.fused_latent` max_abs
+9.32e-05 → 3.73227, `audio.pcm` min_cosine 0.99999986 → 0.99775438 — all in
+the same direction, which is why this reads as accumulated quantization noise
+through roughly 150 quantized HuBERT/DAC-encoder weights rather than a second
+isolated bug: every probe touching the quantized encoder path degrades
+together, by a similar order of magnitude, not just the one that happens to
+flip a token.
+
+**Margin protocol (carry-over item 8), old vs new.** Every greedy case's
+margin is IDENTICAL between profiles, to the measured digit — not merely
+close — because the entire generator is Sensitive/F32 under Q8_MIXED and the
+margin is a property of the generator's own logits alone, never the codec's:
+
+| case | F32 margin (baseline) | Q8_MIXED margin | kind |
+| --- | ---: | ---: | --- |
+| `omni-rate-slow` | 9.53674e-06 | 9.53674e-06 | selection |
+| `omni-fast-mode` | 6.86646e-05 | 6.86646e-05 | argmax |
+| `omni-short-en` | 1.15871e-04 | 1.15871e-04 | selection |
+| `omni-long-boundary` | 2.04682e-04 | 2.04682e-04 | selection |
+| `omni-rate-fast` | 2.44433e-04 | 2.44433e-04 | selection |
+| `omni-lang-none` | 6.03199e-04 | 6.03199e-04 | selection |
+| `omni-design-zh` | 6.40869e-04 | 6.40869e-04 | argmax |
+| `omni-medium-en` | 7.17163e-04 | 7.17163e-04 | argmax |
+| `omni-punctuation` | 8.39233e-04 | 8.39233e-04 | argmax |
+| `omni-upstream-readme` | 1.14441e-03 | 1.14441e-03 | argmax |
+| `omni-clone-en` | 1.19019e-03 | 1.19019e-03 | selection |
+| `omni-clone-zh` | 1.28174e-03 | 1.28174e-03 | selection |
+| `omni-digits` | 1.39546e-03 | 1.39546e-03 | argmax |
+| `omni-design-en` | 1.41111e-03 | 1.41111e-03 | selection |
+| `omni-nonverbal` | 1.89209e-03 | 1.89209e-03 | argmax |
+| `omni-short-zh` | 2.46429e-03 | 2.46429e-03 | selection |
+| `omni-short-ja` | 2.66457e-03 | 2.66457e-03 | selection |
+
+None of the four in-band cases predicted as likely first flips
+(`omni-short-en`, `omni-long-boundary`, `omni-rate-fast`, `omni-lang-none`)
+or `omni-rate-slow` actually flipped — the prediction assumed the failure
+mode would be a generator-side logit perturbation, and this profile cannot
+produce one by construction. The real failure is in a subsystem the greedy
+margin screen was never built to probe: the clone path's RVQ encode margin
+(diagnostic only, never gated) was **0.0102997** narrowest over the whole
+Q8_MIXED run — WIDER than the F32 baseline's 0.00239563 — yet 36.4% of
+positions still flip, because the fused latent feeding the nearest-neighbor
+search moved by orders of magnitude, not because any single decision was
+narrow. The dual-admissibility mechanism (enumerate a second oracle-produced
+grid with provenance) is built for a knife-edge single-decision flip; it has
+no natural reading for 1023 arbitrary positions with no alternate oracle run
+that would plausibly produce this exact grid.
+
+**Status: BLOCKED, not shipped.** Per this section's own opening rule, a
+profile that fails the exact-token gate is not shipped, and no perceptual
+claim substitutes for it. The choice between narrowing the profile's scope
+(e.g. excluding `codec.semantic_model`/`codec.acoustic_encoder`, which feed
+the clone-only encode path, while still quantizing `codec.acoustic_decoder`,
+which the greedy/public synthesis path alone exercises) and dropping the
+profile is jiangzhuo's and the controller's, not this task's — see Plan 4's
+own carry-over ledger for where that decision lands. No tolerance cell for
+Q8_MIXED is committed in `tests/tolerances/omnivoice.json`: the exact-token
+check is unconditional and independent of `--check`, so a tolerance cell
+would not make the grid pass and would misrepresent a blocked profile as
+measured-and-ready.
+
 ## GGML Operator Surface
 
 **The incremental operator surface is zero.** Three independent ports and this

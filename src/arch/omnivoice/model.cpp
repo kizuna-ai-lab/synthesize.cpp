@@ -327,6 +327,9 @@ synth_status_t Model::get_info(ModelInfo & output) const {
         case QuantizationProfile::F32:
             output.quantization_profile = "F32";
             break;
+        case QuantizationProfile::Q8Mixed:
+            output.quantization_profile = "Q8_MIXED";
+            break;
     }
     output.input_flags          = hparams.input_flags;
     output.capability_flags     = hparams.capability_flags;

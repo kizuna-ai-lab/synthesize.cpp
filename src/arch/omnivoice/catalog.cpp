@@ -77,6 +77,7 @@
 
 #include "arch/omnivoice/catalog.h"
 
+#include "arch/omnivoice/quantization.h"
 #include "arch/omnivoice/weights.h"
 #include "ggml.h"
 
@@ -138,9 +139,30 @@ class Resolver {
         if (tensor == nullptr) {
             return fail("missing tensor %s", name.c_str());
         }
-        if (tensor->type != expected_type()) {
+        const ggml_type want_type = expected_type(name, tensor->ne);
+        if (tensor->type != want_type) {
             return fail("tensor %s has type %s, expected %s under the %s profile", name.c_str(),
-                        ggml_type_name(tensor->type), ggml_type_name(expected_type()), profile_name());
+                        ggml_type_name(tensor->type), ggml_type_name(want_type), profile_name());
+        }
+        // A convolution kernel that a Q8_MIXED profile packed collapses its
+        // logical [kernel, in, out] shape into the flattened
+        // [kernel * in, out] a matrix multiply consumes -- the offline
+        // quantizer's own layout for a MatrixWeight tensor
+        // (tools/synthesize-quantize/quantize.cpp). Every caller here still
+        // supplies the logical three-axis shape, so a quantized tensor whose
+        // caller asked for three axes is checked against the packed row
+        // instead of axis by axis.
+        if (hparams_.quantization_profile == QuantizationProfile::Q8Mixed && ggml_is_quantized(tensor->type) &&
+            expected.size() == 3) {
+            const auto *  want   = expected.begin();
+            const int64_t packed = want[0] * want[1];
+            if (want[0] <= 0 || want[1] <= 0 || tensor->ne[0] != packed || tensor->ne[1] != want[2] ||
+                tensor->ne[2] != 1 || tensor->ne[3] != 1) {
+                return fail("tensor %s does not have the packed shape [%lld, %lld]", name.c_str(), (long long) packed,
+                            (long long) want[2]);
+            }
+            resolved_.insert(name);
+            return tensor;
         }
         size_t axis = 0;
         for (int64_t want : expected) {
@@ -210,14 +232,28 @@ class Resolver {
     }
 
   private:
-    ggml_type expected_type() const {
+    // `name`/`ne` feed classify_tensor, the same classifier the offline
+    // quantizer dispatches from (quantization.h), so an offline packing
+    // decision and this load-time expectation cannot drift apart. Every role
+    // this catalog resolves today classifies from the name alone (see that
+    // header's own comment), so `ne` matters only if a future tensor's role
+    // ever needs it.
+    ggml_type expected_type(const std::string & name, const int64_t * ne) const {
         switch (hparams_.quantization_profile) {
             case QuantizationProfile::F32:
                 // The source profile carries the checkpoint through unchanged,
-                // and both halves were already F32. A profile that halves or
-                // packs anything decides by what a tensor *is*, which is what a
-                // role argument here would carry.
+                // and both halves were already F32.
                 return GGML_TYPE_F32;
+            case QuantizationProfile::Q8Mixed:
+                // Codec-only: only a MatrixWeight tensor is ever packed.
+                // TransposeWeight and Sensitive both stay F32 -- the former
+                // for the same col2im_1d/CUDA-F16 reason VITS and Qwen3-TTS's
+                // decoder do, the latter because jiangzhuo's 2026-08-06 ruling
+                // keeps the whole generator and the RVQ exact. An Unknown role
+                // here means a catalog name the classifier does not
+                // recognise, which the type check below still catches as a
+                // mismatch against whatever the tensor actually is.
+                return classify_tensor(name, ne) == QuantRole::MatrixWeight ? GGML_TYPE_Q8_0 : GGML_TYPE_F32;
         }
         return GGML_TYPE_F32;
     }
@@ -226,6 +262,8 @@ class Resolver {
         switch (hparams_.quantization_profile) {
             case QuantizationProfile::F32:
                 return "F32";
+            case QuantizationProfile::Q8Mixed:
+                return "Q8_MIXED";
         }
         return "unknown";
     }

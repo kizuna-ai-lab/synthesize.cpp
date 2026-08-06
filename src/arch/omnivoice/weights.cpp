@@ -58,11 +58,13 @@ bool read_quantization(const GgufMetadata & meta, HParams & hparams) {
         !meta.u32("synthesize.quantization.profile_version", hparams.quantization_profile_version)) {
         return false;
     }
-    // F32 is the whole enum for now. The checkpoint stores F32 in both halves,
-    // so it is also the source profile; the quantized profiles are a stage-6
-    // decision and widen this switch when they exist.
+    // The checkpoint stores F32 in both halves, so F32 is also the source
+    // profile. Q8_MIXED is Plan 4's codec-only Quantization Profile -- see
+    // quantization.h's QuantRole for which tensors it actually touches.
     if (profile == "F32") {
         hparams.quantization_profile = QuantizationProfile::F32;
+    } else if (profile == "Q8_MIXED") {
+        hparams.quantization_profile = QuantizationProfile::Q8Mixed;
     } else {
         std::fprintf(stderr, "omnivoice: unsupported quantization profile %s\n", profile.c_str());
         return false;

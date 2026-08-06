@@ -661,9 +661,12 @@ struct PackedFixture {
 // stored either as F32 (native, [kernel, in, out]) or as the packed Q8_0
 // matrix the offline quantizer would emit for this exact shape
 // ([kernel * in, out]) -- every other tensor is F32, set from the identical
-// `raw` values on both calls.
+// `raw` values on both calls. `quantize_feat_conv1` does the same for
+// feat_conv[1].weight independently, so the two packed tensors can be
+// exercised in isolation from each other.
 bool build_packed_fixture(ggml_backend_dev_t       device,
                           bool                     quantize_conv,
+                          bool                     quantize_feat_conv1,
                           const PackedRawWeights & raw,
                           PackedFixture &          fixture) {
     fixture.backend = ggml_backend_dev_init(device, nullptr);
@@ -679,8 +682,15 @@ bool build_packed_fixture(ggml_backend_dev_t       device,
     synth::omnivoice::SemanticModelWeights & hubert = fixture.weights.semantic_model;
     hubert.feat_conv.resize(2);
     hubert.feat_conv[0].weight = ggml_new_tensor_3d(pctx, GGML_TYPE_F32, kPackedConvKernel[0], 1, kPackedConvDim[0]);
+    // feat_conv[1]: F32 native ([kernel, in, out]) or the packed Q8_0 twin
+    // ([kernel * in, out]) -- the tensor build_semantic_branch's own
+    // kernel-width cross-check (reference-encoder.cpp) has to read a packed
+    // row from, not the bare kernel width, once this profile packs it.
     hubert.feat_conv[1].weight =
-        ggml_new_tensor_3d(pctx, GGML_TYPE_F32, kPackedConvKernel[1], kPackedConvDim[0], kPackedConvDim[1]);
+        quantize_feat_conv1 ?
+            ggml_new_tensor_2d(pctx, GGML_TYPE_Q8_0, int64_t(kPackedConvKernel[1]) * kPackedConvDim[0],
+                               kPackedConvDim[1]) :
+            ggml_new_tensor_3d(pctx, GGML_TYPE_F32, kPackedConvKernel[1], kPackedConvDim[0], kPackedConvDim[1]);
     hubert.feat_conv_norm.weight          = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kPackedConvDim[0]);
     hubert.feat_conv_norm.bias            = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kPackedConvDim[0]);
     hubert.feature_projection_norm.weight = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kPackedConvDim[1]);
@@ -722,7 +732,7 @@ bool build_packed_fixture(ggml_backend_dev_t       device,
     fixture.pcm = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kPackedPcmSamples);
 
     fixture.buffer = ggml_backend_alloc_ctx_tensors(pctx, fixture.backend);
-    if (fixture.buffer == nullptr || sem_enc.conv.weight == nullptr) {
+    if (fixture.buffer == nullptr || sem_enc.conv.weight == nullptr || hubert.feat_conv[1].weight == nullptr) {
         return false;
     }
 
@@ -730,7 +740,18 @@ bool build_packed_fixture(ggml_backend_dev_t       device,
         ggml_backend_tensor_set(tensor, values.data(), 0, ggml_nbytes(tensor));
     };
     set(hubert.feat_conv[0].weight, raw.feat_conv0_weight);
-    set(hubert.feat_conv[1].weight, raw.feat_conv1_weight);
+    if (quantize_feat_conv1) {
+        std::vector<uint8_t> quantized(ggml_nbytes(hubert.feat_conv[1].weight));
+        const size_t         written =
+            ggml_quantize_chunk(GGML_TYPE_Q8_0, raw.feat_conv1_weight.data(), quantized.data(), 0, kPackedConvDim[1],
+                                int64_t(kPackedConvKernel[1]) * kPackedConvDim[0], nullptr);
+        if (written != quantized.size()) {
+            return false;
+        }
+        ggml_backend_tensor_set(hubert.feat_conv[1].weight, quantized.data(), 0, quantized.size());
+    } else {
+        set(hubert.feat_conv[1].weight, raw.feat_conv1_weight);
+    }
     set(hubert.feat_conv_norm.weight, raw.feat_conv_norm_weight);
     set(hubert.feat_conv_norm.bias, raw.feat_conv_norm_bias);
     set(hubert.feature_projection_norm.weight, raw.feature_projection_norm_weight);
@@ -782,7 +803,7 @@ int check_packed_encoder_semantic_conv() {
 
     auto run = [&](bool quantize_conv, std::vector<float> & output_values) -> bool {
         PackedFixture fixture;
-        if (!build_packed_fixture(cpu, quantize_conv, raw, fixture)) {
+        if (!build_packed_fixture(cpu, quantize_conv, false, raw, fixture)) {
             return false;
         }
         Context       graph_ctx = make_graph_context();
@@ -815,6 +836,81 @@ int check_packed_encoder_semantic_conv() {
     // e.g. tests/omnivoice_resampler_test.cpp's own comment for the same
     // rule) rather than left at a guessed round number.
     SYNTH_TEST_CHECK(worst < 0.15f);
+    return 0;
+}
+
+// Regression for Plan 4 Task 3's own finding: build_semantic_branch's
+// feat_conv/conv_kernel cross-check compared a tensor's raw ne[0] against the
+// bare declared kernel width, which is only feat_conv[index]'s actual row
+// when that tensor is unpacked. Once a Quantization Profile packs
+// feat_conv[1] (every feat_conv but index 0, which reads one input channel
+// and stays Sensitive -- src/arch/omnivoice/quantization.h), ne[0] becomes
+// kernel * in_channels, and the unfixed check refused every legitimately
+// packed package outright -- caught only by a real Q8_MIXED package's own
+// clone-path replay, not by any unit test, because
+// check_packed_encoder_semantic_conv above packs a different tensor
+// (encoder_semantic.conv) and never exercises this one.
+int check_packed_feat_conv1() {
+    ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    SYNTH_TEST_CHECK(cpu != nullptr);
+
+    const PackedRawWeights          raw     = draw_packed_raw_weights();
+    const synth::omnivoice::HParams hparams = make_packed_hparams();
+
+    auto run = [&](bool quantize_feat_conv1, std::vector<float> & output_values) -> bool {
+        PackedFixture fixture;
+        if (!build_packed_fixture(cpu, false, quantize_feat_conv1, raw, fixture)) {
+            return false;
+        }
+        Context       graph_ctx = make_graph_context();
+        ggml_cgraph * graph     = ggml_new_graph_custom(graph_ctx.get(), kNodeBudget, false);
+        ggml_tensor * output =
+            synth::omnivoice::build_semantic_branch(graph_ctx.get(), fixture.pcm, fixture.weights, hparams);
+        if (output == nullptr) {
+            return false;
+        }
+        std::vector<std::vector<float>> values;
+        if (!compute(fixture.backend, graph, { output }, values)) {
+            return false;
+        }
+        output_values = std::move(values[0]);
+        return true;
+    };
+
+    std::vector<float> f32_output;
+    std::vector<float> packed_output;
+    // The bug under regression made this second call return false (a refused
+    // build), not merely a numerically different one.
+    SYNTH_TEST_CHECK(run(false, f32_output));
+    SYNTH_TEST_CHECK(run(true, packed_output));
+    SYNTH_TEST_CHECK(!f32_output.empty());
+    SYNTH_TEST_CHECK(f32_output.size() == packed_output.size());
+
+    const float worst = deviation(packed_output, f32_output.data(), f32_output.size());
+    std::printf("omnivoice-reference-encoder: packed-vs-f32 feat_conv[1] worst deviation %.6g\n", double(worst));
+    // Same <=5x-measured discipline as check_packed_encoder_semantic_conv
+    // above; this tensor sits earlier in the branch (before the attention
+    // stack), so its own measured deviation and gate are independent of that
+    // one's.
+    SYNTH_TEST_CHECK(worst < 0.2f);
+
+    // The offline quantizer and this builder must still agree that a WRONG
+    // packed shape is refused rather than silently reinterpreted -- the same
+    // defensive class the un-packed shape checks above already apply.
+    PackedFixture wrong_shape;
+    SYNTH_TEST_CHECK(build_packed_fixture(cpu, false, true, raw, wrong_shape));
+    wrong_shape.weights.semantic_model.feat_conv[1].weight =
+        ggml_new_tensor_2d(wrong_shape.persistent.get(), GGML_TYPE_Q8_0,
+                           int64_t(kPackedConvKernel[1]) * kPackedConvDim[0] + 32, kPackedConvDim[1]);
+    // A stray unbacked tensor: this rebinds the pointer this fixture already
+    // allocated a backend buffer for, so the replacement is metadata-only
+    // (shape/type), exactly what the rejection below is checking, not a
+    // tensor build_semantic_branch could read data through.
+    Context       graph_ctx = make_graph_context();
+    ggml_cgraph * graph     = ggml_new_graph_custom(graph_ctx.get(), kNodeBudget, false);
+    ggml_tensor * refused =
+        synth::omnivoice::build_semantic_branch(graph_ctx.get(), wrong_shape.pcm, wrong_shape.weights, hparams);
+    SYNTH_TEST_CHECK(refused == nullptr);
     return 0;
 }
 
@@ -1799,6 +1895,7 @@ int check_measurement_point_regression() {
 
 int main() {
     SYNTH_TEST_CHECK(check_packed_encoder_semantic_conv() == 0);
+    SYNTH_TEST_CHECK(check_packed_feat_conv1() == 0);
     SYNTH_TEST_CHECK(check_rejections() == 0);
     SYNTH_TEST_CHECK(check_acoustic_rejections() == 0);
     SYNTH_TEST_CHECK(check_rvq_rejections() == 0);

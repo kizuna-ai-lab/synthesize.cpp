@@ -10,6 +10,7 @@
 // wrong audio rather than an error.
 
 #include "arch/omnivoice/catalog.h"
+#include "arch/omnivoice/quantization.h"
 #include "arch/omnivoice/weights.h"
 #include "ggml.h"
 #include "omnivoice_small_layout.h"
@@ -272,6 +273,164 @@ int check_real_package_count() {
     return 0;
 }
 
+// Widths for the Q8_MIXED variant of the small package. Every "in" dimension
+// a MatrixWeight tensor is ever block-quantized against -- packed (kernel *
+// in_channels) or native (a Linear's own row) -- has to be a multiple of
+// Q8_0's 32-element block, or ggml_new_tensor's own row-size assert fires
+// while building the fixture below, not this catalog's code. The whole
+// generator and RVQ are Sensitive under every profile (quantization.h), so
+// only the codec's widths matter here: the decoder halves twice (128, 64, 32)
+// and the encoder doubles twice (32, 64, 128) over this package's two
+// upsampling ratios, `codec.hidden_size` feeds the decoder's entry
+// convolution's row, and `semantic.intermediate_size` and every
+// `semantic.conv_dim` entry feed a HuBERT row the same way. Kernel widths and
+// `semantic.hidden_size` (already 32) are untouched.
+synth::omnivoice::HParams q8_mixed_hparams() {
+    synth::omnivoice::HParams h  = small_hparams();
+    h.quantization_profile       = synth::omnivoice::QuantizationProfile::Q8Mixed;
+    h.codec.decoder_hidden_size  = 128;
+    h.codec.encoder_hidden_size  = 32;
+    h.codec.hidden_size          = 32;
+    h.semantic.intermediate_size = 32;
+    h.semantic.conv_dim          = { 32, 32, 32 };
+    return h;
+}
+
+// Recasts one F32 entry list to what the offline quantizer would have written
+// for it under Q8_MIXED: a MatrixWeight tensor packs to Q8_0 (a three-axis
+// entry -- a convolution kernel -- flattens to [kernel * in, out]; a two-axis
+// one -- a Linear -- keeps its shape), and every other role stays F32,
+// exactly classify_tensor's own split.
+std::vector<std::pair<Entry, ggml_type>> to_q8_mixed(const std::vector<Entry> & entries) {
+    std::vector<std::pair<Entry, ggml_type>> out;
+    out.reserve(entries.size());
+    for (const Entry & entry : entries) {
+        int64_t ne[GGML_MAX_DIMS] = { 1, 1, 1, 1 };
+        for (size_t axis = 0; axis < entry.ne.size() && axis < GGML_MAX_DIMS; ++axis) {
+            ne[axis] = entry.ne[axis];
+        }
+        if (synth::omnivoice::classify_tensor(entry.name, ne) == synth::omnivoice::QuantRole::MatrixWeight) {
+            if (entry.ne.size() == 3) {
+                out.emplace_back(
+                    Entry{
+                        entry.name, { entry.ne[0] * entry.ne[1], entry.ne[2] }
+                },
+                    GGML_TYPE_Q8_0);
+            } else {
+                out.emplace_back(entry, GGML_TYPE_Q8_0);
+            }
+        } else {
+            out.emplace_back(entry, GGML_TYPE_F32);
+        }
+    }
+    return out;
+}
+
+void populate_typed(ggml_context * context, const std::vector<std::pair<Entry, ggml_type>> & entries) {
+    for (const auto & [entry, type] : entries) {
+        int64_t ne[GGML_MAX_DIMS] = { 1, 1, 1, 1 };
+        for (size_t axis = 0; axis < entry.ne.size() && axis < GGML_MAX_DIMS; ++axis) {
+            ne[axis] = entry.ne[axis];
+        }
+        ggml_tensor * tensor =
+            ggml_new_tensor(context, type, int(std::min<size_t>(entry.ne.size(), GGML_MAX_DIMS)), ne);
+        ggml_set_name(tensor, entry.name.c_str());
+    }
+}
+
+int check_q8_mixed_resolution() {
+    const synth::omnivoice::HParams                h           = q8_mixed_hparams();
+    const std::vector<Entry>                       f32_entries = expected_entries(h);
+    const std::vector<std::pair<Entry, ggml_type>> entries     = to_q8_mixed(f32_entries);
+
+    Context context = make_context();
+    populate_typed(context.get(), entries);
+
+    synth::omnivoice::ModelWeights weights;
+    SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_OK);
+
+    // A packed convolution kernel: its row is kernel * in_channels, flattened
+    // out of the logical three-axis shape.
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->type == GGML_TYPE_Q8_0);
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->ne[0] == 7 * int64_t(h.codec.hidden_size));
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->ne[1] == h.codec.decoder_hidden_size);
+    // The one collapsed conv kernel (mono exit, out=1): packing still applies.
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv2.weight->type == GGML_TYPE_Q8_0);
+    // A native Linear inside the codec's HuBERT half: quantized in place,
+    // shape unchanged.
+    SYNTH_TEST_CHECK(weights.semantic_model.layers[0].q_proj.weight->type == GGML_TYPE_Q8_0);
+    SYNTH_TEST_CHECK(weights.semantic_model.layers[0].q_proj.weight->ne[0] == int64_t(h.semantic.hidden_size));
+    // A transposed convolution: never packed, whatever the profile.
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.blocks[0].conv_t1.weight->type == GGML_TYPE_F32);
+    // The three named-Sensitive exceptions and a norm/bias/alpha stay F32.
+    SYNTH_TEST_CHECK(weights.acoustic_encoder.conv1.weight->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.semantic_model.feat_conv[0].weight->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.semantic_model.pos_conv.weight->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.blocks[0].snake1.alpha->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.bias->type == GGML_TYPE_F32);
+    // The whole generator and the RVQ stay exact under every profile.
+    SYNTH_TEST_CHECK(weights.generator.text_embedding->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].q_proj->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.generator.audio_embeddings->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.quantizers[0].codebook->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.fc.weight->type == GGML_TYPE_F32);
+    return 0;
+}
+
+int check_q8_mixed_rejections() {
+    const synth::omnivoice::HParams h           = q8_mixed_hparams();
+    const std::vector<Entry>        f32_entries = expected_entries(h);
+
+    // A MatrixWeight tensor the offline quantizer never touched: still F32
+    // (at its unpacked shape) under a profile that packs it.
+    {
+        std::vector<std::pair<Entry, ggml_type>> entries = to_q8_mixed(f32_entries);
+        for (auto & [entry, type] : entries) {
+            if (entry.name == "codec.acoustic_decoder.conv1.weight") {
+                entry = Entry{
+                    entry.name, { 7, int64_t(h.codec.hidden_size), int64_t(h.codec.decoder_hidden_size) }
+                };
+                type = GGML_TYPE_F32;
+            }
+        }
+        Context                        context = make_context();
+        synth::omnivoice::ModelWeights weights;
+        populate_typed(context.get(), entries);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
+    }
+
+    // A packed convolution whose row does not match kernel * in_channels.
+    {
+        std::vector<std::pair<Entry, ggml_type>> entries = to_q8_mixed(f32_entries);
+        for (auto & [entry, type] : entries) {
+            if (entry.name == "codec.acoustic_decoder.conv1.weight") {
+                entry.ne[0] += 32;
+            }
+        }
+        Context                        context = make_context();
+        synth::omnivoice::ModelWeights weights;
+        populate_typed(context.get(), entries);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
+    }
+
+    // The generator stays exact under every profile; a halved generator
+    // tensor is a package defect even where a codec MatrixWeight tensor at
+    // the same position would legitimately pack.
+    {
+        std::vector<std::pair<Entry, ggml_type>> entries = to_q8_mixed(f32_entries);
+        for (auto & [entry, type] : entries) {
+            if (entry.name == "llm.norm.weight") {
+                type = GGML_TYPE_F16;
+            }
+        }
+        Context                        context = make_context();
+        synth::omnivoice::ModelWeights weights;
+        populate_typed(context.get(), entries);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -281,5 +440,7 @@ int main() {
     SYNTH_TEST_CHECK(check_resolution(h, entries) == 0);
     SYNTH_TEST_CHECK(check_rejections(h, entries) == 0);
     SYNTH_TEST_CHECK(check_real_package_count() == 0);
+    SYNTH_TEST_CHECK(check_q8_mixed_resolution() == 0);
+    SYNTH_TEST_CHECK(check_q8_mixed_rejections() == 0);
     return 0;
 }

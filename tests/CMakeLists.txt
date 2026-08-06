@@ -816,6 +816,30 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
     endif()
 
+    # The same gate against the codec-only Q8_MIXED package (Plan 4 Task 3),
+    # guarded on that package's own existence the same way the F32 gate above
+    # is guarded on its. The exact-token arm is structural and unconditional
+    # regardless of --check or profile, so this is the gate that would catch a
+    # quantized package's greedy grid or clone RVQ encode drifting from the
+    # oracle's -- the whole reason this family's Quantization Profile work
+    # exists. TIMEOUT matches the F32 gate's: same graph, same 20-case sweep,
+    # not yet separately re-measured for this profile.
+    if(EXISTS "${SYNTH_OMNIVOICE_Q8_MIXED_TEST_MODEL}" AND EXISTS "${_synth_omnivoice_golden_sentinel}")
+        add_test(
+            NAME synthesize-omnivoice-replay-golden-q8-mixed
+            COMMAND ${SYNTH_UV_EXECUTABLE} run
+                --project ${CMAKE_SOURCE_DIR}/scripts/envs/omnivoice
+                --locked python ${CMAKE_SOURCE_DIR}/scripts/validate-omnivoice-replay.py
+                --manifest ${CMAKE_SOURCE_DIR}/tests/golden/omnivoice/omnivoice-0-6b.manifest.json
+                --model ${SYNTH_OMNIVOICE_Q8_MIXED_TEST_MODEL}
+                --runner $<TARGET_FILE:synthesize-omnivoice-replay-real>
+                --check --profile Q8_MIXED --backend CPU --stage replay)
+        set_tests_properties(synthesize-omnivoice-replay-golden-q8-mixed PROPERTIES
+            LABELS "integration;omnivoice;golden"
+            TIMEOUT 14400
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    endif()
+
     # OmniVoice's public-request validator needs no oracle payload -- it
     # asserts relations between runs of this port's public seam (seed echo,
     # same-seed byte identity, cross-seed artifact_differs), not agreement

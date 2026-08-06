@@ -283,7 +283,38 @@ justify the choice in the report. The filename is
   on its own.
 - [ ] **Step 7:** Full omnivoice integration set; both unit gates; commit.
 
-### Task 4: The public path under the quantized profile
+### Task 4: N/A — no quantized profile ships
+
+**Closed 2026-08-06 without execution.** Task 3 measured both candidate
+profiles against the exact-token gate and both failed the clone RVQ grid:
+Q8_MIXED wrong at 1023 of 2808 positions (36.4%, first gap 1.51), F16 wrong
+at 103 (3.7%, first gap 0.2024 but with others at 27.48 / 24.84 / 14.25 —
+narrow rounding in places, not narrow at all in others). Dual admissibility
+does not apply: it enumerates values the *reference* produced under a
+different configuration, and here there is no second oracle grid — this is
+our own arithmetic diverging.
+
+The arithmetic that closes the remaining option without another measurement:
+of the 632.3 MiB of quantizable weight, **593.3 MiB (93.8%) is the
+clone-encode path** (`semantic_model` + `acoustic_encoder` +
+`encoder_semantic`) whose output feeds the discrete RVQ nearest-neighbour
+decision, and only `acoustic_decoder`'s 39.0 MiB (6.2%) is safe to quantize
+— worth 0.64% (F16) to 0.94% (Q8) of the package, against a measurable
+waveform change (cosine 0.99999986 → 0.99999743 or 0.99775438). **The
+tensors worth quantizing are exactly the ones that cannot be.** This family
+ships F32-only, and slice 10 of the design spec is satisfied by the
+measurement rather than by a profile.
+
+What survives from Slice A: two real load-path bug fixes with regression
+tests (`catalog.cpp`'s profile-blind F32-only type check, and
+`reference-encoder.cpp`'s unpacked-only `feat_conv` shape cross-check, which
+silently broke `encode_reference` for any quantized package), and Task 2's
+packed-convolution branch, which is correct, tested, and the precedent for
+any future attempt on this or another family.
+
+<details><summary>Original Task 4 text, unexecuted</summary>
+
+#### The public path under the quantized profile</details>
 
 **Files:** `scripts/validate-omnivoice-public.py`, `tests/CMakeLists.txt`,
 `tests/tolerances/omnivoice.json`

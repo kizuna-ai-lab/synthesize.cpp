@@ -57,4 +57,14 @@ bool resolve_kokoro_target_spec(const Profile & profile, const std::string & nam
 bool resolve_qwen3_tts_target_type(const Profile & profile, const std::string & name, ggml_type & type_out);
 bool resolve_qwen3_tts_target_spec(const Profile & profile, const std::string & name, TargetSpec & spec_out);
 
+// And for OmniVoice. Codec-only, by jiangzhuo's ruling of 2026-08-06: every
+// generator tensor (`llm.*`, the two audio tables) stays at the reference
+// dtype whatever its shape, because a reference port measured exact-token
+// agreement collapsing from 100% to roughly 7% with an F16 generator, and
+// this family's headline claim is exact tokens. The classifier lives in the
+// family module (src/arch/omnivoice/quantization.h) so the runtime's catalog
+// and this dispatch cannot disagree about a tensor.
+bool resolve_omnivoice_target_type(const Profile & profile, const std::string & name, ggml_type & type_out);
+bool resolve_omnivoice_target_spec(const Profile & profile, const std::string & name, TargetSpec & spec_out);
+
 }  // namespace synth::quantize

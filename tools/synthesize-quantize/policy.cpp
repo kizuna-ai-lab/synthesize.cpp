@@ -1,6 +1,7 @@
 #include "policy.h"
 
 #include "arch/kokoro/quantization.h"
+#include "arch/omnivoice/quantization.h"
 
 #include <cctype>
 #include <initializer_list>
@@ -466,6 +467,42 @@ bool resolve_kokoro_target_type(const Profile & profile, const std::string & nam
 bool resolve_vits_target_type(const Profile & profile, const std::string & name, ggml_type & type_out) {
     TargetSpec spec{};
     if (!resolve_vits_target_spec(profile, name, spec)) {
+        return false;
+    }
+    type_out = spec.type;
+    return true;
+}
+
+bool resolve_omnivoice_target_spec(const Profile & profile, const std::string & name, TargetSpec & spec_out) {
+    // The classifier lives in the family module so the runtime's catalog and
+    // this tool cannot disagree about a tensor. `ne` is unused by every role
+    // this catalog resolves today (see quantization.h's own header comment),
+    // so a placeholder shape is enough here -- this dispatch, like every
+    // sibling family's, has no tensor shape on hand at this call site.
+    const int64_t ne[4] = { 1, 1, 1, 1 };
+    switch (synth::omnivoice::classify_tensor(name, ne)) {
+        case synth::omnivoice::QuantRole::MatrixWeight:
+            spec_out = { profile.matrix_weight_type, profile.matrix_weight_layout };
+            return true;
+        case synth::omnivoice::QuantRole::TransposeWeight:
+            // The same override VITS and Qwen3-TTS's decoder make, and for
+            // the same reason: this runs as a column matrix multiply into
+            // col2im_1d, and CUDA's F16 matrix multiply accumulates in half
+            // precision (quantization.h's TransposeWeight comment).
+            spec_out = { GGML_TYPE_F32, TensorLayout::Native };
+            return true;
+        case synth::omnivoice::QuantRole::Sensitive:
+            spec_out = { profile.sensitive_type, TensorLayout::Native };
+            return true;
+        case synth::omnivoice::QuantRole::Unknown:
+            return false;
+    }
+    return false;
+}
+
+bool resolve_omnivoice_target_type(const Profile & profile, const std::string & name, ggml_type & type_out) {
+    TargetSpec spec{};
+    if (!resolve_omnivoice_target_spec(profile, name, spec)) {
         return false;
     }
     type_out = spec.type;

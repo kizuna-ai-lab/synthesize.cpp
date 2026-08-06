@@ -129,6 +129,8 @@ bool quantize_file(const std::string & input_path,
         resolve_target_spec = resolve_kokoro_target_spec;
     } else if (architecture == "qwen3-tts") {
         resolve_target_spec = resolve_qwen3_tts_target_spec;
+    } else if (architecture == "omnivoice") {
+        resolve_target_spec = resolve_omnivoice_target_spec;
     } else {
         return fail(error_out, "unsupported input GGUF general.architecture: " + architecture);
     }
@@ -175,16 +177,32 @@ bool quantize_file(const std::string & input_path,
         // packing one would flatten it into a single meaningless row: a
         // [1024, 3072] projection would become one row of 3145728. Packing
         // exists for convolution kernels, whose fastest dimension is the kernel
-        // and therefore too short to hold a block. Kokoro's projections and the
-        // whole of Qwen3-TTS's quantizable half are the former.
+        // and therefore too short to hold a block. Kokoro's projections, the
+        // whole of Qwen3-TTS's quantizable half, and omnivoice's HuBERT
+        // attention/feed-forward Linears (feature_projection.projection plus
+        // every layer's q/k/v/out_proj and inter_dense/output_dense) are the
+        // former.
         //
         // Naming the families is deliberate. `ggml_n_dims` collapses trailing
         // unit dimensions, so VITS's `decoder.post.weight` at [7, 32, 1] reports
         // as two-dimensional and would be read as a matrix -- leaving a row of
         // seven, which no block divides. The test fixture catches exactly that,
         // and it is why this cannot be written as a general rule about shape.
-        const bool matrix_family = architecture == "kokoro" || architecture == "qwen3-tts";
-        if (matrix_family && target.layout == TensorLayout::PackedMatrix && ggml_n_dims(tensor) < 3) {
+        // omnivoice has the identical hazard shape at
+        // codec.acoustic_decoder.conv2.weight, also [7, 32, 1] -- but unlike
+        // VITS it also has genuine Linears to protect (above), so it cannot
+        // simply sit outside matrix_family the way VITS does. It is named out
+        // of the demotion below instead: packing it succeeds (7 * 32 = 224, a
+        // whole number of Q8_0's 32-element blocks) where demoting it to a
+        // native row of 7 would not, and there is exactly one such tensor in
+        // this family's whole catalog (see Task 2's report for the survey
+        // that confirmed it).
+        const bool matrix_family =
+            architecture == "kokoro" || architecture == "qwen3-tts" || architecture == "omnivoice";
+        const bool omnivoice_collapsed_conv_kernel =
+            architecture == "omnivoice" && std::string(name) == "codec.acoustic_decoder.conv2.weight";
+        if (matrix_family && !omnivoice_collapsed_conv_kernel && target.layout == TensorLayout::PackedMatrix &&
+            ggml_n_dims(tensor) < 3) {
             target.layout = TensorLayout::Native;
         }
         if (architecture == "kokoro" && ggml_is_quantized(target.type) &&

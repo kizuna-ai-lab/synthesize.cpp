@@ -754,16 +754,11 @@ bool find_u8_32_value_offset(const uint8_t * data, size_t search_size, const std
 // this file's own prescan_buffer validates against, not yet another
 // hand-transcription of it).
 
-// n_kv is exactly one of these two values: 8 common + 1 ("instruct") for
-// DesignInstruct, 8 common + 3 (transcript_text/ref_rms/language_tag) for
-// ClonePrompt -- not a generous ceiling, an exact enumeration, since this
-// writer never produces anything else. Which SPECIFIC keys are required for
-// a given `kind` is still load_profile_from_memory's own job afterward
-// (GgufMetadata's per-field reads already fail closed on a missing field);
-// this pre-scan only bounds the total count and rejects any key outside the
-// union above.
-constexpr int64_t kPrescanKvCountDesign = 9;
-constexpr int64_t kPrescanKvCountClone  = 11;
+// kPrescanKvCountDesign/kPrescanKvCountClone -- the exact per-kind metadata
+// KV count this pre-scan bounds `n_kv` against -- now live in profile.h
+// alongside kPrescanKnownKeys, for the same reason: fix-round-1's
+// tests/omnivoice_serialize_writer_agreement_test.cpp pins the REAL writer's
+// per-kind key count against these SAME two constants.
 
 constexpr uint64_t kPrescanMaxKeyLength    = 256;
 // Tied to kMaxClonePromptTranscriptLength (profile.h) rather than a second,

@@ -15,16 +15,6 @@
 // model-guarded round-trip integration test (tests/omnivoice_profile_test.cpp),
 // which needs a multi-GB real GGUF and is not in the fast unit loop.
 //
-// Two drift directions, and the second is the dangerous one:
-//   * a key ADDED to the writer without a matching whitelist entry -> the
-//     writer's own output gets rejected by its own loader. Loud, but only
-//     ever exercised by the model-guarded test.
-//   * a key REMOVED from the writer while left in the whitelist -> a
-//     SILENTLY TOO PERMISSIVE whitelist (prescan_buffer would still accept a
-//     buffer shaped like the writer USED to produce, not what it produces
-//     now) -- a security-relevant loosening of the untrusted-bytes surface
-//     this whitelist exists to defend, and no other fast test would notice.
-//
 // Method: build a ClonePrompt and a DesignInstruct payload entirely by hand
 // -- neither serialize_clone_prompt nor serialize_design_instruct takes a
 // Model argument at all, so no real (or synthetic) GGUF package is loaded
@@ -34,23 +24,46 @@
 // elsewhere in this family. Run them through the REAL writer functions,
 // parse the REAL emitted bytes with ggml's own gguf_init_from_buffer -- a
 // genuine GGUF reader, independent of profile.cpp's own hand-rolled
-// prescan_buffer walk -- and compare the resulting key sets against
-// profile.h's kPrescanKnownKeys.
+// prescan_buffer walk -- and check the resulting key sets/counts against
+// profile.h's kPrescanKnownKeys, kPrescanKvCountClone, and
+// kPrescanKvCountDesign.
 //
-// The assertion is three checks, not one equality, because the two kinds
-// emit DISJOINT key sets by design: ClonePrompt's 3 own keys
-// (transcript_text/ref_rms/language_tag) and DesignInstruct's 1 own key
-// (instruct) never appear in the other kind's envelope, so neither kind's
-// emitted set alone equals the whitelist.
-//   1. clone-prompt's emitted keys ⊆ whitelist
-//   2. design-instruct's emitted keys ⊆ whitelist
-//   3. (clone-prompt's emitted keys ∪ design-instruct's emitted keys) == whitelist
-// (1) and (2) catch a key ADDED to either writer: an emitted key with no
-// whitelist entry breaks the subset relation. (3) is what actually catches
-// the dangerous direction: a key REMOVED from either writer leaves the
-// whitelist with an entry NEITHER kind emits any more, which only the
-// union-equals-whitelist check (not (1) or (2), which only ever look at
-// what IS emitted) can surface.
+// Fix-round-1 (reviewer finding): the original three checks below (the two
+// subset checks and the union-equals-whitelist check) are blind to two
+// further, realistic drifts, because none of the three cares WHICH kind
+// emitted a given key, only whether it was emitted by "either":
+//   * a key MOVED between the two writers (e.g. `language_tag` from clone to
+//     design) leaves the union unchanged -- all three original checks stay
+//     green -- while prescan_buffer (profile.cpp) would reject every real
+//     envelope of BOTH kinds, since neither one's key set matches either of
+//     prescan_buffer's own two accepted shapes any more.
+//   * a key added correctly to a writer AND to kPrescanKnownKeys, but whose
+//     matching kPrescanKvCountClone/kPrescanKvCountDesign is not bumped,
+//     also leaves all three original checks green (the whitelist and the
+//     writer agree on the key SET) while prescan_buffer's own separate `n_kv`
+//     gate -- a plain scalar comparison, independent of which specific keys
+//     are present -- rejects every real envelope of that kind.
+// Two more checks close these, using profile.h's `PrescanKeyScope` (added in
+// this same fix round) and the two count constants (moved to profile.h
+// alongside kPrescanKnownKeys, exposed the same way and for the same reason):
+//   4/5. per-kind EXACT set equality: clone's emitted keys must equal
+//        exactly the kCommon+kCloneOnly-scoped entries of kPrescanKnownKeys;
+//        design's must equal exactly the kCommon+kDesignOnly-scoped entries.
+//        Built by filtering kPrescanKnownKeys on its own `scope` field --
+//        not by re-typing "transcript_text"/"ref_rms"/"language_tag"/
+//        "instruct" as fresh string literals here, which would make this
+//        test a fourth hand-transcription of the same knowledge.
+//   6/7. per-kind COUNT equality: clone_keys.size() == kPrescanKvCountClone,
+//        design_keys.size() == kPrescanKvCountDesign -- the SAME two scalars
+//        prescan_buffer's own `n_kv` gate compares against, so a count drift
+//        independent of any actual key-set drift (the "added correctly
+//        everywhere except the count constant" case above) is still caught.
+//
+// All seven booleans are computed and printed BEFORE any SYNTH_TEST_CHECK
+// runs (see the "check:" lines below), so the failure evidence for a given
+// mutation is never limited to whichever single check happens to run first
+// and halt the process -- the stderr transcript always shows every check's
+// own pass/fail verdict.
 
 #include "arch/omnivoice/profile.h"
 #include "gguf.h"
@@ -71,6 +84,9 @@ using synth::omnivoice::ClonePrompt;
 using synth::omnivoice::DesignInstruct;
 using synth::omnivoice::kPrescanKnownKeyCount;
 using synth::omnivoice::kPrescanKnownKeys;
+using synth::omnivoice::kPrescanKvCountClone;
+using synth::omnivoice::kPrescanKvCountDesign;
+using synth::omnivoice::PrescanKeyScope;
 
 struct GgufContextDeleter {
     void operator()(gguf_context * context) const {
@@ -115,6 +131,25 @@ void print_keys(const char * label, const std::set<std::string> & keys) {
         first = false;
     }
     std::fprintf(stderr, "}\n");
+}
+
+void print_check(const char * label, bool value) {
+    std::fprintf(stderr, "check: %-55s -> %s\n", label, value ? "pass" : "FAIL");
+}
+
+// Filters kPrescanKnownKeys by `scope`, collecting every entry whose scope is
+// `kCommon` or matches `only_scope` -- i.e. the exact expected key set for
+// the kind `only_scope` names. Reused for both kinds below rather than
+// writing the filter twice.
+std::set<std::string> expected_keys_for(PrescanKeyScope only_scope) {
+    std::set<std::string> keys;
+    for (size_t index = 0; index < kPrescanKnownKeyCount; ++index) {
+        const auto & spec = kPrescanKnownKeys[index];
+        if (spec.scope == PrescanKeyScope::kCommon || spec.scope == only_scope) {
+            keys.insert(spec.key);
+        }
+    }
+    return keys;
 }
 
 }  // namespace
@@ -164,33 +199,72 @@ int main() {
         whitelist_keys.insert(kPrescanKnownKeys[index].key);
     }
 
-    // Printed unconditionally (not gated on a failing check): this is the
-    // "actual failure output" this task's own brief asks the mutation proof
-    // to report, and the sets are cheap enough (a dozen short strings) that
-    // printing them every run costs nothing.
-    print_keys("clone-prompt emitted keys", clone_keys);
-    print_keys("design-instruct emitted keys", design_keys);
-    print_keys("kPrescanKnownKeys whitelist", whitelist_keys);
-
     std::set<std::string> emitted_union = clone_keys;
     emitted_union.insert(design_keys.begin(), design_keys.end());
 
-    // (1) clone-prompt's emitted keys ⊆ whitelist -- a key ADDED to
-    // serialize_clone_prompt (or set_common_metadata) without a matching
-    // whitelist entry breaks this.
-    SYNTH_TEST_CHECK(std::includes(whitelist_keys.begin(), whitelist_keys.end(), clone_keys.begin(), clone_keys.end()));
+    // Expected per-kind sets, derived from kPrescanKnownKeys' own `scope`
+    // field -- not from re-typed key-name literals (see this file's own
+    // header comment on why that would be a fourth hand-transcription).
+    const std::set<std::string> expected_clone_keys  = expected_keys_for(PrescanKeyScope::kCloneOnly);
+    const std::set<std::string> expected_design_keys = expected_keys_for(PrescanKeyScope::kDesignOnly);
 
-    // (2) design-instruct's emitted keys ⊆ whitelist -- the same check for
-    // serialize_design_instruct (or set_common_metadata).
-    SYNTH_TEST_CHECK(
-        std::includes(whitelist_keys.begin(), whitelist_keys.end(), design_keys.begin(), design_keys.end()));
+    // Every boolean this test checks, computed up front.
+    const bool clone_is_subset =
+        std::includes(whitelist_keys.begin(), whitelist_keys.end(), clone_keys.begin(), clone_keys.end());
+    const bool design_is_subset =
+        std::includes(whitelist_keys.begin(), whitelist_keys.end(), design_keys.begin(), design_keys.end());
+    const bool union_matches_whitelist = (emitted_union == whitelist_keys);
+    const bool clone_matches_expected  = (clone_keys == expected_clone_keys);
+    const bool design_matches_expected = (design_keys == expected_design_keys);
+    const bool clone_count_ok          = (int64_t(clone_keys.size()) == kPrescanKvCountClone);
+    const bool design_count_ok         = (int64_t(design_keys.size()) == kPrescanKvCountDesign);
 
-    // (3) the union of what both kinds actually emit equals the whitelist
-    // exactly -- the check that catches the DANGEROUS direction: a key
-    // REMOVED from either writer leaves a whitelist entry neither kind emits
-    // any more, which (1) and (2) alone can never see (they only ever look
-    // at what IS emitted, never at what the whitelist additionally allows).
-    SYNTH_TEST_CHECK(emitted_union == whitelist_keys);
+    // Printed unconditionally (not gated on a failing check): this is the
+    // "actual failure output" a mutation proof needs to report, and the data
+    // is cheap enough (a dozen short strings, seven booleans) that printing
+    // it every run costs nothing. Because this all runs BEFORE any
+    // SYNTH_TEST_CHECK below, every one of these lines is visible in the
+    // transcript regardless of which check ends up halting the process.
+    print_keys("clone-prompt emitted keys", clone_keys);
+    print_keys("design-instruct emitted keys", design_keys);
+    print_keys("kPrescanKnownKeys whitelist", whitelist_keys);
+    print_keys("expected clone-prompt keys (scope filter)", expected_clone_keys);
+    print_keys("expected design-instruct keys (scope filter)", expected_design_keys);
+    print_check("(1) clone-prompt emitted keys subset of whitelist", clone_is_subset);
+    print_check("(2) design-instruct emitted keys subset of whitelist", design_is_subset);
+    print_check("(3) union(clone, design) == whitelist", union_matches_whitelist);
+    print_check("(4) clone-prompt emitted keys == expected (scope) set", clone_matches_expected);
+    print_check("(5) design-instruct emitted keys == expected (scope) set", design_matches_expected);
+    print_check("(6) clone-prompt emitted key count == kPrescanKvCountClone", clone_count_ok);
+    print_check("(7) design-instruct emitted key count == kPrescanKvCountDesign", design_count_ok);
+
+    // (1)/(2): no key emitted that the whitelist lacks -- a key ADDED to
+    // either writer without a matching whitelist entry breaks the subset
+    // relation.
+    SYNTH_TEST_CHECK(clone_is_subset);
+    SYNTH_TEST_CHECK(design_is_subset);
+
+    // (3): no whitelist entry neither kind emits -- the check that catches a
+    // key REMOVED from a writer while left in the whitelist (a silently
+    // too-permissive whitelist that (1)/(2) alone can never see, since they
+    // only ever look at what IS emitted).
+    SYNTH_TEST_CHECK(union_matches_whitelist);
+
+    // (4)/(5): per-kind EXACT equality -- catches a key MOVED between the
+    // two writers, which leaves (1), (2), AND (3) all green (the union of
+    // what both kinds emit is unchanged by a move) but changes what EACH
+    // individual kind emits.
+    SYNTH_TEST_CHECK(clone_matches_expected);
+    SYNTH_TEST_CHECK(design_matches_expected);
+
+    // (6)/(7): per-kind COUNT equality against the SAME scalar constants
+    // prescan_buffer's own `n_kv` gate uses -- catches a key added correctly
+    // to a writer AND to kPrescanKnownKeys (with the correct `scope`, so (4)/
+    // (5) above stay green) whose matching count constant was never bumped:
+    // prescan_buffer would still reject every real envelope of that kind
+    // over the stale `n_kv` comparison alone.
+    SYNTH_TEST_CHECK(clone_count_ok);
+    SYNTH_TEST_CHECK(design_count_ok);
 
     return 0;
 }

@@ -2566,3 +2566,215 @@ clone-only encode path) while still quantizing `codec.acoustic_decoder`
 option both measurements point toward — untried here because re-scoping the
 profile to force a grid to pass is exactly what this task's gate discipline
 prohibits doing unilaterally.
+
+## 2026-08-07 — Plan 4 Task 11: the CUDA sweep, and claiming the backend
+
+Measured on the DGX Spark/GB10 development host: driver 580.159.03, CUDA
+13.3.73, native `sm_121a`, the standard `dev-dgx-spark` preset (GGML CUDA
+unified-memory fallback off — see the UVM note below).
+
+```
+export SYNTH_CUDA_ROOT=/usr/local/cuda-13.3
+export PATH="$SYNTH_CUDA_ROOT/bin:$PATH"
+export LD_LIBRARY_PATH="$SYNTH_CUDA_ROOT/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+CUDAToolkit_ROOT="$SYNTH_CUDA_ROOT" CUDACXX="$SYNTH_CUDA_ROOT/bin/nvcc" \
+  cmake --preset dev-dgx-spark -DSYNTH_BUILD_INTEGRATION_TESTS=ON
+cmake --build --preset dev-dgx-spark -j 20
+```
+
+### The gate: byte-exact tokens, complete placement
+
+```
+uv run --project scripts/envs/omnivoice --locked python \
+  scripts/validate-omnivoice-replay.py \
+  --manifest tests/golden/omnivoice/omnivoice-0-6b.manifest.json \
+  --model models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
+  --runner build/dev-dgx-spark/bin/synthesize-omnivoice-replay-real \
+  --accelerate --check --profile F32 --backend CUDA --stage replay
+```
+
+```
+token grids exact: 17/17
+ref.tokens exact: 2/2
+```
+
+Aggregated placement across all twenty cases (summed from each case's own
+`"placement": {"generator": [nodes, off_cpu], "codec": [nodes, off_cpu]}`):
+
+```
+generator: 0 of 880,032 nodes off the CPU
+codec:     8,440 of 8,440 nodes off the CPU
+```
+
+Both halves hold on every one of the twenty cases individually, not only in
+aggregate. No greedy grid and no cloning-path `ref.tokens` grid flipped.
+Re-run later as the registered gate
+(`synthesize-omnivoice-replay-golden-cuda`, `tests/CMakeLists.txt`): **passed,
+869.83s.**
+
+A reviewer of this task independently re-derived the same aggregate from the
+raw report JSON, re-ran six of the twenty cases live and confirmed each one's
+own placement (`codec: [422, 422]`, `generator: [N, 0]`), and mutated the
+backend-claim flip back to `false` to confirm the positive assertion below
+actually fails without it — the check is not a tautology.
+
+### Waveform drift, and the tolerance cell
+
+Only the waveform channel shows the codec's CUDA (TF32) arithmetic:
+`audio.pcm`/`audio.pcm_freerun` worst cosine 0.9999963545175866 (deviation
+≈3.65e-6, against the CPU-only file's ≈1.7e-7) and worst max_abs
+0.007008261978626251 on a 0.5-peak signal. Every deep generator probe and
+every reference-encode probe (`ref.pcm_16k`/`ref.semantic_mean`/
+`ref.fused_latent`) landed within the same ~1e-7 noise floor the CPU-only
+file already documents — several probes came back bit-identical to the CPU
+file's own committed `observed_*` values, because that half of the graph
+never left the CPU. Committed to `tests/tolerances/omnivoice.json`'s new
+`profiles.F32.backends.CUDA.stages.replay` cell using this family's own
+established rule (5× the measured deviation, floored/ceiled the same way the
+CPU cell's own note derives its numbers): min_cosine 0.999981, max_abs 0.04
+for the two waveform probes; every other probe's committed min_cosine is
+copied unchanged from the CPU cell.
+
+### Codec timing: two independent measurements agree
+
+On `omni-long-boundary` (719 frames, the suite's longest case), same binary,
+`--backend CUDA` vs. the CPU-only run:
+
+| run | codec_seconds (CPU) | codec_seconds (CUDA) | speedup | wall (CPU → CUDA) |
+| --- | ---: | ---: | ---: | --- |
+| mine | 4.3069 | 0.4451 | 9.68× | 267.30 s → 258.48 s (−3.4%, RTF 9.294 → 8.987) |
+| reviewer's independent re-run | 4.2063 | 0.4382 | 9.6× | (not separately reported) |
+
+Two separately-run measurements landing within 2% of each other on the
+codec's own timing is itself evidence the CUDA path is doing real work: a
+mislabelled or silently-CPU-fallback run could not reproduce a ~9.6× gap
+twice from two different invocations. The held generator is 98.9% of wall
+time on this case, so despite the codec's own large speedup the end-to-end
+effect is a small, bounded saving rather than a dramatic one — the inverse
+of Kokoro/VITS's own CUDA rows in `docs/backends.md`'s per-family cost table
+(there, holding a minority stage off an otherwise-GPU-primary graph is a
+tax; here, moving a free minority stage off an otherwise-CPU-primary graph
+is a saving). Added OmniVoice's row there with that explanation.
+
+### Operational evidence: latency, RTF, and why peak memory has no second budget here
+
+Through the public seam (`tests/omnivoice_public_real.c`, now carrying the
+`[cpu|cuda]` backend positional qwen3-tts's driver already had — see below),
+one seed-0 request of "Sampling follows the seed." (45,120 PCM frames) loads
+in 2.0015 s / 2.0356 s and synthesizes in 15.2393 s / 15.3927 s, CPU vs.
+CUDA — too small a request to separate the codec's share from run-to-run
+noise, consistent with its 1.6% share on the longer case above.
+
+**Peak memory is not a second, GPU-exclusive budget on this hardware, and
+this is measured rather than assumed.** `synth_model_get_device()` — this
+family's own public Interface, sourced from the CUDA runtime rather than
+`nvidia-smi` per `docs/backends.md`'s CUDA Unified Memory Policy — reports
+the CUDA device with `SYNTH_DEVICE_MEMORY_SHARED` set and `memory_total` =
+130,594,721,792 bytes, bit-identical to what the CPU device entry reports as
+system memory total. `nvidia-smi -q -d MEMORY` independently corroborates:
+its `FB Memory Usage` block reports `Total`/`Reserved`/`Used`/`Free` all as
+literally `N/A` for this device (the plain `nvidia-smi` summary table
+separately shows `Not Supported` in its Memory-Usage column — a different
+field of the same underlying absence, not a second string for the same
+one). The research-only `dev-dgx-spark-uvm` preset was read and deliberately
+**not** used for this measurement or the claim below — `docs/backends.md`'s
+own UVM policy says its results do not qualify a model-family/backend
+combination as Supported, and the `SYNTH_DEVICE_MEMORY_SHARED` flag above is
+a hardware-topology fact independent of whether that preset's UVM fallback
+is enabled (it is not, under the standard preset this sweep used).
+
+So there is no second budget to report a peak against. What is real and
+measured instead: `/usr/bin/time -v` on `omni-medium-en` (307 frames, same
+binary) reports Maximum resident set size 4,071,432 kB on CPU and
+4,071,436 kB with `--accelerate` — a 4 kB difference, i.e. no measurable host
+RSS growth from moving the codec to CUDA, because RSS accounting does not
+see the device-mapped allocation at all. That allocation is real and
+bounded, just invisible to RSS: `nvidia-smi --query-compute-apps` (which
+returns real per-process numbers here even though the aggregate query does
+not) showed this process holding 254 MiB right after load — the CUDA
+context plus the 84.24 MiB mirrored decode-path weights — rising to a
+**transient** 1,167 MiB while the codec's own compute buffers were live on
+the 719-frame case, then falling back once that decode finished. That figure
+is not a dedicated-VRAM requirement: it is a momentary share of the same
+128 GB pool host RSS already draws from, not a second, GPU-exclusive
+allocation the way a discrete card's VRAM reading would be — see
+`docs/porting/families/omnivoice.md`'s Execution Backends section for the
+fuller argument against reading it that way.
+
+### Repeated-run cleanup
+
+`tests/public_cleanup_test.cpp`'s CUDA arm is generic across families
+(Task 8's fix round 1 made it assert the family's actual claim either way),
+so it went live for OmniVoice the moment the claim flipped — no test code
+changed for this family.
+
+```
+build/dev-dgx-spark/bin/synthesize-public-cleanup-test \
+  models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf 12 720000 "text:Hi." "" "en"
+```
+
+```
+cpu: post-free resident floor 367268 -> 367268 KB over 12 cycles (+0 KB)
+cuda: post-free resident floor 563632 -> 563632 KB over 12 cycles (+0 KB)
+```
+
+No leak on either backend.
+
+### Making `--backend cuda` real, and the positive assertion
+
+`scripts/validate-omnivoice-public.py --backend cuda` used to be metadata
+only (Task 10): the flag landed in the report dict and never reached the
+runner. Fixed by giving `tests/omnivoice_public_real.c` the `[cpu|cuda]`
+positional `tests/qwen3_tts_public_real.c` already has, and having
+`validate-omnivoice-public.py`'s `synthesize()` forward `arguments.backend`.
+Verified the pre-flip refusal was live before touching anything else: with
+`family_supports_explicit_backend` still `false`, a `--backend cuda` run
+failed every case with `load -> 17` (`SYNTH_ERR_BACKEND`).
+
+The repeated-run cleanup test tolerates a forgotten claim flip by
+construction — a correct refusal and a silently-wrong claim are
+observationally identical to it. Two independent checks close that gap,
+both querying `synth_model_get_device()` directly rather than trusting
+`SYNTH_OK`: `tests/omnivoice_backend_test.cpp`'s `check_explicit_cuda`
+(synthetic package, unit-level, asserts `device.kind == "cuda"`) and
+`scripts/validate-omnivoice-public.py`'s new check 14 (real package,
+integration-level, same assertion after a real `synth_synthesize_to_buffer`
+call). Both passed; a reviewer of this task ran the full public validator
+independently (`--backend cuda`, 388s, all 14 checks including check 14)
+and separately proved check 14 is load-bearing by reverting the claim flip
+and confirming it fails without it.
+
+Only after all of the above did `family_supports_explicit_backend
+(ModelFamily::Omnivoice, SYNTH_BACKEND_CUDA)` flip to `true`
+(`src/model-info.h`) — the replay runner calls `Model::load` directly and
+bypasses the public seam this refusal lives behind, so the sweep measured
+real placement on real hardware while the seam still said no throughout.
+
+### Gates
+
+| gate | result |
+| --- | --- |
+| `cmake --build build --target synthesize-check-unit` (CPU-only, no CUDA compiled in) | 90/90 passed |
+| `cmake --build build-sanitize --target synthesize-check-unit` (ASan/UBSan) | 89/89 passed |
+| `ctest --test-dir build-integration -L integration -R omnivoice` | 7/7 passed (`synthesize-omnivoice-cli`, `-public-cleanup`, `-load-real`, `-profile-test`, `-resampler-golden`, `-replay-golden`, `-public-request`) |
+| `ctest --test-dir build/dev-dgx-spark -R '^synthesize-omnivoice-(replay-golden-cuda|public-request-cuda)$'` | 2/2 passed (869.83s, 389.57s) |
+| `python3 -m unittest tests.python.test_tolerance_coverage` | 3/3 passed |
+| `scripts/ci/clang-format.sh --check-diff` | exit 0 |
+
+Neither VITS/Kokoro nor Qwen3-TTS had a permanently-registered CUDA gate for
+their golden/public validators before this task (their own CUDA evidence
+lived in prose and manual runs); `synthesize-omnivoice-replay-golden-cuda`
+and `synthesize-omnivoice-public-request-cuda` are new for the whole
+project, not only for this family.
+
+### The claim
+
+Every `docs/backends.md` Validation Gate this family/backend combination
+owes is now satisfied: same cases as the CPU baseline (1), tensor agreement
+within committed tolerances (2), finite correctly-shaped PCM (3), twenty
+cases (4), proven placement with latency/RTF/memory (5), and clean
+repeated-run cycles (6). `docs/porting/families/omnivoice.md`'s "Generator
+on CUDA" Open Question is resolved: the generator does not move, by the
+discrete-outputs rule, and was never a live candidate — only the codec's 152
+decode-path tensors do. Publication and the support matrix are separate,
+later questions.

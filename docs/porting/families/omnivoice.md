@@ -1289,8 +1289,10 @@ device with `SYNTH_DEVICE_MEMORY_SHARED` set and `memory_total` =
 system memory total, sourced from the CUDA runtime rather than from
 `nvidia-smi` (`docs/backends.md`'s CUDA Unified Memory Policy already commits
 the project to that source; `nvidia-smi -q -d MEMORY`'s own aggregate query
-independently confirms the reason, returning "Not Supported" for this device's
-Total/Reserved/Used/Free). A shared-memory flag on the standard, non-UVM
+independently confirms the reason, returning "N/A" for this device's
+Total/Reserved/Used/Free -- the plain `nvidia-smi` summary table separately
+shows "Not Supported" in its Memory-Usage column, a different field of the
+same underlying absence). A shared-memory flag on the standard, non-UVM
 `dev-dgx-spark` preset is a hardware-topology fact, not a sign that GGML's UVM
 fallback is enabled -- it is not, here.
 
@@ -1299,16 +1301,27 @@ measured instead: `/usr/bin/time -v` on `omni-medium-en` (307 frames, same
 binary, same host) reports Maximum resident set size 4,071,432 kB on CPU and
 4,071,436 kB with `--accelerate` -- a 4 kB difference, i.e. no measurable host
 RSS growth from moving the codec to CUDA, because host RSS accounting does not
-count the device-mapped allocation at all. That allocation is real and bounded,
-just invisible to RSS: `nvidia-smi --query-compute-apps` (which returns real
-numbers on this box even though the aggregate query does not) shows this
-process holding 254 MiB right after load -- the CUDA context plus the 84.24 MiB
-mirrored decode-path weights -- rising to 1,167 MiB transiently while the
-codec's own compute buffers are live on the suite's largest case, then falling
-back. Total physical commitment is host RSS plus this per-process figure, both
-drawn from the identical pool `SYNTH_DEVICE_MEMORY_SHARED` names; there is no
-sense in which the GPU figure is "on top of" host RAM the way a discrete
-card's VRAM would be.
+count the device-mapped allocation at all. That allocation is real and
+bounded, just invisible to RSS: `nvidia-smi --query-compute-apps` (which
+returns real per-process numbers on this box even though the aggregate query
+does not) shows this process holding 254 MiB right after load -- the CUDA
+context plus the 84.24 MiB mirrored decode-path weights -- rising to a
+transient 1,167 MiB while the codec's own compute buffers are live on the
+suite's largest case, then falling back once that decode finishes.
+
+**That 1,167 MiB is not a dedicated-VRAM requirement and must not be read as
+one.** On discrete hardware a number like it would mean "this workload needs
+1.2 GB of GPU memory the rest of the system cannot use," because discrete VRAM
+is a separate physical pool. Here it is a transient share of the *same*
+128 GB DRAM pool `SYNTH_DEVICE_MEMORY_SHARED` already names as identical to
+system RAM (the 130,594,721,792-byte figure two paragraphs up) -- host RSS
+already dominates this process's real footprint at ~3.9 GB, and this figure
+rises and falls within that same one budget rather than adding a second,
+GPU-exclusive one on top of it. Total physical commitment at any instant is
+host RSS plus this per-process figure, both drawn from the identical pool;
+there is no sense in which the GPU figure is "on top of" host RAM the way a
+discrete card's VRAM would be, and no hardware on this machine is reserved
+for it that a CPU-only run could not otherwise use.
 
 ### Repeated-run and resource cleanup (Validation Gate 6)
 

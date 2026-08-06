@@ -15,7 +15,8 @@
 // embedder.
 //
 // So this drives whole cycles -- load, context, synthesize, free -- on every
-// backend the build claims, and asserts two things a one-shot run cannot:
+// backend the PACKAGE'S FAMILY claims, and asserts two things a one-shot run
+// cannot:
 //
 //   * the cycles are interchangeable: identical frame count and bit-identical
 //     PCM at a fixed seed, cycle after cycle, so nothing accumulates in the
@@ -36,6 +37,34 @@
 //
 // Run this under the sanitizer build as well: LeakSanitizer answers at
 // allocation granularity what the resident-set bound can only approximate.
+//
+// Fix round 1 (OmniVoice Plan 4 Task 8's review): the CUDA branch used to
+// gate solely on `synth_backend_available(SYNTH_BACKEND_CUDA)`, which asks
+// whether the BUILD has a CUDA device registered, never whether the loaded
+// PACKAGE'S FAMILY claims to run on it (src/model-info.h's
+// family_supports_explicit_backend, added by that same task). On a CUDA
+// build that difference was invisible only because this test was not yet
+// registered in a CUDA-enabled integration tree; the moment one runs it, an
+// unclaimed family's `run_backend` would call `run_cycle`, get the new
+// per-family SYNTH_ERR_BACKEND refusal from `synth_model_load`, and hard-fail
+// on a correct refusal.
+//
+// `run_backend`'s own cycle 0 now asks the public seam itself instead of
+// assuming, by wiring up a diagnostic sink for that one cycle only: a
+// claimed refusal (SYNTH_ERR_BACKEND, the cycle failed, a diagnostic fired)
+// is verified and the remaining cycles are skipped for this backend;
+// anything else is an ordinary first cycle, indistinguishable from what a
+// claiming family already paid before this fix. The first attempt at this
+// fix ran a separate discard-and-reload probe ahead of run_backend, freed it,
+// and then called run_backend fresh -- correct in isolation, but measured
+// against a real CUDA device it occasionally pushed VITS's (a claiming
+// family's) resident-floor statistic a few MB over its tolerance, because the
+// probe's own load-then-free was one extra CUDA context/allocation round
+// trip the pre-fix code never paid before the timed window started. Folding
+// the probe into cycle 0 removes that extra round trip entirely: a claiming
+// family's byte-for-byte cycle sequence is unchanged from before this task.
+// This works unchanged as OmniVoice's own claim changes -- Task 11 flips it
+// to include CUDA with no edit needed here.
 
 #include "synthesize.h"
 #include "test-assert.h"
@@ -120,19 +149,37 @@ uint64_t digest(const float * samples, uint64_t count) {
 }
 
 // One full public cycle. Everything it opens, it closes.
-bool run_cycle(const char *            model_path,
-               const RequestSpec &     spec,
-               synth_backend_request_t backend,
-               uint64_t &              out_frames,
-               uint64_t &              out_digest) {
+//
+// `diagnostics` is null for every cycle but the first of a backend
+// (run_backend wires one up only there); `out_load_status` always carries the
+// raw synth_model_load result so the FIRST cycle can double as the "does this
+// family claim this backend" probe (src/model-info.h's
+// family_supports_explicit_backend) without a separate discard-and-reload
+// pass -- one that would spend an extra one-time CUDA context/allocation
+// round trip before the measured window even starts, which is exactly the
+// kind of thing this file's own resident-floor statistic exists to be
+// sensitive to.
+bool run_cycle(const char *              model_path,
+               const RequestSpec &       spec,
+               synth_backend_request_t   backend,
+               synth_diagnostic_sink_t * diagnostics,
+               uint64_t &                out_frames,
+               uint64_t &                out_digest,
+               synth_status_t &          out_load_status) {
     synth_model_load_params_t load_params;
     synth_model_load_params_init(&load_params, sizeof(load_params));
-    load_params.backend = backend;
+    load_params.backend     = backend;
+    load_params.diagnostics = diagnostics;
 
-    synth_model_t *      model  = nullptr;
-    const synth_status_t loaded = synth_model_load(model_path, &load_params, &model);
-    if (loaded != SYNTH_OK || model == nullptr) {
-        std::fprintf(stderr, "cleanup: load -> %d\n", (int) loaded);
+    synth_model_t * model = nullptr;
+    out_load_status       = synth_model_load(model_path, &load_params, &model);
+    if (out_load_status != SYNTH_OK || model == nullptr) {
+        // A claimed refusal (SYNTH_ERR_BACKEND on the first cycle) is
+        // expected often enough that logging it here would read as an
+        // error; the caller decides what it means for that one status.
+        if (out_load_status != SYNTH_ERR_BACKEND) {
+            std::fprintf(stderr, "cleanup: load -> %d\n", (int) out_load_status);
+        }
         return false;
     }
 
@@ -197,6 +244,38 @@ long floor_kb(const std::vector<long> & resident, int begin, int end) {
     return lowest;
 }
 
+struct SeenDiagnostic {
+    bool           seen   = false;
+    synth_status_t status = SYNTH_OK;
+    std::string    code;
+};
+
+void SYNTH_CALL record_diagnostic(void * user_data, const synth_diagnostic_t * diagnostic) {
+    auto * seen  = static_cast<SeenDiagnostic *>(user_data);
+    seen->seen   = true;
+    seen->status = diagnostic->status;
+    seen->code.assign(diagnostic->code, static_cast<size_t>(diagnostic->code_size));
+}
+
+// Whether this backend runs at all is a per-family fact
+// (src/model-info.h's family_supports_explicit_backend), not a build-wide one
+// -- synth_backend_available() answers "does this process have a device of
+// this kind", which every one of the four families sees the same answer to,
+// even though only some of them place real work on it. So cycle 0's own load
+// doubles as the "does this family claim this backend" probe, through the
+// same public synth_model_load seam the refusal lives behind, rather than
+// assuming every family that reaches this call can honor an explicit backend
+// request. Only cycle 0 carries a diagnostic sink and is inspected for
+// SYNTH_ERR_BACKEND specifically:
+//
+//   * SYNTH_ERR_BACKEND on cycle 0 is a legitimate, claimed refusal --
+//     verified here (the cycle failed, a diagnostic fired with that status)
+//     and then nothing further runs, because there is nothing this family
+//     will do on this backend to clean up after.
+//   * Otherwise cycle 0 is an ordinary first cycle, identical to every
+//     family that already claims this backend today: no separate
+//     discard-and-reload probe runs before it, so a claiming family pays for
+//     exactly the same N loads it always has, not N+1.
 int run_backend(const char *            model_path,
                 const RequestSpec &     spec,
                 synth_backend_request_t backend,
@@ -207,9 +286,29 @@ int run_backend(const char *            model_path,
     std::vector<long> resident;
 
     for (int cycle = 0; cycle < cycles; ++cycle) {
-        uint64_t frames = 0;
-        uint64_t hash   = 0;
-        SYNTH_TEST_CHECK(run_cycle(model_path, spec, backend, frames, hash));
+        uint64_t                  frames      = 0;
+        uint64_t                  hash        = 0;
+        synth_status_t            load_status = SYNTH_OK;
+        SeenDiagnostic            diagnostic;
+        synth_diagnostic_sink_t   sink;
+        synth_diagnostic_sink_t * diagnostics = nullptr;
+        if (cycle == 0) {
+            synth_diagnostic_sink_init(&sink, sizeof(sink));
+            sink.emit      = record_diagnostic;
+            sink.user_data = &diagnostic;
+            diagnostics    = &sink;
+        }
+
+        const bool ok = run_cycle(model_path, spec, backend, diagnostics, frames, hash, load_status);
+        if (cycle == 0 && load_status == SYNTH_ERR_BACKEND) {
+            SYNTH_TEST_CHECK(!ok);
+            SYNTH_TEST_CHECK(diagnostic.seen);
+            SYNTH_TEST_CHECK(diagnostic.status == SYNTH_ERR_BACKEND);
+            std::fprintf(stderr, "%s: refused (%s), family does not claim this backend -- skipping cycles\n", label,
+                         diagnostic.code.c_str());
+            return 0;
+        }
+        SYNTH_TEST_CHECK(ok);
         SYNTH_TEST_CHECK(frames > 0);
         if (cycle == 0) {
             first_frames = frames;
@@ -296,8 +395,11 @@ int main(int argc, char ** argv) {
     // CPU is the baseline every package claims.
     SYNTH_TEST_CHECK(run_backend(argv[1], spec, SYNTH_BACKEND_CPU, "cpu", cycles) == 0);
 
-    // Every further backend the build claims runs the same cycles. A backend
-    // that is absent from this build is not being claimed by it.
+    // A backend absent from this BUILD is never claimed by any family in it,
+    // so this stays the outer gate. Whether the loaded PACKAGE'S FAMILY
+    // claims a backend the build does have is a separate, per-family
+    // question that run_backend's own first cycle now answers through the
+    // public seam, rather than assuming every family answers the same way.
     if (synth_backend_available(SYNTH_BACKEND_CUDA) == SYNTH_TRUE) {
         SYNTH_TEST_CHECK(run_backend(argv[1], spec, SYNTH_BACKEND_CUDA, "cuda", cycles) == 0);
     }

@@ -100,22 +100,22 @@ QuantRole classify_codec_matrix_region(const std::vector<std::string_view> & tok
     // how this runtime reads them, named individually rather than folded
     // into a generic rule -- a future reader must not "fix" any of them.
     //
-    // A caveat that applies to every *other* MatrixWeight tensor returned
+    // A note that applies to every *other* MatrixWeight tensor returned
     // below, not just these three: ggml_compute_forward_im2col
     // (ggml/src/ggml-cpu/ops.cpp, ~6369-6386) aborts on any destination type
-    // besides F16/F32, and this family's conv1d builders (codec.cpp's
-    // codec_conv1d, reference-encoder.cpp's conv1d) currently pass the
-    // weight's own type as that destination -- so all 85 conv1d-consumed
-    // MatrixWeight tensors here (the 32 acoustic_decoder + 36
-    // acoustic_encoder + 6 feat_conv.1-6 + 11 encoder_semantic convolutions;
-    // the semantic_model attention/feed-forward Linears are mul_mat directly
-    // and unaffected) abort at the first synthesis under a profile that
-    // packs them, until that is fixed. VITS and Kokoro already carry the
-    // remedy -- a packed branch that passes GGML_TYPE_F32 as im2col's
-    // destination and feeds the quantized kernel straight into mul_mat as
-    // its already-2-D operand (src/arch/vits/operations.cpp:37-43,
-    // src/arch/kokoro/operations.cpp:46-79) -- and Plan 4's Task 2 ports it
-    // into this family's two conv1d builders. This classifier still calls
+    // besides F16/F32, so all 85 conv1d-consumed MatrixWeight tensors here
+    // (the 32 acoustic_decoder + 36 acoustic_encoder + 6 feat_conv.1-6 + 11
+    // encoder_semantic convolutions; the semantic_model attention/feed-
+    // forward Linears are mul_mat directly and unaffected) would abort at
+    // the first synthesis under a profile that packs them, if their
+    // conv1d builders still passed the weight's own type as that
+    // destination. Plan 4's Task 2 ported VITS's and Kokoro's own remedy
+    // into this family's two conv1d builders (codec.cpp's codec_conv1d,
+    // reference-encoder.cpp's conv1d): a packed branch that passes
+    // GGML_TYPE_F32 as im2col's destination and feeds the quantized kernel
+    // straight into mul_mat as its already-2-D operand
+    // (src/arch/vits/operations.cpp:37-43,
+    // src/arch/kokoro/operations.cpp:46-79). This classifier still calls
     // these tensors MatrixWeight: the role is about how a tensor is *read*
     // (through a matrix multiply, so packing it is not incoherent), not
     // about whether every consumer already handles a packed one.

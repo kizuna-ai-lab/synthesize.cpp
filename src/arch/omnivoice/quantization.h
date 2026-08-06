@@ -19,10 +19,11 @@ enum class QuantRole {
     // a matrix multiply through ggml_im2col, whose CPU implementation
     // aborts on any destination type besides F16/F32
     // (ggml/src/ggml-cpu/ops.cpp's ggml_compute_forward_im2col); this
-    // family's conv1d builders do not yet pass the packed-safe F32
-    // destination VITS and Kokoro already use (src/arch/vits/operations.cpp:37-43,
-    // src/arch/kokoro/operations.cpp:46-79), so quantizing today without
-    // Plan 4 Task 2's port of that fix aborts at the first synthesis. See
+    // family's conv1d builders (codec.cpp's codec_conv1d, reference-
+    // encoder.cpp's conv1d) carry the same packed-safe F32 destination VITS
+    // and Kokoro use (src/arch/vits/operations.cpp:37-43,
+    // src/arch/kokoro/operations.cpp:46-79), ported by Plan 4 Task 2, so
+    // ggml_im2col never sees a quantized destination type. See
     // quantization.cpp's classify_codec_matrix_region for which tensors this
     // covers.
     MatrixWeight,

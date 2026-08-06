@@ -529,6 +529,295 @@ bool run_case(ggml_backend_dev_t device, float & max_diff) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Task 2 (Plan 4): reference-encoder.cpp's private conv1d packed branch.
+// That function is not exposed via reference-encoder.h, so it is reached
+// here the only way a public caller can: through build_semantic_branch,
+// with encoder_semantic's own entry convolution (sem_enc.conv) as the one
+// tensor under test and `sem_enc.blocks` left EMPTY. With no blocks,
+// sem_enc.conv's own output IS build_semantic_branch's return value -- the
+// LAST operation in the graph -- so the two runs below (its weight F32, then
+// the Q8_0-packed twin of the identical values) differ only by that one
+// convolution's own packed-vs-F32 numerics: everything upstream (both
+// feature-extractor convolutions, the positional embedding, the one HuBERT
+// attention layer) is bit-identical between them, built from the same
+// pre-drawn value buffers rather than two independent LCG draws.
+//
+// hidden_size/conv_dim are 32, Q8_0's own block size and the same reasoning
+// omnivoice_codec_test.cpp's own check_packed_conv1d applies: the narrowest
+// width whose packed row (kernel * in_channels) can hold even one block.
+
+constexpr uint32_t kPackedHidden        = 32;
+constexpr uint32_t kPackedIntermediate  = 64;
+constexpr uint32_t kPackedHeads         = 1;
+constexpr uint32_t kPackedConvDim[2]    = { 32, 32 };
+constexpr uint32_t kPackedConvKernel[2] = { 3, 3 };
+constexpr uint32_t kPackedConvStride[2] = { 1, 1 };
+constexpr uint32_t kPackedPosKernel     = 3;  // odd: no HubertSamePadLayer trim
+constexpr uint32_t kPackedPcmSamples    = 8;
+constexpr float    kPackedLayerNormEps  = 1e-5f;
+constexpr uint64_t kPackedSeed          = 20260806u;
+
+synth::omnivoice::HParams make_packed_hparams() {
+    synth::omnivoice::HParams h;
+    h.semantic.hidden_size          = kPackedHidden;
+    h.semantic.layer_count          = 1;
+    h.semantic.attention_head_count = kPackedHeads;
+    h.semantic.intermediate_size    = kPackedIntermediate;
+    h.semantic.layer_norm_eps       = kPackedLayerNormEps;
+    h.semantic.conv_dim.assign(std::begin(kPackedConvDim), std::end(kPackedConvDim));
+    h.semantic.conv_kernel.assign(std::begin(kPackedConvKernel), std::end(kPackedConvKernel));
+    h.semantic.conv_stride.assign(std::begin(kPackedConvStride), std::end(kPackedConvStride));
+    return h;
+}
+
+// Every value either run needs, drawn ONCE so both runs share bit-identical
+// weights everywhere except sem_enc.conv.weight's own storage.
+struct PackedRawWeights {
+    std::vector<float> feat_conv0_weight;
+    std::vector<float> feat_conv1_weight;
+    std::vector<float> feat_conv_norm_weight;
+    std::vector<float> feat_conv_norm_bias;
+    std::vector<float> feature_projection_norm_weight;
+    std::vector<float> feature_projection_norm_bias;
+    std::vector<float> feature_projection_weight;
+    std::vector<float> feature_projection_bias;
+    std::vector<float> pos_conv_weight;
+    std::vector<float> pos_conv_bias;
+    std::vector<float> q_proj_weight, q_proj_bias;
+    std::vector<float> k_proj_weight, k_proj_bias;
+    std::vector<float> v_proj_weight, v_proj_bias;
+    std::vector<float> out_proj_weight, out_proj_bias;
+    std::vector<float> layer_norm_weight, layer_norm_bias;
+    std::vector<float> inter_dense_weight, inter_dense_bias;
+    std::vector<float> output_dense_weight, output_dense_bias;
+    std::vector<float> final_layer_norm_weight, final_layer_norm_bias;
+    std::vector<float> encoder_norm_weight, encoder_norm_bias;
+    std::vector<float> sem_conv_weight;  // the tensor under test
+    std::vector<float> pcm;
+};
+
+PackedRawWeights draw_packed_raw_weights() {
+    LcgStream stream(kPackedSeed);
+    auto      draw = [&](size_t count, float scale, float offset) {
+        return stream.fill(count, scale, offset);
+    };
+    PackedRawWeights raw;
+    raw.feat_conv0_weight              = draw(size_t(3) * 1 * kPackedHidden, kWeightScale, kWeightOffset);
+    raw.feat_conv1_weight              = draw(size_t(3) * kPackedHidden * kPackedHidden, kWeightScale, kWeightOffset);
+    raw.feat_conv_norm_weight          = draw(kPackedHidden, kGainScale, kGainOffset);
+    raw.feat_conv_norm_bias            = draw(kPackedHidden, kBiasScale, kBiasOffset);
+    raw.feature_projection_norm_weight = draw(kPackedHidden, kGainScale, kGainOffset);
+    raw.feature_projection_norm_bias   = draw(kPackedHidden, kBiasScale, kBiasOffset);
+    raw.feature_projection_weight      = draw(size_t(kPackedHidden) * kPackedHidden, kWeightScale, kWeightOffset);
+    raw.feature_projection_bias        = draw(kPackedHidden, kBiasScale, kBiasOffset);
+    raw.pos_conv_weight   = draw(size_t(kPackedPosKernel) * kPackedHidden * kPackedHidden, kWeightScale, kWeightOffset);
+    raw.pos_conv_bias     = draw(kPackedHidden, kBiasScale, kBiasOffset);
+    raw.q_proj_weight     = draw(size_t(kPackedHidden) * kPackedHidden, kWeightScale, kWeightOffset);
+    raw.q_proj_bias       = draw(kPackedHidden, kBiasScale, kBiasOffset);
+    raw.k_proj_weight     = draw(size_t(kPackedHidden) * kPackedHidden, kWeightScale, kWeightOffset);
+    raw.k_proj_bias       = draw(kPackedHidden, kBiasScale, kBiasOffset);
+    raw.v_proj_weight     = draw(size_t(kPackedHidden) * kPackedHidden, kWeightScale, kWeightOffset);
+    raw.v_proj_bias       = draw(kPackedHidden, kBiasScale, kBiasOffset);
+    raw.out_proj_weight   = draw(size_t(kPackedHidden) * kPackedHidden, kWeightScale, kWeightOffset);
+    raw.out_proj_bias     = draw(kPackedHidden, kBiasScale, kBiasOffset);
+    raw.layer_norm_weight = draw(kPackedHidden, kGainScale, kGainOffset);
+    raw.layer_norm_bias   = draw(kPackedHidden, kBiasScale, kBiasOffset);
+    raw.inter_dense_weight      = draw(size_t(kPackedHidden) * kPackedIntermediate, kWeightScale, kWeightOffset);
+    raw.inter_dense_bias        = draw(kPackedIntermediate, kBiasScale, kBiasOffset);
+    raw.output_dense_weight     = draw(size_t(kPackedIntermediate) * kPackedHidden, kWeightScale, kWeightOffset);
+    raw.output_dense_bias       = draw(kPackedHidden, kBiasScale, kBiasOffset);
+    raw.final_layer_norm_weight = draw(kPackedHidden, kGainScale, kGainOffset);
+    raw.final_layer_norm_bias   = draw(kPackedHidden, kBiasScale, kBiasOffset);
+    raw.encoder_norm_weight     = draw(kPackedHidden, kGainScale, kGainOffset);
+    raw.encoder_norm_bias       = draw(kPackedHidden, kBiasScale, kBiasOffset);
+    raw.sem_conv_weight         = draw(size_t(3) * kPackedHidden * kPackedHidden, kWeightScale, kWeightOffset);
+    raw.pcm                     = draw(kPackedPcmSamples, kWeightScale, kWeightOffset);
+    return raw;
+}
+
+struct PackedFixture {
+    ggml_backend_t                 backend = nullptr;
+    Context                        persistent;
+    ggml_backend_buffer_t          buffer = nullptr;
+    synth::omnivoice::ModelWeights weights;
+    ggml_tensor *                  pcm = nullptr;
+
+    PackedFixture()                                  = default;
+    PackedFixture(const PackedFixture &)             = delete;
+    PackedFixture & operator=(const PackedFixture &) = delete;
+
+    ~PackedFixture() {
+        if (buffer != nullptr) {
+            ggml_backend_buffer_free(buffer);
+        }
+        if (backend != nullptr) {
+            ggml_backend_free(backend);
+        }
+    }
+};
+
+// Builds one full weight set from `raw`, with encoder_semantic.conv.weight
+// stored either as F32 (native, [kernel, in, out]) or as the packed Q8_0
+// matrix the offline quantizer would emit for this exact shape
+// ([kernel * in, out]) -- every other tensor is F32, set from the identical
+// `raw` values on both calls.
+bool build_packed_fixture(ggml_backend_dev_t       device,
+                          bool                     quantize_conv,
+                          const PackedRawWeights & raw,
+                          PackedFixture &          fixture) {
+    fixture.backend = ggml_backend_dev_init(device, nullptr);
+    if (fixture.backend == nullptr) {
+        return false;
+    }
+    fixture.persistent  = make_context(ggml_tensor_overhead() * 64);
+    ggml_context * pctx = fixture.persistent.get();
+    if (pctx == nullptr) {
+        return false;
+    }
+
+    synth::omnivoice::SemanticModelWeights & hubert = fixture.weights.semantic_model;
+    hubert.feat_conv.resize(2);
+    hubert.feat_conv[0].weight = ggml_new_tensor_3d(pctx, GGML_TYPE_F32, kPackedConvKernel[0], 1, kPackedConvDim[0]);
+    hubert.feat_conv[1].weight =
+        ggml_new_tensor_3d(pctx, GGML_TYPE_F32, kPackedConvKernel[1], kPackedConvDim[0], kPackedConvDim[1]);
+    hubert.feat_conv_norm.weight          = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kPackedConvDim[0]);
+    hubert.feat_conv_norm.bias            = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kPackedConvDim[0]);
+    hubert.feature_projection_norm.weight = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kPackedConvDim[1]);
+    hubert.feature_projection_norm.bias   = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kPackedConvDim[1]);
+    hubert.feature_projection.weight      = ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kPackedConvDim[1], kPackedHidden);
+    hubert.feature_projection.bias        = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kPackedHidden);
+    // groups == 1 here (kPosInPerGroup == kPackedHidden): this test does not
+    // exercise the grouped case, which Task 2 leaves permanently unpacked.
+    hubert.pos_conv.weight = ggml_new_tensor_3d(pctx, GGML_TYPE_F32, kPackedPosKernel, kPackedHidden, kPackedHidden);
+    hubert.pos_conv.bias   = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kPackedHidden);
+
+    hubert.layers.resize(1);
+    synth::omnivoice::SemanticLayerWeights & layer = hubert.layers[0];
+    auto linear2d = [&](synth::omnivoice::LinearWeights & target, int64_t in, int64_t out) {
+        target.weight = ggml_new_tensor_2d(pctx, GGML_TYPE_F32, in, out);
+        target.bias   = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, out);
+    };
+    linear2d(layer.q_proj, kPackedHidden, kPackedHidden);
+    linear2d(layer.k_proj, kPackedHidden, kPackedHidden);
+    linear2d(layer.v_proj, kPackedHidden, kPackedHidden);
+    linear2d(layer.out_proj, kPackedHidden, kPackedHidden);
+    layer.layer_norm.weight = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kPackedHidden);
+    layer.layer_norm.bias   = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kPackedHidden);
+    linear2d(layer.inter_dense, kPackedHidden, kPackedIntermediate);
+    linear2d(layer.output_dense, kPackedIntermediate, kPackedHidden);
+    layer.final_layer_norm.weight = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kPackedHidden);
+    layer.final_layer_norm.bias   = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kPackedHidden);
+
+    hubert.encoder_norm.weight = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kPackedHidden);
+    hubert.encoder_norm.bias   = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kPackedHidden);
+
+    // The tensor under test: bias-free (bare_conv's own convention), F32 or
+    // its packed Q8_0 twin.
+    synth::omnivoice::SemanticEncoderWeights & sem_enc = fixture.weights.encoder_semantic;
+    sem_enc.conv.weight = quantize_conv ? ggml_new_tensor_2d(pctx, GGML_TYPE_Q8_0, 3 * kPackedHidden, kPackedHidden) :
+                                          ggml_new_tensor_3d(pctx, GGML_TYPE_F32, 3, kPackedHidden, kPackedHidden);
+    // sem_enc.blocks is left empty -- see this section's own top comment.
+
+    fixture.pcm = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kPackedPcmSamples);
+
+    fixture.buffer = ggml_backend_alloc_ctx_tensors(pctx, fixture.backend);
+    if (fixture.buffer == nullptr || sem_enc.conv.weight == nullptr) {
+        return false;
+    }
+
+    auto set = [&](ggml_tensor * tensor, const std::vector<float> & values) {
+        ggml_backend_tensor_set(tensor, values.data(), 0, ggml_nbytes(tensor));
+    };
+    set(hubert.feat_conv[0].weight, raw.feat_conv0_weight);
+    set(hubert.feat_conv[1].weight, raw.feat_conv1_weight);
+    set(hubert.feat_conv_norm.weight, raw.feat_conv_norm_weight);
+    set(hubert.feat_conv_norm.bias, raw.feat_conv_norm_bias);
+    set(hubert.feature_projection_norm.weight, raw.feature_projection_norm_weight);
+    set(hubert.feature_projection_norm.bias, raw.feature_projection_norm_bias);
+    set(hubert.feature_projection.weight, raw.feature_projection_weight);
+    set(hubert.feature_projection.bias, raw.feature_projection_bias);
+    set(hubert.pos_conv.weight, raw.pos_conv_weight);
+    set(hubert.pos_conv.bias, raw.pos_conv_bias);
+    set(layer.q_proj.weight, raw.q_proj_weight);
+    set(layer.q_proj.bias, raw.q_proj_bias);
+    set(layer.k_proj.weight, raw.k_proj_weight);
+    set(layer.k_proj.bias, raw.k_proj_bias);
+    set(layer.v_proj.weight, raw.v_proj_weight);
+    set(layer.v_proj.bias, raw.v_proj_bias);
+    set(layer.out_proj.weight, raw.out_proj_weight);
+    set(layer.out_proj.bias, raw.out_proj_bias);
+    set(layer.layer_norm.weight, raw.layer_norm_weight);
+    set(layer.layer_norm.bias, raw.layer_norm_bias);
+    set(layer.inter_dense.weight, raw.inter_dense_weight);
+    set(layer.inter_dense.bias, raw.inter_dense_bias);
+    set(layer.output_dense.weight, raw.output_dense_weight);
+    set(layer.output_dense.bias, raw.output_dense_bias);
+    set(layer.final_layer_norm.weight, raw.final_layer_norm_weight);
+    set(layer.final_layer_norm.bias, raw.final_layer_norm_bias);
+    set(hubert.encoder_norm.weight, raw.encoder_norm_weight);
+    set(hubert.encoder_norm.bias, raw.encoder_norm_bias);
+
+    if (quantize_conv) {
+        std::vector<uint8_t> quantized(ggml_nbytes(sem_enc.conv.weight));
+        const size_t written = ggml_quantize_chunk(GGML_TYPE_Q8_0, raw.sem_conv_weight.data(), quantized.data(), 0,
+                                                   kPackedHidden, 3 * kPackedHidden, nullptr);
+        if (written != quantized.size()) {
+            return false;
+        }
+        ggml_backend_tensor_set(sem_enc.conv.weight, quantized.data(), 0, quantized.size());
+    } else {
+        set(sem_enc.conv.weight, raw.sem_conv_weight);
+    }
+    set(fixture.pcm, raw.pcm);
+    return true;
+}
+
+int check_packed_encoder_semantic_conv() {
+    ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    SYNTH_TEST_CHECK(cpu != nullptr);
+
+    const PackedRawWeights          raw     = draw_packed_raw_weights();
+    const synth::omnivoice::HParams hparams = make_packed_hparams();
+
+    auto run = [&](bool quantize_conv, std::vector<float> & output_values) -> bool {
+        PackedFixture fixture;
+        if (!build_packed_fixture(cpu, quantize_conv, raw, fixture)) {
+            return false;
+        }
+        Context       graph_ctx = make_graph_context();
+        ggml_cgraph * graph     = ggml_new_graph_custom(graph_ctx.get(), kNodeBudget, false);
+        ggml_tensor * output =
+            synth::omnivoice::build_semantic_branch(graph_ctx.get(), fixture.pcm, fixture.weights, hparams);
+        if (output == nullptr) {
+            return false;
+        }
+        std::vector<std::vector<float>> values;
+        if (!compute(fixture.backend, graph, { output }, values)) {
+            return false;
+        }
+        output_values = std::move(values[0]);
+        return true;
+    };
+
+    std::vector<float> f32_output;
+    std::vector<float> packed_output;
+    SYNTH_TEST_CHECK(run(false, f32_output));
+    SYNTH_TEST_CHECK(run(true, packed_output));
+    SYNTH_TEST_CHECK(!f32_output.empty());
+    SYNTH_TEST_CHECK(f32_output.size() == packed_output.size());
+
+    const float worst = deviation(packed_output, f32_output.data(), f32_output.size());
+    std::printf("omnivoice-reference-encoder: packed-vs-f32 encoder_semantic.conv worst deviation %.6g\n",
+                double(worst));
+    // Measured 0.0395 on this development host's CPU; gated at 0.15
+    // (~3.8x measured, within the project's <=5x-measured discipline -- see
+    // e.g. tests/omnivoice_resampler_test.cpp's own comment for the same
+    // rule) rather than left at a guessed round number.
+    SYNTH_TEST_CHECK(worst < 0.15f);
+    return 0;
+}
+
 // A shape the builder cannot serve is a wiring defect, so it returns nullptr
 // rather than aborting inside ggml on an assertion the caller cannot catch.
 int check_rejections() {
@@ -1509,6 +1798,7 @@ int check_measurement_point_regression() {
 }  // namespace
 
 int main() {
+    SYNTH_TEST_CHECK(check_packed_encoder_semantic_conv() == 0);
     SYNTH_TEST_CHECK(check_rejections() == 0);
     SYNTH_TEST_CHECK(check_acoustic_rejections() == 0);
     SYNTH_TEST_CHECK(check_rvq_rejections() == 0);

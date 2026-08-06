@@ -134,6 +134,19 @@ def parse_args(argv=None):
     parser.add_argument("--margin-report", action="store_true",
                         help="measure how narrowly each greedy case's decisions were made; "
                              "the screen for new golden cases (see the family doc)")
+    # Placement's accelerated mode (Plan 4 Task 10): passed through to the
+    # runner as --accelerate, which selects SYNTH_BACKEND_CUDA for the codec.
+    # It also changes what the placement check below requires: on a CPU run
+    # every node of every stage must stay on the CPU; with this set the
+    # codec's must ALL have left it while the generator's -- this family's
+    # discrete-outputs rule, docs/backends.md -- must not have moved either
+    # way. Plan 4's Task 11 is what actually runs this against a device; today
+    # (this build registers no accelerator device at all) the runner's own
+    # load call fails cleanly with SYNTH_ERR_INVALID_ARG before a single graph
+    # runs, which this script reports as an ordinary runner-failed case rather
+    # than a placement finding.
+    parser.add_argument("--accelerate", action="store_true",
+                        help="run the codec on the primary backend and require it to land there")
     parser.add_argument("--tolerances", type=pathlib.Path,
                         default=pathlib.Path("tests/tolerances/omnivoice.json"))
     parser.add_argument("--profile", default="F32")
@@ -332,6 +345,8 @@ def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
                VOLUME_BY_BRANCH[branch]] + [str(layer) for layer in PROBE_LAYERS]
     if arguments.margin_report:
         command.append("--margin-report")
+    if arguments.accelerate:
+        command.append("--accelerate")
     # Asked for whenever the case pins one, not only when the port turns out to
     # need it: which grid the port matches is not known until it has run, and a
     # second full greedy run to find out would cost minutes to save one codec
@@ -535,11 +550,32 @@ def main(argv=None) -> int:
                 structural_failures += 1
                 print(f"{result['case']}: free-run waveform differs from this port's own "
                       f"decode of {freerun['grid']} (max_abs {freerun['max_abs']:.6g})")
-        # Plan 2 is CPU-only: a node on an accelerator is a placement bug.
+        # The generator is CPU-only, always: its output is a sampled code, and
+        # docs/backends.md's discrete-outputs rule holds it and its whole input
+        # path on the CPU whether or not --accelerate was asked for. This is
+        # the one half of the old "Plan 2 is CPU-only" assertion that stays
+        # unconditional in both modes.
         placement = result["stats"]["placement"]
-        if placement["generator"][1] != 0 or placement["codec"][1] != 0:
+        if placement["generator"][1] != 0:
             failures += 1
-            print(f"{result['case']}: nodes left the CPU: {placement}")
+            print(f"{result['case']}: generator nodes left the CPU: {placement['generator']}")
+        # The codec has no discrete output of its own, so its placement is
+        # conditional on the mode this run asked for -- mirroring
+        # validate-qwen3-tts-replay.py's own accelerated check. On a plain run
+        # it must stay put like every other node; with --accelerate, claiming
+        # the backend means proving the work reached it, not that a device was
+        # merely present, so a codec graph that silently fell back to the CPU
+        # must fail here rather than pass by omission.
+        codec_nodes, codec_off_cpu = placement["codec"]
+        if arguments.accelerate:
+            if codec_off_cpu != codec_nodes:
+                failures += 1
+                print(f"{result['case']}: codec placed {codec_off_cpu} of {codec_nodes} nodes "
+                      f"off the CPU, expected all")
+        elif codec_off_cpu != 0:
+            failures += 1
+            print(f"{result['case']}: codec placed {codec_off_cpu} of {codec_nodes} nodes "
+                  f"off the CPU on a CPU run")
         # ref.tokens: structural_exactness, compared unconditionally (before
         # and independent of --check), the same rule the greedy grid above
         # follows. A mismatch prints the (level, frame, got, want, gap)

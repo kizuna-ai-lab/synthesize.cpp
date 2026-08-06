@@ -164,11 +164,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--report", type=pathlib.Path, default=None)
     # The Quantization Profile and Execution Backend this run covers, recorded
     # rather than inferred: the tolerance grid is keyed on them, and a run
-    # that does not say which cell it filled cannot fill one. This family has
-    # no accelerator path yet (see src/arch/omnivoice/model.cpp's placement
-    # note), so "cpu" is the only backend there is.
+    # that does not say which cell it filled cannot fill one. "cuda" is
+    # accepted (Plan 4 Task 10) so a future report can name the cell Task 11's
+    # sweep fills; the runner behind this validator (tests/omnivoice_public_
+    # real.cpp) has no backend selector of its own yet, unlike qwen3-tts's --
+    # this flag is metadata for the report only, same as --profile, not a
+    # request forwarded to the runner's command line.
     parser.add_argument("--profile", default="F32")
-    parser.add_argument("--backend", default="cpu", choices=("cpu",))
+    parser.add_argument("--backend", default="cpu", choices=("cpu", "cuda"))
     return parser.parse_args()
 
 

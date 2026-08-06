@@ -44,6 +44,7 @@
 #include "arch/omnivoice/codec-host.h"
 #include "arch/omnivoice/generator-host.h"
 #include "arch/omnivoice/omnivoice.h"
+#include "ggml-backend.h"
 
 #include <chrono>
 #include <cstdint>
@@ -130,6 +131,21 @@ std::string margin_json(const synth::omnivoice::MarginReport & margin) {
     return buffer;
 }
 
+// The first device that is not the CPU. Asking for GGML_BACKEND_DEVICE_TYPE_GPU
+// by name misses this machine entirely: its CUDA device reports as integrated.
+// Mirrors qwen3-tts's own helper (tests/qwen3_tts_replay_real.cpp) exactly --
+// nullptr when the build registers no accelerator at all, which is what a
+// CPU-only build (this one, today) always returns.
+ggml_backend_dev_t first_accelerator() {
+    for (size_t index = 0; index < ggml_backend_dev_count(); ++index) {
+        ggml_backend_dev_t device = ggml_backend_dev_get(index);
+        if (device != nullptr && ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+            return device;
+        }
+    }
+    return nullptr;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
@@ -140,10 +156,21 @@ int main(int argc, char ** argv) {
     bool                     margin_report = false;
     std::string              alt_grid_path;
     std::string              encode_reference_path;
+    // Selects SYNTH_BACKEND_CUDA for the codec (Task 8's per-family gate holds
+    // the generator on the CPU regardless; Task 11 is what makes the codec's
+    // move real). A flag rather than qwen3-tts's SYNTH_QWEN3_TTS_ACCELERATE
+    // env var: this runner already parses its optional modes as flags
+    // (--margin-report, --alt-grid, --encode-reference), so an env var here
+    // would be the one mode a reader could not find by reading this loop.
+    bool                     accelerate = false;
     for (int index = 1; index < argc; ++index) {
         const std::string argument(argv[index]);
         if (argument == "--margin-report") {
             margin_report = true;
+            continue;
+        }
+        if (argument == "--accelerate") {
+            accelerate = true;
             continue;
         }
         // Takes a value, so a missing one is refused rather than swallowing the
@@ -179,7 +206,7 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr,
                      "usage: %s <model.gguf> <case-dir> <out-dir> <num-step> <run-greedy 0|1> "
                      "<decode-replay 0|1> <volume peak|none> [probe-layers...] [--margin-report] "
-                     "[--alt-grid <grid.i32>] [--encode-reference <pcm_24k.f32>]\n",
+                     "[--alt-grid <grid.i32>] [--encode-reference <pcm_24k.f32>] [--accelerate]\n",
                      argv[0]);
         return 2;
     }
@@ -238,7 +265,18 @@ int main(int argc, char ** argv) {
     }
 
     std::unique_ptr<synth::omnivoice::Model> model;
-    synth_status_t                           status = synth::omnivoice::Model::load_cpu(model_path, model);
+    // Plan 4's Task 8 gate lives in the PUBLIC seam (src/synthesize.cpp's
+    // synth_model_load), not here -- this call goes straight to the family's
+    // own Model::load, the same seam qwen3-tts's replay runner uses. In a
+    // build that registers no accelerator device at all (this one, today,
+    // since Task 11 has not landed CUDA support), first_accelerator() returns
+    // nullptr and BackendPlan::create (backend-plan.cpp) refuses a null
+    // primary device with SYNTH_ERR_INVALID_ARG before it even inspects a
+    // device type -- reported below like any other load failure ("load ->
+    // 1"), not a crash. Once Task 11's build registers a real device, this
+    // same call is what starts exercising it.
+    synth_status_t status = accelerate ? synth::omnivoice::Model::load(model_path, first_accelerator(), true, model) :
+                                         synth::omnivoice::Model::load_cpu(model_path, model);
     if (status != SYNTH_OK) {
         std::fprintf(stderr, "load -> %d\n", int(status));
         return 1;

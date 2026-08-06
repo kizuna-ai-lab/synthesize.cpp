@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gguf.h"
 #include "synthesize.h"
 #include "voice-profile-handle.h"
 
@@ -205,6 +206,65 @@ synth_status_t resolve_instruct(const std::string &                     descript
 // `synthesize.profile.schema` is frozen at "omnivoice-clone-prompt"); one
 // schema with an internal kind tag is available without one.
 // ---------------------------------------------------------------------------
+
+// The exact, closed set of metadata keys this family's writer
+// (set_common_metadata/serialize_clone_prompt/serialize_design_instruct, all
+// in profile.cpp) ever emits: the 8 keys every kind shares (including
+// "general.alignment"'s absence -- this writer never sets that key, so it is
+// simply not a member here), plus serialize_clone_prompt's 3 ClonePrompt-only
+// keys, plus serialize_design_instruct's 1 DesignInstruct-only key -- 12
+// entries total. profile.cpp's own prescan_buffer (the untrusted-buffer
+// pre-scan guarding load_profile_from_memory; see that function's own header
+// comment for why it exists) uses this SAME table as its positive-validation
+// whitelist: a key outside this set, or a known key declared with the wrong
+// type/array-ness/count, is refused before gguf_init_from_buffer ever runs.
+//
+// Declared here in the header -- `inline constexpr` at namespace scope, the
+// same pattern src/unicode-ranges.h already uses for its own cross-TU
+// constant tables -- rather than file-local (anonymous-namespace) to
+// profile.cpp, where the rest of the pre-scan machinery still lives, for
+// exactly one reason: tests/omnivoice_serialize_writer_agreement_test.cpp
+// drives the REAL serialize_clone_prompt/serialize_design_instruct and checks
+// their real output's key set against this SAME table, rather than yet
+// another hand-transcription of it -- the carry-over item this test closes:
+// a key REMOVED from the writer while left in this table is a silently
+// too-permissive whitelist that no other fast test would ever notice.
+// CLAUDE.md's "family internals are private; tests may reach them" rule,
+// applied to this one table.
+//
+// `is_array`/`count` are only meaningful together; a scalar entry's `count`
+// is ignored. The two array-typed entries (compatibility_id, content_sha256)
+// are spelled as raw literals here, matching how the other ten entries below
+// already are -- profile.cpp's own kKeyCompatibilityId/kKeyContentSha256
+// constants exist for the call sites that build an actual value FROM them
+// (read_u8_32_array, find_u8_32_value_offset), not for this table, which
+// never referenced the other ten keys' own literals by a shared constant
+// either.
+struct PrescanKeySpec {
+    const char * key;
+    gguf_type    type;
+    bool         is_array;
+    uint64_t     count;
+};
+
+inline constexpr PrescanKeySpec kPrescanKnownKeys[] = {
+    // set_common_metadata (8 keys, every kind).
+    { "general.architecture",                      GGUF_TYPE_STRING,  false, 0  },
+    { "synthesize.voice_profile.format_version",   GGUF_TYPE_UINT32,  false, 0  },
+    { "synthesize.voice_profile.model_family",     GGUF_TYPE_STRING,  false, 0  },
+    { "synthesize.voice_profile.schema",           GGUF_TYPE_STRING,  false, 0  },
+    { "synthesize.voice_profile.schema_version",   GGUF_TYPE_UINT32,  false, 0  },
+    { "synthesize.voice_profile.compatibility_id", GGUF_TYPE_UINT8,   true,  32 },
+    { "synthesize.voice_profile.content_sha256",   GGUF_TYPE_UINT8,   true,  32 },
+    { "synthesize.voice_profile.kind",             GGUF_TYPE_STRING,  false, 0  },
+    // serialize_clone_prompt (3 more keys, "clone-prompt" only).
+    { "synthesize.voice_profile.transcript_text",  GGUF_TYPE_STRING,  false, 0  },
+    { "synthesize.voice_profile.ref_rms",          GGUF_TYPE_FLOAT32, false, 0  },
+    { "synthesize.voice_profile.language_tag",     GGUF_TYPE_STRING,  false, 0  },
+    // serialize_design_instruct (1 more key, "design-instruct" only).
+    { "synthesize.voice_profile.instruct",         GGUF_TYPE_STRING,  false, 0  },
+};
+inline constexpr size_t kPrescanKnownKeyCount = sizeof(kPrescanKnownKeys) / sizeof(kPrescanKnownKeys[0]);
 
 // Serializes `prompt` into a fresh v1 envelope. `compatibility_id` is the
 // Loaded Model's own 32-byte Profile Compatibility ID (already decoded from

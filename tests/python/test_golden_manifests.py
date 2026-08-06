@@ -258,6 +258,37 @@ class GoldenManifestSchemaTest(unittest.TestCase):
                             f"{case['id']}: {entry['file']} has sha256 {digest}",
                         )
 
+    def test_omnivoice_primary_grids_are_digest_pinned(self):
+        """Every omnivoice case pins its PRIMARY grid's sha256, not only fast-mode's alternate.
+
+        The primary grid is never committed -- it lives in the oracle dump
+        under `case_artifact_root`, which stays out of the tree -- but its
+        digest is knowable ahead of time, and recording it turns "the oracle
+        dump on this machine is the one the manifest describes" into
+        something scripts/validate-omnivoice-replay.py checks (before
+        comparing anything) rather than assumes. Scoped to the omnivoice
+        manifest: `stochasticInput.sha256` is optional in the shared schema
+        because vits/kokoro/qwen3-tts use the same type for their own
+        stochastic inputs and do not (yet) pin one.
+        """
+        for path, manifest in self.manifests:
+            if manifest["family"] != "omnivoice":
+                continue
+            with self.subTest(manifest=path.name):
+                for case in manifest["cases"]:
+                    grid_entries = [
+                        entry for entry in case["oracle"]["stochastic_inputs"]
+                        if entry["name"] == "codes.grid"
+                    ]
+                    self.assertEqual(
+                        1, len(grid_entries),
+                        f"{case['id']}: expected exactly one codes.grid stochastic input",
+                    )
+                    self.assertIn(
+                        "sha256", grid_entries[0],
+                        f"{case['id']}: codes.grid stochastic input has no pinned sha256",
+                    )
+
     def test_generated_artifact_paths_stay_inside_the_case_root(self):
         for path, manifest in self.manifests:
             with self.subTest(manifest=path.name):

@@ -138,7 +138,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "26c69f73d96a49113d9c1917f1384f364becef2dd8f8c71845b3952d0c6b326f"
           }
         ]
       },
@@ -267,7 +268,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "60473d82f59352094a7c0f5f6cb8d30ec52331e331c3516640fc05ad230ad4f5"
           }
         ]
       },
@@ -396,7 +398,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "bf474db4089195a589e2af72e173724a39aa49de6c2a8c99636619b090ffc40c"
           }
         ]
       },
@@ -525,7 +528,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "4fae225663ca01f811ca066240077df81b502471f9f7d1b29b96d53cff42e0e2"
           }
         ]
       },
@@ -654,7 +658,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "a208c95a597459e4d4c2bdb339bf2d2b84c25de7d20d1b6dfbb7c010ae01805b"
           }
         ]
       },
@@ -783,7 +788,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "0a7b6ca30c751956d97f0909ae2981ede97e768ee2bb62722fc55732cc21971b"
           }
         ]
       },
@@ -912,7 +918,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "18e38c6fd1b0fed4aaf6e6c735fc7fb20d1213e36e0b54590c474f0c99681e6d"
           }
         ]
       },
@@ -1041,7 +1048,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "add6b34e10a72a8e65cf941367fee13ff6a477198d2ad0c1866d99121b90655c"
           }
         ]
       },
@@ -1170,7 +1178,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "5740eeea93e02a5c08145f2f44406dc085a1473a2abcb48c51776c8d8de9a853"
           }
         ]
       },
@@ -1299,7 +1308,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "0975a873970de6f9b53f45d84003bbb4c536adb4b2c3427e14b530f8725d49d3"
           }
         ]
       },
@@ -1428,7 +1438,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "3261532625e04a144e801c81e968558c110b0dd4c01551bfa420e0f1c2eeceb0"
           }
         ]
       },
@@ -1557,7 +1568,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "39c0690ffdd6821ebbedf651f37b321756093cf17adadd42b86914b199fb81fe"
           }
         ]
       },
@@ -1687,7 +1699,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "ab3e9a30e76cca8c574d769b74d08812b29f662a8a4ef2382646c85239d2eac2"
           }
         ]
       },
@@ -1817,7 +1830,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "f170aef7111b11ed6039970888cb40e08e662bac02aa9a054fe029cb709d6b76"
           }
         ]
       },
@@ -1954,7 +1968,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "8608b5d5d4fd7ddbf5b3084f90b1df222d16b0c59a9608c506937c2c7c355586"
           }
         ]
       },
@@ -2121,7 +2136,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "44075f6cef0607f7dd1d257ae880cef10796d672c9332a7e3cc1989e007ce896"
           }
         ]
       },
@@ -2280,7 +2296,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "70ebe3093eb691c9409f0fdc8c525c875cd68781958045b4cf24313f8e8ff05a"
           }
         ],
         "alternate_grids": [
@@ -2416,7 +2433,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "318a39c33c1d5fdd7666be252c38b08b9e005ab45b20ca159b8e05e256c7565f"
           }
         ]
       },
@@ -2545,7 +2563,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "cf77340c0cb2c4b71bbef3a1620dcbf618e43d87130662b267ced0b723368118"
           }
         ]
       },
@@ -2674,7 +2693,8 @@
           {
             "name": "codes.grid",
             "path": "codes/grid.i32",
-            "format": "i32le"
+            "format": "i32le",
+            "sha256": "e1e27a9f3db1ed391459e93ba142dd731a8117f52d5ded662495ef9d18da80fe"
           }
         ]
       },

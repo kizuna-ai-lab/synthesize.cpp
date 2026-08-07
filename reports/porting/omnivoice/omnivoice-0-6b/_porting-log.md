@@ -2778,3 +2778,295 @@ on CUDA" Open Question is resolved: the generator does not move, by the
 discrete-outputs rule, and was never a live candidate — only the codec's 152
 decode-path tensors do. Publication and the support matrix are separate,
 later questions.
+
+## 2026-08-07 — Plan 4 Task 12: generator-on-CUDA, measured as an experiment — flips, does not ship
+
+Task 11 closed the "Generator on CUDA" Open Question by *policy*: the
+discrete-outputs rule holds the generator on the CPU regardless of backend,
+so it was never a live candidate for a claim. This task runs the *empirical*
+test the Open Question originally asked for anyway — what actually happens
+to the committed token grids if the rule is deliberately broken and the
+generator is forced onto the primary backend — because a policy argument and
+a measurement are different kinds of evidence, and the family doc's own
+standing rule ("claimed only if placement evidence proves the committed
+token grids bit-identical to CPU") is about the latter.
+
+### Method: one line, reverted, never shipped
+
+`src/arch/omnivoice/model.cpp`'s `generator_branch_forward` calls
+`GraphRun::run(logits_tensor, "omnivoice.generator", threads)` at its
+`on_primary=false` default — the one call site every generator forward (step
+0, and both CFG branches of every denoising step) goes through. The
+experiment is flipping that one argument to `true`:
+
+```diff
+-    const synth_status_t status  = run.run(logits_tensor, "omnivoice.generator", threads);
++    const synth_status_t status = run.run(logits_tensor, "omnivoice.generator", threads, true);
+```
+
+`on_primary=true` routes the graph through `BackendPlan::create_scheduler()`
+(primary CUDA + CPU fallback, `op_offload=true`) instead of
+`create_cpu_scheduler()`. No weight-mirroring twin was built for this
+experiment — the generator's weights stay exactly where `Model::load`
+already puts them, in the one CPU-resident `weights_context`/`weights_buffer`
+Task 9's comment names as never retargetable. `ggml_backend_sched`'s
+`op_offload` path is what makes this work at all: it offloads a
+CPU-resident-weight op onto the primary backend anyway, copying whatever
+operand it needs at each split boundary. That is the same mechanism
+`docs/backends.md`'s discrete-outputs section measured at "2,372 scheduler
+splits... five times slower" for Kokoro's duration stage and rejected for
+the *shipped* path on performance grounds — irrelevant here, because this
+run is not shipping.
+
+Built once, into the existing `dev-dgx-spark` CUDA tree, on top of it:
+
+```
+export SYNTH_CUDA_ROOT=/usr/local/cuda-13.3
+export PATH="$SYNTH_CUDA_ROOT/bin:$PATH"
+export LD_LIBRARY_PATH="$SYNTH_CUDA_ROOT/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+cmake --build build/dev-dgx-spark --target synthesize-omnivoice-replay-real -j 20
+```
+
+Kept off the shipped path in the plainest way available: the patch lives
+only in one hand-edited working-tree line, is never registered behind a
+build flag or CLI option, and is reverted with `git checkout --
+src/arch/omnivoice/model.cpp` (confirmed via `git diff`/`git status` — clean)
+before any of the verification gates below ran or this commit was made. No
+committed source carries a reachable path to `on_primary=true` for the
+generator.
+
+### Baseline: reproduce the family doc's own margin table first
+
+Before touching the source, a plain CPU `--margin-report` run (unmodified
+binary, no rebuild) reproduces the family doc's margin table exactly and
+gives the exact position each case's narrowest decision sits at — useful
+below when checking whether a flip lands where the margin table would
+predict:
+
+```
+uv run --project scripts/envs/omnivoice --locked python3 \
+  scripts/validate-omnivoice-replay.py \
+  --model models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
+  --require grid --margin-report \
+  --work build/goldens/omnivoice-replay-task12-cpu-baseline
+```
+
+```
+omni-short-en:      min selection margin 0.000115871 at step 7,  codebook 0, frame 19
+omni-lang-none:     min selection margin 0.000603199 at step 11, codebook 0, frame 13
+omni-long-boundary: min selection margin 0.000204682 at step 11, codebook 0, frame 237
+omni-rate-slow:     min selection margin 9.53674e-06 at step 28, codebook 4, frame 80
+omni-rate-fast:     min selection margin 0.000244433 at step 10, codebook 0, frame 9
+token grids exact: 17/17
+```
+
+Matches the family doc's `1.16e-04` / `6.03e-04` / `2.05e-04` / `9.5e-06` /
+`2.44e-04` to the measured digit. ~8 minutes wall for all 20 cases
+(`--require grid`, no waveform decode).
+
+### The gate: 3/17 byte-exact, not 17/17 — STOP
+
+```
+uv run --project scripts/envs/omnivoice --locked python3 \
+  scripts/validate-omnivoice-replay.py \
+  --model models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
+  --runner build/dev-dgx-spark/bin/synthesize-omnivoice-replay-real \
+  --accelerate --profile F32 --backend CUDA --stage replay \
+  --require grid --margin-report \
+  --work build/goldens/omnivoice-replay-task12-generator-cuda
+```
+
+2:12.77 wall for all 20 cases — *faster* than the CPU baseline despite
+`op_offload`'s per-forward weight copies, confirming the generator's own
+compute genuinely moved rather than merely being nominally rescheduled.
+Placement, aggregated over all 20 cases: **849,315 of 880,032 generator
+nodes (96.51%) left the CPU** — the same 880,032-node total Task 11's own
+sweep reported (confirming this is the identical graph, only the scheduler
+changed) — so the experiment is not a token gesture at the flag level: the
+generator's compute substantially and verifiably ran on the primary device.
+
+```
+token grids exact: 3/17
+```
+
+| case | elements | mismatches | % flipped | GPU margin (kind@step,cb,frame=value) | CPU margin |
+| --- | ---: | ---: | ---: | --- | --- |
+| omni-upstream-readme | 536 | 23 | 4.29% | selection@19,1,5=6.47e-04 | argmax@31,6,54=1.14e-03 |
+| omni-short-en | 400 | 376 | 94.00% | selection@7,0,47=2.23e-04 | selection@7,0,19=1.16e-04 |
+| omni-short-zh | 432 | 208 | 48.15% | selection@25,2,47=1.69e-03 | selection@29,5,36=2.46e-03 |
+| omni-short-ja | 376 | 142 | 37.77% | selection@26,3,24=3.32e-04 | selection@25,2,33=2.66e-03 |
+| omni-lang-none | 392 | **0** | 0.00% | selection@11,0,13=8.88e-04 | selection@11,0,13=6.03e-04 |
+| omni-punctuation | 536 | 4 | 0.75% | selection@1,0,19=4.26e-03 | argmax@31,7,32=8.39e-04 |
+| omni-digits | 1056 | 1038 | 98.30% | argmax@31,6,64=5.26e-04 | argmax@31,7,102=1.40e-03 |
+| omni-nonverbal | 488 | 10 | 2.05% | argmax@31,6,57=2.85e-03 | argmax@31,7,28=1.89e-03 |
+| omni-medium-en | 2456 | 1651 | 67.22% | selection@27,3,115=1.77e-04 | argmax@31,7,297=7.17e-04 |
+| omni-long-boundary | 5752 | 4190 | 72.84% | selection@27,3,664=3.32e-04 | selection@11,0,237=2.05e-04 |
+| omni-rate-slow | 800 | 410 | 51.25% | selection@28,4,79=5.15e-05 | selection@28,4,80=9.54e-06 |
+| omni-rate-fast | 200 | 1 | 0.50% | selection@10,0,9=2.43e-04 | selection@10,0,9=2.44e-04 |
+| omni-design-en | 400 | **0** | 0.00% | selection@3,0,47=2.19e-03 | selection@3,0,47=1.41e-03 |
+| omni-design-zh | 392 | 301 | 76.79% | argmax@31,7,16=2.59e-04 | argmax@31,7,46=6.41e-04 |
+| omni-clone-en | 560 | 115 | 20.54% | selection@14,0,46=8.69e-04 | selection@29,5,13=1.19e-03 |
+| omni-clone-zh | 784 | 254 | 32.40% | argmax@31,6,29=9.99e-04 | selection@25,2,53=1.28e-03 |
+| omni-fast-mode | 400 | **0*** | 0.00% | selection@9,1,6=1.25e-03 | argmax@15,7,8=6.87e-05 |
+
+\* `omni-fast-mode` matched its committed alternate grid
+(`omni-fast-mode.alternate-grid-1.i32`), the same dual-admissible witness
+Task 2/the 2026-07-31 ruling already covers — not a coincidental agreement
+with the primary.
+
+**Aggregate: 8,723 of 15,960 committed tokens (54.66%) differ from the CPU
+baseline; 45.34% agree.** Per-case: **3/17 exact** (`omni-lang-none`,
+`omni-design-en`, `omni-fast-mode`), 14/17 flip, several catastrophically
+(`omni-digits` 98.30%, `omni-short-en` 94.00%). `ref.tokens` (the two
+cloning cases' RVQ encode, unaffected by this patch since it never touches
+`generator_branch_forward`) stayed 2/2 exact, as expected.
+
+### Per-position detail for the four smallest flips
+
+The full per-position `(codebook, frame, got, want)` quintuple for every
+case with a tractable number of mismatches (the four largest flips run into
+the thousands and are not reproduced element-by-element here; the counts
+above and the raw `grid.i32` files under `build/goldens/omnivoice-replay-
+task12-generator-cuda/` are the record):
+
+```
+omni-rate-fast (1 of 200):
+  codebook 7 frame 13: want(cpu)=554  got(gpu)=984
+
+omni-punctuation (4 of 536):
+  codebook 7 frame 2:  want=658   got=597
+  codebook 7 frame 7:  want=1018  got=761
+  codebook 7 frame 23: want=14    got=481
+  codebook 7 frame 32: want=217   got=1007
+
+omni-nonverbal (10 of 488):
+  codebook 6 frame 45: want=315  got=173
+  codebook 6 frame 57: want=614  got=770   <- coincides with this run's
+                                              own reported narrowest margin
+                                              (argmax@31,6,57 = 2.85e-03)
+  codebook 7 frame 3:  want=528  got=440
+  codebook 7 frame 6:  want=863  got=865
+  codebook 7 frame 7:  want=830  got=78
+  codebook 7 frame 10: want=753  got=137
+  codebook 7 frame 13: want=863  got=818
+  codebook 7 frame 28: want=734  got=465
+  codebook 7 frame 45: want=369  got=612
+  codebook 7 frame 51: want=761  got=210
+
+omni-upstream-readme (23 of 536): codebooks 4-7, various frames; none
+  coincide with this run's own reported margin position (selection@19,1,5).
+```
+
+Only `omni-nonverbal`'s flip happens to land where the run's own margin
+report points — and that position's margin (2.85e-03) is not itself
+narrow; it is *not* in the sub-1e-4 screen band, nearly 3x the screen
+threshold. The other three small-flip cases' actual flip positions are
+elsewhere entirely. This is a limit of the instrumentation, not a surprise:
+`MarginReport` (`generator-host.h`) keeps only the single narrowest
+decision over the *whole run*, not a per-position ledger, so most flip
+positions here have no recorded margin to quote — a run with 8 codebooks x
+tens of frames x 32 steps makes far more decisions than the one the
+instrument was built to surface.
+
+### Interpretation: this does not match the margin-table prediction
+
+The four in-band cases the family doc names as likeliest to flip first —
+`omni-short-en` (1.16e-04), `omni-long-boundary` (2.05e-04), `omni-rate-fast`
+(2.44e-04), `omni-lang-none` (6.03e-04) — plus `omni-rate-slow` (9.5e-06,
+already below the screen) were the predicted leading indicators. Against
+that prediction:
+
+- Three of the five predicted cases flip (`omni-short-en`, `omni-long-
+  boundary`, `omni-rate-slow`), one flips by a single token
+  (`omni-rate-fast`), and one does **not** flip at all (`omni-lang-none`).
+- Ten cases with comfortably "safe" CPU-vs-oracle margins — none within 6x
+  of the screen — flip too, several worse than any of the predicted five:
+  `omni-digits` (1.40e-03 margin, 98.30% flipped), `omni-short-zh` (2.46e-03
+  margin, 48.15% flipped), `omni-short-ja` (2.66e-03 margin, 37.77%
+  flipped).
+- Only `omni-design-en` (1.41e-03) stays exact among the "safe" cases,
+  alongside `omni-lang-none` and the dual-admissible `omni-fast-mode`.
+
+So the answer is **no, the flip pattern does not match the margin table**,
+and the reason is visible in the probe table the same run produced:
+
+```
+                        max_abs (GPU vs. CPU baseline)
+generator.logits_step0  0.100906
+generator.hidden_l0     0.00626373
+generator.hidden_l7     0.0691681
+generator.hidden_l14    0.0986023
+generator.hidden_l21    0.726776
+generator.hidden_l27    14.8662
+```
+
+Step 0's logit divergence alone (0.10 max_abs) is already ~90x the 6.1e-04
+max_abs the margin screen was calibrated against (the CPU-port-vs-oracle
+divergence the family doc's knife-edge ruling derives 1e-4 from), and by
+the last of 28 layers it has compounded to 14.9 — five orders of magnitude
+past the 1e-4 screen and roughly 4 orders past the widest of the 17 cases'
+own recorded margins (2.66e-03). The margin table predicts which decisions
+are *narrow relative to this port's own ~6e-4 CPU arithmetic difference
+from the oracle*; TF32 compounding through a 28-layer transformer run 32
+times, each forward doing both CFG branches, produces a perturbation two to
+three orders of magnitude larger than that calibration basis. At that
+scale nearly every decision in the suite is exposed, not only the
+already-narrow ones — which is exactly what 14 of 17 cases flipping, with
+several near-total, shows. `omni-lang-none` and `omni-design-en` surviving
+are best read as luck at that scale, the same word the family doc already
+uses for `omni-rate-slow`'s CPU-side margin — not as a demonstration that
+either case's decisions are actually robust to it.
+
+### Decision: the generator stays on CPU; no claim is made
+
+Per the plan's own Step 2 rule ("Any flip → the generator stays on CPU, the
+claim is not made, and the measurement is recorded so the next cycle does
+not repeat it"): 14 of 17 greedy cases flip, most by a wide margin, so this
+is not the ambiguous case the plan reserves for jiangzhuo — it is a clean
+STOP. No change to `family_supports_explicit_backend` or any shipped
+placement; `docs/backends.md`'s discrete-outputs rule already held this
+stage on the CPU by construction (Task 11), and this measurement is
+confirming evidence for keeping it there, not new grounds to reconsider it.
+The Open Question in `docs/porting/families/omnivoice.md` gets this
+measurement recorded alongside Task 11's policy answer, so a future cycle
+does not re-run the same experiment expecting a different, more favorable
+number.
+
+### Revert, and re-verification that the shipped claim is unaffected
+
+```
+git checkout -- src/arch/omnivoice/model.cpp   # confirmed clean via git diff/status
+cmake --build build/dev-dgx-spark --target synthesize-omnivoice-replay-real -j 20
+uv run --project scripts/envs/omnivoice --locked python3 \
+  scripts/validate-omnivoice-replay.py \
+  --model models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
+  --runner build/dev-dgx-spark/bin/synthesize-omnivoice-replay-real \
+  --accelerate --profile F32 --backend CUDA --stage replay --require grid \
+  --work build/goldens/omnivoice-replay-task12-revert-check
+```
+
+```
+token grids exact: 17/17
+ref.tokens exact: 2/2
+```
+
+Bit-for-bit the same result Task 11 committed — the shipped CUDA claim
+(codec moves, generator does not) is unaffected by this task.
+
+### Gates
+
+| gate | result |
+| --- | --- |
+| `cmake --build build --target synthesize-check-unit` (CPU-only) | 90/90 passed |
+| `cmake --build build-sanitize --target synthesize-check-unit` | 89/89 passed |
+| `ctest --test-dir build-integration -L integration -R omnivoice` | 7/7 passed (902.49s: `cli` 34.28s, `public-cleanup` 96.01s, `load-real` 4.40s, `profile-test` 129.84s, `resampler-golden` 0.01s, `replay-golden` 441.74s, `public-request` 196.21s) |
+| `scripts/ci/clang-format.sh --check-diff` | exit 0 (no C/C++ file carries a diff — the experimental patch was reverted before this ran) |
+
+No source file differs from `HEAD` at the point this task committed; the
+only committed changes are this entry, the family doc's Open Question
+update, and the task report.
+
+### Status
+
+**DONE — STOP condition, as a complete and legitimate outcome.** The
+generator is not claimed on CUDA. Commit follows this entry.

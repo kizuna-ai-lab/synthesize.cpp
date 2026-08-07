@@ -1568,6 +1568,49 @@ every sampled token rather than upstream of one) moved, and the twenty-case
 sweep held all seventeen greedy grids and both cloning grids byte-exact
 against the CPU baseline.
 
+**The empirical test the question originally asked for was still run
+(Plan 4 Task 12, 2026-08-07), separately from the policy answer above.**
+Policy holding the generator on the CPU is not the same claim as measuring
+what breaks if it does not, and this family doc's own standing rule --
+"claimed only if placement evidence proves the committed token grids
+bit-identical to CPU" -- is about the measurement. A one-line, hand-reverted
+patch (`generator_branch_forward`'s `GraphRun::run(...)` call, `on_primary`
+flipped to `true`; never registered behind any build flag or option, never
+shipped, full method in the porting log) forced the generator's own graph
+through the primary-backend scheduler, and the twenty-case sweep re-ran
+against it: **3 of 17 greedy grids stayed byte-exact; 14 flipped, several
+almost totally (`omni-digits` 98.30%, `omni-short-en` 94.00%). Aggregate
+token agreement across all 17 cases: 45.34% (8,723 of 15,960 positions
+differ).** This is markedly worse than the "Metal-F32 at 83%" reference
+point above, which was already characterized as encouraging rather than
+evidentiary.
+
+The flip pattern does **not** match this doc's own margin-table prediction.
+Three of the five cases the margin table names as likeliest to flip first do
+flip (`omni-short-en`, `omni-long-boundary`, `omni-rate-slow`), one flips by
+a single token (`omni-rate-fast`), and one does not flip at all
+(`omni-lang-none`) -- but ten cases with comfortably safe CPU-vs-oracle
+margins flip too, several worse than any of the predicted five
+(`omni-digits`, margin 1.40e-03, 98.30% flipped). The mechanism why is in
+the same sweep's own probe table: step-0 logits already diverge from the CPU
+baseline by 0.10 max_abs -- about 90x the 6.1e-04 the margin screen is
+calibrated against -- and TF32 error compounding through the generator's 28
+transformer layers, 32 denoising steps and two CFG branches per step grows
+that to 14.9 max_abs by the final layer, several orders of magnitude past
+both the screen and the widest margin any of the 17 cases actually carries.
+At that scale nearly every decision in the suite is exposed, not only the
+already-narrow ones, which is what distinguishes this result from a
+knife-edge story: it is a magnitude problem from depth times step count, not
+a handful of coin-flip decisions. Full per-case numbers, per-position detail
+for the four smallest flips, and the exact reproduction method are in
+`reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s Task 12 entry.
+
+This changes nothing about the shipped claim -- the discrete-outputs rule
+already held this stage on the CPU by construction, independent of what this
+measurement found -- but it closes the question the family doc originally
+posed with a real number instead of an argument, so a future cycle does not
+re-run the same experiment expecting a more favorable one.
+
 **Quantized profiles against the argmax cascade.** ~~Whether any profile below
 F32 survives the exact-token gates is an open measurement, not an
 expectation.~~ **Answered 2026-08-06: no profile below F32 survives, and this

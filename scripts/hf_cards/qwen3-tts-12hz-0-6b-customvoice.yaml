@@ -131,7 +131,7 @@ publication_note: |
 usage:
   profile: F16
   voice: aiden
-  phonemes: "Qwen3-TTS is awesome!"
+  text: "Qwen3-TTS is awesome!"
 
 quants:
   - name: BF16

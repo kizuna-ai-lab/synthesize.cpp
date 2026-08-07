@@ -53,14 +53,25 @@ validated on {{ validation.date }} against {{ validation.reference }}.
 All profiles use the same {{ architecture_label }} architecture and public synthesize.cpp API. The
 profile name describes a versioned storage policy, not the language or Execution
 Backend.
+{% if sidecars is defined and sidecars %}
+## Sidecar files
 
+These files are not GGUF tensor storage; they are declared resources that must
+travel with the package. Verify each digest before relying on its contents.
+
+| Role | File | Size | SHA-256 |
+| --- | --- | ---: | --- |
+{%- for sidecar in sidecars %}
+| {{ sidecar.role }} | [{{ sidecar.filename }}](https://huggingface.co/{{ target_repo }}/resolve/main/{{ sidecar.filename }}) | {{ sidecar.size }} ({{ "{:,}".format(sidecar.size_bytes) }} bytes) | `{{ sidecar.sha256 }}` |
+{%- endfor %}
+{% endif %}
 ## Validation status
 
 `validation_level: {{ validation.level }}`
 
 {{ validation.stages }} graph stages were replayed for {{ validation.cases_per_stage }} cases on
 {{ validation.platforms | join(", ") }}. Duration structure was exact in every
-case. CUDA placement contained zero executable CPU fallback nodes.
+case.{% if validation.cuda_placement | default("full") == "full" %} CUDA placement contained zero executable CPU fallback nodes.{% elif validation.cuda_placement | default("full") == "partial" %} {{ validation.cuda_placement_note }}{% endif %}
 
 | Profile |{% for column in validation.columns %} {{ column.title }} |{% endfor %}
 | --- |{% for column in validation.columns %} ---: |{% endfor %}
@@ -72,7 +83,7 @@ case. CUDA placement contained zero executable CPU fallback nodes.
 
 {% if validation.quality_evaluation == "not_run" -%}
 **Quality evaluation has not been run.** These results establish that the port,
-{{ "Voice selection" if capabilities.voice_mode | default("preset_catalog") == "preset_catalog" else "the fixed-Voice request path" }},
+{% if capabilities.voice_mode | default("preset_catalog") == "preset_catalog" %}Voice selection{% elif capabilities.voice_mode | default("preset_catalog") == "fixed_default" %}the fixed-Voice request path{% else %}the seed-selected Voice request path{% endif %},
 deterministic request path, and CPU/CUDA execution work. They do
 not claim perceptual equivalence, naturalness, intelligibility, or speaker
 similarity.
@@ -96,14 +107,31 @@ This package exposes {{ capabilities.voice_count }} preset speaker IDs,
 `{{ capabilities.voice_ids }}`. It produces {{ capabilities.sample_rate_hz }} Hz
 mono F32 audio. No default speaker is invented; every request must select a
 Voice.
-{%- else -%}
+{%- elif capabilities.voice_mode | default("preset_catalog") == "fixed_default" -%}
 This package has one fixed package-default Voice and does not expose a preset
 speaker catalog. It produces {{ capabilities.sample_rate_hz }} Hz mono F32
 audio. Callers omit Voice selection; the package always uses its trained Voice.
+{%- else -%}
+This package exposes no preset speaker catalog. Its package default has no
+fixed identity: with no Voice Profile supplied, which speaker a request
+produces follows the synthesis seed, so a caller who wants the same speaker
+twice reuses the seed the request reports. Callers who want a specific
+identity instead may build a Voice Profile from
+{%- if "reference_audio" in capabilities.voice_profile_sources and "description_text" in capabilities.voice_profile_sources %} Reference Audio (voice cloning) or Description Text (voice design)
+{%- elif "reference_audio" in capabilities.voice_profile_sources %} Reference Audio (voice cloning)
+{%- elif "description_text" in capabilities.voice_profile_sources %} Description Text (voice design)
+{%- endif %} and pass it to the request. It produces {{ capabilities.sample_rate_hz }} Hz mono F32 audio.
 {%- endif %}
 
+{% if "text_utf8" in capabilities.input_kinds -%}
+This package accepts raw UTF-8 text through the built-in
+`{{ capabilities.frontend_provider }}` frontend, and also accepts exact token
+IDs already produced by the same vocabulary. The frontend tokenizes text
+directly: no grapheme-to-phoneme conversion happens or is needed, and the
+runtime does not silently invoke eSpeak or download a frontend.
+{%- else -%}
 This package accepts UTF-8 phoneme strings through the built-in
-`synthesize.symbol_map` frontend, and also accepts exact token IDs. The frontend
+`{{ capabilities.frontend_provider }}` frontend, and also accepts exact token IDs. The frontend
 validates UTF-8, maps each Unicode scalar through the symbol table embedded in
 the GGUF, and applies the model's blank-insertion rule.
 
@@ -111,6 +139,7 @@ The built-in frontend does not perform grapheme-to-phoneme conversion or text
 normalization. Callers starting from raw text must currently run a compatible
 G2P frontend externally. The runtime does not silently invoke eSpeak or download
 a frontend.
+{%- endif %}
 
 ## Usage
 
@@ -128,8 +157,9 @@ hf download {{ target_repo }} {{ model_slug }}-{{ usage.profile }}.gguf \
 build/bin/synthesize-cli \
   --model models/{{ model_slug }}/{{ model_slug }}-{{ usage.profile }}.gguf \
   --output output.wav \
-  --phonemes "{{ usage.phonemes }}" \
-  --language {{ languages[0] }} \
+{% if "text_utf8" in capabilities.input_kinds %}  --text "{{ usage.text }}" \
+{% else %}  --phonemes "{{ usage.phonemes }}" \
+{% endif %}  --language {{ languages[0] }} \
 {% if capabilities.voice_mode | default("preset_catalog") == "preset_catalog" %}  --voice {{ usage.voice }} \
 {% endif %}  --seed 0
 ```

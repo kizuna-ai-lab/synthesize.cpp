@@ -594,6 +594,21 @@ Package".
 
 ### Task 16: The Listening Audit
 
+**Reordered 2026-08-07 at jiangzhuo's request: this task now runs FIRST in
+Slice D, before Tasks 13–15.** Two reasons, both of which should have been
+obvious when the plan was written. The audit's verdict is an *input* to the
+card (`listening_audit` plus its detail block), so writing the card first with
+`not_run` and amending it afterwards is backwards. And a `regression` verdict
+is a ship-blocker — learning it before investing in generator extensions and
+doc updates is strictly better than after. Every audio-producing slice (A, B,
+C) is complete, so the material exists now.
+
+The matrix is also smaller than this task was written for, because the
+measurements narrowed it: **profiles = F32 only** (Q8_MIXED and F16 both
+failed the exact-token gate and do not ship) and **backends = CPU and CUDA**
+(codec on CUDA; the generator stays on CPU). So the comparisons that matter
+are port-vs-reference and CUDA-vs-CPU, not a profile grid.
+
 **Files:** the audit page and clips (git-ignored working artifacts), the YAML's
 `listening_audit` + `listening_audit_detail`, the porting log
 

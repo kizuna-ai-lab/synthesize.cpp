@@ -3321,8 +3321,11 @@ accept `SYNTH_BACKEND_CUDA` and silently run entirely on CPU); after fix
 round 1 the family-blind cleanup-test gap Task 8's own review found was
 closed too. Task 9 built the codec's accelerator twin with a filter
 narrower than qwen3-tts's blanket `codec.*` mirror (152 movable tensors,
-84.24 MiB, vs. 486 tensors/~593 MiB a copied filter would have mirrored for
-nothing), and fix round 1 caught and fixed a second-consumer trap the first
+84.24 MiB; a copied blanket filter would have mirrored all 486 `codec.*`
+tensors, ≈700 MiB, of which the 334 the CPU-held clone-encode chain reads —
+616.01 MiB, measured, not the ~593 MiB the pre-Task-9 survey estimated —
+would have gone to the device for nothing), and fix round 1 caught and
+fixed a second-consumer trap the first
 draft missed (`codec.quantizer.*` is read by both the decode graph and
 host-side `rvq_encode`). Task 10 made placement checkable. Task 11 ran the
 sweep and claimed the backend:

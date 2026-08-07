@@ -3245,3 +3245,150 @@ listening_audit_detail:
 Complete. Nothing under `build/`, `tests/golden/`, `ggml/`, or `third_party/`
 was modified; the audit's page, manifest and scripts are working artifacts
 under `$CLAUDE_JOB_DIR`, never the repo. Docs-only commit follows this entry.
+
+## 2026-08-07 — Plan 4 closeout: the four slices tied together
+
+Plan 4 took OmniVoice from "port-validated on CPU at F32" (Plan 3's close) to
+a publication-ready Restricted Model Package, in four slices, each closed on
+a measurement rather than an assumption. This section ties them together;
+none of the individual entries above are restated, only cross-referenced.
+
+**Slice A — Quantization (Tasks 1–4), negative and explained.** Task 1's
+classifier and Task 2's packed-convolution branch are real, tested, shipped
+infrastructure regardless of the outcome. Task 3 measured both codec-only
+candidate profiles against the exact-token gate:
+
+| profile | size | sha256 | greedy grids | clone RVQ grids | mismatch | narrowest gap |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| F32 (reference) | 3,189,953,504 B | `f6d504ff…f9fa3` | 17/17 | 2/2 | — | 0.00239563 |
+| Q8_MIXED | 2,703,016,576 B (−15.3%) | `b020933f…4b671e` | 17/17 | 0/2 | 1023/2808 (36.4%) | 0.0102997 (wider than F32, mismatch anyway) |
+| F16 | 2,858,422,240 B (−10.4%) | `530b2b85…0b955fa` | 17/17 | 0/2 | 103/2808 (3.7%) | 0.00306702 |
+
+Both fail; both are BLOCKED, not shipped; no tolerance cell exists for
+either. The greedy margin table is bit-identical across all three profiles
+(the generator is Sensitive/F32 under every profile), which is why none of
+the margin-table's four predicted-first-flip cases (`omni-short-en`,
+`omni-long-boundary`, `omni-rate-fast`, `omni-lang-none`) or `omni-rate-slow`
+actually flipped — the real failure lives entirely in the clone-encode RVQ
+lookup, a subsystem the greedy margin screen was never built to probe. The
+structural reason, computed once and not revisited: **93.8% of the
+quantizable weight (593.3 of 632.3 MiB) is the clone-encode path**
+(`semantic_model` + `acoustic_encoder` + `encoder_semantic`) feeding a
+discrete RVQ nearest-neighbour decision, and the only 6.2% that is safe to
+quantize (`acoustic_decoder`, 39.0 MiB) buys 0.64–0.94% of package size for a
+measurable waveform change. The tensors worth quantizing are exactly the
+ones that cannot be. **This family ships F32-only.**
+
+**Slice B — Validation-suite debt (Tasks 5–7), all three carry-over items
+closed.** Task 5 added
+`synthesize-omnivoice-serialize-writer-agreement-test` (labels
+`unit;omnivoice`), proven in both drift directions and, after fix round 1,
+per-kind exact-equality plus the two `n_kv` count constants — closing the
+dangerous direction (a key silently removed from a writer while the
+whitelist stays permissive) that no prior fast test could see. Task 6 pinned
+all 20 cases' primary-grid sha256 digests in the manifest (a new, additive
+`stochasticInput` schema def, `suite_version` unchanged), extended
+`scripts/validate-omnivoice-replay.py` to verify them before any comparison
+runs (proven pre-spawn: a corrupted digest fails in well under a second, a
+real run takes 400+), and added
+`test_omnivoice_primary_grids_are_digest_pinned` to
+`synthesize-golden-manifest-contract`. Task 7 found both of Plan 1's
+carry-over converter defects (the `verify_gguf` shape check, the
+license-copy ordering) were already fixed on `main` before Plan 4 began
+(`b08757d`, `3b1d88f`, both 2026-07-31); the debt was purely missing unit
+coverage, closed with four new tests plus a defense-in-depth reorder,
+converter emission proven unchanged.
+
+**Slice C — CUDA Execution Backend (Tasks 8–12), claimed for the codec,
+refused for the generator, both on measurement.** Task 8 closed a live
+honesty defect predating this plan (every family, OmniVoice included, could
+accept `SYNTH_BACKEND_CUDA` and silently run entirely on CPU); after fix
+round 1 the family-blind cleanup-test gap Task 8's own review found was
+closed too. Task 9 built the codec's accelerator twin with a filter
+narrower than qwen3-tts's blanket `codec.*` mirror (152 movable tensors,
+84.24 MiB, vs. 486 tensors/~593 MiB a copied filter would have mirrored for
+nothing), and fix round 1 caught and fixed a second-consumer trap the first
+draft missed (`codec.quantizer.*` is read by both the decode graph and
+host-side `rvq_encode`). Task 10 made placement checkable. Task 11 ran the
+sweep and claimed the backend:
+
+- Placement, aggregated over all 20 cases: generator 0/880,032 nodes off
+  CPU; codec 8,440/8,440 nodes off CPU — both unconditional.
+- Token grids: 17/17 greedy + 2/2 clone RVQ byte-exact against the CPU
+  baseline, no flip.
+- Waveform: `audio.pcm` worst cosine 0.9999963545 (deviation ≈3.65e-6),
+  committed at `backends.CUDA.stages.replay` (min_cosine 0.999981, max_abs
+  0.04 — 5× measured, this family's standing rule).
+- Cost is inverted from Kokoro/VITS: codec alone is 9.68× faster on the
+  longest case, but the held generator is 98.9% of wall time, so end-to-end
+  is a 3.4% saving (267.30 s → 258.48 s), not a tax.
+- UMA peak memory has no second budget to report on this hardware
+  (`SYNTH_DEVICE_MEMORY_SHARED`, `memory_total` bit-identical to the CPU
+  device's); host RSS is flat within 4 KB, and the 1,167 MiB transient
+  `nvidia-smi --query-compute-apps` figure is a momentary share of the one
+  128 GB pool, not a dedicated-VRAM requirement.
+- Two registered CUDA gates, neither VITS/Kokoro/qwen3-tts had before this:
+  `synthesize-omnivoice-replay-golden-cuda` (869.83 s) and
+  `synthesize-omnivoice-public-request-cuda` (389.57 s).
+
+Task 12 then ran the empirical experiment the family doc's own Open Question
+asked for — generator on CUDA, hand-reverted, never shipped — and it FLIPS:
+3/17 greedy grids byte-exact, 14 flip (up to 98.30%), 45.34% of all 15,960
+committed positions differ. **The valuable part is that the flip pattern
+does NOT match the margin table**: three of the five margin-predicted
+first-flip cases do flip, one flips by a single token, one does not flip at
+all, while ten comfortably-safe-margin cases flip too, several worse than
+any predicted case (`omni-digits`, margin 1.40e-03, 98.30% flipped). This is
+a magnitude problem, not a knife-edge one: step-0 logit divergence from the
+CPU baseline is already ~90× the margin screen's own calibration basis
+(0.10 vs. 6.1e-04) and compounds through 28 layers, 32 steps and 2 CFG
+branches per step to 14.9 max_abs by the final layer — several orders past
+both the screen and the widest margin any of the 17 cases carries. **The
+margin screen is calibrated for a different scale of perturbation entirely
+and says nothing useful about TF32 at this depth**; it governs which GREEDY
+cases are safe to adopt into the Golden suite on CPU-vs-oracle arithmetic,
+and does not transfer to a backend-placement question at all. The decision
+follows the plan's own rule without needing to reach jiangzhuo: the
+generator stays on CPU, no claim is made, and the discrete-outputs rule
+would have held it there regardless of this measurement's outcome.
+
+**Slice D — Ship (Tasks 13–17).** Task 13 taught the shared HF card
+generator OmniVoice's shape (Sidecar Resources, text input, `--text` usage,
+the third `seed_default_with_profiles` voice mode, conditional CUDA-placement
+prose) — 31/31 generator tests (10 pre-existing + 21 new), 267 python tests,
+and found a real latent bug in the unreleased qwen3-tts card template along
+the way. Task 14 built the clean, flat `models/publish/omnivoice-0-6b/`
+directory (F32 GGUF, the Boson sidecar, the rendered README — no upstream
+checkpoint, no non-shipping profile) and found a second false template claim
+(unconditional "also accepts exact token IDs", false for a `TEXT_UTF8`-only
+family) — 34/34 + 23/23 python tests. Task 16 (moved ahead of 13–15 at
+jiangzhuo's request once every audio-producing slice was complete) recorded
+the Listening Audit verdict: **`no_obvious_regression`, all six pairs**,
+including the CUDA-vs-CPU codec pair (pair 3, the largest numeric divergence
+in the set) corroborating Slice C's backend claim with the one kind of
+evidence a tolerance grid cannot provide. Task 15 brought ADR 0018's
+Restricted Model Package vocabulary into `docs/scope.md`,
+`docs/model-packages.md`, and `CONTEXT.md`'s Validation Level entry. Task 17
+(this entry, plus the family doc's Status line, `docs/testing.md`'s new
+gates, the design spec's license-sentence amendment, and the Plan 5
+carry-over ledger) is the close-out.
+
+**What ships.** `omnivoice-0-6b-F32.gguf` only, as a Restricted Model Package
+(ADR 0018) under `license: other` /
+`license_name: omnivoice-cc-by-nc-unspecified-version-plus-boson-higgs-audio-2-community`,
+CUDA claimed for the codec's decode path only, `listening_audit:
+no_obvious_regression`. Publication itself — `hf repos create` / `hf
+upload` — is a separate act awaiting jiangzhuo's explicit per-act
+confirmation naming the target repository; nothing in this plan performed
+it.
+
+**What Plan 4 newly owes.** Recorded in full, each naming its file, in
+`docs/superpowers/plans/2026-08-07-omnivoice-plan-5-carryover.md`: the margin
+screen does not transfer to backend-placement questions (Task 12's finding,
+above); `models/publish/` is a working, git-ignored directory the upload
+command depends on and must be rebuilt if the shipped GGUF ever changes; and
+the four project-wide questions this plan's own carry-over ledger declined
+to settle unilaterally (`SYNTH_ASSERT` under `NDEBUG`, the
+`synthesis.graph_failed` diagnostic name, the `std::optional` stream
+micro-optimization, and the two-clips validation-order test), plus the
+float64 cosine-estimator question, both still open from Plan 3's own ledger.

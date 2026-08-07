@@ -1,6 +1,6 @@
 # Testing Policy
 
-Status: Confirmed, last updated on 2026-08-02.
+Status: Confirmed, last updated on 2026-08-07.
 
 Testing is a per-slice completion gate. A new converter rule, graph stage,
 runtime control, backend path, or public Interface is not complete merely because
@@ -98,6 +98,18 @@ it is a gate against the committed tolerances rather than a measurement -- witho
 it `tests/tolerances/qwen3-tts.json` is a record nothing enforces. It needs the
 oracle payload under `build/goldens/qwen3-tts/` and is not registered without it.
 
+`synthesize-golden-manifest-contract` (`unit`) is the structural test over every
+committed Golden Manifest against its schema
+(`docs/schemas/synthesize-golden-manifest-v1.schema.json`), shared across all
+four families. OmniVoice's manifest additionally pins a sha256 digest on
+every case's primary token grid, symmetric with the digest `omni-fast-mode`'s
+alternate grid already carried; the contract test's
+`test_omnivoice_primary_grids_are_digest_pinned` enforces that every case
+carries one. `scripts/validate-omnivoice-replay.py` verifies each digest
+against the local oracle dump before any comparison runs, greedy or sampled
+case alike, and fails in well under a second on a mismatch -- the runner
+subprocess that does the multi-second inference is never spawned.
+
 `synthesize-qwen3-tts-public-request` needs only the package. It asserts relations
 between runs of this port -- a seed reproduces, a different seed does not, a Voice
 change moves the audio -- rather than agreement with the reference, so it has no
@@ -160,6 +172,18 @@ blacklist of `ggml`'s own reserved-key asserts -- is recorded in
 `docs/porting/families/omnivoice.md`'s "untrusted-bytes lesson" section; its
 standing evidence is a repeatable fuzz harness, not this test alone.
 
+`synthesize-omnivoice-serialize-writer-agreement-test` (`unit`) is that
+untrusted-bytes hardening's fast companion: it drives the real
+`serialize_clone_prompt`/`serialize_design_instruct` writers against a
+synthetic in-memory model, parses the emitted bytes with `ggml`'s own reader,
+and asserts the emitted key sets equal `kPrescanKnownKeys` exactly, per kind
+and in aggregate, including the two kinds' own `n_kv` count constants (Plan
+4, Task 5). It exists because the model-guarded round trip above is the only
+prior test that ever exercised the real writer against the real whitelist,
+and it could not catch the dangerous drift direction -- a key silently
+removed from a writer while the whitelist still accepts it -- fast or at all
+without a real GGUF package.
+
 OmniVoice's CLI and Python-wheel Adapters (`examples/cli/` and the API
 wheel) are registered the same way as VITS's and Kokoro's:
 `synthesize-omnivoice-cli` (model-guarded, package-default Voice, no
@@ -188,6 +212,18 @@ CUDAToolkit_ROOT="$SYNTH_CUDA_ROOT" \
 cmake --build --preset dev-dgx-spark -j
 ctest --preset dev-dgx-spark
 ```
+
+Configuring this preset with `-DSYNTH_BUILD_INTEGRATION_TESTS=ON` (its own
+default is off) registers OmniVoice's two CUDA integration gates alongside
+its CPU ones, both `--accelerate` sweeps of the real 0.6B package against the
+real oracle payload: `synthesize-omnivoice-replay-golden-cuda` (measured
+869.83s) and `synthesize-omnivoice-public-request-cuda` (measured 389.57s).
+Neither VITS, Kokoro, nor Qwen3-TTS had a permanently-registered CUDA-backend
+ctest for their golden or public validators before this (Plan 4, Task 11) --
+their own CUDA evidence lived only in prose and manual runs. The same
+configuration also makes `tests/public_cleanup_test.cpp`'s CUDA arm live for
+every family it did not already cover, since that test is generic across
+families rather than gated per one.
 
 The equivalent RTX 4070 SUPER command uses the
 `dev-linux-x86_64-cuda` preset and native `sm_89`. Release jobs use the

@@ -1,17 +1,24 @@
 # OmniVoice Family Selection and Port Plan
 
-Status: Confirmed 2026-08-06. Intake through the greedy synthesis core
+Status: Confirmed 2026-08-07. Intake through the greedy synthesis core
 (slices 4–6) done: single-forward parity, exact token grids 17/17, replay
 waveform under committed tolerances (tests/tolerances/omnivoice.json). Plan 3
 (the public sampled path, Reference Audio and Description Text Voice
 Profiles, their Serialized Profile GGUF round-trip, the CLI and Python-wheel
-Adapters, and this record's own close-out) is done as of Task 17. Plan 4's
-Quantization Profile measurement is done and its answer is negative: both
-candidate profiles were produced and both fail the clone path's exact-token
-gate, so this family ships F32-only (see the quantization section). The
-remainder of the Port Validation Suite, Quantization Profiles, Execution
-Backends, and ship (Plan 4) have not started; the carry-over debt this plan
-leaves behind is `docs/superpowers/plans/2026-08-02-omnivoice-plan-4-carryover.md`.
+Adapters, and this record's own close-out) is done as of Task 17. Plan 4
+(Quantization Profile measurement, the validation-suite carry-over debt, the
+CUDA Execution Backend, and ship) is done as of its own Task 17. Both
+candidate Quantization Profiles were produced and both fail the clone path's
+exact-token gate, so this family ships F32-only (see the quantization
+section). The CUDA backend is claimed for the codec's decode path; the
+generator stays on CPU by the discrete-outputs rule, and a separate
+measurement confirmed it would not survive placement there anyway (see
+Execution Backends and Open Questions below). The Listening Audit recorded
+`no_obvious_regression` on all six audited pairs. Ship artifacts are prepared
+as a Restricted Model Package (ADR 0018) under `models/publish/omnivoice-0-6b/`;
+publication itself is a separate act awaiting jiangzhuo's per-act
+confirmation. Plan 5's carry-over ledger is
+`docs/superpowers/plans/2026-08-07-omnivoice-plan-5-carryover.md`.
 
 ## Decision
 

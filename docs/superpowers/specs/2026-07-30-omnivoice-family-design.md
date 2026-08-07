@@ -65,6 +65,17 @@ A Restricted Model Package:
 - is uploaded only with jiangzhuo's per-act confirmation, like every
   publication.
 
+**Amended 2026-08-06:** the "`license: cc-by-nc-4.0`-class frontmatter" bullet
+above is superseded. jiangzhuo's Plan 4 ruling sets the ship card's frontmatter
+to `license: other` with a descriptive `license_name` slug instead, consistent
+with the 2026-07-30 GGUF ruling ("never invent a CC version" — upstream states
+no CC-BY-NC version at all) and with ADR 0018:29–31. Every other clause in this
+bullet (Boson agreement as a verbatim Sidecar Resource, dual attribution, the
+no-commercial-use statement, Emilia provenance) is unchanged; only the
+frontmatter `license` value and its class label move. `scripts/hf_cards/
+omnivoice-0-6b.yaml` and `docs/porting/families/omnivoice.md` record the
+operative value.
+
 Cautionary context recorded for the ADR: all three community GGML ports
 misstate or omit these terms (one HF GGUF repo labels the weights apache-2.0);
 the project's card must not inherit any downstream claim.

@@ -3,10 +3,25 @@
 
 Deep generator probes gate on cosine similarity, not max-abs; the waveform
 gates on both, because a listener hears the waveform and a cosine over it
-would hide a constant offset. The token grid is compared EXACTLY: greedy
-decoding makes no RNG call, docs/porting/families/omnivoice.md defines
+would hide a constant offset. The token grid is compared EXACTLY by default:
+greedy decoding makes no RNG call, docs/porting/families/omnivoice.md defines
 structural_exactness for this family as equality of the 8 x T grid, and no
-tolerance file entry exists or ever will for it.
+tolerance file entry exists or ever will for it. The F32/CPU reference
+profile keeps this unconditionally.
+
+`--tokens-informational` narrows that for the one case docs/backends.md's
+discrete-outputs exception carves out: a backend where the generator itself
+(not just the codec) runs on the primary Execution Backend, so TF32 changes
+WHICH token index is committed at a rate a per-token tolerance cannot
+absorb (Plan 5 Task 1/2 measured 3/17 exact, the rest ranging 0.5%-98.3%
+flipped). Under that flag, a content mismatch is reported, not gated -- but
+the grid's SIZE against the primary oracle grid still gates unconditionally,
+because that is the structural property the exception is conditioned on
+(RuleDurationEstimator fixes the canvas length before the first generator
+forward, so a size mismatch here is a real regression, not expected drift).
+This is a narrower, backend-scoped carve-out from the paragraph above, not a
+repeal of it: the CPU reference profile's grid is still compared for exact
+equality, unaffected by this flag.
 
 A case may pin more than one admissible grid. `oracle.alternate_grids` names
 committed, digest-pinned grids the reference itself produced under a different
@@ -135,21 +150,30 @@ def parse_args(argv=None):
                         help="measure how narrowly each greedy case's decisions were made; "
                              "the screen for new golden cases (see the family doc)")
     # Placement's accelerated mode: passed through to the runner as
-    # --accelerate, which selects SYNTH_BACKEND_CUDA for the codec. It also
-    # changes what the placement check below requires: on a CPU run every
-    # node of every stage must stay on the CPU; with this set the codec's
-    # must ALL have left it while the generator's -- this family's
-    # discrete-outputs rule, docs/backends.md -- must not have moved either
-    # way. Plan 4 Task 11 ran this for real against a GB10 device: twenty
-    # golden cases, every codec node off the CPU, every generator node on
-    # it, seventeen greedy grids byte-exact (docs/porting/families/
-    # omnivoice.md's Execution Backends section). On a build that registers
-    # no accelerator device at all, the runner's own load call still fails
-    # cleanly with SYNTH_ERR_INVALID_ARG before a single graph runs, which
-    # this script reports as an ordinary runner-failed case rather than a
-    # placement finding.
+    # --accelerate, which selects SYNTH_BACKEND_CUDA. Plan 4 Task 11 first
+    # measured this with the codec only (twenty golden cases, every codec
+    # node off the CPU, every generator node on it, per docs/backends.md's
+    # discrete-outputs rule as it stood then); Plan 5 Task 1 gave the
+    # generator its own accelerator twin, so as of that change --accelerate
+    # moves BOTH: the placement check below now requires every node of both
+    # the codec's and the generator's stages to have left the CPU, mirroring
+    # each other, rather than holding the generator unconditionally as
+    # before. On a CPU run (this flag unset) every node of every stage must
+    # still stay on the CPU. On a build that registers no accelerator device
+    # at all, the runner's own load call still fails cleanly with
+    # SYNTH_ERR_INVALID_ARG before a single graph runs, which this script
+    # reports as an ordinary runner-failed case rather than a placement
+    # finding.
     parser.add_argument("--accelerate", action="store_true",
-                        help="run the codec on the primary backend and require it to land there")
+                        help="run the codec and generator on the primary backend and require both to land there")
+    # See the module docstring for the structural-vs-content distinction this
+    # implements. Off by default so every existing invocation (the CPU
+    # reference gate, and any script or notebook that calls this validator
+    # without knowing about the flag) keeps demanding exact tokens exactly as
+    # before -- this is additive, not a loosening of the default path.
+    parser.add_argument("--tokens-informational", action="store_true",
+                        help="report greedy token-grid content mismatches instead of failing on them; "
+                             "grid SIZE against the primary oracle grid still fails unconditionally")
     parser.add_argument("--tolerances", type=pathlib.Path,
                         default=pathlib.Path("tests/tolerances/omnivoice.json"))
     parser.add_argument("--profile", default="F32")
@@ -271,6 +295,15 @@ def compare_grid(admissible: list[tuple[str, np.ndarray]], actual: np.ndarray) -
     closest grid happens to be the primary; a same-shaped suite never
     exercises the difference, but a mismatched-size alternate would otherwise
     print an element count that was never compared.
+
+    `primary_size_match` is independent of which grid is closest: it is
+    shape equality against `admissible[0]` (always the primary oracle grid)
+    specifically. This is the field `--tokens-informational` still gates on
+    unconditionally -- the canvas length docs/backends.md's discrete-outputs
+    exception is conditioned on, not the closest-grid bookkeeping above,
+    which exists for the exact-token report and would keep reporting a
+    same-shaped alternate's mismatch count even if the primary's shape had
+    changed underneath it.
     """
     matched, closest, fewest, closest_elements = None, None, None, None
     for name, expected in admissible:
@@ -281,9 +314,12 @@ def compare_grid(admissible: list[tuple[str, np.ndarray]], actual: np.ndarray) -
         if count == 0:
             matched = name
             break
+    primary_shape = admissible[0][1].shape
     return {"elements": closest_elements, "mismatches": fewest,
             "exact": matched is not None, "matched": matched, "closest": closest,
-            "admissible": [name for name, _ in admissible]}
+            "admissible": [name for name, _ in admissible],
+            "primary_size_match": primary_shape == actual.shape,
+            "primary_elements": int(admissible[0][1].size), "actual_elements": int(actual.size)}
 
 
 def compare_tokens_exact(expected: np.ndarray, actual: np.ndarray, gaps: np.ndarray | None) -> dict:
@@ -515,12 +551,28 @@ def main(argv=None) -> int:
             slot = worst.setdefault(name, {"max_abs": 0.0, "min_cosine": 1.0})
             slot["max_abs"] = max(slot["max_abs"], measurement["max_abs"])
             slot["min_cosine"] = min(slot["min_cosine"], measurement["cosine"])
-        if result["grid"] is not None and not result["grid"]["exact"]:
+        if result["grid"] is not None and not result["grid"]["primary_size_match"]:
+            # Unconditional, --tokens-informational or not: this is the
+            # structural property docs/backends.md's discrete-outputs
+            # exception is actually conditioned on (RuleDurationEstimator
+            # fixes the canvas length before the first generator forward), so
+            # a size mismatch here means the exception's own precondition
+            # broke, not that content drifted within it.
             structural_failures += 1
-            print(f"{result['case']}: token grid differs at {result['grid']['mismatches']} "
-                  f"of {result['grid']['elements']} positions "
-                  f"(closest of {len(result['grid']['admissible'])} admissible: "
-                  f"{result['grid']['closest']})")
+            print(f"{result['case']}: token grid SIZE differs: {result['grid']['actual_elements']} "
+                  f"elements, primary oracle grid has {result['grid']['primary_elements']}")
+        elif result["grid"] is not None and not result["grid"]["exact"]:
+            if arguments.tokens_informational:
+                print(f"{result['case']}: token grid content differs at "
+                      f"{result['grid']['mismatches']} of {result['grid']['elements']} positions "
+                      f"(closest of {len(result['grid']['admissible'])} admissible: "
+                      f"{result['grid']['closest']}) -- informational, size invariant holds")
+            else:
+                structural_failures += 1
+                print(f"{result['case']}: token grid differs at {result['grid']['mismatches']} "
+                      f"of {result['grid']['elements']} positions "
+                      f"(closest of {len(result['grid']['admissible'])} admissible: "
+                      f"{result['grid']['closest']})")
         # Which grid a case matched is a fact about the contract, not a detail:
         # a case that starts passing only via its alternate has changed what it
         # demonstrates, and that must be visible without opening the report.
@@ -546,22 +598,40 @@ def main(argv=None) -> int:
                       f"(port matched {freerun['grid']}); identical to this port's own "
                       f"decode of that grid")
             elif freerun["max_abs"] is None:
-                structural_failures += 1
-                print(f"{result['case']}: matched {freerun['grid']}, but no decode of that grid "
-                      f"was produced to compare its free-run waveform against")
+                if arguments.tokens_informational:
+                    print(f"{result['case']}: matched {freerun['grid']}, but no decode of that grid "
+                          f"was produced to compare its free-run waveform against -- informational")
+                else:
+                    structural_failures += 1
+                    print(f"{result['case']}: matched {freerun['grid']}, but no decode of that grid "
+                          f"was produced to compare its free-run waveform against")
             else:
-                structural_failures += 1
-                print(f"{result['case']}: free-run waveform differs from this port's own "
-                      f"decode of {freerun['grid']} (max_abs {freerun['max_abs']:.6g})")
-        # The generator is CPU-only, always: its output is a sampled code, and
-        # docs/backends.md's discrete-outputs rule holds it and its whole input
-        # path on the CPU whether or not --accelerate was asked for. This is
-        # the one half of the old "Plan 2 is CPU-only" assertion that stays
-        # unconditional in both modes.
+                if arguments.tokens_informational:
+                    print(f"{result['case']}: free-run waveform differs from this port's own "
+                          f"decode of {freerun['grid']} (max_abs {freerun['max_abs']:.6g}) -- informational")
+                else:
+                    structural_failures += 1
+                    print(f"{result['case']}: free-run waveform differs from this port's own "
+                          f"decode of {freerun['grid']} (max_abs {freerun['max_abs']:.6g})")
+        # The generator's placement is conditional on the mode this run asked
+        # for, mirroring the codec's own check just below -- as of Plan 5
+        # Task 1, --accelerate gives the generator its own accelerator twin
+        # too, so "the generator is CPU-only, always" no longer holds; what
+        # is still unconditional is that its placement must MATCH what was
+        # asked for, on both a plain run (must stay on the CPU, same as
+        # every other stage) and an accelerated one (must have left it
+        # entirely, same proof-of-placement standard the codec is held to).
         placement = result["stats"]["placement"]
-        if placement["generator"][1] != 0:
+        generator_nodes, generator_off_cpu = placement["generator"]
+        if arguments.accelerate:
+            if generator_off_cpu != generator_nodes:
+                failures += 1
+                print(f"{result['case']}: generator placed {generator_off_cpu} of {generator_nodes} "
+                      f"nodes off the CPU, expected all")
+        elif generator_off_cpu != 0:
             failures += 1
-            print(f"{result['case']}: generator nodes left the CPU: {placement['generator']}")
+            print(f"{result['case']}: generator placed {generator_off_cpu} of {generator_nodes} "
+                  f"nodes off the CPU on a CPU run")
         # The codec has no discrete output of its own, so its placement is
         # conditional on the mode this run asked for -- mirroring
         # validate-qwen3-tts-replay.py's own accelerated check. On a plain run

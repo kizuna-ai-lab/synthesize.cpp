@@ -847,17 +847,40 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     # Plan 4 Task 11's CUDA sweep, same manifest and sentinel as the CPU gate
     # above -- only the requested backend and the tolerance cell it checks
     # against change. --accelerate moves the codec's decode graph onto the
-    # primary CUDA device (Task 9's accelerator twin) while the generator and
-    # its whole input path stay on the CPU (docs/backends.md's discrete-
-    # outputs rule); the validator's own placement check fails the gate if
-    # either half lands wrong, and its exact-token arm is unaffected by
-    # --accelerate -- the generator never moves, so the seventeen greedy
-    # grids and both cloning grids owe the same byte-exact match the CPU gate
-    # does. Same TIMEOUT rationale as the CPU gate: the held generator is
-    # what dominates wall time here (docs/porting/families/omnivoice.md's
-    # Execution Backends section measured the codec at 1.6 percent of it on
-    # the suite's longest case), so this sweep costs about what the CPU one
-    # does rather than benefiting from the accelerator.
+    # primary CUDA device (Task 9's accelerator twin); as of Plan 5 Task 1 it
+    # ALSO moves the generator (Task 1's own twin) -- docs/backends.md's
+    # discrete-outputs rule no longer holds this family's generator on CPU
+    # unconditionally, per the narrow, measured exception recorded there.
+    # The validator's own placement check fails the gate if either half
+    # lands wrong (both must now be fully off the CPU under --accelerate).
+    #
+    # --tokens-informational: exact-token identity does NOT survive the
+    # generator's move (Plan 5 Task 1/2 measured 3 of 17 greedy grids exact,
+    # the rest 0.2%-98.3% content-flipped against the CPU oracle) and this
+    # flag stops that from failing the gate. What still fails the gate
+    # unconditionally, flag or not: every greedy grid's SIZE against the
+    # oracle's own (RuleDurationEstimator fixes the canvas length before the
+    # first generator forward runs, so a size mismatch here is a real
+    # regression, not the expected content drift), the cloning path's
+    # ref.tokens grids (codec-only, untouched by the generator's move, still
+    # byte-exact), and the tolerance cell's probes (re-measured against this
+    # same generator-on-CUDA configuration -- see
+    # tests/tolerances/omnivoice.json's own note for the run this cell came
+    # from). A gate with all three of those still real is not a gate that
+    # asserts nothing; it is the structural half of the old claim plus a
+    # calibrated numerical half, with only per-token content identity
+    # retired -- deliberately, per jiangzhuo's 2026-08-08 ruling and the
+    # Listening Audit backing it.
+    #
+    # TIMEOUT: measured at approximately 350-360s for the full twenty-case
+    # sweep on build/rel-dgx-spark (this task's own re-measurement, quiet
+    # host) -- markedly faster than the CPU gate's ~7 minutes now that the
+    # generator itself runs on the accelerator rather than dominating wall
+    # time on the CPU, though per-case process/model-load overhead (twenty
+    # separate runner invocations) keeps it from scaling down by anything
+    # close to the generator's own 22x RTF speedup. 14400s is kept as
+    # headroom for a slower or busier machine, consistent with the CPU
+    # gate's own rationale, rather than retuned to this measurement.
     if(SYNTH_CUDA AND EXISTS "${SYNTH_OMNIVOICE_TEST_MODEL}" AND EXISTS "${_synth_omnivoice_golden_sentinel}")
         add_test(
             NAME synthesize-omnivoice-replay-golden-cuda
@@ -867,7 +890,7 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                 --manifest ${CMAKE_SOURCE_DIR}/tests/golden/omnivoice/omnivoice-0-6b.manifest.json
                 --model ${SYNTH_OMNIVOICE_TEST_MODEL}
                 --runner $<TARGET_FILE:synthesize-omnivoice-replay-real>
-                --accelerate --check --profile F32 --backend CUDA --stage replay)
+                --accelerate --tokens-informational --check --profile F32 --backend CUDA --stage replay)
         set_tests_properties(synthesize-omnivoice-replay-golden-cuda PROPERTIES
             LABELS "integration;omnivoice;golden;cuda"
             TIMEOUT 14400

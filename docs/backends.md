@@ -123,9 +123,9 @@ and the table row above is what that measured to. It also runs the mechanism
 letting the shared column headers imply a shared direction: for Kokoro and VITS,
 primary is the accelerator and the discrete stage's weights get a second,
 CPU-resident copy so the hold is enforceable without a five-times-slower mixed
-scheduler. For OmniVoice, primary is CPU -- the discrete decision (the codec's own
-RVQ token selection, drawn once per generator step and fed back into the next one)
-means the *generator* is what is held, and it was already CPU-only before this
+scheduler. For OmniVoice, primary is CPU -- the discrete decision (the generator's
+own RVQ token selection, drawn once per generator step and fed back into the next
+one) means the *generator* is what is held, and it was already CPU-only before this
 task, by construction, not by a new mirroring decision. What Task 11 mirrors is the
 other direction: 152 codec-decoder tensors (84.24 of the model's 3042.2 MiB) get a
 second, accelerator-resident copy so the codec's own decode -- the one stage

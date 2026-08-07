@@ -3181,18 +3181,33 @@ never embedded in the page; the page itself was grepped for `oracle`,
 ### Pair 3 corroborates the backend claim, not merely accompanies it
 
 Pair 3 is the one pair this audit spent on Execution Backends rather than
-port-vs-oracle fidelity, and it is deliberately the largest numeric
-divergence in the whole set (max_abs 3.06e-03, ~450x pair 1's). Task 11
-already established the *structural* half of the CUDA claim: byte-exact
-token grids on all 17 greedy cases plus both clone cases, so nothing upstream
-of the codec's decode moved. What a tolerance grid cannot show is whether the
-codec's own float32 arithmetic difference between backends is large enough to
-hear. Pair 3 answers exactly that question, on exactly the case Task 11 named
-as the backend's largest measured effect — and the answer is no. This is
-corroborating evidence for the backend claim already made on structural
-grounds, not a second, independent claim standing beside it: the byte-exact
-grids proved the CUDA path decodes the same discrete decisions, and pair 3
-now shows that its largest measured floating-point divergence in doing so is
+port-vs-oracle fidelity. Among the six audited pairs its max_abs (3.06e-03,
+~450x pair 1's) is the largest, but that is an artifact of comparison kind,
+not evidence about the case: five pairs compare a port against an oracle
+(1e-5 to 1e-6 range) and only this one compares two backends, so it was never
+going to land in the same range. `omni-long-boundary` was the case at hand
+because it holds the audit's longest-duration slot, the same case Task 11
+already named as the codec's largest measured CUDA *speedup* (9.68x at 719
+frames) — a different claim from the largest measured CUDA numeric
+divergence across the family, a distinction an earlier draft of this entry
+blurred. **Fix (final branch review, 2026-08-07): recomputing
+CPU-vs-CUDA `audio.pcm` cosine directly from `build/goldens/omnivoice-replay`
+and `build/goldens/omnivoice-replay-cuda` for all twenty cases ranks
+`omni-long-boundary` 5th of 20 by that measure** — behind `omni-upstream-
+readme`, `omni-medium-en`, `omni-nonverbal` and `omni-short-en`, in that
+order — so it is not, and was never claimed by Task 11 to be, the family's
+largest CUDA divergence; the selection reason stands on the longest-duration
+slot and the speedup finding alone. Task 11 already established the
+*structural* half of the CUDA claim: byte-exact token grids on all 17 greedy
+cases plus both clone cases, so nothing upstream of the codec's decode moved.
+What a tolerance grid cannot show is whether the codec's own float32
+arithmetic difference between backends is large enough to hear. Pair 3
+answers exactly that question, on the case the longest-duration slot already
+pointed to — and the answer is no. This is corroborating evidence for the
+backend claim already made on structural grounds, not a second, independent
+claim standing beside it: the byte-exact grids proved the CUDA path decodes
+the same discrete decisions, and pair 3 shows that the floating-point
+divergence the codec's CUDA path produces on a representative case is
 inaudible to the one listener who checked. Had pair 3 come back "audible
 difference," it would not have falsified Task 11's structural evidence, but
 it would have been a reason to look harder at the codec's CUDA kernels before
@@ -3333,7 +3348,7 @@ sweep and claimed the backend:
 
 Task 12 then ran the empirical experiment the family doc's own Open Question
 asked for — generator on CUDA, hand-reverted, never shipped — and it FLIPS:
-3/17 greedy grids byte-exact, 14 flip (up to 98.30%), 45.34% of all 15,960
+3/17 greedy grids byte-exact, 14 flip (up to 98.30%), 54.66% of all 15,960
 committed positions differ. **The valuable part is that the flip pattern
 does NOT match the margin table**: three of the five margin-predicted
 first-flip cases do flip, one flips by a single token, one does not flip at

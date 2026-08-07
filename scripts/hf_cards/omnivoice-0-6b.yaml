@@ -190,10 +190,10 @@ validation:
     over all twenty golden cases, every one of its 8,440 nodes left the CPU.
     The generator -- the entire mask-predict denoising loop, every one of
     its 880,032 measured nodes, and its whole input path -- stayed on the
-    CPU unconditionally, because the codec's own token selection feeds the
-    generator's next step and `docs/backends.md`'s discrete-outputs rule
-    holds a discrete decision and its input path off the accelerator
-    regardless of backend.
+    CPU unconditionally, because the generator's own token selection feeds
+    its next step and `docs/backends.md`'s discrete-outputs rule holds a
+    discrete decision and its input path off the accelerator regardless of
+    backend.
 
 publication_note: |
   This is a **Restricted Model Package** (ADR 0018), not a Published Model

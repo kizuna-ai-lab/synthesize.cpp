@@ -134,17 +134,20 @@ def parse_args(argv=None):
     parser.add_argument("--margin-report", action="store_true",
                         help="measure how narrowly each greedy case's decisions were made; "
                              "the screen for new golden cases (see the family doc)")
-    # Placement's accelerated mode (Plan 4 Task 10): passed through to the
-    # runner as --accelerate, which selects SYNTH_BACKEND_CUDA for the codec.
-    # It also changes what the placement check below requires: on a CPU run
-    # every node of every stage must stay on the CPU; with this set the
-    # codec's must ALL have left it while the generator's -- this family's
+    # Placement's accelerated mode: passed through to the runner as
+    # --accelerate, which selects SYNTH_BACKEND_CUDA for the codec. It also
+    # changes what the placement check below requires: on a CPU run every
+    # node of every stage must stay on the CPU; with this set the codec's
+    # must ALL have left it while the generator's -- this family's
     # discrete-outputs rule, docs/backends.md -- must not have moved either
-    # way. Plan 4's Task 11 is what actually runs this against a device; today
-    # (this build registers no accelerator device at all) the runner's own
-    # load call fails cleanly with SYNTH_ERR_INVALID_ARG before a single graph
-    # runs, which this script reports as an ordinary runner-failed case rather
-    # than a placement finding.
+    # way. Plan 4 Task 11 ran this for real against a GB10 device: twenty
+    # golden cases, every codec node off the CPU, every generator node on
+    # it, seventeen greedy grids byte-exact (docs/porting/families/
+    # omnivoice.md's Execution Backends section). On a build that registers
+    # no accelerator device at all, the runner's own load call still fails
+    # cleanly with SYNTH_ERR_INVALID_ARG before a single graph runs, which
+    # this script reports as an ordinary runner-failed case rather than a
+    # placement finding.
     parser.add_argument("--accelerate", action="store_true",
                         help="run the codec on the primary backend and require it to land there")
     parser.add_argument("--tolerances", type=pathlib.Path,

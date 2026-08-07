@@ -1082,8 +1082,8 @@ synth_status_t Model::load(const std::string &      path,
         // binds the decode path against them when present. Filtered to
         // is_decode_path_tensor's three prefixes rather than every `codec.`
         // tensor -- see this file's placement comment and catalog.h's
-        // bind_decode_weights for why the rest of the codec (332 tensors,
-        // ~612 MiB in this checkpoint's F32 GGUF) must stay off the twin.
+        // bind_decode_weights for why the rest of the codec (334 tensors,
+        // 616.01 MiB in this checkpoint's F32 GGUF) must stay off the twin.
         const bool split = implementation->backend_plan->primary() != implementation->backend_plan->cpu_backend();
         if (split) {
             ggml_init_params twin_params{};

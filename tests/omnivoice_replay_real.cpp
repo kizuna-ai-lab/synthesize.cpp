@@ -134,8 +134,9 @@ std::string margin_json(const synth::omnivoice::MarginReport & margin) {
 // The first device that is not the CPU. Asking for GGML_BACKEND_DEVICE_TYPE_GPU
 // by name misses this machine entirely: its CUDA device reports as integrated.
 // Mirrors qwen3-tts's own helper (tests/qwen3_tts_replay_real.cpp) exactly --
-// nullptr when the build registers no accelerator at all, which is what a
-// CPU-only build (this one, today) always returns.
+// nullptr on a CPU-only build that registers no accelerator at all. Plan 4
+// Task 11 proved this returns the real GB10 CUDA device on the dev-dgx-spark
+// preset.
 ggml_backend_dev_t first_accelerator() {
     for (size_t index = 0; index < ggml_backend_dev_count(); ++index) {
         ggml_backend_dev_t device = ggml_backend_dev_get(index);
@@ -267,14 +268,16 @@ int main(int argc, char ** argv) {
     std::unique_ptr<synth::omnivoice::Model> model;
     // Plan 4's Task 8 gate lives in the PUBLIC seam (src/synthesize.cpp's
     // synth_model_load), not here -- this call goes straight to the family's
-    // own Model::load, the same seam qwen3-tts's replay runner uses. In a
-    // build that registers no accelerator device at all (this one, today,
-    // since Task 11 has not landed CUDA support), first_accelerator() returns
-    // nullptr and BackendPlan::create (backend-plan.cpp) refuses a null
-    // primary device with SYNTH_ERR_INVALID_ARG before it even inspects a
-    // device type -- reported below like any other load failure ("load ->
-    // 1"), not a crash. Once Task 11's build registers a real device, this
-    // same call is what starts exercising it.
+    // own Model::load, the same seam qwen3-tts's replay runner uses. On a
+    // build that registers no accelerator device at all, first_accelerator()
+    // returns nullptr and BackendPlan::create (backend-plan.cpp) refuses a
+    // null primary device with SYNTH_ERR_INVALID_ARG before it even inspects
+    // a device type -- reported below like any other load failure ("load ->
+    // 1"), not a crash. Plan 4 Task 11 ran this same call against a real
+    // GB10 device on the dev-dgx-spark preset: twenty golden cases, every
+    // codec node off the CPU, every generator node on it, seventeen greedy
+    // grids byte-exact (docs/porting/families/omnivoice.md's Execution
+    // Backends section).
     synth_status_t status = accelerate ? synth::omnivoice::Model::load(model_path, first_accelerator(), true, model) :
                                          synth::omnivoice::Model::load_cpu(model_path, model);
     if (status != SYNTH_OK) {

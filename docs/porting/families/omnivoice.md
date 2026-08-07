@@ -1223,8 +1223,8 @@ summarizes the outcome the family card and `family_supports_explicit_backend`
 ### The codec moves, the generator does not
 
 This resolves the "Generator on CUDA" Open Question below, and confirms the
-qwen3-tts precedent this family always intended to follow: the codec's own
-RVQ token selection is upstream of the generator's next step (every frame's
+qwen3-tts precedent this family always intended to follow: the generator's
+own RVQ token selection is upstream of its own next step (every frame's
 codes feed back into the canvas the next denoising step reads), so
 `docs/backends.md`'s discrete-outputs rule holds the *generator* -- the whole
 mask-predict denoising loop, all `num_step` iterations -- and its entire input
@@ -1592,17 +1592,26 @@ so neither the port nor the CUDA side was positionally guessable.
 | 6 | `omni-punctuation` | port vs oracle (random pick) | 1.0000002084 |
 
 **Pair 3 is the CUDA-vs-CPU comparison, and its inaudibility corroborates the
-backend claim rather than merely accompanying it.** It is deliberately the
-largest numeric divergence audited (max_abs 3.06e-03, ~450x pair 1's), on
-`omni-long-boundary` because Task 11 already identified that case as the
-backend's largest measured effect. Task 11's byte-exact token grids already
-established that nothing upstream of the codec's decode moves between
-backends; a tolerance grid cannot say whether the codec's own float32
-arithmetic difference between backends is large enough to hear, and pair 3
-answers exactly that, on exactly the case most likely to expose it. The
-answer is no — which extends the Execution Backends section's structural
-claim with the one kind of evidence a token-grid comparison cannot provide,
-rather than standing beside it as an unrelated data point.
+backend claim rather than merely accompanying it.** Among the six audited
+pairs its max_abs (3.06e-03, ~450x pair 1's) is the largest, but that is a
+property of comparison kind, not of the case: five pairs compare a port
+against an oracle (1e-5 to 1e-6 range) and only this one compares two
+backends. `omni-long-boundary` was picked for the audit's longest-duration
+slot, the same case Task 11 already named as the codec's largest measured
+CUDA *speedup* (9.68x at 719 frames) — not, as an earlier draft of this
+section claimed, the case with the family's largest measured CUDA numeric
+divergence: recomputing CPU-vs-CUDA `audio.pcm` cosine directly from the
+replay artifacts for all twenty cases ranks `omni-long-boundary` 5th of 20 by
+that measure (`reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s
+2026-08-07 Task 16 entry has the full ranking). Task 11's byte-exact token
+grids already established that nothing upstream of the codec's decode moves
+between backends; a tolerance grid cannot say whether the codec's own
+float32 arithmetic difference between backends is large enough to hear, and
+pair 3 answers exactly that, on the case the longest-duration slot already
+pointed to. The answer is no — which extends the Execution Backends
+section's structural claim with the one kind of evidence a token-grid
+comparison cannot provide, rather than standing beside it as an unrelated
+data point.
 
 **What this does not establish.** Per `CONTEXT.md`'s definition, a Listening
 Audit "records obvious regressions without claiming population-level
@@ -1625,7 +1634,7 @@ placement evidence proves the committed token grids bit-identical to CPU; one
 port measured CUDA-F32 token-exact and Metal-F32 at 83%, which is encouraging
 and not evidence. Stage 7 decides.~~ **Answered 2026-08-07 by Stage 7 (see the
 Execution Backends section above): the generator does not move, and is not
-claimed to.** The codec's RVQ token selection feeds the generator's next step,
+claimed to.** The generator's own RVQ token selection feeds its next step,
 so `docs/backends.md`'s discrete-outputs rule holds the generator and its
 whole input path on the CPU regardless of backend, the same way it always has
 -- this was never a live candidate for the CUDA-F32-token-exact test the

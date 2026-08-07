@@ -153,7 +153,7 @@ an unmeasured gap: only the codec's decode graph (the RVQ dequantizer, the
 acoustic decoder, and the final projection -- 152 tensors) moves to CUDA. The
 generator -- the entire mask-predict denoising loop and its whole input path --
 stays on the CPU **unconditionally**, on every case and every profile, because
-the codec's own token selection feeds the generator's next denoising step and
+the generator's own token selection feeds its next denoising step and
 `docs/backends.md`'s discrete-outputs rule holds a discrete decision and its
 input path off the accelerator regardless of backend.
 
@@ -190,9 +190,10 @@ pairs compare the port's replayed codec against the pinned PyTorch oracle
 (covering the worst and second-worst waveform cosine, one Reference Audio
 clone case, one Description Text case, and one random pick); the sixth
 compares the codec's CUDA decode against its CPU decode of the identical
-byte-exact committed token grid, deliberately on the case with the largest
-measured CUDA numeric divergence -- its inaudibility corroborates the backend
-claim rather than merely accompanying it. This is one listener, six pairs,
+byte-exact committed token grid, deliberately on the suite's longest-duration
+case (also the codec's largest measured CUDA speedup, 9.68x at 719 frames) --
+its inaudibility corroborates the backend claim rather than merely
+accompanying it. This is one listener, six pairs,
 non-statistical: it says no obvious problem was noticed on the pairs heard,
 not that the port and the oracle are perceptually equivalent, and it does not
 move `quality_evaluation` off `not_run` (ADR 0017's automated grid has not

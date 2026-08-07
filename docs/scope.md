@@ -1,6 +1,6 @@
 # Project Scope
 
-Status: Confirmed, last updated on 2026-07-22.
+Status: Confirmed, last updated on 2026-08-07.
 
 ## Purpose
 
@@ -20,6 +20,12 @@ synthesize.cpp is primarily an embeddable, local, offline, native C/C++ text-to-
   end-to-end inference support without claiming corpus-scale perceptual quality.
 - Publishing validated, directly loadable Model Packages through project-owned
   Hugging Face model repositories.
+- Publishing a Restricted Model Package through the same repository and
+  validation flow for a Model Family whose upstream weight terms are
+  redistribution-restricted, carrying those terms in full (ADR 0018). This is
+  an addition to the line above, not a reinterpretation of it: a Restricted
+  Model Package is not a Published Model Package and never carries its
+  embeddable-in-other-programs promise.
 
 ## Out of Scope
 

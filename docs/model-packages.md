@@ -1,6 +1,6 @@
 # Model Package Format
 
-Status: Confirmed, last updated on 2026-07-22.
+Status: Confirmed, last updated on 2026-08-07.
 
 ## Package Boundary
 
@@ -119,6 +119,21 @@ to treat that absence as imposing no additional restriction beyond the published
 source-model terms. The generated card must disclose both the missing separate
 statement and this project-policy assumption. Contrary evidence still blocks or
 removes the affected artifact.
+
+### Restricted Model Packages
+
+A Model Family whose upstream weights carry a non-commercial or otherwise
+redistribution-restricted grant may still be published, as a Restricted Model
+Package rather than a Published Model Package (ADR 0018) — an addition to the
+publication flow above, not a reinterpretation of it. A Restricted Model
+Package passes the same Port Validation Suite, uses the same repository
+layout and model-card workflow, and reaches the same Validation Levels as any
+other package, but its card declares the restrictive license in frontmatter,
+quotes the upstream statement verbatim, and states plainly that the weights
+are not usable in commercial products. It is never called a Published Model
+Package and never carries this document's embeddable-in-other-programs
+promise. Publication of either kind remains a separate act requiring
+jiangzhuo's explicit per-act confirmation.
 
 Acquisition is explicit and occurs before model loading. Documentation and CI use
 the Hugging Face CLI to download selected files and cache canary files where

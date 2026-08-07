@@ -424,6 +424,44 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
         self.assertIn("accepts UTF-8 phoneme strings", card)
         self.assertIn("does not perform grapheme-to-phoneme conversion", card)
 
+    # -- Task 14 fix: the "also accepts exact token IDs" clause is only true
+    # for a package that actually declares that input kind (OmniVoice's
+    # loader refuses to load any package whose input_flags is not EXACTLY
+    # SYNTH_INPUT_SUPPORT_TEXT_UTF8, so this family has no token-ID bypass
+    # to claim) -----------------------------------------------------------
+
+    def test_text_utf8_frontend_omits_the_token_id_clause_when_undeclared(self) -> None:
+        spec = base_fixture_spec()
+        spec["capabilities"]["input_kinds"] = ["text_utf8"]
+        spec["capabilities"]["frontend_provider"] = "synthesize.qwen_bpe"
+        spec["usage"] = {"profile": "F16", "voice": "speaker-000", "text": "Hello there."}
+
+        card = self.generator.render(spec, "# stub")
+        self.assertIn("accepts raw UTF-8 text", card)
+        self.assertNotIn("also accepts exact token", card)
+
+    def test_phonemes_utf8_frontend_omits_the_token_id_clause_when_undeclared(self) -> None:
+        spec = base_fixture_spec()
+        spec["capabilities"]["input_kinds"] = ["phonemes_utf8"]
+
+        card = self.generator.render(spec, "# stub")
+        self.assertIn("accepts UTF-8 phoneme strings", card)
+        self.assertNotIn("also accepts exact token", card)
+
+    def test_omnivoice_spec_declares_text_only_input_with_no_token_id_claim(self) -> None:
+        # Regression for a real (non-fixture) spec: OmniVoice's public seam
+        # dispatches straight from the raw request bytes to its own text
+        # frontend (src/synthesize.cpp's Omnivoice branch) and its loader
+        # refuses any package declaring more than SYNTH_INPUT_SUPPORT_TEXT_UTF8,
+        # so the card must not claim a token-ID bypass this family cannot
+        # accept.
+        spec = self.generator.load_spec(ROOT / "scripts" / "hf_cards" / "omnivoice-0-6b.yaml")
+        self.generator.validate_spec(spec)
+        self.assertEqual(spec["capabilities"]["input_kinds"], ["text_utf8"])
+        card = self.generator.render(spec, "# stub upstream card")
+        self.assertIn("accepts raw UTF-8 text", card)
+        self.assertNotIn("also accepts exact token", card)
+
     # -- Task 13, feature 3: usage (--text vs --phonemes) --------------------
 
     def test_usage_renders_text_flag_for_a_text_utf8_family(self) -> None:

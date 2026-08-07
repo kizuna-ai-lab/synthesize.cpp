@@ -125,13 +125,13 @@ identity instead may build a Voice Profile from
 
 {% if "text_utf8" in capabilities.input_kinds -%}
 This package accepts raw UTF-8 text through the built-in
-`{{ capabilities.frontend_provider }}` frontend, and also accepts exact token
-IDs already produced by the same vocabulary. The frontend tokenizes text
+`{{ capabilities.frontend_provider }}` frontend{% if "token_ids" in capabilities.input_kinds %}, and also accepts exact token
+IDs already produced by the same vocabulary{% endif %}. The frontend tokenizes text
 directly: no grapheme-to-phoneme conversion happens or is needed, and the
 runtime does not silently invoke eSpeak or download a frontend.
 {%- else -%}
 This package accepts UTF-8 phoneme strings through the built-in
-`{{ capabilities.frontend_provider }}` frontend, and also accepts exact token IDs. The frontend
+`{{ capabilities.frontend_provider }}` frontend{% if "token_ids" in capabilities.input_kinds %}, and also accepts exact token IDs{% endif %}. The frontend
 validates UTF-8, maps each Unicode scalar through the symbol table embedded in
 the GGUF, and applies the model's blank-insertion rule.
 

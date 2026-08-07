@@ -1550,6 +1550,66 @@ to re-derive them from the sections above:
    resolved `description_language` instead. See Open Questions, same
    paragraph, for the full rationale and the three places this is recorded.
 
+## Listening Audit (Plan 4 Task 16)
+
+**Verdict, jiangzhuo, 2026-08-07: `no_obvious_regression`, all six pairs.**
+Reordered ahead of Tasks 13–15 in Slice D because a `regression` verdict is a
+ship-blocker and every audio-producing slice (A/B/C) was already complete; the
+carry-over ledger's open item ("The Listening Audit is still owed before
+ship") is closed by this entry.
+
+Six A/B pairs, `docs/model-porting.md:244-271`'s cap. None of the doc's three
+named quality scores (worst intelligibility, worst UTMOSv2, worst
+voice-similarity) exist for this family — **ADR 0017 defers that whole grid**
+— so the selection substituted the per-case `audio.pcm` cosine this family's
+own replay validator already reports: worst and second-worst cosine stand in
+for intelligibility/UTMOSv2 (1 slot each), voice-similarity expanded to one
+clone case plus one Description Text case rather than picking one
+conditioning path arbitrarily (2 slots), longest-duration stood as specified
+but had its comparison kind spent on backend coverage instead of a second
+port-vs-oracle pair (1 slot, see below), and the two random slots reduced to
+one to hold the total at six (1 slot). Five of the six pairs compare the
+port's replayed codec output against the pinned PyTorch oracle; the sixth
+compares the codec's CUDA decode against its CPU decode of the identical
+committed token grid. Order and A/B side were independently randomized
+(`order_seed 20260807`, `case_selection_seed 16`); 5 of 6 pairs were swapped
+so neither the port nor the CUDA side was positionally guessable.
+
+| Pair | Case | Comparison | Cosine |
+| --- | --- | --- | ---: |
+| 1 | `omni-medium-en` | port vs oracle (worst cosine) | 0.9999998558 |
+| 2 | `omni-nonverbal` | port vs oracle (2nd-worst cosine) | 0.9999998990 |
+| 3 | `omni-long-boundary` | **CUDA vs CPU** codec | 0.9999983311 |
+| 4 | `omni-clone-en` | port vs oracle (Reference Audio) | 0.9999999031 |
+| 5 | `omni-design-en` | port vs oracle (Description Text) | 0.9999999511 |
+| 6 | `omni-punctuation` | port vs oracle (random pick) | 1.0000002084 |
+
+**Pair 3 is the CUDA-vs-CPU comparison, and its inaudibility corroborates the
+backend claim rather than merely accompanying it.** It is deliberately the
+largest numeric divergence audited (max_abs 3.06e-03, ~450x pair 1's), on
+`omni-long-boundary` because Task 11 already identified that case as the
+backend's largest measured effect. Task 11's byte-exact token grids already
+established that nothing upstream of the codec's decode moves between
+backends; a tolerance grid cannot say whether the codec's own float32
+arithmetic difference between backends is large enough to hear, and pair 3
+answers exactly that, on exactly the case most likely to expose it. The
+answer is no — which extends the Execution Backends section's structural
+claim with the one kind of evidence a token-grid comparison cannot provide,
+rather than standing beside it as an unrelated data point.
+
+**What this does not establish.** Per `CONTEXT.md`'s definition, a Listening
+Audit "records obvious regressions without claiming population-level
+subjective quality." This was one listener, six pairs, informally — no rated
+comparison, no panel, no score. It says that on the six automatically
+selected pairs above, at that hearing, no obvious problem was noticed. It
+does not claim general perceptual equivalence between the port and the
+oracle, or between the CUDA and CPU codecs, and it does not move
+`quality_evaluation` off `not_run`: ADR 0017's automated grid has not run and
+is not scheduled. Full method, the seeds, the swap pattern, and the values
+Task 14's card needs are in
+`reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s 2026-08-07 Task
+16 entry.
+
 ## Open Questions
 
 ~~**Generator on CUDA.** The codec moves first, following the qwen3-tts

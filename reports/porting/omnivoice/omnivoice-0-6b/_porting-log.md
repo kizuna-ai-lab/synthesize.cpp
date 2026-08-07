@@ -3070,3 +3070,178 @@ update, and the task report.
 
 **DONE — STOP condition, as a complete and legitimate outcome.** The
 generator is not claimed on CUDA. Commit follows this entry.
+
+## 2026-08-07 — Plan 4 Task 16: The Listening Audit — `no_obvious_regression`, all six pairs
+
+**Reordered to the front of Slice D at jiangzhuo's request** (ahead of Tasks
+13–15): a `regression` verdict is a ship-blocker, and every audio-producing
+slice (A/B/C) was already complete, so there was no reason to write the card
+with `not_run` first and amend it. Preparation is `task-16-report.md`
+(`.superpowers/sdd/2026-08-06-omnivoice-plan-4-quants-backends-ship/`); this
+entry is the verdict record `docs/model-porting.md`'s Step 4 requires.
+
+### Method: six pairs, `docs/model-porting.md:244-271`'s rule, with substitutions recorded
+
+The doc's rule names five selection criteria — worst intelligibility, worst
+UTMOSv2, worst voice-similarity, longest-duration, two deterministic random
+cases — capped at six pairs. None of the three named quality scores exist for
+this family: **ADR 0017 defers the whole intelligibility/UTMOSv2/
+voice-similarity grid** (`quality_evaluated` is not a near-term goal), so
+there is nothing to rank worst-of by those names. Substituted with what this
+family *does* measure — the per-case `audio.pcm` cosine/max_abs
+`scripts/validate-omnivoice-replay.py` already reports against the oracle for
+all 20 golden cases (`build/goldens/omnivoice-replay/full-report.json`):
+
+| Doc's slot | Substituted with | Slots |
+| --- | --- | --- |
+| worst intelligibility | worst cosine (no ASR evaluator exists) | 1 |
+| worst UTMOSv2 | second-worst cosine (no naturalness evaluator exists) | 1 |
+| worst voice-similarity | one clone case (`voice.kind=reference_audio`) **+** one Description Text case (`voice.kind=description_text`) — this family's two headline conditioning paths, rather than picking one arbitrarily | 2 |
+| longest-duration | unchanged, but the comparison kind on this slot was spent on backend coverage (below) | 1 |
+| two random | reduced to **one**, to hold the total at six after voice-similarity grew from 1 slot to 2 | 1 |
+
+Total 1+1+2+1+1 = 6, at the doc's cap, nothing dropped.
+
+**Backend coverage was folded into the longest-duration slot rather than
+added as a seventh pair.** F32 is the only shipped profile (Q8_MIXED and F16
+both failed the clone exact-token gate, Plan 4 Task 3/3-continuation), so
+every pair trivially covers it. CPU and CUDA are both shipped backends (Task
+11/12), but six pairs leaves no independent slot for that axis. Rather than
+exceeding the cap or dropping a required criterion, the longest-duration
+case's comparison kind was changed from port-vs-oracle to **CUDA-vs-CPU codec
+decode of the same committed token grid** — deliberately `omni-long-boundary`,
+because Task 11's own report already identified it as the case with the
+codec's largest measured CUDA effect (9.68x speedup at 719 frames), the
+single most informative case to spend that slot on.
+
+Both clone/design picks went to the `-en` variant over `-zh`:
+`docs/model-porting.md:265`'s "for a language the maintainer understands" —
+English is that language here.
+
+### The six pairs and the identity key
+
+Two comparison kinds. **Port vs oracle** (5 pairs): the port's own codec
+decoding the ORACLE's committed token grid
+(`build/goldens/omnivoice-replay/<case>/pcm.f32`, isolating the codec from the
+decode loop) against the oracle's own waveform
+(`build/goldens/omnivoice/<case>/audio/pcm.f32`). **CUDA vs CPU** (pair 3):
+the same case's codec decode of the *same* committed token grid, once per
+backend — `grid.i32` verified byte-identical between the CPU and CUDA replay
+directories before use, so the two waveforms differ only by codec backend.
+
+| Pair | Case | Comparison | A | B | Duration | Cosine |
+| --- | --- | --- | --- | --- | ---: | ---: |
+| 1 | `omni-medium-en` | port vs oracle | oracle | port | 12.28s | 0.9999998558 |
+| 2 | `omni-nonverbal` | port vs oracle | port | oracle | 2.44s | 0.9999998990 |
+| 3 | `omni-long-boundary` | **CUDA vs CPU** | cuda | cpu | 28.76s | 0.9999983311 |
+| 4 | `omni-clone-en` | port vs oracle | oracle | port | 2.80s | 0.9999999031 |
+| 5 | `omni-design-en` | port vs oracle | oracle | port | 2.00s | 0.9999999511 |
+| 6 | `omni-punctuation` | port vs oracle | oracle | port | 2.68s | 1.0000002084 |
+
+Cosine values fractionally above 1.0 (pairs 1, 5, 6 read below 1.0, pair 6
+above) are `compare()`'s own float32 rounding in the dot-product/norm
+computation, not a bound violation — the same artifact the deep generator
+probes already show elsewhere in this log.
+
+Pair 3's figures are not in `full-report.json` (that report only ever ran the
+CPU backend); computed once, directly, against the two already-produced
+replay directories, with the project's own locked numpy env before the
+manifest was written: max_abs 0.0030613476410508156, cosine
+0.9999983310699463 — roughly three orders of magnitude larger than any
+port-vs-oracle max_abs above (1e-5 to 1e-6 range), consistent with CUDA's
+TF32 cuBLAS path (`docs/backends.md`) rather than a placement defect, since
+the feeding token grid is byte-identical and the divergence is purely the
+codec backend's arithmetic.
+
+### Seeds and the A/B swap pattern
+
+Two independent seeds, so re-deriving one never perturbs the other:
+
+- **`case_selection_seed = 16`** (the task number) drives exactly one draw,
+  `random.Random(16).choice(sorted(remainder))`, over the 15 cases left after
+  the five fixed-criteria picks — landed on `omni-punctuation`.
+- **`order_seed = 20260807`** (the audit date) drives one
+  `random.Random(20260807).random() < 0.5` draw per pair, consumed in pair
+  order 1→6, deciding whether that pair's first-defined identity (`port` /
+  `cuda_codec`) is presented as A or as B.
+
+**5 of the 6 pairs were A/B-swapped** from their first-defined identity (only
+pair 2 was not), so the port (or the CUDA side) was not positionally
+guessable across the set. The mapping lived only in `audit-manifest.json`
+(sha256-pinned source paths for both sides of all six pairs), a sibling file
+never embedded in the page; the page itself was grepped for `oracle`,
+`port_vs_oracle`, `cuda_codec`, `cpu_codec`, every `omni-*` case id, and the
+`build/goldens` path prefix, with zero matches outside the identity key.
+
+### Verdict
+
+**jiangzhuo, 2026-08-07: all six pairs "no obvious difference" ⇒
+`listening_audit: no_obvious_regression`.**
+
+### Pair 3 corroborates the backend claim, not merely accompanies it
+
+Pair 3 is the one pair this audit spent on Execution Backends rather than
+port-vs-oracle fidelity, and it is deliberately the largest numeric
+divergence in the whole set (max_abs 3.06e-03, ~450x pair 1's). Task 11
+already established the *structural* half of the CUDA claim: byte-exact
+token grids on all 17 greedy cases plus both clone cases, so nothing upstream
+of the codec's decode moved. What a tolerance grid cannot show is whether the
+codec's own float32 arithmetic difference between backends is large enough to
+hear. Pair 3 answers exactly that question, on exactly the case Task 11 named
+as the backend's largest measured effect — and the answer is no. This is
+corroborating evidence for the backend claim already made on structural
+grounds, not a second, independent claim standing beside it: the byte-exact
+grids proved the CUDA path decodes the same discrete decisions, and pair 3
+now shows that its largest measured floating-point divergence in doing so is
+inaudible to the one listener who checked. Had pair 3 come back "audible
+difference," it would not have falsified Task 11's structural evidence, but
+it would have been a reason to look harder at the codec's CUDA kernels before
+shipping the backend regardless of what the token grids said — a tolerance
+number is not a substitute for that check, which is the whole reason this
+task exists.
+
+### What this does, and does not, establish
+
+Per `CONTEXT.md`'s definition, a Listening Audit "records obvious regressions
+without claiming population-level subjective quality," and per
+`docs/model-porting.md` it "is never reported as MOS, CMOS, a listening
+panel, or population-level evidence." This was **one listener, six pairs,
+informally, no rated comparison, no panel, no score.** It says: on the six
+automatically selected pairs above, at that hearing, no obvious problem was
+noticed. It does not say the port sounds identical to the oracle in general,
+does not say the CUDA and CPU codecs are perceptually equivalent in general,
+and does not move `quality_evaluation` off `not_run` — ADR 0017's automated
+grid has not run and is not scheduled. `docs/porting/families/omnivoice.md`
+records the outcome in the family record.
+
+### Values for Task 14's card
+
+Not written to any YAML here — Task 14 owns the card. For that task's
+`listening_audit` / `listening_audit_detail` fields, following the shape
+`kokoro-v1-0.yaml` and `qwen3-tts-12hz-0-6b-customvoice.yaml` already use:
+
+```yaml
+listening_audit: no_obvious_regression
+listening_audit_detail:
+  listeners: 1
+  cases: 6 (5 port_vs_oracle, 1 cuda_vs_cpu)
+  profiles: [F32]
+  backends: [CPU, CUDA]
+  date: 2026-08-07
+  method: >-
+    Blind A/B web page, five pairs replaying the port's codec against the
+    pinned PyTorch oracle on the oracle's own committed token grid, one pair
+    (omni-long-boundary, this family's largest measured CUDA effect)
+    comparing the codec's CUDA decode against its CPU decode of the same
+    byte-identical committed grid; A/B order independently randomized per
+    pair (order_seed 20260807, 5 of 6 swapped) and case selection randomized
+    for the one non-criteria slot (case_selection_seed 16); verified in a
+    real headless browser for no trimming, offset-preserving side switch, and
+    zero drift on a rapid double-switch.
+```
+
+### Status
+
+Complete. Nothing under `build/`, `tests/golden/`, `ggml/`, or `third_party/`
+was modified; the audit's page, manifest and scripts are working artifacts
+under `$CLAUDE_JOB_DIR`, never the repo. Docs-only commit follows this entry.

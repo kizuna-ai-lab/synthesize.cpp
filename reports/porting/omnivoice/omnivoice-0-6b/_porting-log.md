@@ -3410,3 +3410,177 @@ to settle unilaterally (`SYNTH_ASSERT` under `NDEBUG`, the
 `synthesis.graph_failed` diagnostic name, the `std::optional` stream
 micro-optimization, and the two-clips validation-order test), plus the
 float64 cosine-estimator question, both still open from Plan 3's own ledger.
+
+## 2026-08-08 — Plan 5 Tasks 1–2: the generator weight twin, the placement move, and an honest RTF
+
+jiangzhuo revised the bar for this family from token identity to audible
+quality on 2026-08-08, after a six-pair blind A/B (order seed 20260808, case
+seed 12) comparing generator-on-CPU against generator-on-CUDA output heard
+no problem in any pair, including `omni-digits` at waveform cosine 0.0515
+with 98.3% of its tokens flipped between the two runs. That ruling reopens
+the placement Plan 4 Task 11/12 closed by the discrete-outputs rule: the
+generator can now move to the primary Execution Backend, which — per two
+independent RTF investigations recorded before this plan — is the only
+order-of-magnitude lever this family has (~1,722 token-forwards of a 0.44B
+model per second of synthesized audio, mask-predict's 32 steps × no KV cache
+× 2 CFG branches, against 25 for a cached autoregressive decoder).
+
+### Task 1: the generator weight twin
+
+Followed Task 9's codec-twin pattern exactly, generalized to a group with no
+NOT-MOVABLE remainder: `bind_generator_weights` (`catalog.h`/`catalog.cpp`)
+starts `generator_weights` as a whole-struct copy of `weights` and only
+re-resolves `generator_weights.generator` against a twin context when one is
+given, so `weights` itself — what any future second consumer would read — is
+never mutated. **Before writing anything, every host-side reader of
+`GeneratorWeights` was grepped across `src/` and `tests/`**: the only two
+consumers are `build_canvas_embedding` and `build_generator_forward`
+(`generator.cpp`), both reached exclusively through `model.cpp`'s file-local
+`generator_branch_forward`, itself called only from `Model::run_synthesis`'s
+three sites. Unlike `codec.quantizer.*` in Task 9's own twin, there is **no
+second consumer analogous to `rvq_encode`** — no host-side reader of the
+generator's weights outside the graph-building path — but the split is built
+the same defensive way regardless, both because a future reader that
+bypasses `generator_branch_forward` must keep seeing the CPU-resident
+package by construction, and because `tests/omnivoice_catalog_test.cpp`'s
+own unit tests call `build_model_weights` directly and must observe it
+unaffected by whatever this function does elsewhere.
+
+`Model::Impl` gained `generator_context`/`generator_buffer`/
+`generator_weights`, built and streamed in `Model::load` the same way as the
+codec's own `codec_context`/`codec_buffer`/`decode_weights`, sized for the
+whole 312-tensor, 2,450,309,120-byte (2,336.80 MiB) generator group (computed
+directly from `reports/convert/omnivoice/omnivoice-0-6b-F32.json`, summing
+every tensor whose name starts `llm.` or equals
+`audio_embeddings.weight`/`audio_heads.weight`). `generator_branch_forward`
+gained an `on_primary` parameter forwarded to `GraphRun::run`;
+`Model::run_synthesis` passes `impl.generator_weights` and
+`impl.generator_context != nullptr` at all three call sites (the step-0
+conditional forward, the per-step conditional refill, and the per-step
+unconditional branch) — **both CFG branches move together**, since both read
+the identical generator weights and there is no reason for one to run on the
+primary backend while the other stays on the CPU. The `Persistent inputs`
+buffer commits to the primary backend under the same condition, mirroring
+`decode_codes`'s own rule for its input leaf and avoiding a cross-backend
+copy the scheduler would otherwise insert.
+
+**CPU bit-identity, proven not asserted.** With no accelerator,
+`generator_context` stays null, `bind_generator_weights` returns a plain
+copy, and `on_primary` is always `false` — byte-identical to before this
+task. Verified:
+
+```
+uv run --project scripts/envs/omnivoice --locked python \
+  scripts/validate-omnivoice-replay.py \
+  --manifest tests/golden/omnivoice/omnivoice-0-6b.manifest.json \
+  --model models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
+  --runner build-integration/bin/synthesize-omnivoice-replay-real \
+  --check --profile F32 --backend CPU --stage replay
+```
+
+```
+token grids exact: 17/17
+ref.tokens exact: 2/2
+```
+
+Both unit gates: `cmake --build build --target synthesize-check-unit`
+(90/90 passed), `cmake --build build-sanitize --target synthesize-check-unit`
+(89/89 passed, ASan/UBSan). The full omnivoice integration set on the CPU
+tree (`ctest --test-dir build-integration -L integration -R omnivoice`):
+7/7 passed, including `synthesize-omnivoice-replay-golden`'s own 17/17 +
+2/2 exact-token confirmation above.
+
+**A cross-check the implementation did not have to produce, but did.**
+Running the new twin under `--accelerate` on `omni-long-boundary` alone
+(`--cases omni-long-boundary --accelerate --backend CUDA --require grid`)
+reports `generator nodes left the CPU: [53184, 53184]` — every one of this
+case's 53,184 generator nodes, the identical total Plan 4's own CPU sweep
+recorded for this case, confirming this is the same graph with only its
+scheduler changed — and a token grid mismatch of **4,190 of 5,752
+positions (72.84%)**, the exact count Plan 4 Task 12's hand-reverted,
+one-line `on_primary=true` experiment measured for this same case one day
+earlier. Two independently-built mechanisms (a real weight-mirroring twin
+here; an `op_offload` scheduler patch there) landing on the identical flip
+count is strong evidence both are exercising the same underlying CUDA
+arithmetic rather than either one being a measurement artifact.
+
+**This deliberately leaves one gate red.**
+`tests/CMakeLists.txt`'s `synthesize-omnivoice-replay-golden-cuda` and
+`tests/tolerances/omnivoice.json`'s `profiles.F32.backends.CUDA.stages.replay`
+cell assert byte-exact tokens under `--backend CUDA` — true before this task,
+false after it, by construction. Plan 5 Tasks 3–4 own the replacement
+validation shape; neither the tolerance file nor the CUDA gate's assertion
+was touched by this task, per the controlling instruction.
+
+### Task 2: RTF, measured honestly, through the public seam
+
+Built `synthesize-omnivoice-public-real` and `synthesize-omnivoice-replay-real`
+on the `dev-dgx-spark` CUDA tree with Task 1's changes
+(`SYNTH_CUDA_ROOT=/usr/local/cuda-13.3`, driver 580.159.03, CUDA 13.3.73,
+native `sm_121a`). Measured `omni-long-boundary` — the same case Plan 4's own
+codec-only CUDA claim measured at 267.30 s / RTF 9.294 — end to end through
+`synth_synthesize_to_buffer` (`tests/omnivoice_public_real.c`, not the
+internal replay runner, which bypasses the backend-capability gate), same
+binary, `cpu` vs `cuda` backend positional, seed 0, language `en`,
+`max-frames 0`, text from the case's own committed
+`tests/golden/omnivoice/omnivoice-0-6b.manifest.json` entry. Two runs each
+way:
+
+| backend | run 1 (s) | run 2 (s) | mean (s) | RTF (mean) |
+| --- | ---: | ---: | ---: | ---: |
+| CPU  | 272.1212 | 267.3172 | 269.7192 | 9.365 |
+| CUDA |   6.5184 |   6.3898 |   6.4541 | 0.224 |
+
+(691,200 PCM frames at 24,000 Hz = 28.8 s of audio in every run; both
+backends produced the identical sample count, confirming the canvas length
+argument this task's own comments make — TF32 changes WHICH token is
+committed, never HOW MANY frames exist.) `resolved_device` confirmed
+`"cpu"`/`"cuda"` in every run (not merely requested), and
+`device_memory_shared` flipped `false`→`true` on the CUDA runs as expected
+for this UMA host.
+
+**Speedup: 41.8× (269.7192 s / 6.4541 s), taking this case from RTF 9.365 to
+RTF 0.224 — faster than real time.** This is the number the whole plan
+exists for, and it is not a flattering rounding: even the SLOWER of the two
+CUDA runs (6.5184 s) against the FASTER of the two CPU runs (267.3172 s)
+still gives 41.0×. Plan 4's own codec-only figure recovered 3.4% of wall
+time on this case because the generator, 98.9% of it, stayed held; moving
+the generator recovers the other 96.6 percentage points. For comparison,
+ServeurpersoCom's own port reports RTF 0.194 on an RTX 4060 Ti with the
+whole generator on CUDA at Q8_0 (and states no fidelity claim beyond "smoke
+surfaces" at any dtype) — this port's F32 measurement on DGX Spark/GB10
+lands at RTF 0.224, the same order of magnitude, at full F32 precision and
+without the step-count or quantization reductions Tasks 8–9 have not yet
+revisited.
+
+**What this measurement does not establish.** One case, one host, two runs
+each way — not a claim of Support (Task 4 owns that once Task 3's
+validation shape exists to back one), not a sweep across the other 19
+golden cases (which would very likely show a smaller relative gain on
+shorter cases, where fixed per-request overhead — load, resampling, WAV
+framing — is a larger fraction of the total), and not a memory or
+concurrency measurement. It is one honest, reproducible number: this is
+what the generator's move buys on the case Plan 4 itself picked as the
+suite's longest and most demanding.
+
+**Implications for what this task deliberately left untouched (per the
+controlling instruction):**
+
+- **The model card and `docs/models/omnivoice-0-6b.md`** (Plan 4 Task 14's
+  ship artifacts) state F32-only and CPU+partial-CUDA (codec only) with the
+  267.30 s/RTF 9.294 figures. Both the backend scope and the RTF figures are
+  now stale; Plan 5 Task 7 corrects them once Task 3/4 settle what the CUDA
+  claim's own validation shape is, so the card is not corrected twice.
+- **`tests/tolerances/omnivoice.json`'s CUDA backend cell and
+  `tests/CMakeLists.txt`'s `synthesize-omnivoice-replay-golden-cuda`** now
+  assert something false (byte-exact tokens under `--backend CUDA`) and will
+  fail if run; Plan 5 Task 3 designs the replayed-grid/waveform-tolerance
+  replacement described in this plan document, and Task 4 registers it.
+  Left unregistered/unrun deliberately rather than silently loosened.
+- **`docs/backends.md`'s discrete-outputs rule and its per-family cost
+  table row** (currently: "the whole generator... held... 267.30 s → 258.48
+  s, −3.4%... 8.99× real time") describe a configuration this task
+  supersedes. Plan 5 Task 5 owns the principled-exception writeup (the
+  fixed-canvas-shape argument, Kokoro's 376→377-frame counter-example, and
+  this task's own 53,184/53,184-off-CPU + 691,200-frames-both-ways evidence)
+  and the table row's replacement with this measurement's own numbers.

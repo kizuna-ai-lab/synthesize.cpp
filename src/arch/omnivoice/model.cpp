@@ -6,35 +6,56 @@
 // catalog and the frontend meet, and it is worth closing on the real package
 // before any graph exists to blame a wrong number on.
 //
-// Placement: the generator and its whole input path stay on the CPU always --
-// this family's canvas is a table of sampled codes, and docs/backends.md's
-// discrete-outputs rule holds the generator and everything feeding it there on
-// every Execution Backend. The clone-encode chain (reference-encoder-host.cpp)
-// stays on the CPU too, unconditionally: its own output is continuous, but
-// what reads it -- rvq_encode's host-side nearest-neighbour argmax -- is a
-// discrete decision, the same rule one step removed.
+// Placement, as of Plan 5 Task 1: the generator can now run on an accelerator
+// too, following jiangzhuo's 2026-08-08 ruling that this family's bar is
+// audible quality rather than token identity (a six-pair blind listening test
+// heard no problem in generator-on-CPU vs generator-on-CUDA output, including
+// a pair whose token grids agree at only 1.7%). Before this task,
+// docs/backends.md's discrete-outputs rule held the generator and everything
+// feeding it on the CPU on every Execution Backend, because its own committed
+// token grid is a discrete decision; that rule's text is not yet amended
+// (Plan 5 Task 5 owns that), but this family's own measurement now qualifies
+// for the exception the rule's rationale never actually forbade: the canvas
+// LENGTH is fixed by RuleDurationEstimator before the first generator forward
+// runs, so a discrete decision here can change WHICH token is committed but
+// never the downstream tensor SHAPE the way Kokoro's duration-to-frame-count
+// rounding could. The clone-encode chain (reference-encoder-host.cpp) stays on
+// the CPU unconditionally regardless: its own output is continuous, but what
+// reads it -- rvq_encode's host-side nearest-neighbour argmax -- is a discrete
+// decision feeding no downstream forward at all, so there is no fixed-shape
+// argument to make for it the way there is for the generator's own canvas.
 //
-// Only the codec's DECODE half can run on an accelerator: decode_codes's
-// committed code grid is the last discrete value on that path, so
-// build_codec_decoder's RVQ-sum/fc2/DAC-decoder graph is free to move. Task 9
-// (Plan 4) adds the twin that makes that possible -- Model::Impl::codec_context
-// and codec_buffer, present only when the primary backend is not the CPU. See
-// the comment above its construction in Model::load for the exact tensor
-// groups and their byte cost, and catalog.h's bind_decode_weights for how the
-// catalog binds against them.
+// Both the codec's DECODE half and the generator can therefore run on an
+// accelerator: decode_codes's committed code grid is the last discrete value
+// on the codec's own path, so build_codec_decoder's RVQ-sum/fc2/DAC-decoder
+// graph is free to move (Task 9, Plan 4); the generator's own canvas-length
+// argument above is why generator_branch_forward's graph is free to move too
+// (Task 1, Plan 5). Two independent twins make this possible --
+// Model::Impl::codec_context/codec_buffer and
+// Model::Impl::generator_context/generator_buffer, each present only when the
+// primary backend is not the CPU. See the comments above their construction in
+// Model::load for the exact tensor groups and byte cost, and catalog.h's
+// bind_decode_weights/bind_generator_weights for how the catalog binds against
+// each.
 //
 // codec.quantizer is read by BOTH directions -- the decode graph's dequantize
 // sum and encode_reference's own host-side RVQ nearest-neighbour argmax
-// (rvq_encode) -- which a first draft of this task missed: it let the twin
+// (rvq_encode) -- which a first draft of Task 9 missed: it let the twin
 // re-resolve overwrite the one ModelWeights every reader shared, so
 // rvq_encode would have started reading a CUDA-resident tensor through
 // ggml_backend_tensor_get the moment Task 11 gave this family a CUDA primary.
-// Fixed by never mutating `weights` for the twin at all: `Model::Impl` carries
-// `weights` (bound to the package, read by every host-side caller including
-// rvq_encode) and a separate `decode_weights` (bind_decode_weights's own
-// output, read only by decode_codes) side by side. With no accelerator the
-// twin is null, `decode_weights` is an exact copy of `weights`, and every path
-// here runs exactly as Plan 2 left it.
+// Fixed by never mutating `weights` for either twin at all: `Model::Impl`
+// carries `weights` (bound to the package, read by every host-side caller
+// including rvq_encode), a `decode_weights` (bind_decode_weights's own output,
+// read only by decode_codes), and a `generator_weights` (bind_generator_weights's
+// own output, read only by generator_branch_forward) side by side. The
+// generator has no second host-side consumer analogous to rvq_encode -- Task
+// 1's own pre-flight grep found none -- but the split is built the same
+// defensive way regardless: a future reader that bypasses
+// generator_branch_forward must keep seeing the CPU-resident package by
+// construction, not by continued vigilance. With no accelerator both twins are
+// null, `decode_weights`/`generator_weights` are exact copies of `weights`, and
+// every path here runs exactly as it did before either twin existed.
 
 #include "arch/omnivoice/catalog.h"
 #include "arch/omnivoice/codec-host.h"
@@ -133,14 +154,17 @@ class GraphRun {
     uint64_t accelerator_nodes = 0;
 
     // `on_primary` places the graph on the primary backend rather than the CPU.
-    // Only Model::decode_codes ever passes true, and only when a codec twin
-    // exists (Model::Impl::codec_context != nullptr): its output is the last
-    // discrete value on the decode path, so the DAC decoder graph downstream
-    // of it is free to move. The generator never passes it -- its own output
-    // is a sampled code, and docs/backends.md's discrete-outputs rule holds it
-    // and its whole input path on the CPU -- and generator_branch_forward
-    // below calls run() at the false default accordingly. See the placement
-    // note at the top of this file for the full accounting.
+    // Model::decode_codes passes true when a codec twin exists
+    // (Model::Impl::codec_context != nullptr): its output is the last discrete
+    // value on the decode path, so the DAC decoder graph downstream of it is
+    // free to move. Since Plan 5 Task 1, generator_branch_forward passes true
+    // too when a generator twin exists (Model::Impl::generator_context !=
+    // nullptr): the canvas length is fixed before the first forward runs, so a
+    // discrete decision here changes token CONTENT, never downstream tensor
+    // SHAPE -- see the placement note at the top of this file for the full
+    // argument and its Kokoro counter-example. Neither twin exists with no
+    // accelerator, so `on_primary` is always false in that configuration and
+    // every call site's behavior is unchanged from before either twin existed.
     synth_status_t run(ggml_tensor * output, const char * stage, int threads, bool on_primary = false) {
         if (!ok() || output == nullptr) {
             return SYNTH_ERR_INTERNAL;
@@ -247,6 +271,34 @@ bool is_decode_path_tensor(const char * name) {
     return false;
 }
 
+// The whole generator group: `llm.*` (the Qwen3 backbone, one prefix covers
+// the embedding, every layer and the final norm) plus the two audio tables,
+// which sit outside the `llm.` prefix in the catalog's own naming (catalog.cpp's
+// layout comment). Unlike kDecodePathPrefixes above, this is not a narrowing
+// of a wider group -- see catalog.h's bind_generator_weights for why the whole
+// generator is movable and has no NOT-MOVABLE remainder to exclude.
+constexpr const char * kGeneratorPrefixes[] = {
+    "llm.",
+};
+constexpr const char * kGeneratorExactNames[] = {
+    "audio_embeddings.weight",
+    "audio_heads.weight",
+};
+
+bool is_generator_tensor(const char * name) {
+    for (const char * prefix : kGeneratorPrefixes) {
+        if (std::strncmp(name, prefix, std::strlen(prefix)) == 0) {
+            return true;
+        }
+    }
+    for (const char * exact : kGeneratorExactNames) {
+        if (std::strcmp(name, exact) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Which probe buffers a forward should fill; empty = no probes.
 struct ForwardProbeSinks {
     const std::vector<uint32_t> *     layer_indices = nullptr;
@@ -255,14 +307,20 @@ struct ForwardProbeSinks {
     std::vector<std::vector<float>> * layer_hidden  = nullptr;
 };
 
-// One full-canvas forward of one CFG branch on the CPU scheduler. Reads back
-// the FULL logits [vocab, codebooks, positions] into `logits`; the caller
-// slices the target region (the trailing target_frames positions). text_ids
-// is null for the unconditional branch, whose every position is an audio slot.
+// One full-canvas forward of one CFG branch, on the primary backend when
+// `on_primary` is true (a generator twin exists -- Plan 5 Task 1) and on the
+// CPU scheduler otherwise. Reads back the FULL logits [vocab, codebooks,
+// positions] into `logits`; the caller slices the target region (the trailing
+// target_frames positions). text_ids is null for the unconditional branch,
+// whose every position is an audio slot.
 //
 // Takes the plan/weights/hparams pieces rather than Model::Impl: a file-local
 // function cannot name a private nested type, and passing the pieces keeps it
-// callable from every member without a friend declaration.
+// callable from every member without a friend declaration. `weights` is
+// `Model::Impl::generator_weights` at every call site (Model::run_synthesis),
+// never `Model::Impl::weights` directly -- see this file's top-of-file
+// placement note and catalog.h's bind_generator_weights for why the two must
+// not be conflated.
 synth_status_t generator_branch_forward(const BackendPlan &       plan,
                                         const ModelWeights &      weights,
                                         const HParams &           hparams,
@@ -270,6 +328,7 @@ synth_status_t generator_branch_forward(const BackendPlan &       plan,
                                         ggml_tensor *             audio_ids,
                                         ggml_tensor *             positions,
                                         int                       threads,
+                                        bool                      on_primary,
                                         const ForwardProbeSinks & probes,
                                         std::vector<float> &      logits,
                                         SynthesisOutput &         output) {
@@ -305,7 +364,7 @@ synth_status_t generator_branch_forward(const BackendPlan &       plan,
         ggml_build_forward_expand(run.graph(), final_tensor);
     }
     const double         started = now_seconds();
-    const synth_status_t status  = run.run(logits_tensor, "omnivoice.generator", threads);
+    const synth_status_t status  = run.run(logits_tensor, "omnivoice.generator", threads, on_primary);
     if (status != SYNTH_OK) {
         return status;
     }
@@ -340,29 +399,39 @@ struct Model::Impl {
     gguf_context *                      gguf            = nullptr;
     ggml_context *                      weights_context = nullptr;
     std::unique_ptr<BackendPlan>        backend_plan;
-    ggml_backend_buffer_t               weights_buffer = nullptr;
-    // Twins of the codec's decode path on the primary backend, present only
-    // when that is not the CPU. Every other stage has no twin: the generator's
-    // and the clone-encode chain's outputs both bottom out in a discrete
-    // decision (a sampled code; a host-side RVQ argmax), so docs/backends.md
-    // holds them and everything reading them on the CPU regardless of what the
-    // primary backend is. See catalog.h's build_model_weights/bind_decode_weights
-    // and this file's placement comment for the tensor groups and byte cost.
-    ggml_context *                      codec_context  = nullptr;
-    ggml_backend_buffer_t               codec_buffer   = nullptr;
+    ggml_backend_buffer_t               weights_buffer    = nullptr;
+    // Twin of the codec's decode path on the primary backend, present only
+    // when that is not the CPU. See catalog.h's build_model_weights/
+    // bind_decode_weights and this file's placement comment for the tensor
+    // group and byte cost.
+    ggml_context *                      codec_context     = nullptr;
+    ggml_backend_buffer_t               codec_buffer      = nullptr;
+    // Twin of the generator (Plan 5 Task 1), present under the same condition
+    // as codec_context above. The clone-encode chain is the one stage that
+    // still has no twin and stays on the CPU unconditionally regardless of the
+    // primary backend: its own output is continuous, but what reads it --
+    // rvq_encode's host-side nearest-neighbour argmax -- is a discrete
+    // decision feeding no downstream forward, so there is no fixed-canvas-shape
+    // argument to move it the way this file's placement note makes for the
+    // generator. See catalog.h's bind_generator_weights for the tensor group
+    // and byte cost.
+    ggml_context *                      generator_context = nullptr;
+    ggml_backend_buffer_t               generator_buffer  = nullptr;
     HParams                             hparams;
     std::shared_ptr<const TextFrontend> frontend;
     // `weights` is bound against `weights_context` alone, ALWAYS -- every
-    // host-side reader (rvq_encode via encode_reference, the generator) reads
-    // this and only this, so it can never be made to read a twin. `decode_weights`
-    // is bind_decode_weights's own output: identical to `weights` in every
-    // field when `codec_context` is null (no accelerator; see catalog.h's own
-    // header comment on that function for the second-consumer trap this split
-    // closes), and diverging only in quantizers/fc2/acoustic_decoder -- bound
-    // to the twin instead -- when one exists. Only Model::decode_codes reads
-    // `decode_weights`.
+    // host-side reader (rvq_encode via encode_reference) reads this and only
+    // this, so it can never be made to read a twin. `decode_weights` is
+    // bind_decode_weights's own output (read only by Model::decode_codes) and
+    // `generator_weights` is bind_generator_weights's own output (read only by
+    // generator_branch_forward via Model::run_synthesis); each is identical to
+    // `weights` in every field when its own twin context is null (no
+    // accelerator; see catalog.h's header comments on both bind_* functions
+    // for the second-consumer trap this split closes), diverging only in the
+    // fields its own twin re-resolves.
     ModelWeights                        weights;
     ModelWeights                        decode_weights;
+    ModelWeights                        generator_weights;
 
     ~Impl() {
         if (weights_buffer != nullptr) {
@@ -373,6 +442,12 @@ struct Model::Impl {
         }
         if (codec_context != nullptr) {
             ggml_free(codec_context);
+        }
+        if (generator_buffer != nullptr) {
+            ggml_backend_buffer_free(generator_buffer);
+        }
+        if (generator_context != nullptr) {
+            ggml_free(generator_context);
         }
         if (weights_context != nullptr) {
             ggml_free(weights_context);
@@ -524,7 +599,12 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     ggml_tensor * t_uncond_audio = ggml_new_tensor_2d(ictx, GGML_TYPE_I32, int64_t(frames), int64_t(codebooks));
     ggml_tensor * t_cond_pos     = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, int64_t(total));
     ggml_tensor * t_uncond_pos   = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, int64_t(frames));
-    if (!inputs.commit(impl.backend_plan->cpu_backend())) {
+    // On the primary backend whenever the generator's graph will be, so the
+    // graph reads these leaves without a cross-backend copy -- decode_codes's
+    // own rule for its input leaf, applied here since Plan 5 Task 1 gives the
+    // generator the same option.
+    if (!inputs.commit(impl.generator_context != nullptr ? impl.backend_plan->primary() :
+                                                           impl.backend_plan->cpu_backend())) {
         return SYNTH_ERR_OOM;
     }
     // The unconditional branch's canvas is the TARGET REGION ALONE -- no style
@@ -566,8 +646,9 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         sinks.layer_hidden  = &output.layer_hidden;
     }
     std::vector<float> cond_logits;
-    status = generator_branch_forward(*impl.backend_plan, impl.weights, hparams, t_text, t_cond_audio, t_cond_pos,
-                                      threads, sinks, cond_logits, output);
+    status =
+        generator_branch_forward(*impl.backend_plan, impl.generator_weights, hparams, t_text, t_cond_audio, t_cond_pos,
+                                 threads, impl.generator_context != nullptr, sinks, cond_logits, output);
     if (status != SYNTH_OK) {
         return status;
     }
@@ -628,19 +709,24 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
             fill_shifted_audio_ids(prompt.grid.data(), total, prompt.audio_start(), prompt.audio_length(), codebooks,
                                    vocab, shifted);
             ggml_backend_tensor_set(t_cond_audio, shifted.data(), 0, ggml_nbytes(t_cond_audio));
-            status = generator_branch_forward(*impl.backend_plan, impl.weights, hparams, t_text, t_cond_audio,
-                                              t_cond_pos, threads, no_probes, cond_logits, output);
+            status = generator_branch_forward(*impl.backend_plan, impl.generator_weights, hparams, t_text, t_cond_audio,
+                                              t_cond_pos, threads, impl.generator_context != nullptr, no_probes,
+                                              cond_logits, output);
             if (status != SYNTH_OK) {
                 return status;
             }
         }
         if (guidance != 0.0f) {
             // The unconditional branch carries the target region only -- no
-            // style markers, no text, no reference audio.
+            // style markers, no text, no reference audio. Both CFG branches
+            // move together: there is no reason for one to run on the primary
+            // backend while the other stays on the CPU, since both read the
+            // identical generator weights.
             fill_shifted_audio_ids(canvas.data(), frames, 0, frames, codebooks, vocab, uncond_shifted);
             ggml_backend_tensor_set(t_uncond_audio, uncond_shifted.data(), 0, ggml_nbytes(t_uncond_audio));
-            status = generator_branch_forward(*impl.backend_plan, impl.weights, hparams, nullptr, t_uncond_audio,
-                                              t_uncond_pos, threads, no_probes, uncond_logits, output);
+            status = generator_branch_forward(*impl.backend_plan, impl.generator_weights, hparams, nullptr,
+                                              t_uncond_audio, t_uncond_pos, threads, impl.generator_context != nullptr,
+                                              no_probes, uncond_logits, output);
             if (status != SYNTH_OK) {
                 return status;
             }
@@ -1076,14 +1162,18 @@ synth_status_t Model::load(const std::string &      path,
         if (status != SYNTH_OK) {
             return status;
         }
-        // Twins of the codec's decode path, so it can run on the primary
-        // backend while the generator and the clone-encode chain stay on the
-        // CPU. Declared before binding, because bind_decode_weights below
-        // binds the decode path against them when present. Filtered to
+        // Twins of the codec's decode path and of the generator (Plan 5 Task
+        // 1), so both can run on the primary backend while the clone-encode
+        // chain stays on the CPU. Declared before binding, because
+        // bind_decode_weights/bind_generator_weights below bind each path
+        // against its own twin when present. The codec twin is filtered to
         // is_decode_path_tensor's three prefixes rather than every `codec.`
         // tensor -- see this file's placement comment and catalog.h's
         // bind_decode_weights for why the rest of the codec (334 tensors,
-        // 616.01 MiB in this checkpoint's F32 GGUF) must stay off the twin.
+        // 616.01 MiB in this checkpoint's F32 GGUF) must stay off it. The
+        // generator twin has no such narrowing: is_generator_tensor covers the
+        // whole group, because catalog.h's bind_generator_weights has no
+        // NOT-MOVABLE remainder to carve out.
         const bool split = implementation->backend_plan->primary() != implementation->backend_plan->cpu_backend();
         if (split) {
             ggml_init_params twin_params{};
@@ -1105,20 +1195,49 @@ synth_status_t Model::load(const std::string &      path,
                 }
                 ggml_set_name(twin, tensor->name);
             }
+            // 312 generator tensors (catalog.h's bind_generator_weights own
+            // count); 384 leaves the same proportional headroom the codec
+            // twin's 256-for-152 sizing above does.
+            ggml_init_params generator_twin_params{};
+            generator_twin_params.mem_size    = ggml_tensor_overhead() * 384;
+            generator_twin_params.no_alloc    = true;
+            implementation->generator_context = ggml_init(generator_twin_params);
+            if (implementation->generator_context == nullptr) {
+                return SYNTH_ERR_OOM;
+            }
+            for (ggml_tensor * tensor = ggml_get_first_tensor(implementation->weights_context); tensor != nullptr;
+                 tensor               = ggml_get_next_tensor(implementation->weights_context, tensor)) {
+                if (!is_generator_tensor(tensor->name)) {
+                    continue;
+                }
+                ggml_tensor * twin =
+                    ggml_new_tensor(implementation->generator_context, tensor->type, ggml_n_dims(tensor), tensor->ne);
+                if (twin == nullptr) {
+                    return SYNTH_ERR_OOM;
+                }
+                ggml_set_name(twin, tensor->name);
+            }
         }
         // `weights` is bound against the package alone -- ALWAYS, whether or
-        // not `codec_context` exists -- so the host clone-encode chain
+        // not either twin exists -- so the host clone-encode chain
         // (rvq_encode, reached through encode_reference) can never be handed a
-        // twin pointer. `decode_weights` is the separate, twin-aware binding
-        // only Model::decode_codes reads; see catalog.h's own header comment
-        // on bind_decode_weights for the second-consumer trap this split
-        // exists to close.
+        // twin pointer. `decode_weights` and `generator_weights` are the
+        // separate, twin-aware bindings only Model::decode_codes and
+        // generator_branch_forward (via Model::run_synthesis) read
+        // respectively; see catalog.h's own header comments on
+        // bind_decode_weights/bind_generator_weights for the second-consumer
+        // trap this split exists to close.
         status = build_model_weights(implementation->weights_context, implementation->hparams, implementation->weights);
         if (status != SYNTH_OK) {
             return status;
         }
         status = bind_decode_weights(implementation->codec_context, implementation->hparams, implementation->weights,
                                      implementation->decode_weights);
+        if (status != SYNTH_OK) {
+            return status;
+        }
+        status = bind_generator_weights(implementation->generator_context, implementation->hparams,
+                                        implementation->weights, implementation->generator_weights);
         if (status != SYNTH_OK) {
             return status;
         }
@@ -1177,6 +1296,26 @@ synth_status_t Model::load(const std::string &      path,
             std::vector<unsigned char> scratch;
             for (ggml_tensor * twin = ggml_get_first_tensor(implementation->codec_context); twin != nullptr;
                  twin               = ggml_get_next_tensor(implementation->codec_context, twin)) {
+                const ggml_tensor * source = ggml_get_tensor(implementation->weights_context, twin->name);
+                if (source == nullptr || ggml_nbytes(source) != ggml_nbytes(twin)) {
+                    return SYNTH_ERR_GGUF;
+                }
+                scratch.resize(ggml_nbytes(source));
+                ggml_backend_tensor_get(source, scratch.data(), 0, scratch.size());
+                ggml_backend_tensor_set(twin, scratch.data(), 0, scratch.size());
+            }
+        }
+        if (implementation->generator_context != nullptr) {
+            implementation->generator_buffer = ggml_backend_alloc_ctx_tensors(implementation->generator_context,
+                                                                              implementation->backend_plan->primary());
+            if (implementation->generator_buffer == nullptr) {
+                return SYNTH_ERR_OOM;
+            }
+            ggml_backend_buffer_set_usage(implementation->generator_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+            // Copy after streaming, same as the codec twin above.
+            std::vector<unsigned char> scratch;
+            for (ggml_tensor * twin = ggml_get_first_tensor(implementation->generator_context); twin != nullptr;
+                 twin               = ggml_get_next_tensor(implementation->generator_context, twin)) {
                 const ggml_tensor * source = ggml_get_tensor(implementation->weights_context, twin->name);
                 if (source == nullptr || ggml_nbytes(source) != ggml_nbytes(twin)) {
                     return SYNTH_ERR_GGUF;

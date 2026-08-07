@@ -400,6 +400,135 @@ int check_twin_resolution(const synth::omnivoice::HParams & h, const std::vector
     return 0;
 }
 
+// Plan 5 Task 1's own filter, restated independently here for the same reason
+// is_decode_path_entry above is: a second, independent statement of
+// model.cpp's is_generator_tensor, so the two cannot silently drift apart.
+bool is_generator_entry(const Entry & entry) {
+    if (entry.name.rfind("llm.", 0) == 0) {
+        return true;
+    }
+    return entry.name == "audio_embeddings.weight" || entry.name == "audio_heads.weight";
+}
+
+// The generator twin (Plan 5 Task 1): bind_generator_weights must bind the
+// WHOLE generator group against it when present, WITHOUT EVER MUTATING
+// `weights` itself -- the same second-consumer-safe discipline
+// check_twin_resolution above pins for the codec's narrower twin, applied
+// here even though Task 1's own pre-flight grep found no second host-side
+// consumer of GeneratorWeights: a future reader that bypasses
+// generator_branch_forward must keep seeing the CPU-resident package by
+// construction, not by continued vigilance.
+int check_generator_twin_resolution(const synth::omnivoice::HParams & h, const std::vector<Entry> & entries) {
+    Context context = make_context();
+    populate(context.get(), entries, nullptr);
+
+    std::vector<Entry> generator_entries;
+    for (const Entry & entry : entries) {
+        if (is_generator_entry(entry)) {
+            generator_entries.push_back(entry);
+        }
+    }
+    // 26 at this synthetic package's reduced widths: embed_tokens (1) + 2
+    // layers * 11 tensors each (22) + norm (1) + the two audio tables (2).
+    // The real package's numbers -- 312 total, catalog.h's own
+    // bind_generator_weights accounting -- are this same arithmetic at
+    // h.generator.layer_count == 28.
+    SYNTH_TEST_CHECK(generator_entries.size() == 26);
+
+    Context twin = make_context();
+    populate(twin.get(), generator_entries, nullptr);
+
+    synth::omnivoice::ModelWeights weights;
+    SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_OK);
+
+    // `weights` itself is bound to the package alone -- the fact a future
+    // second consumer would depend on, the same as the codec twin's own
+    // invariant above.
+    ggml_tensor * package_embed = ggml_get_tensor(context.get(), "llm.embed_tokens.weight");
+    ggml_tensor * package_norm  = ggml_get_tensor(context.get(), "llm.norm.weight");
+    ggml_tensor * package_heads = ggml_get_tensor(context.get(), "audio_heads.weight");
+    SYNTH_TEST_CHECK(weights.generator.text_embedding == package_embed);
+    SYNTH_TEST_CHECK(weights.generator.norm == package_norm);
+    SYNTH_TEST_CHECK(weights.generator.audio_heads == package_heads);
+
+    // bind_generator_weights with NO twin: generator_weights is a plain copy,
+    // so generator_branch_forward reads exactly what it always has when there
+    // is no accelerator -- the CPU-identity property Task 1's own gate
+    // depends on.
+    synth::omnivoice::ModelWeights no_twin_generator;
+    SYNTH_TEST_CHECK(synth::omnivoice::bind_generator_weights(nullptr, h, weights, no_twin_generator) == SYNTH_OK);
+    SYNTH_TEST_CHECK(no_twin_generator.generator.text_embedding == package_embed);
+    SYNTH_TEST_CHECK(no_twin_generator.generator.norm == package_norm);
+    SYNTH_TEST_CHECK(no_twin_generator.generator.audio_heads == package_heads);
+    // Every non-generator field is carried over unchanged too -- the copy is a
+    // whole-struct one, not a field-by-field reconstruction that could drift.
+    SYNTH_TEST_CHECK(no_twin_generator.fc2.weight == weights.fc2.weight);
+    SYNTH_TEST_CHECK(no_twin_generator.acoustic_decoder.conv1.weight == weights.acoustic_decoder.conv1.weight);
+    SYNTH_TEST_CHECK(no_twin_generator.quantizers[0].codebook == weights.quantizers[0].codebook);
+
+    // bind_generator_weights WITH a twin: generator_weights's whole generator
+    // group moves to the twin; `weights` itself must not have changed AT ALL.
+    synth::omnivoice::ModelWeights generator_weights;
+    SYNTH_TEST_CHECK(synth::omnivoice::bind_generator_weights(twin.get(), h, weights, generator_weights) == SYNTH_OK);
+
+    SYNTH_TEST_CHECK(generator_weights.generator.text_embedding ==
+                     ggml_get_tensor(twin.get(), "llm.embed_tokens.weight"));
+    SYNTH_TEST_CHECK(generator_weights.generator.text_embedding != package_embed);
+    SYNTH_TEST_CHECK(generator_weights.generator.norm == ggml_get_tensor(twin.get(), "llm.norm.weight"));
+    SYNTH_TEST_CHECK(generator_weights.generator.norm != package_norm);
+    SYNTH_TEST_CHECK(generator_weights.generator.audio_heads == ggml_get_tensor(twin.get(), "audio_heads.weight"));
+    SYNTH_TEST_CHECK(generator_weights.generator.audio_heads != package_heads);
+    SYNTH_TEST_CHECK(generator_weights.generator.layers[0].q_proj ==
+                     ggml_get_tensor(twin.get(), "llm.layers.0.self_attn.q_proj.weight"));
+
+    // `weights` -- what a future second consumer would depend on -- is
+    // untouched: still bound to the package, identical to what it was before
+    // bind_generator_weights ran at all.
+    SYNTH_TEST_CHECK(weights.generator.text_embedding == package_embed);
+    SYNTH_TEST_CHECK(weights.generator.norm == package_norm);
+    SYNTH_TEST_CHECK(weights.generator.audio_heads == package_heads);
+
+    // Every non-generator field of generator_weights still traces back to the
+    // package even when a twin exists: the twin never carries them.
+    SYNTH_TEST_CHECK(generator_weights.fc2.weight == weights.fc2.weight);
+    SYNTH_TEST_CHECK(generator_weights.acoustic_decoder.conv1.weight == weights.acoustic_decoder.conv1.weight);
+    SYNTH_TEST_CHECK(generator_weights.quantizers[0].codebook == weights.quantizers[0].codebook);
+
+    // A twin missing one of the generator's tensors is refused, the same as a
+    // missing package tensor -- and `weights` still must not move.
+    {
+        std::vector<Entry> incomplete;
+        for (const Entry & entry : generator_entries) {
+            if (entry.name != "llm.norm.weight") {
+                incomplete.push_back(entry);
+            }
+        }
+        Context                        broken_twin = make_context();
+        synth::omnivoice::ModelWeights parsed;
+        populate(broken_twin.get(), incomplete, nullptr);
+        SYNTH_TEST_CHECK(synth::omnivoice::bind_generator_weights(broken_twin.get(), h, weights, parsed) ==
+                         SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(weights.generator.text_embedding == package_embed);
+    }
+
+    // A twin whose tensor disagrees in shape is refused too.
+    {
+        Context                        broken_twin = make_context();
+        synth::omnivoice::ModelWeights parsed;
+        populate(broken_twin.get(), generator_entries, [](const Entry & entry, Entry & effective, ggml_type &) {
+            if (entry.name == "llm.embed_tokens.weight") {
+                effective.ne[0] += 1;
+                return true;
+            }
+            return false;
+        });
+        SYNTH_TEST_CHECK(synth::omnivoice::bind_generator_weights(broken_twin.get(), h, weights, parsed) ==
+                         SYNTH_ERR_GGUF);
+        SYNTH_TEST_CHECK(weights.generator.text_embedding == package_embed);
+    }
+    return 0;
+}
+
 // The real package's shape, to catch an arithmetic change that the synthetic
 // package is too small to notice. 798 is the emitted tensor count in
 // reports/convert/omnivoice/omnivoice-0-6b-F32.json: 312 generator plus 486
@@ -679,6 +808,7 @@ int main() {
     SYNTH_TEST_CHECK(check_resolution(h, entries) == 0);
     SYNTH_TEST_CHECK(check_rejections(h, entries) == 0);
     SYNTH_TEST_CHECK(check_twin_resolution(h, entries) == 0);
+    SYNTH_TEST_CHECK(check_generator_twin_resolution(h, entries) == 0);
     SYNTH_TEST_CHECK(check_real_package_count() == 0);
     SYNTH_TEST_CHECK(check_q8_mixed_resolution() == 0);
     SYNTH_TEST_CHECK(check_q8_mixed_rejections() == 0);

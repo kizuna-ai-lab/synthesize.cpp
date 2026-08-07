@@ -620,4 +620,28 @@ synth_status_t bind_decode_weights(ggml_context *       codec_context,
     return SYNTH_OK;
 }
 
+synth_status_t bind_generator_weights(ggml_context *       generator_context,
+                                      const HParams &      hparams,
+                                      const ModelWeights & weights,
+                                      ModelWeights &       generator_weights) {
+    // Same whole-struct-copy-first discipline as bind_decode_weights above:
+    // `weights` is never written here, so a reader that keeps reading it
+    // (there is none today, per catalog.h's own header comment, but the
+    // invariant does not depend on that staying true) can never observe a
+    // twin.
+    generator_weights = weights;
+    if (generator_context == nullptr) {
+        return SYNTH_OK;
+    }
+    // The whole generator group re-resolved against the twin context, using
+    // the same resolve_generator build_model_weights itself uses -- an
+    // offline decision and a load-time expectation cannot drift apart when
+    // both call the identical function.
+    Resolver twins(generator_context, hparams);
+    if (!resolve_generator(twins, hparams, generator_weights.generator)) {
+        return SYNTH_ERR_GGUF;
+    }
+    return SYNTH_OK;
+}
+
 }  // namespace synth::omnivoice

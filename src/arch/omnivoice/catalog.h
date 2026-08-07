@@ -236,6 +236,45 @@ synth_status_t bind_decode_weights(ggml_context *       codec_context,
                                    const ModelWeights & weights,
                                    ModelWeights &       decode_weights);
 
+// Binds the GENERATOR against an accelerator twin (Plan 5 Task 1) -- the
+// mask-predict denoising loop's own weights, all 312 generator tensors:
+// `llm.*`, `audio_embeddings.weight`, `audio_heads.weight`. Byte total from
+// the same reports/convert/omnivoice/omnivoice-0-6b-F32.json this file's
+// other comments cite as ground truth: 2,450,309,120 bytes, 2,336.80 MiB.
+//
+// Unlike bind_decode_weights above, the whole group is movable -- there is
+// no NOT-MOVABLE remainder to carve out, because the generator has no
+// sibling stage that reads a subset of its own tensors the way the
+// clone-encode chain reads codec.acoustic_encoder/semantic_model/
+// encoder_semantic. And unlike codec.quantizer.* in bind_decode_weights,
+// GeneratorWeights has no second host-side consumer at all: grepping every
+// reader of `weights.generator` (Plan 5 Task 1's own pre-flight check) finds
+// exactly two functions, build_canvas_embedding and build_generator_forward
+// (generator.cpp), both reached only through model.cpp's file-local
+// generator_branch_forward, itself called only from Model::run_synthesis.
+// There is no rvq_encode-shaped trap here to close.
+//
+// The split is still built the second-consumer-safe way regardless, for two
+// reasons rather than one: a future reader that bypasses
+// generator_branch_forward must keep seeing the CPU-resident package by
+// construction, not by continued vigilance that this comment's "no second
+// consumer today" claim stays true; and tests/omnivoice_catalog_test.cpp's
+// own unit tests call build_model_weights directly and must keep observing
+// its output unaffected by whatever this function does elsewhere. `weights`
+// (built by build_model_weights) is NEVER mutated here -- `generator_weights`
+// starts as a copy of it, so every non-generator field, and the generator
+// field itself when `generator_context` is null, is pointer-identical to
+// `weights`'s own; only `generator_weights.generator` is re-resolved against
+// `generator_context` when present. Only Model::generator_branch_forward
+// (via Model::run_synthesis) reads `generator_weights`; every other reader
+// keeps reading `weights`. tests/omnivoice_catalog_test.cpp's
+// check_generator_twin_resolution pins the pointer-identity invariant in
+// both directions, mirroring check_twin_resolution's own shape.
+synth_status_t bind_generator_weights(ggml_context *       generator_context,
+                                      const HParams &      hparams,
+                                      const ModelWeights & weights,
+                                      ModelWeights &       generator_weights);
+
 // The number of tensors a package for these hyper-parameters must contain.
 // Exposed so a caller can size a context before resolving anything.
 uint64_t expected_tensor_count(const HParams & hparams);

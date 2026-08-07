@@ -3584,3 +3584,138 @@ controlling instruction):**
   fixed-canvas-shape argument, Kokoro's 376→377-frame counter-example, and
   this task's own 53,184/53,184-off-CPU + 691,200-frames-both-ways evidence)
   and the table row's replacement with this measurement's own numbers.
+
+## 2026-08-08 — Erratum: the RTF measurement build defect, and the honest correction
+
+This entry corrects, without rewriting, three prior measurements in this
+file: the Plan 4 Task 11 codec-only pair above (267.30 s → 258.48 s, RTF
+9.294 → 8.987), the Plan 4 closeout summary that repeats it, and the Plan 5
+Task 2 entry immediately above this one (269.7192 s / RTF 9.365 CPU,
+6.4541 s / RTF 0.224 CUDA, **41.8×**). All three stand as originally written;
+this entry states what was wrong with the build each was measured on, and
+gives the honest replacement.
+
+### The defect
+
+Every one of the RTF figures above — Plan 4's and Plan 5's alike — was
+measured on `build/dev-dgx-spark`. That preset inherits `development-base`,
+which sets `CMAKE_BUILD_TYPE: RelWithDebInfo` (`CMakePresets.json:32`), so
+ggml-cpu compiled at **`-O2 -g`**. Verified directly from both trees'
+`flags.make`:
+
+| tree | ggml-cpu C_FLAGS |
+| --- | --- |
+| `build/dev-dgx-spark` | `-O2 -g -DNDEBUG` |
+| `build/` (plain, defaults to Release) | `-O3 -DNDEBUG -mcpu=native` |
+
+`-O2` costs **2.19×** on this workload. RTF 9.294 (Plan 4) and RTF 9.365
+(Plan 5 Task 2's own CPU arm) are both a property of the measurement build,
+not of the code. Shipped wheels were never affected: release presets use
+`Release` (`CMakePresets.json:45`) and a bare `cmake -S . -B build` defaults
+to `Release` (`CMakeLists.txt:39-40`) — only this project's own published
+numbers were pessimistic, by roughly that factor.
+
+### The honest pair
+
+Measured on `build/rel-dgx-spark` — the `dev-dgx-spark` CUDA settings with
+`CMAKE_BUILD_TYPE=Release`, now the committed `rel-dgx-spark` CMake preset
+(`CMakePresets.json`). Same binary for both arms, `omni-long-boundary`
+(719 frames = 28.76 s of audio), through `synth_synthesize_to_buffer`,
+round-robin interleaved, N=3 per arm, every run under 1.0 other-cores of
+contention (the host was quiet — load 1.41, versus load 50 during the
+original Plan 5 Task 2 measurement).
+
+| arm | best | mean | RTF (best) |
+| --- | ---: | ---: | ---: |
+| CPU | 122.61 s | 123.02 s | **4.263** |
+| CUDA, generator on GPU | 5.481 s | 5.518 s | **0.1906** |
+
+**Speedup 22.4×.** Not the 41.8× Plan 5 Task 2 reported. Both ends moved: the
+CPU arm was 2.2× overstated, and the CUDA arm is itself ~1.17× faster at
+`-O3` (its host-side sampling loop is CPU code too).
+
+### A second correction to the same entry: the RTX 4060 Ti comparison
+
+Plan 5 Task 2's own closing comparison ("For comparison, ServeurpersoCom's
+own port reports RTF 0.194 on an RTX 4060 Ti... at Q8_0") misattributes the
+benchmark. Verified directly against both repositories' own READMEs: the
+`[rtf] total=0.194  seconds=14.932` figure on a local RTX 4060 Ti run is
+`bluryar/omnivoice.cpp`'s own reported number (its README's Performance
+section, `omnivoice-q8_0.gguf`), not `ServeurpersoCom/omnivoice.cpp`'s —
+`ServeurpersoCom/omnivoice.cpp`'s own README carries no RTF figure at all.
+With the correction above, this port's own honest RTF 0.1906 on DGX
+Spark/GB10 (full F32 precision, no step-count or quantization reduction) is
+in the same range as `bluryar`'s reported 0.194 on an RTX 4060 Ti at Q8_0.
+
+### `-mcpu=native` is worth nothing
+
+Two fresh Release CPU trees, N=3 each, interleaved, long case:
+
+| tree | mean |
+| --- | ---: |
+| `GGML_NATIVE=ON` | 122.089 s |
+| `GGML_NATIVE=OFF` | 122.003 s |
+
+**0.07% apart — inside noise.** This settles a contradiction in the original
+investigation (one agent's GEMM microbenchmark claimed 1.45× for native; an
+end-to-end four-build A/B claimed nothing). End-to-end wins. It matters
+because `pyproject.toml:42` sets `GGML_NATIVE=OFF` for wheels and aarch64 has
+no runtime variant dispatch — so the entire `-O3` win is shippable as-is,
+with no packaging change and no new CPU-variant machinery.
+
+### Bit-identity holds
+
+`-O2` output and all three `-O3` outputs hash identically
+(`43db99bc…dca2d`). The Release CPU tree still passes the replay check at
+**17/17 exact token grids, 2/2 exact clone-token grids**, and
+`synthesize-omnivoice-replay-golden` passes (443.62 s).
+
+### Open question, recorded not investigated: one CPU run in ten hashed differently
+
+Of ten CPU runs collected during this re-measurement, **one**
+(`rel-cpu-native` run 1) hashed differently from the canonical hash — 119 of
+2,760,960 bytes, all in the last ~3% of the waveform. Runs 2 and 3 on that
+same tree matched the canonical hash. This is run-to-run nondeterminism on
+the CPU path, independent of `-O2`/`-O3` and of native/non-native (it
+occurred on a native-CPU Release tree; nothing about this build's
+optimization level or CPU-variant flag distinguishes it from the nine runs
+that matched).
+
+**This matters because this family's whole contract is exact tokens.**
+Two things are known and two are not. Known: the replay gate (which checks
+committed token grids, not the decoded waveform) passed on the tree this
+divergent run came from, and the byte difference is confined to a small tail
+of the waveform rather than spread throughout it. Not known: whether the
+divergence originates in the generator's own token draws (with the codec
+merely propagating an already-different grid) or downstream of the
+generator, in the codec/vocoder's own arithmetic on an identical grid — a
+119-byte PCM tail difference is consistent with either. The replay gate
+passing weakly suggests the latter (downstream of the generator), but **that
+is not established** — it has not been cross-checked against the actual
+token grid the divergent run produced, and it is not this entry's job to
+settle: **do not let it disappear into a footnote.** A future task needs a
+deliberate repeat-run experiment (many more than ten runs, with the token
+grid captured and diffed alongside the PCM on every run) before this can be
+called understood.
+
+### What this does and does not establish
+
+One case, one host, N=3 per arm for the honest pair (N=3 per tree for the
+`-mcpu=native` question, N=10 for the CPU determinism sweep that surfaced the
+open question above). Not a sweep across the other 19 golden cases, not a
+memory or concurrency measurement. It is what the corrected build changes,
+measured honestly, plus one open question that measurement surfaced and does
+not answer. Cross-references: `docs/backends.md`'s per-family cost table and
+"Discrete-Outputs Rule Admits One Narrow Exception" section,
+`docs/porting/families/omnivoice.md`'s Execution Backends section,
+`docs/models/omnivoice-0-6b.md`'s Backends section, and `docs/testing.md`'s
+"Performance Figures Require A Release Preset" — all four updated with these
+numbers as part of this correction. `docs/port-validation.md` and the sibling
+families' (VITS, Kokoro, qwen3-tts) own CPU figures were checked for the same
+dev-preset provenance defect as part of this correction where they cited
+OmniVoice; qwen3-tts's own unrelated oracle CPU-vs-CUDA figure
+(`docs/port-validation.md:103`, "9.4 times") was inspected and found to be
+about the PyTorch oracle's own device choice, not this project's C++ build
+type, and is left untouched — checking whether *that* figure has its own
+provenance problem is unstarted, sibling-family work this correction does
+not do.

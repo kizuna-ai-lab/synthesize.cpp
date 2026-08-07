@@ -76,6 +76,7 @@ class CMakePresetContractTest(unittest.TestCase):
         expected = {
             "dev-dgx-spark",
             "dev-dgx-spark-uvm",
+            "rel-dgx-spark",
             "release-linux-aarch64-cu13",
             "dev-linux-x86_64-cuda",
             "release-linux-x86_64-cu13",
@@ -104,6 +105,7 @@ class CMakePresetContractTest(unittest.TestCase):
         expected = {
             "dev-dgx-spark": "121a-real",
             "dev-dgx-spark-uvm": "121a-real",
+            "rel-dgx-spark": "121a-real",
             "release-linux-aarch64-cu13": "121a-real",
             "dev-linux-x86_64-cuda": "89-real",
             "release-linux-x86_64-cu13": (
@@ -145,7 +147,12 @@ class CMakePresetContractTest(unittest.TestCase):
         self.assertEqual(builds, configure_names)
         self.assertEqual(
             tests,
-            {"dev-dgx-spark", "dev-dgx-spark-uvm", "dev-linux-x86_64-cuda"},
+            {
+                "dev-dgx-spark",
+                "dev-dgx-spark-uvm",
+                "rel-dgx-spark",
+                "dev-linux-x86_64-cuda",
+            },
         )
         uvm = next(
             preset

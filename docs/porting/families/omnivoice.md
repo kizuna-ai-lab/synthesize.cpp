@@ -1,6 +1,6 @@
 # OmniVoice Family Selection and Port Plan
 
-Status: Confirmed 2026-08-07. Intake through the greedy synthesis core
+Status: Confirmed 2026-08-08. Intake through the greedy synthesis core
 (slices 4–6) done: single-forward parity, exact token grids 17/17, replay
 waveform under committed tolerances (tests/tolerances/omnivoice.json). Plan 3
 (the public sampled path, Reference Audio and Description Text Voice
@@ -10,15 +10,20 @@ Adapters, and this record's own close-out) is done as of Task 17. Plan 4
 CUDA Execution Backend, and ship) is done as of its own Task 17. Both
 candidate Quantization Profiles were produced and both fail the clone path's
 exact-token gate, so this family ships F32-only (see the quantization
-section). The CUDA backend is claimed for the codec's decode path; the
-generator stays on CPU by the discrete-outputs rule, and a separate
-measurement confirmed it would not survive placement there anyway (see
-Execution Backends and Open Questions below). The Listening Audit recorded
-`no_obvious_regression` on all six audited pairs. Ship artifacts are prepared
-as a Restricted Model Package (ADR 0018) under `models/publish/omnivoice-0-6b/`;
-publication itself is a separate act awaiting jiangzhuo's per-act
-confirmation. Plan 5's carry-over ledger is
-`docs/superpowers/plans/2026-08-07-omnivoice-plan-5-carryover.md`.
+section). **Superseded 2026-08-08 (Plan 5 Task 1):** the generator no longer
+stays on CPU. jiangzhuo revised this family's bar from token identity to
+audible quality after a six-pair blind A/B heard no problem in
+generator-on-CUDA output, so the generator now moves too, under
+`docs/backends.md`'s new discrete-outputs exception. The honest end-to-end
+pair, measured on a Release build, is 122.61 s / RTF 4.263 (CPU) versus
+5.481 s / RTF 0.1906 (CUDA) -- 22.4x -- superseding both the Plan 4
+codec-only figures below and a first-reported 41.8x that was itself measured
+on a `RelWithDebInfo`/`-O2` preset; see Execution Backends below for the full
+correction. The Listening Audit recorded `no_obvious_regression` on all six
+audited pairs. Ship artifacts are prepared as a Restricted Model Package
+(ADR 0018) under `models/publish/omnivoice-0-6b/`; publication itself is a
+separate act awaiting jiangzhuo's per-act confirmation. Plan 5's carry-over
+ledger is `docs/superpowers/plans/2026-08-07-omnivoice-plan-5-carryover.md`.
 
 ## Decision
 
@@ -1220,7 +1225,53 @@ claim if it had been). The evidence and the exact commands are in
 summarizes the outcome the family card and `family_supports_explicit_backend`
 (`src/model-info.h`) now rely on.
 
-### The codec moves, the generator does not
+**Superseded 2026-08-08 (Plan 5 Tasks 1–2).** Everything through the end of
+this section (the "codec moves, generator does not" finding, the 267.30 s →
+258.48 s / RTF 9.294 → 8.987 pair, and the 15.2393 s / 15.3927 s short-case
+pair below) is Plan 4's own measurement, kept for the historical record, not
+because it is still the current claim. Two things changed it:
+
+1. **jiangzhuo revised this family's bar from token identity to audible
+   quality** (2026-08-08), after a six-pair blind A/B (order seed 20260808,
+   case seed 12) heard no problem in generator-on-CUDA output, including a
+   pair at waveform cosine 0.0515 with 98.3% of tokens flipped. Plan 5 Task 1
+   gave the generator its own accelerator-resident twin (312 tensors,
+   2,336.80 of the model's 3042.2 MiB) under `docs/backends.md`'s new
+   "Discrete-Outputs Rule Admits One Narrow Exception," so `--accelerate` now
+   moves the whole graph, not only the codec's 152-tensor partition.
+2. **The measurement build itself was wrong.** Every figure below, and Plan 5
+   Task 2's own first RTF measurement, was taken on `build/dev-dgx-spark`,
+   whose preset inherits `RelWithDebInfo`, compiling ggml-cpu at `-O2 -g`
+   rather than the `-O3` a plain `cmake -S . -B build` (or any release
+   preset) actually ships. `-O2` costs 2.19x on this workload, verified
+   directly from both trees' `flags.make`. Shipped wheels were never
+   affected -- only this project's own published numbers.
+
+**The honest pair**, from a fresh Release CUDA tree (`build/rel-dgx-spark`:
+`dev-dgx-spark`'s CUDA settings with `CMAKE_BUILD_TYPE=Release`; see
+`docs/testing.md`), same case (`omni-long-boundary`, 719 frames = 28.76 s of
+audio), same binary for both arms, N=3 per arm, round-robin interleaved,
+host quiet:
+
+| arm | best | RTF (best) |
+| --- | ---: | ---: |
+| CPU | 122.61 s | 4.263 |
+| CUDA (generator + codec on GPU) | 5.481 s | 0.1906 |
+
+**Speedup 22.4x** -- not the 41.8x Plan 5 Task 2 first reported from the same
+`-O2` denominator as the Plan 4 figures below. Both ends moved: the CPU arm
+was 2.2x overstated, and the CUDA arm is itself ~1.17x faster at `-O3` too,
+since its host-side sampling loop is CPU code as well. Bit-identity holds
+across build types (`-O2` and all three `-O3` trees hash identically), and
+the Release CPU tree still passes the replay check at 17/17 exact token
+grids, 2/2 exact clone-token grids. Full method, the `-mcpu=native`
+finding (negligible, inside noise), and an open run-to-run nondeterminism
+question are in
+`reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s 2026-08-08
+erratum; the corrected per-family cost table row and the exception's own
+writeup are in `docs/backends.md`.
+
+### The codec moves, the generator does not (Plan 4, historical)
 
 This resolves the "Generator on CUDA" Open Question below, and confirms the
 qwen3-tts precedent this family always intended to follow: the generator's
@@ -1262,13 +1313,16 @@ CUDA --stage replay`):
   `docs/testing.md`'s CPU golden-gate timeout budget is measured against): the
   codec itself is 9.68× faster (4.3069 s → 0.4451 s), but because the held
   generator is 98.9% of wall time on this case, the end-to-end effect is a
-  3.4% reduction (267.30 s → 258.48 s; real-time factor 9.294 → 8.987). This
-  is the opposite shape from Kokoro and VITS's own CUDA rows in
-  `docs/backends.md`'s per-family cost table: there, holding a *minority*
-  stage off an otherwise-GPU-primary graph is a tax; here, moving a free
-  *minority* stage off an otherwise-CPU-primary graph is a small, bounded
-  saving. `docs/backends.md`'s own per-family table carries the row and the
-  reasoning for the inversion.
+  3.4% reduction (267.30 s → 258.48 s; real-time factor 9.294 → 8.987).
+  **This pair is measured on the `dev-dgx-spark` `RelWithDebInfo`/`-O2`
+  preset, 2.19x pessimistic on this workload's CPU-bound generator versus
+  the shipped `Release`/`-O3` build -- see the supersession note above for
+  the honest 122.61 s / 5.481 s, 22.4x pair.** This was the opposite shape
+  from Kokoro and VITS's own CUDA rows in `docs/backends.md`'s per-family
+  cost table: there, holding a *minority* stage off an otherwise-GPU-primary
+  graph is a tax; here, moving a free *minority* stage off an
+  otherwise-CPU-primary graph was a small, bounded saving. `docs/backends.md`'s
+  own per-family table now carries the corrected, whole-graph row instead.
 
 ### Operational evidence (`docs/backends.md`'s Validation Gate 5)
 
@@ -1282,6 +1336,12 @@ would have made a CUDA sweep a false green): one seed-0 request of
 and synthesizes in 15.2393 s / 15.3927 s, CPU vs. CUDA -- the codec's share of
 this particular request is too small to separate from run-to-run noise, which
 is consistent with the longer case's own 1.6 percent codec share above.
+**This pair predates Plan 5 Task 1's generator move and was taken on the same
+`-O2` `dev-dgx-spark` preset as the rest of this historical section; no
+Release-tree re-measurement of this specific short case exists.** The current,
+honest operational figure is the `omni-long-boundary` pair in the supersession
+note that opens this section (122.61 s / 5.481 s, 22.4x, both arms now moving
+the whole graph).
 
 **Peak memory is not separately measurable on this hardware the way it is on
 discrete hardware, and reporting a bare number would claim more than it means
@@ -1501,20 +1561,60 @@ manifest choice.
 ## Prior Art and Attribution
 
 Four existing implementations were read at design time. None of their code is
-in this project; anything later adopted as code from the two permissively
+in this project; anything later adopted as code from the three permissively
 licensed ones records its notice in `THIRD_PARTY_NOTICES.md` at the time of
 adoption.
 
 | Repo | License | Use |
 | --- | --- | --- |
-| `ServeurpersoCom/omnivoice.cpp` | MIT | Best architecture document of the four, published GGUFs usable as cross-check oracles, and the col2im recipe. Its README misstates the upstream licenses. |
-| `bluryar/omnivoice.cpp` | Apache-2.0 | Clearest MaskGIT-style decode loop in ggml, single-GGUF precedent, a ggml CUDA bug audit. Misstates the weight license and ships no converter. |
+| `ServeurpersoCom/omnivoice.cpp` | MIT | Best architecture document of the four (`docs/ARCHITECTURE.md`, 900 lines), published GGUFs (Hugging Face, `Serveurperso/OmniVoice-GGUF`) usable as cross-check oracles. Its README misstates the upstream licenses. |
+| `bluryar/omnivoice.cpp` | Apache-2.0 | Clearest MaskGIT-style decode loop in ggml, single-GGUF precedent (self-published on Hugging Face, `bluryar/omnivoice-gguf`), a ggml CUDA bug audit. Misstates the weight license and ships no converter. |
 | `rockerritesh/omnivoice-tts.cpp` | **PolyForm Noncommercial** | **Read-only — no code reuse.** Source of the temperatures-zero bit-exactness finding and the F16 collapse measurement. |
-| `0xShug0/audio.cpp` | unverified — treat as read-only | Active multi-model GGML audio engine that supports OmniVoice; a positioning mirror rather than a source. |
+| `0xShug0/audio.cpp` | Apache-2.0 | Active multi-model GGML audio engine that supports OmniVoice; a positioning mirror rather than a source. |
 
 The license column is about each port's own code. It says nothing about the
 weights, which every one of these repositories describes incorrectly or not at
 all.
+
+**Corrected 2026-08-08.** This table's col2im-recipe attribution and
+`0xShug0/audio.cpp`'s license were re-verified directly against each
+repository (GitHub API, raw `LICENSE`/`README`/`docs` contents), because a
+prior draft of this correction guessed at what was wrong here without
+checking and got most of its own guesses wrong. What actually changed, and
+what didn't:
+
+- **The col2im_1d recipe does not belong in this table at all — it was never
+  a finding from reading this family's own prior art.** `ggml_col2im_1d`
+  being available upstream, unforked, was established during the qwen3-tts
+  intake on 2026-07-26 by reading `ServeurpersoCom/qwentts.cpp`
+  (`docs/porting/families/qwen3-tts.md`'s "Findings From Reading qwentts.cpp"
+  section), and VITS moved onto it the next day, 2026-07-27 -- four days
+  before this family's own intake began. `ServeurpersoCom/omnivoice.cpp`
+  itself does the opposite of what crediting it implied: its own `ggml` fork
+  (`ServeurpersoCom/ggml.git`) adds a *custom*, patched `GGML_OP_COL2IM_1D`
+  op rather than using an unforked upstream one, which is not the recipe this
+  project follows. The previous row's "and the col2im recipe" clause is
+  removed rather than reattributed to a repo this table doesn't otherwise
+  cover.
+- **The ARCHITECTURE.md claim was already correct.** `docs/ARCHITECTURE.md`
+  genuinely exists in `ServeurpersoCom/omnivoice.cpp` (900 lines, specific to
+  this model: Qwen3-0.6B backbone, 8×1024-entry codebooks, MaskGIT steps,
+  the Higgs Audio v2 codec) — it does not belong to a different port.
+- **The GGUF-publishing claim was already correct.** Neither port embeds GGUF
+  binaries in its git repository (normal practice for multi-gigabyte
+  artifacts), but both self-publish converted GGUFs on Hugging Face under
+  accounts matching their own project names — `Serveurperso/OmniVoice-GGUF`
+  (7 models, 55k+ downloads, the same author as `ServeurpersoCom`) and
+  `bluryar/omnivoice-gguf` — not a third party's repository.
+- **The license this table had wrong was `0xShug0/audio.cpp`, not
+  `ServeurpersoCom/omnivoice.cpp`.** `ServeurpersoCom/omnivoice.cpp`'s own
+  `LICENSE` file and README both say MIT, plainly; that entry was already
+  right. `0xShug0/audio.cpp`'s `LICENSE` file is unmodified Apache License
+  2.0 text (Copyright 2026 ShugoAI LLC) — GitHub's own license detector
+  misreports it as `Other`/`NOASSERTION`, which is presumably how
+  "unverified" entered this table, but reading the file directly resolves
+  it. This makes three of the four referenced ports permissively licensed,
+  not two, which the paragraph above this table now reflects.
 
 ## Divergences Ledger (v1)
 

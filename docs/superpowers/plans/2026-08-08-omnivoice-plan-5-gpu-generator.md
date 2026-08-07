@@ -250,6 +250,24 @@ whether a twin exists elsewhere.
 
 ### Task 2: RTF, measured honestly
 
+**Amended 2026-08-08, after execution.** Step 1 below, as originally written,
+directed this measurement onto the `dev-dgx-spark` CUDA tree — the same tree
+every prior OmniVoice RTF figure used, and the root cause of what this
+amendment corrects. That tree's `dev-dgx-spark` preset inherits
+`RelWithDebInfo`, compiling ggml-cpu at `-O2` rather than the `-O3` a
+`Release` build ships; measured 2.19× slower on this workload. Task 2's own
+first execution reported a 41.8× speedup (269.7192 s / RTF 9.365 CPU,
+6.4541 s / RTF 0.224 CUDA) from exactly that tree, and it is retracted for
+the same reason. The honest pair, from a fresh Release CUDA tree
+(`build/rel-dgx-spark`, now the committed `rel-dgx-spark` CMake preset):
+**122.61 s / RTF 4.263 (CPU) vs. 5.481 s / RTF 0.1906 (CUDA), 22.4×** — full
+method and the erratum are in the porting log's 2026-08-08 entry; the
+project-wide rule this adds (a `dev-*` preset proves correctness, never
+timing) is in `docs/testing.md`. Step 1 is left as originally written below,
+for the historical record of what was actually run; a repeat of this
+measurement should build on a `Release`-typed tree instead (`rel-dgx-spark`
+for this same host).
+
 **Files:** `reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md` (a new
 dated entry); no source changes are expected, but if
 `tests/omnivoice_public_real.c` needs a capability it does not already have

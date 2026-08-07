@@ -1,6 +1,6 @@
 # Testing Policy
 
-Status: Confirmed, last updated on 2026-08-07.
+Status: Confirmed, last updated on 2026-08-08.
 
 Testing is a per-slice completion gate. A new converter rule, graph stage,
 runtime control, backend path, or public Interface is not complete merely because
@@ -225,6 +225,10 @@ configuration also makes `tests/public_cleanup_test.cpp`'s CUDA arm live for
 every family it did not already cover, since that test is generic across
 families rather than gated per one.
 
+**`dev-dgx-spark` is for correctness, never for timing** -- see "Performance
+Figures Require A Release Preset" below for why, and `rel-dgx-spark` for the
+preset that measures instead.
+
 The equivalent RTX 4070 SUPER command uses the
 `dev-linux-x86_64-cuda` preset and native `sm_89`. Release jobs use the
 committed `release-linux-aarch64-cu13` and `release-linux-x86_64-cu13` presets;
@@ -344,3 +348,64 @@ disagree.
 
 A new test or runner therefore needs no change here. What still does is anything
 the gate drives that is neither: register it explicitly.
+
+## Performance Figures Require A Release Preset
+
+Every OmniVoice RTF figure this project published before 2026-08-08 was
+measured on `build/dev-dgx-spark`. That preset inherits `development-base`,
+which sets `CMAKE_BUILD_TYPE: RelWithDebInfo`, so ggml-cpu compiled at
+`-O2 -g` rather than the `-O3` a plain `cmake -S . -B build` (or any
+`release-*` preset) actually ships. Verified directly from both trees'
+`flags.make`:
+
+| tree | ggml-cpu C_FLAGS |
+| --- | --- |
+| `build/dev-dgx-spark` | `-O2 -g -DNDEBUG` |
+| `build/` (plain, defaults to Release) | `-O3 -DNDEBUG -mcpu=native` |
+
+`-O2` measured 2.19x slower than `-O3` on OmniVoice's `omni-long-boundary`
+case (719 frames) -- a real-time factor difference large enough to change
+the qualitative story a reader takes from the number, not just its third
+decimal. Every dev-preset RTF claim this project published (`docs/backends.md`,
+`docs/porting/families/omnivoice.md`, `docs/models/omnivoice-0-6b.md`, the
+family porting log) was pessimistic by roughly that factor until corrected
+2026-08-08; full method and the honest re-measurement are in
+`reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s 2026-08-08
+erratum. Shipped wheels were never affected -- release presets and the plain
+`cmake` default were always `Release` -- only this project's own published
+performance claims were.
+
+**The rule, going forward: a `dev-*` preset (`dev-dgx-spark`,
+`dev-dgx-spark-uvm`, `dev-linux-x86_64-cuda`) proves correctness --
+functional behavior, placement, token/tensor agreement -- never wall-clock
+time.** `RelWithDebInfo`'s debug symbols and reduced optimization exist so a
+development build stays debuggable; that tradeoff is invisible to a
+correctness assertion and decisive to a timing one. A performance figure
+destined for a doc, a report, or a card is measured on a build whose
+`CMAKE_BUILD_TYPE` is `Release` and nothing else -- the committed
+`rel-dgx-spark` preset (DGX Spark's own CUDA settings from `dev-dgx-spark`,
+with `CMAKE_BUILD_TYPE=Release` in place of `RelWithDebInfo`) for the DGX
+Spark/GB10 CUDA host, or the plain `cmake -S . -B build` default for CPU-only
+hosts, which is already `Release`:
+
+```bash
+export SYNTH_CUDA_ROOT=/path/to/cuda-13.3
+export PATH="$SYNTH_CUDA_ROOT/bin:$PATH"
+export LD_LIBRARY_PATH="$SYNTH_CUDA_ROOT/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+CUDAToolkit_ROOT="$SYNTH_CUDA_ROOT" \
+  CUDACXX="$SYNTH_CUDA_ROOT/bin/nvcc" \
+  cmake --preset rel-dgx-spark
+cmake --build --preset rel-dgx-spark -j
+ctest --preset rel-dgx-spark
+```
+
+`rel-dgx-spark` is a measurement tree, not a registered CI gate: it carries
+the same test/CLI/Python surface as `dev-dgx-spark` (so the same integration
+suite can be pointed at it for a correctness cross-check at `-O3`, as this
+family's own re-measurement did), but nothing in the required-gate list above
+depends on it, and it is not a substitute for `dev-dgx-spark`'s own gates.
+`-mcpu=native` (`GGML_NATIVE=ON`) is deliberately left off by default on both
+presets, matching `pyproject.toml`'s wheel setting: measured 0.07% apart from
+`GGML_NATIVE=OFF` end to end on this workload, inside noise, despite an
+earlier microbenchmark suggesting a real GEMM-level win -- end-to-end timing
+overrode the microbenchmark, not the other way around.

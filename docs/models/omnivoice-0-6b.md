@@ -145,43 +145,64 @@ source-f32-oracle-vs-f32-cpu`); both sides run F32 on CPU for this
 comparison, so the thresholds carry neither a dtype nor a device
 difference, only an implementation one.
 
-### Backends: CPU baseline, CUDA partial
+### Backends: CPU baseline, CUDA now the whole graph
 
 CPU is the mandatory baseline; every measurement above is against it. CUDA
-support is **partial**, not full, and the split is a design rule rather than
-an unmeasured gap: only the codec's decode graph (the RVQ dequantizer, the
-acoustic decoder, and the final projection -- 152 tensors) moves to CUDA. The
-generator -- the entire mask-predict denoising loop and its whole input path --
-stays on the CPU **unconditionally**, on every case and every profile, because
-the generator's own token selection feeds its next denoising step and
-`docs/backends.md`'s discrete-outputs rule holds a discrete decision and its
-input path off the accelerator regardless of backend.
+support **covered only the codec's decode graph through Plan 4** (the RVQ
+dequantizer, the acoustic decoder, and the final projection -- 152 tensors),
+with the generator held on CPU unconditionally under `docs/backends.md`'s
+discrete-outputs rule. **Superseded 2026-08-08 (Plan 5 Task 1):** after
+jiangzhuo revised this family's bar from token identity to audible quality
+(a six-pair blind A/B heard no problem in generator-on-CUDA output), the
+generator earned `docs/backends.md`'s new "one narrow exception" to that
+rule -- its discrete token choice never changes the canvas shape, only its
+content -- and now moves to CUDA too, mirrored through its own
+accelerator-resident weight twin.
 
-Measured 2026-08-07 across all twenty Golden cases with `--accelerate`: every
-codec node left the CPU and every generator node did not, not just on
-average -- aggregated over the whole suite, codec 8,440 of 8,440 nodes off the
-CPU, generator 0 of 880,032. All seventeen greedy token grids and both
-cloning RVQ grids stayed byte-exact against the CPU baseline. The one artifact
-that does move is the decoded waveform, because it is what the accelerated
-codec's TF32 arithmetic actually touches:
+Measured 2026-08-07 across all twenty Golden cases with `--accelerate`
+(Plan 4, codec-only, kept for the record): every codec node left the CPU and
+every generator node did not -- aggregated over the whole suite, codec 8,440
+of 8,440 nodes off the CPU, generator 0 of 880,032. All seventeen greedy
+token grids and both cloning RVQ grids stayed byte-exact against the CPU
+baseline. The one artifact that moved was the decoded waveform, because it
+is what the accelerated codec's TF32 arithmetic actually touches:
 
 | Backend | `audio.pcm` worst cosine | `audio.pcm` worst max\_abs |
 | --- | ---: | ---: |
 | CPU (F32 baseline) | 0.99999986 | 1.69e-05 |
-| CUDA (codec only) | 0.99999635 | 7.01e-03 |
+| CUDA (codec only, Plan 4) | 0.99999635 | 7.01e-03 |
 
 committed to `tests/tolerances/omnivoice.json`'s `backends.CUDA.stages.replay`
 cell at `min_cosine 0.999981` / `max_abs 0.04` (five times the measured
-deviation). On the suite's longest case the codec itself is 9.68x faster
-(4.3069 s to 0.4451 s), but because the CPU-held generator is 98.9% of wall
-time there, the end-to-end effect is a bounded 3.4% reduction -- the opposite
+deviation). Once the generator also moves (Plan 5), token *content* -- not
+grid size -- diverges from the CPU baseline in most cases; this is a
+deliberate, measured, and audited trade (see the family doc's Listening
+Audit), not a regression.
+
+**RTF, corrected.** The Plan 4 codec-only figure below (9.68x faster codec,
+3.4% end-to-end reduction) was measured on the `dev-dgx-spark` preset, whose
+`RelWithDebInfo` build compiles ggml-cpu at `-O2` -- 2.19x slower than the
+shipped `Release`/`-O3` build -- so it is doubly stale: superseded by the
+generator's own move, and pessimistic on top of that. The honest, corrected
+pair, from a Release CUDA tree (`build/rel-dgx-spark`) with the generator
+also on CUDA, same case (`omni-long-boundary`, 719 frames):
+
+| Backend | Time | RTF |
+| --- | ---: | ---: |
+| CPU | 122.61 s | 4.263 |
+| CUDA (generator + codec) | 5.481 s | 0.1906 |
+
+**22.4x**, faster than real time. (For the record, the superseded Plan 4
+figure: codec alone was 9.68x faster [4.3069 s to 0.4451 s] but the CPU-held
+generator was 98.9% of wall time, so the end-to-end effect was a bounded
+3.4% reduction, 267.30 s to 258.48 s, RTF 9.294 to 8.987 -- the opposite
 shape from a GPU-primary family, where holding a minority stage on CPU is a
-tax rather than a small saving. Full method, the twenty-case sweep, and the
-operational-evidence tables (latency, repeated-run cleanup, and why peak
-memory has no second budget on this UMA host) are in
-`docs/porting/families/omnivoice.md`'s Execution Backends section and
-`reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s 2026-08-07 Task
-11 entry.
+tax rather than a small saving.) Full method, the twenty-case sweep, the
+corrected RTF measurement, and the operational-evidence tables (latency,
+repeated-run cleanup, and why peak memory has no second budget on this UMA
+host) are in `docs/porting/families/omnivoice.md`'s Execution Backends
+section and `reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s
+2026-08-07 Task 11 entry and 2026-08-08 erratum.
 
 ### Listening Audit
 

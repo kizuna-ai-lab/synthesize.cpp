@@ -70,6 +70,16 @@
       }
     },
     {
+      "name": "rel-dgx-spark",
+      "displayName": "DGX Spark CUDA Release measurement",
+      "description": "dev-dgx-spark's CUDA/test settings at CMAKE_BUILD_TYPE=Release. Use this, never dev-dgx-spark, for any performance figure: dev-dgx-spark's inherited RelWithDebInfo compiles ggml-cpu at -O2, measured 2.19x slower than -O3 on this workload (docs/testing.md).",
+      "inherits": ["preset-base", "cuda-base", "development-base"],
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CUDA_ARCHITECTURES": "121a-real"
+      }
+    },
+    {
       "name": "release-linux-aarch64-cu13",
       "displayName": "Linux AArch64 CUDA 13 Provider release",
       "description": "Release posture for the manylinux_2_28 AArch64 cu13 Provider with the complete native target set.",
@@ -107,6 +117,10 @@
     {
       "name": "dev-dgx-spark-uvm",
       "configurePreset": "dev-dgx-spark-uvm"
+    },
+    {
+      "name": "rel-dgx-spark",
+      "configurePreset": "rel-dgx-spark"
     },
     {
       "name": "release-linux-aarch64-cu13",
@@ -155,6 +169,16 @@
     {
       "name": "dev-linux-x86_64-cuda",
       "configurePreset": "dev-linux-x86_64-cuda",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "rel-dgx-spark",
+      "configurePreset": "rel-dgx-spark",
       "output": {
         "outputOnFailure": true
       },

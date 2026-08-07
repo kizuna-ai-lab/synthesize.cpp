@@ -462,6 +462,55 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
         self.assertIn("accepts raw UTF-8 text", card)
         self.assertNotIn("also accepts exact token", card)
 
+    def test_omnivoice_default_readme_matches_the_generated_card(self) -> None:
+        # This family's working directory (models/omnivoice-0-6b) is not flat
+        # -- it holds the raw upstream checkpoint beside our GGUFs, unlike
+        # every sibling family -- but generate.py's own model_dir resolution
+        # (REPO_ROOT / "models" / model_slug) still targets it by default,
+        # exactly as it does for VITS and Kokoro. A defect caught after this
+        # task's first pass: the card had only ever been written to a
+        # --output override (models/publish/omnivoice-0-6b/README.md), which
+        # left the plain `generate.py omnivoice-0-6b.yaml --check` invocation
+        # -- the one every sibling family answers with exit 0 -- checking a
+        # stale copy of the *upstream* README instead, silently, because
+        # nothing exercised the no-argument path. This pins the default path
+        # too, the same way the sibling `test_generated_*_is_flat` tests do.
+        spec = self.generator.load_spec(ROOT / "scripts" / "hf_cards" / "omnivoice-0-6b.yaml")
+        self.generator.validate_spec(spec)
+        model_dir = ROOT / "models" / "omnivoice-0-6b"
+        if not model_dir.is_dir():
+            self.skipTest("the OmniVoice packages have not been materialized locally")
+        self.generator.validate_artifacts(spec, model_dir)
+        expected_card = self.generator.render(spec, self.generator.load_upstream_card(spec))
+        self.assertEqual((model_dir / "README.md").read_text(encoding="utf-8"), expected_card)
+        # The upstream card was moved to models/upstream/omnivoice-0-6b/, not
+        # overwritten in place, so source.card_path has a stable home that is
+        # never mixed with our own artifacts (the Kokoro precedent). Confirm
+        # it is still genuinely the upstream card, not a copy of ours.
+        self.assertNotIn("synthesize.cpp", self.generator.load_upstream_card(spec))
+
+    def test_omnivoice_publish_directory_is_flat_and_current(self) -> None:
+        # models/publish/omnivoice-0-6b/ is the clean, flat publication
+        # directory this family needs precisely because its working
+        # directory is not flat (see the test above). It must hold the GGUF,
+        # the declared sidecar, and the generated README -- and nothing else.
+        spec = self.generator.load_spec(ROOT / "scripts" / "hf_cards" / "omnivoice-0-6b.yaml")
+        self.generator.validate_spec(spec)
+        publish_dir = ROOT / "models" / "publish" / "omnivoice-0-6b"
+        if not publish_dir.is_dir():
+            self.skipTest("the OmniVoice publication directory has not been built locally")
+        self.generator.validate_artifacts(spec, publish_dir)
+        expected_card = self.generator.render(spec, self.generator.load_upstream_card(spec))
+        self.assertEqual((publish_dir / "README.md").read_text(encoding="utf-8"), expected_card)
+
+        expected_files = {
+            "README.md",
+            *(quant["filename"] for quant in spec["quants"]),
+            *(sidecar["filename"] for sidecar in spec.get("sidecars", [])),
+        }
+        actual_files = {path.name for path in publish_dir.iterdir() if path.is_file()}
+        self.assertEqual(actual_files, expected_files)
+
     # -- Task 13, feature 3: usage (--text vs --phonemes) --------------------
 
     def test_usage_renders_text_flag_for_a_text_utf8_family(self) -> None:

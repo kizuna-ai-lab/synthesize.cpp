@@ -4636,3 +4636,99 @@ and is not scheduled. The 2026-08-07 `no_obvious_regression` Listening Audit
 verdict for this family is **unchanged**: this audit's subject is a rejected
 candidate configuration, not the shipped one, and the two 32-step findings it
 surfaced are documentation corrections rather than a regression in what ships.
+
+## 2026-08-08 — Backend speaker audit: 1 of 17, confirmed by ear
+
+Follow-up to the step-count audit's Finding 2, which established that auto-voice
+has no speaker conditioning and that the generator's move to CUDA can therefore
+change who is speaking. That finding rested on one case. This entry establishes
+the scope and settles it with a listening pass.
+
+### The sweep
+
+Both arms rendered fresh at HEAD (`9d89524`) for all 17 greedy Golden cases on
+`build/rel-dgx-spark`, shipped 32-step default, greedy free-run, one binary,
+differing only in backend. All 34 renders structurally invariant (identical
+sample counts CPU vs CUDA in every case), all CPU grids exact against the
+oracle, placement verified explicitly on both arms.
+
+Speaker proxy: median F0 over voiced frames from two independent estimators
+(YIN and a normalised-cross-correlation tracker), plus the fraction of voiced
+frames below 165 Hz. Criterion for calling a speaker change: complete register
+separation (the below-165 Hz fraction going 1.00 to 0.00 on both trackers) plus
+a >40% median-F0 shift on both.
+
+**Result: 1 of 17 changes speaker — `omni-short-en`.** YIN 140.9 to 199.0 Hz,
+NCC 118.2 to 189.0 Hz, below-165 fraction 1.00 to 0.00 on both. Its CPU grid is
+byte-identical to the oracle, so CUDA is the arm that moved. Token flip 94.0%.
+
+Every other measurable case stayed in the same register on both trackers, with
+median-F0 ratios in roughly 0.92-1.03.
+
+**`omni-rate-fast` is excluded from the count, not ignored.** Its own oracle
+reference is degenerate (see Finding 1 of the step-count audit). YIN finds zero
+voiced frames on its CPU arm; the NCC tracker's "120 Hz on both arms" is
+tracking noise, not a voice. Neither arm carries a speaker to compare.
+
+### Token drift does not predict speaker change
+
+This is the part that matters for anyone reasoning about backend risk from the
+tolerance grid alone:
+
+| case | token flip | median F0 CPU -> CUDA | speaker |
+| --- | ---: | --- | --- |
+| `omni-short-en` | 94.0% | 140.9 -> 199.0 | **changed** |
+| `omni-digits` | 98.3% | 177.8 -> 183.1 | unchanged |
+| `omni-long-boundary` | 72.8% | 99.5 -> 100.8 | unchanged |
+| `omni-medium-en` | 67.2% | 169.9 -> 170.1 | unchanged |
+
+The case with the highest token disagreement in the whole suite keeps its
+speaker. No tolerance number this project records would have surfaced the one
+case that does change.
+
+### The listening pass
+
+Two blind pairs, identities withheld, balanced assignment (one pair CPU as slot
+A, one CUDA as slot A) under order seed 2026080817, deliberately distinct from
+the two earlier audits' seeds. Pair 1 `omni-short-en`, the measured change.
+Pair 2 `omni-design-zh`, the sweep's one borderline case, where the two
+trackers disagreed (NCC 160.0 to 147.2, YIN unchanged at 148.8) with no clean
+register separation and the sweep declined to count it.
+
+jiangzhuo returned:
+
+- Pair 1 (A=CPU, B=CUDA): quality indistinguishable, **different people**.
+- Pair 2 (A=CUDA, B=CPU): quality indistinguishable, **same person**.
+
+One listener, two pairs, one day — a Listening Audit in this project's
+vocabulary, explicitly not a statistical claim.
+
+**Methodological result worth carrying forward:** the proxy was confirmed
+against a human ear on a positive case *and* on a negative one. The borderline
+case the instrument declined to count was the case the listener also called
+unchanged. That is why the median-F0-plus-register-separation measure can be
+cited in future audits of this family rather than re-argued each time.
+
+### Consequences
+
+The effect is identity, not degradation: quality was judged indistinguishable
+in both pairs, and the 22.4x throughput result the placement move bought is
+unaffected. What changed is what the documentation may claim. The scope figure
+and the ear confirmation are now stated in `docs/models/omnivoice-0-6b.md` and,
+through a new optional `speaker_backend_variation` field, in the shipped model
+card. The template field is family-agnostic; the number lives in this family's
+YAML, not in the shared template.
+
+Cloning and Description Text paths are unaffected and the sweep confirms it:
+`omni-clone-en`, `omni-clone-zh`, `omni-design-en`, `omni-design-zh` all sit in
+the unchanged set. The mechanism explains why — those paths carry real
+conditioning into the prompt, so the speaker is not left to emerge from the
+token grid.
+
+### Recommended, not done
+
+`omni-short-en` should join the standing case set for this family's listening
+audits. The 2026-08-08 six-pair audit that accepted the CUDA placement move did
+not sample it, so the one case in the suite most sensitive to that very change
+was the one nobody heard. Selecting audit cases by coverage criteria and random
+draw is what let it through; a sensitive-case pin is the fix.

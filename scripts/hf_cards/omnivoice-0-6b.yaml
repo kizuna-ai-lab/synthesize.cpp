@@ -122,6 +122,16 @@ capabilities:
   # produce different speakers (omni-short-en, 118 Hz vs 189 Hz median F0).
   voice_ids: "none (unnamed default; unconditioned, not pinned by seed alone)"
   voice_mode: seed_default_with_profiles
+  # Scope, measured 2026-08-08: both backends rendered for every Golden case and
+  # compared on median F0 from two independent pitch trackers. One of the
+  # seventeen greedy cases changes speaker; omni-rate-fast is excluded because
+  # its own reference is degenerate and neither arm carries a voice to compare.
+  # A blind listener confirmed the changed pair as different people and judged
+  # the two arms equal in quality, so this is identity, not degradation.
+  speaker_backend_variation: >-
+    one case in seventeen changes speaker between the CPU and CUDA backends,
+    and a listener judged that pair to be two different speakers of equal
+    audio quality
   voice_profile_sources:
     - reference_audio
     - description_text

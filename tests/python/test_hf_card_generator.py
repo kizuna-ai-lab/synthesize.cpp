@@ -591,6 +591,46 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
         self.assertIn("Reference Audio (voice cloning)", card)
         self.assertNotIn("Description Text", card)
 
+    def test_speaker_backend_variation_is_optional_and_rendered_when_present(
+        self,
+    ) -> None:
+        # Added 2026-08-08 with the field itself. The two tests above cover
+        # only its ABSENCE, which is how the field first shipped broken: the
+        # template read `capabilities.speaker_backend_variation` directly and
+        # the generator runs Jinja under StrictUndefined, so every family that
+        # does not set it raised UndefinedError. The field is optional by
+        # design -- it carries a per-family measurement and must not become a
+        # required key in the shared template -- so both branches need a test.
+        # The measurement it carries for OmniVoice: one of seventeen greedy
+        # Golden cases changes speaker between the CPU and CUDA backends, with
+        # a listener confirming that pair as two different speakers of equal
+        # quality. See the 2026-08-08 backend speaker audit in
+        # reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md.
+        spec = base_fixture_spec()
+        spec["capabilities"]["voice_mode"] = "seed_default_with_profiles"
+        spec["capabilities"]["voice_profile_sources"] = ["reference_audio"]
+        del spec["usage"]["voice"]
+
+        # Absent: renders, and says nothing about a measured rate.
+        self.generator.validate_spec(spec)
+        without = self.generator.render(spec, "# stub")
+        self.assertNotIn("Measured on this", without)
+
+        # Present: the sentence appears, joined to the preceding one rather
+        # than glued to it, and the family's own wording is passed through.
+        spec["capabilities"]["speaker_backend_variation"] = (
+            "one case in seventeen changes speaker between the CPU and CUDA "
+            "backends"
+        )
+        self.generator.validate_spec(spec)
+        with_note = self.generator.render(spec, "# stub")
+        self.assertIn(
+            "Measured on this\npackage's own validation cases, one case in "
+            "seventeen changes speaker",
+            with_note,
+        )
+        self.assertIn("backends. Callers who want a stable identity", with_note)
+
     def test_seed_default_with_profiles_requires_a_declared_source(self) -> None:
         spec = base_fixture_spec()
         spec["capabilities"]["voice_mode"] = "seed_default_with_profiles"

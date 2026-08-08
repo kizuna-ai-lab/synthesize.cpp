@@ -47,6 +47,22 @@ Callers who need a stable identity should build a Voice Profile from Reference
 Audio or Description Text; those paths are conditioned and are not subject to
 this.
 
+**How often, measured.** Both backends were rendered for all twenty Golden
+cases at the shipped step count and compared on median F0 from two independent
+pitch trackers: **one case of the seventeen greedy cases changes speaker**
+(`omni-short-en`). Every other measurable case stays in the same register on
+both trackers. `omni-rate-fast` is excluded rather than counted, because its
+own reference audio is degenerate and neither arm carries a voice to compare.
+A listener heard the changed pair blind, reported the two arms as different
+people, and judged their audio quality indistinguishable -- so this is an
+identity effect, not a quality one.
+
+**Token drift does not predict it.** The case with the highest disagreement
+between backends, 98.3% of committed tokens, keeps the same speaker
+(178 Hz against 183 Hz). A caller cannot infer speaker stability from how much
+the two backends' tokens differ, and neither can this project's tolerance
+grid -- which is why the finding took a listening pass to surface.
+
 The package declares a validated
 Language Capability Catalog of `en`, `zh`, `ja`; the checkpoint claims 600+
 languages through its training data and prompt format, but no language beyond

@@ -118,7 +118,11 @@ which speaker a request produces is emergent, and the synthesis seed alone does
 not pin it. Reproducing a speaker needs the same seed **and** the same
 Execution Backend, package, and decode settings; switching between the CPU and
 CUDA backends can produce a different speaker for an otherwise identical
-request. Callers who want a stable identity should instead build a Voice
+request.
+{%- if capabilities.speaker_backend_variation | default("") %} Measured on this
+package's own validation cases,
+{{- " " }}{{ capabilities.speaker_backend_variation }}.
+{%- endif %} Callers who want a stable identity should instead build a Voice
 Profile from
 {%- if "reference_audio" in capabilities.voice_profile_sources and "description_text" in capabilities.voice_profile_sources %} Reference Audio (voice cloning) or Description Text (voice design)
 {%- elif "reference_audio" in capabilities.voice_profile_sources %} Reference Audio (voice cloning)

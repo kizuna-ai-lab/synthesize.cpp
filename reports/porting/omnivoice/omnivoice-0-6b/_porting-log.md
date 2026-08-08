@@ -4817,3 +4817,249 @@ human's identity is attached to a claim about someone else's legal terms.
 
 Publication remains unperformed and still requires jiangzhuo's explicit
 per-act confirmation, which the corrections do not carry forward.
+
+## 2026-08-09 — The conv-exempt codec policy: 36.4% → 3.49%, and where the rest of it lives
+
+jiangzhuo's third quantization decision of 2026-08-09: adopt the reference
+port's conv-exempt codec policy. This implements it, cuts the package under it,
+and tests the hypothesis it was adopted on — that never quantizing a
+convolution is what separates the reference port's 0.7% RVQ-code drift from our
+36.4%.
+
+### What was built
+
+A fifth `QuantRole`, `ConvKernel`, in `src/arch/omnivoice/quantization.h`. It is
+held at the profile's halved fallback column (`Profile::transpose_weight_type`
+— the same column Kokoro's quantizer already falls back to for a matrix it will
+not block-quantize) at the tensor's native three-axis shape. The offline
+quantizer's resolver and `catalog.cpp`'s load-time `expected_type` both read
+it, so an offline packing decision and a load-time expectation still cannot
+drift.
+
+The split inside `classify_codec_matrix_region` is a **positive whitelist of
+the seven Linear module names our own converter emits** under
+`codec.semantic_model` — `q_proj`, `k_proj`, `v_proj`, `out_proj`,
+`inter_dense`, `output_dense`, `projection` — with everything else in the four
+codec matrix regions falling through to `ConvKernel`. Whitelisting our own
+format rather than blacklisting theirs means a catalog tensor nobody
+anticipated lands unquantized, which is the safe direction under a policy whose
+whole content is "do not quantize this class of thing".
+
+**The rule reads the name, never the rank, and that is not a style choice.**
+`codec.acoustic_decoder.conv2.weight` is `[7, 32, 1]`; `ggml_n_dims` collapses
+the trailing unit axis and reports it as two-dimensional, so its `ne` is
+indistinguishable from a Linear's. A rule spelled "`ggml_n_dims >= 3`" would
+quantize the one convolution the policy most obviously means to exempt. The
+offline resolver could not have used a rank rule anyway — it passes a
+placeholder `ne` of `{1,1,1,1}`, having no shape at that call site.
+
+Counts, asserted in `omnivoice_quantization_test.cpp` against the real
+798-tensor topology: the old 158 codec MatrixWeight tensors split **73 Linears
+/ 85 convolution kernels**, and the per-module breakdown is now
+`acoustic_decoder` 0 quantized / 32 ConvKernel, `acoustic_encoder` 0 / 36,
+`encoder_semantic` 0 / 11, `semantic_model` 73 / 6.
+
+The three named-Sensitive convolutions (`acoustic_encoder.conv1`,
+`feat_conv.0`, `pos_conv_embed`) stay Sensitive rather than folding into
+`ConvKernel`. They are redundant as *decisions* now — the fall-through would
+also have kept them out of a block-quantized type — but Sensitive is F32 where
+ConvKernel is F16, and demoting them would change the bytes of the already-cut
+F16 package for no measured reason. Their comments say so.
+
+`Q8_MIXED` is redefined for this family rather than given a new name, per the
+plan's recommendation: it was BLOCKED, unpublished and carried no tolerance
+cell. **The old meaning is no longer reproducible from the same command line.**
+It was 2,703,016,576 bytes, sha256
+`b020933facda39c875f276934d3a5611c7a8836d4f243efc3fb1403d109b671e`, and every
+figure in this log's "Plan 4 Task 3" section belongs to it. The old artifact is
+kept locally as `omnivoice-0-6b-Q8_MIXED-pre-conv-exempt.gguf`; `models/` is
+not committed, so this entry is the durable record.
+
+The `F16` profile is **byte-identical across the policy change** — its matrix
+weight type and its halved fallback column are both F16, so a Linear and a
+convolution land on the same type either way. The F16 package's committed
+sha256 and its 103/2808 measurement stand unchanged.
+
+### The package
+
+| | |
+| --- | --- |
+| command | `build/bin/synthesize-quantize models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf models/omnivoice-0-6b/omnivoice-0-6b-Q8_MIXED.gguf --quant Q8_MIXED` |
+| source sha256 | `f6d504ffaddcbf32f80f1f6c847f075bbd5d2c7b50fe95a194ceb635772f9fa3` |
+| output sha256 | `3de73b73f3846faf084866bd244d7d37030a51a214b7883487de8773b610ddac` |
+| size | **2,778,427,360 bytes**, predicted exactly before cutting |
+| against F32 | −411,526,144 B (−12.9%) |
+| against the old `Q8_MIXED` | **+75,410,784 B — bigger** |
+| census | 640 F32, 85 F16, 73 Q8_0 |
+
+Reproducibility was checked the direct way: the diagnostic patch described
+below was reverted and the package re-cut, giving the same sha256 byte for
+byte.
+
+**Against the briefed prediction.** The brief predicted **979,174,688 bytes**
+for a *combined* "Q8_0-generator / conv-exempt-Q8-codec" profile. Re-deriving
+from `reports/convert/omnivoice/omnivoice-0-6b-F32.json` — with the arithmetic
+model first validated by reproducing the measured F16 (2,858,422,240) and
+`Q8_GEN` (1,390,699,680) packages exactly — that composition comes to
+**979,174,112 bytes**, 576 short of the briefed figure. That 576 is the same
+constant the plan's own model was out by on `Q8_GEN`: 73 tensors declared
+three-dimensional with a trailing unit axis lose one 8-byte extent each when
+`ggml_n_dims` collapses them, against a few bytes of longer profile string,
+re-rounded to the 32-byte alignment; the briefed 979,174,688 is this model's
+own pre-collapse figure to the byte. **So the briefed number was right, and it
+was right specifically for convolutions at F16** — the same arithmetic with
+convolutions at F32 gives 1,134,661,792 of tensor data, 1,140,049,056 as a
+file and 1,140,049,632 pre-collapse, which is the figure the plan's own table
+quoted for that composition. That the two predictions differ by exactly the
+conv F32→F16 saving is the strongest independent confirmation available that
+"conv weights land at F16" was the intended reading of the policy.
+
+No such combined profile exists. This family's profiles quantize exactly one
+half each, by construction (`classify_tensor_for_half`), and nothing in this
+task's brief asked for that invariant to be broken. The number is recorded
+because it was asked for, not because a package carries it.
+
+### THE HYPOTHESIS TEST
+
+Full 20-case CPU replay on `build/rel-dgx-spark`'s runner, fresh `--work`:
+
+```
+scripts/envs/omnivoice/.venv/bin/python3 scripts/validate-omnivoice-replay.py \
+  --require all --margin-report --profile Q8_MIXED --backend CPU --stage replay \
+  --model models/omnivoice-0-6b/omnivoice-0-6b-Q8_MIXED.gguf \
+  --runner build/rel-dgx-spark/bin/synthesize-omnivoice-replay-real \
+  --work /tmp/ce_full_work
+```
+
+```
+token grids exact: 17/17
+ref.tokens exact: 0/2
+narrowest RVQ encode gap: 0.00143433
+free-run waveforms: 16 against the oracle, 1 exempt (decode determinism), 0 not compared
+narrowest margin: 9.53674e-06 (selection) in omni-rate-slow; 2 of 17 case(s) under the 0.0001 screen
+```
+
+Both clone cases mismatch at **98 of 2808 positions (3.49%)**, against 1023
+(36.4%) under the old meaning. **Confirmed: convolution packing was the
+dominant cause, worth a factor of 10.4.** 17/17 greedy grids exact and every
+margin reproducing the F32 baseline to the measured digit, for the same
+structural reason every codec-only profile has: the generator never changes.
+
+Probes, against the two profiles already measured on this clip:
+
+| probe | F32 | old `Q8_MIXED` | `F16` | conv-exempt `Q8_MIXED` |
+| --- | ---: | ---: | ---: | ---: |
+| `audio.pcm` min_cosine | 0.99999986 | 0.99775438 | 0.99999743 | **0.99999743** |
+| `ref.semantic_mean` max_abs | 6.09e-05 | 0.342867 | 0.00795197 | 0.22166 |
+| `ref.fused_latent` max_abs | 9.32e-05 | 3.73227 | 0.129286 | 0.123921 |
+| narrowest RVQ encode gap | 0.00239563 | 0.0102997 | 0.00306702 | 0.00143433 |
+
+`audio.pcm` matching the F16 package to all eight digits is not a coincidence:
+`codec.acoustic_decoder` contains no Linears, so its weights are the same bytes
+under both profiles. The decode path this policy leaves alone is exactly the
+F16 profile's decode path.
+
+### What the 3.49% is made of — the diagnostic cut
+
+3.49% is not ~1%, and it is within noise of simply halving the entire codec
+(the `F16` profile's 3.67%). So the honest question is no longer "did
+conv-exemption help" — it plainly did — but "what is left". One throwaway
+package answers it: the `ConvKernel` arm patched to F32 in both the resolver
+and the catalog (two lines, not committed), cut, run on `omni-clone-en`, then
+both files restored and the shipped package re-cut byte-identically.
+
+One clip (`seedtts_ref_en_1.wav`), one gate, `ref.tokens` mismatches of 2808:
+
+| conv kernels | HuBERT Linears | mismatches | share | package bytes |
+| --- | --- | ---: | ---: | ---: |
+| Q8_0, packed | Q8_0 | 1023 | 36.4% | 2,703,016,576 |
+| **F16** | **Q8_0** (this policy) | **98** | **3.49%** | **2,778,427,360** |
+| F16 | F16 (`F16` profile) | 103 | 3.67% | 2,858,422,240 |
+| F32 | Q8_0 (diagnostic) | **19** | **0.68%** | 2,939,302,304 |
+| F32 | F32 (`F32` package) | 0 | 0% | 3,189,953,504 |
+
+Two things fall out that neither the brief nor the plan predicted:
+
+1. **Quantizing the 73 Linears to Q8_0 costs nothing measurable on this gate.**
+   98 against F16's 103 is a five-position difference in the noise, and it buys
+   80 MB. The Linears are not where the drift is — even though
+   `ref.semantic_mean` is 28× worse under Q8_0 Linears than under F16 ones
+   (0.22166 against 0.00795197). The fused latent that actually feeds the RVQ
+   is dominated by the acoustic-encoder branch, and the two profiles' fused
+   latents are nearly the same (0.1239 against 0.1293).
+2. **All of the remaining drift is the precision of the convolutions.** F32
+   convolutions take it to 0.68% for 161 MB more file.
+
+**Do not read 0.68% ≈ 0.7% as a reproduction of the reference port's result.**
+Their 0.7% was measured on their own reference clip and ours on
+`seedtts_ref_en_1.wav`; the two numbers were never directly comparable, and
+this project has been burned before by carrying a prior finding across without
+re-deriving it. The five rows above are the comparable evidence, because they
+share a clip, a gate and a codebase. If the reference port really does fall
+back to F16 on convolutions as the brief describes, then the row corresponding
+to *their* policy is ours at 3.49%, and the distance to their published 0.7% is
+a property of the clip or of their measurement, not of ours.
+
+### Status: BLOCKED, and what is still owed
+
+`ref.tokens` is 0/2 exact. That is the one gate with no "different valid
+realization" defence — fixed clip in, discrete codes out — so no tolerance cell
+is committed and no per-profile golden gate is registered, exactly as for the
+two profiles measured before it. The plan predicted this outcome before the cut
+and the prediction holds; the value of the task is the attribution, not a
+shippable profile.
+
+**The open decision for jiangzhuo, stated with the arithmetic.** The policy as
+adopted and implemented puts convolutions at F16, which is what the reference
+port's own fallback does and what the briefed size prediction assumed. The
+diagnostic says F32 convolutions are five times better on the clone gate for
+161 MB. Neither passes `ref.tokens`, so this is a decision about what the
+family's policy *is*, not a ship decision.
+
+**What this family gives up.** The packed-convolution branch this project built
+and ported for it is now unexercised by any omnivoice package: `codec_conv1d`
+and `reference-encoder.cpp`'s `conv1d` (Plan 4 Task 2), the packed-shape
+acceptance in `catalog.cpp`'s `find()`, the `omnivoice_collapsed_conv_kernel`
+carve-out in `quantize.cpp`, and the `feat_conv[1..6]` load-path fix that cost
+a whole debugging session. All of it stays — the builders are shared with three
+other families, and `check_packed_feat_conv1` /
+`check_packed_encoder_semantic_conv` keep the omnivoice half covered by
+building packed kernels directly rather than through a profile — but the family
+doc now says plainly that this family does not pack convolutions, so nobody
+reads the code's presence as evidence that it does. A new catalog test asserts
+the other side of that: a pre-policy package, with a Q8_0 convolution at its
+packed shape, is now REFUSED at load under the profile name it still carries.
+
+**On the Tier 2 instrument.** The brief flagged the replayed-grid codec
+tolerance as possibly unbuilt. Checked: it is built and it gates. `audio.pcm`
+replays the oracle's own committed grid through the candidate's codec and is an
+ordinary tolerance-gated measurement — it is what produced both the 0.99775438
+and the 0.99999743 above. What is genuinely missing is a comparison for the
+free-run waveform once the greedy grid drifts (`mode: "not-compared"` is
+printed and counted in the summary but adds to no failure count). That does not
+bind here: a codec-half profile leaves the generator untouched, so all 17
+greedy grids are exact and this run compared 16 free-run waveforms against the
+oracle plus one against the port's own decode of the alternate grid it matched,
+with **zero not-compared**. The debt is real for generator-half profiles and
+stays open.
+
+### Gates
+
+| gate | result |
+| --- | --- |
+| `cmake --build build --target synthesize-check-unit` | 91/91 passed, exit 0 |
+| `cmake --build build-sanitize --target synthesize-check-unit` (ASan/UBSan) | 90/90 passed, exit 0 |
+| `ctest --test-dir build/rel-dgx-spark -L integration -R omnivoice -E replay-golden` | 7/7 passed, exit 0 (535.69 s) |
+| `ctest --test-dir build/rel-dgx-spark -R '^synthesize-omnivoice-replay-golden$'` | passed, 461.39 s |
+| `ctest --test-dir build/rel-dgx-spark -R replay-golden-cuda` | passed, 99.33 s |
+| `scripts/ci/clang-format.sh --check-diff` | exit 0 |
+
+Non-vacuity of the new tests was checked directly rather than assumed:
+collapsing `is_semantic_model_linear` to `true` (so every codec matrix weight
+would be quantized again) makes all four of
+`synthesize-omnivoice-quantization-test`,
+`synthesize-omnivoice-catalog-test`, `synthesize-quantize-policy-test` and
+`synthesize-quantize-test` fail. The probe was reverted.
+
+No timing was measured in this task, so the load average during the correctness
+runs (2.8 one-minute) does not affect any number recorded here.

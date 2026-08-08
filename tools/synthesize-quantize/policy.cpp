@@ -547,6 +547,18 @@ bool resolve_omnivoice_target_spec(const Profile & profile, const std::string & 
             // precision (quantization.h's TransposeWeight comment).
             spec_out = { GGML_TYPE_F32, TensorLayout::Native };
             return true;
+        case synth::omnivoice::QuantRole::ConvKernel:
+            // The conv-exempt codec policy: never block-quantized, never
+            // packed, held at the profile's halved fallback column at its
+            // native three-axis shape. That column is the same one Kokoro's
+            // quantizer falls back to for a matrix it will not block-quantize
+            // (quantize.cpp's matrix_is_block_quantizable branch), which is
+            // what it means here too -- not "this is a transposed
+            // convolution". Under `Q8_MIXED` and `F16` it is F16; under the
+            // two generator-half profiles the codec is all Sensitive and this
+            // arm is never reached.
+            spec_out = { profile.transpose_weight_type, TensorLayout::Native };
+            return true;
         case synth::omnivoice::QuantRole::Sensitive:
             spec_out = { profile.sensitive_type, TensorLayout::Native };
             return true;

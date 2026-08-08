@@ -5,7 +5,10 @@ Listening Audit on 2026-08-07 found no obvious regression across six pairs
 (`no_obvious_regression`) -- see "Listening Audit," below; neither claim moves
 the Validation Level. Two corrections landed 2026-08-08 after a further audit:
 see **"Short canvases produce unintelligible output"** and the auto-voice
-speaker note under "Package" -- both describe the shipped configuration.
+speaker note under "Package" -- both describe the shipped configuration. The
+quantization table under "Package" was re-measured on 2026-08-09 under the
+conv-exempt codec policy; `Q8_MIXED` means something different for this family
+since that date and still does not ship.
 This is a **Restricted Model Package** (ADR 0018), not a
 Published Model Package: the generator (LM) weights are CC-BY-NC (no version
 stated by upstream) and the codec weights carry the Boson Higgs Audio 2
@@ -133,31 +136,43 @@ greedy-decode token agreement collapsing from 100% to roughly 7% under an F16
 every later step of the same synthesis. Quantizing the generator was never
 attempted here for that reason.
 
-Two codec-only profiles were produced and measured against this family's own
-exact-token gate (below), and **both failed it**:
+Codec-only profiles were produced and measured against this family's own
+exact-token gate (below), and **every one of them failed it**:
 
 | Profile | Bytes | Reduction | Clone RVQ tokens mismatched | Greedy grids |
 | --- | ---: | ---: | ---: | ---: |
-| Q8_MIXED | 2,703,016,576 | 15.3% | 1,023 of 2,808 (36.4%) | 17/17 exact |
+| Q8_MIXED (current, conv-exempt) | 2,778,427,360 | 12.9% | 98 of 2,808 (3.49%) | 17/17 exact |
 | F16 | 2,858,422,240 | 10.4% | 103 of 2,808 (3.7%) | 17/17 exact |
+| Q8_MIXED (superseded, packed convs) | 2,703,016,576 | 15.3% | 1,023 of 2,808 (36.4%) | 17/17 exact |
 
-Both profiles reproduce the greedy decode loop's 8 x T token grid exactly,
+`Q8_MIXED` means something different for this family since the conv-exempt
+codec policy of 2026-08-09: it no longer block-quantizes any convolution
+kernel, so 85 of the 158 codec matrix weights are held at F16 and only the 73
+HuBERT Linears are Q8_0. The last row is what the same command line produced
+before that change and is **no longer reproducible**; it is kept here because
+the 36.4% figure it belongs to has been quoted. Exempting the convolutions cut
+the clone drift by a factor of 10.4 and is what makes those first two rows
+nearly equal -- the drift that remains is the precision of the convolutions,
+not of the Linears (`docs/porting/families/omnivoice.md` has the four-cell
+attribution).
+
+Every profile reproduces the greedy decode loop's 8 x T token grid exactly,
 for a structural reason rather than luck: the generator and the RVQ are
 Sensitive/F32 under every profile, so the decode loop's logits are bit-for-bit
 identical to the F32 package's. What actually fails is the **Reference Audio
-cloning path's own RVQ encode**: quantizing `codec.semantic_model` (HuBERT)
-and `codec.acoustic_encoder` moves the fused latent that feeds the encode's
-nearest-neighbor codebook lookup by orders of magnitude (`ref.fused_latent`
-max_abs 9.32e-05 at F32 versus 0.129286 at F16 and 3.73227 at Q8_MIXED), which
-flips a discrete nearest-neighbor decision at a large fraction of frames --
-not a knife-edge margin call eligible for the dual-admissibility mechanism, in
-either case. Per this family's own gate discipline, a profile that fails the
+cloning path's own RVQ encode**: quantizing the clone-encode path moves the
+fused latent that feeds the encode's nearest-neighbor codebook lookup
+(`ref.fused_latent` max_abs 9.32e-05 at F32 versus 0.123921 at the current
+Q8_MIXED, 0.129286 at F16 and 3.73227 at the superseded one), which flips a
+discrete nearest-neighbor decision at a large fraction of frames -- not a
+knife-edge margin call eligible for the dual-admissibility mechanism, in any
+case. Per this family's own gate discipline, a profile that fails the
 exact-token gate is not shipped and no perceptual claim substitutes for it, so
-neither Q8_MIXED nor F16 has a registered golden gate or a committed tolerance
-cell, and the measurement stands as the record instead
+no profile has a registered golden gate or a committed tolerance cell, and the
+measurement stands as the record instead
 (`docs/porting/families/omnivoice.md`'s Quantization Profile Shape section;
-`reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s Plan 4 Task 3
-entries).
+`reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s Plan 4 Task 3 and
+2026-08-09 entries).
 
 ## Port validation
 

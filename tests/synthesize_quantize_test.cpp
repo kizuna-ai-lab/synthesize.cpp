@@ -135,17 +135,22 @@ bool write_omnivoice_fixture(const std::string & path, bool include_unknown) {
     add("audio_heads.weight", 256, 3);       // same shape, but a plain mul_mat
 
     // A genuine 2-D Linear (HuBERT's attention projections stand in for the
-    // whole 73-tensor matmul-consumed group): MatrixWeight, but must land
-    // Native, not packed -- the reason omnivoice needs matrix_family at all.
+    // whole 73-tensor group, and since the conv-exempt policy they are the
+    // *only* codec tensors a profile still block-quantizes): MatrixWeight,
+    // but must land Native, not packed -- the reason omnivoice needs
+    // matrix_family at all.
     add("codec.semantic_model.encoder.layers.0.attn.q_proj.weight", 32, 3);
     add1("codec.semantic_model.encoder.layers.0.attn.q_proj.bias", 3);
 
-    // An ordinary 3-D convolution kernel: MatrixWeight, packed normally.
+    // An ordinary 3-D convolution kernel: ConvKernel since the conv-exempt
+    // policy of 2026-08-09, so halved at its native shape rather than packed.
     add3("codec.acoustic_decoder.conv1.weight", 3, 32, 4);
     add1("codec.acoustic_decoder.conv1.bias", 4);
 
-    // The hazard shape: out_channels == 1 collapses ggml_n_dims to 2, the
-    // same shape class as VITS's decoder.post.weight -- must stay PACKED.
+    // The hazard shape: out_channels == 1 collapses ggml_n_dims to 2, so this
+    // convolution kernel is indistinguishable from a Linear by shape alone --
+    // the case that decides the conv-exempt rule must classify by name. It
+    // must come out F16 and unpacked like every other convolution, not Q8_0.
     add3("codec.acoustic_decoder.conv2.weight", 7, 32, 1);
     add1("codec.acoustic_decoder.conv2.bias", 1);
 
@@ -155,18 +160,29 @@ bool write_omnivoice_fixture(const std::string & path, bool include_unknown) {
     add1("codec.acoustic_decoder.block.0.conv_t1.bias", 3);
 
     if (include_unknown) {
-        // Two different refusals, and the difference is worth naming because
-        // it is not visible from the tensor names.
+        // Three tensors, and only two of them refuse anything. The
+        // differences are worth naming because none of them is visible from
+        // the tensor names.
         //
-        // The first is NOT unknown to the classifier. Anything ending
-        // `.weight` under one of the four codec modules is MatrixWeight by
-        // design -- that region is deliberately permissive, with its
-        // exceptions named individually (quantization.cpp). What stops a
-        // codec-half profile here is the row-size check: packed to [16, 1],
-        // 16 is not a whole number of Q8_0 blocks. A generator-half profile
-        // holds this tensor at F32 and walks straight past it.
+        // The first is NOT unknown to the classifier and no longer refuses
+        // anything at all. Anything ending `.weight` under one of the four
+        // codec modules is recognised by design -- that region is
+        // deliberately permissive, with its exceptions named individually
+        // (quantization.cpp). Before the conv-exempt policy it was
+        // MatrixWeight and a codec-half profile stopped on its row size;
+        // now it is not one of the seven whitelisted semantic-model Linear
+        // module names, so it is ConvKernel, halved at its native shape, and
+        // every profile walks past it. That is the policy failing safe: a
+        // codec weight nobody anticipated is not block-quantized on the
+        // strength of a catch-all.
         add("codec.acoustic_decoder.future_module.weight", 4, 4);
-        // The second genuinely is unknown -- `codec.unknown_module` matches
+        // The second is a genuine semantic-model Linear with a row no block
+        // divides: 17 is not a whole number of Q8_0's 32. It is what still
+        // exercises the row-size refusal under a codec-half profile now that
+        // convolutions never reach it. A generator-half profile holds it at
+        // F32 and walks past.
+        add("codec.semantic_model.encoder.layers.0.ff.inter_dense.weight", 17, 3);
+        // The third genuinely is unknown -- `codec.unknown_module` matches
         // no module -- so it stops every profile, whichever half it lands in.
         add("codec.unknown_module.conv.weight", 32, 4);
     }
@@ -303,38 +319,55 @@ int check_omnivoice_q8_output(const std::string & path) {
     ggml_tensor * linear_bias = ggml_get_tensor(ctx, "codec.semantic_model.encoder.layers.0.attn.q_proj.bias");
     SYNTH_TEST_CHECK(linear_bias != nullptr && linear_bias->type == GGML_TYPE_F32);
 
-    // An ordinary 3-D convolution kernel: MatrixWeight, packed to
-    // [kernel * in_channels, out_channels] = [96, 4].
+    // An ordinary 3-D convolution kernel. This is the assertion the
+    // conv-exempt policy of 2026-08-09 turns on: before it, this came back
+    // Q8_0 packed to [kernel * in_channels, out_channels] = [96, 4]; now it
+    // is F16 at its declared [3, 32, 4].
     ggml_tensor * conv1 = ggml_get_tensor(ctx, "codec.acoustic_decoder.conv1.weight");
-    SYNTH_TEST_CHECK(conv1 != nullptr && conv1->type == GGML_TYPE_Q8_0);
-    SYNTH_TEST_CHECK(conv1->ne[0] == 3 * 32 && conv1->ne[1] == 4 && conv1->ne[2] == 1);
+    SYNTH_TEST_CHECK(conv1 != nullptr && conv1->type == GGML_TYPE_F16);
+    SYNTH_TEST_CHECK(conv1->ne[0] == 3 && conv1->ne[1] == 32 && conv1->ne[2] == 4);
 
-    // The VITS-shaped hazard: a convolution kernel whose out_channels == 1
-    // collapses ggml_n_dims to 2, the same shape a genuine Linear would
-    // report. It must still be PACKED ([224, 1]), not demoted to a native
-    // row of 7 -- the one named exception in quantize.cpp's demotion rule.
+    // The hazard shape: a convolution kernel whose out_channels == 1
+    // collapses ggml_n_dims to 2, exactly what a genuine Linear reports. It
+    // must come out F16 and unpacked like every other convolution, which is
+    // the case that proves the conv-exempt rule reads the name and not the
+    // shape. `ggml_n_dims` collapsing the trailing axis is why its stored
+    // rank is 2 while its extents are still [7, 32, 1].
     ggml_tensor * conv2 = ggml_get_tensor(ctx, "codec.acoustic_decoder.conv2.weight");
-    SYNTH_TEST_CHECK(conv2 != nullptr && conv2->type == GGML_TYPE_Q8_0);
-    SYNTH_TEST_CHECK(conv2->ne[0] == 7 * 32 && conv2->ne[1] == 1 && conv2->ne[2] == 1);
+    SYNTH_TEST_CHECK(conv2 != nullptr && conv2->type == GGML_TYPE_F16);
+    SYNTH_TEST_CHECK(conv2->ne[0] == 7 && conv2->ne[1] == 32 && conv2->ne[2] == 1);
     ggml_tensor * conv2_bias = ggml_get_tensor(ctx, "codec.acoustic_decoder.conv2.bias");
     SYNTH_TEST_CHECK(conv2_bias != nullptr && conv2_bias->type == GGML_TYPE_F32);
 
     // TransposeWeight: the same F32-at-every-profile override VITS and
     // Qwen3-TTS's decoder make, not Kokoro's halved type -- left Native at
-    // its own declared 3-D shape, never packed.
+    // its own declared 3-D shape, never packed. It is F32 where an ordinary
+    // convolution is now F16, which is the one difference the two
+    // convolution roles still make.
     ggml_tensor * transpose = ggml_get_tensor(ctx, "codec.acoustic_decoder.block.0.conv_t1.weight");
     SYNTH_TEST_CHECK(transpose != nullptr && transpose->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(transpose->ne[0] == 4 && transpose->ne[1] == 3 && transpose->ne[2] == 2);
 
-    // Round-trip the packed conv2.weight to prove the bytes are a real
-    // quantization of the source values, not merely the right shape/type --
-    // the same proof check_q8_output runs for VITS's own decoder.post.weight.
-    const ggml_type_traits * traits = ggml_get_type_traits(conv2->type);
+    // Round-trip the one tensor this profile still block-quantizes, to prove
+    // the bytes are a real quantization of the source values and not merely
+    // the right shape and type -- the same proof check_q8_output runs for
+    // VITS's own decoder.post.weight.
+    const ggml_type_traits * traits = ggml_get_type_traits(linear->type);
     SYNTH_TEST_CHECK(traits != nullptr && traits->to_float != nullptr);
-    std::vector<float> dequantized(static_cast<size_t>(conv2->ne[0]));
-    traits->to_float(conv2->data, dequantized.data(), conv2->ne[0]);
-    const int64_t probe = 100;
+    std::vector<float> dequantized(static_cast<size_t>(linear->ne[0]));
+    traits->to_float(linear->data, dequantized.data(), linear->ne[0]);
+    const int64_t probe = 20;
     SYNTH_TEST_CHECK(std::fabs(dequantized[probe] - static_cast<float>(probe + 1) / 7.0f) < 0.2f);
+
+    // And round-trip the halved convolution, so "F16" here means the values
+    // survived the conversion rather than the tensor merely carrying the
+    // type. Its packed predecessor was the tensor this proof used to cover.
+    const ggml_type_traits * conv_traits = ggml_get_type_traits(conv2->type);
+    SYNTH_TEST_CHECK(conv_traits != nullptr && conv_traits->to_float != nullptr);
+    std::vector<float> conv_values(static_cast<size_t>(conv2->ne[0] * conv2->ne[1]));
+    conv_traits->to_float(conv2->data, conv_values.data(), conv2->ne[0] * conv2->ne[1]);
+    const int64_t conv_probe = 100;
+    SYNTH_TEST_CHECK(std::fabs(conv_values[conv_probe] - static_cast<float>(conv_probe + 1) / 7.0f) < 0.2f);
 
     gguf_free(gguf);
     ggml_free(ctx);
@@ -569,8 +602,11 @@ int main(int argc, char ** argv) {
     SYNTH_TEST_CHECK(
         !synth::quantize::quantize_file(omnivoice_invalid_input, omnivoice_invalid_output, "Q8_MIXED", error));
     // The row-size refusal, not the unknown-tensor one -- see the fixture.
+    // The tensor named is the semantic-model Linear with the 17-wide row:
+    // since the conv-exempt policy the Linears are the only codec tensors
+    // that can reach the row-size check at all.
     SYNTH_TEST_CHECK(error.find("row size is incompatible") != std::string::npos);
-    SYNTH_TEST_CHECK(error.find("codec.acoustic_decoder.future_module.weight") != std::string::npos);
+    SYNTH_TEST_CHECK(error.find("codec.semantic_model.encoder.layers.0.ff.inter_dense.weight") != std::string::npos);
     std::ifstream omnivoice_absent(omnivoice_invalid_output, std::ios::binary);
     SYNTH_TEST_CHECK(!omnivoice_absent.good());
 
@@ -578,9 +614,10 @@ int main(int argc, char ** argv) {
     // the half it lands in is the one this profile leaves alone -- that is
     // the Unknown-first ordering in classify_tensor_for_half. Without it the
     // name would be reported as Sensitive and written out as an F32 tensor
-    // nobody recognises. Q8_GEN walks past `future_module` (F32, no row-size
-    // check to fail) and stops on `unknown_module` instead, which is why the
-    // expected message differs from the Q8_MIXED case above.
+    // nobody recognises. Q8_GEN walks past both `future_module` and the
+    // 17-wide Linear (F32, no row-size check to fail) and stops on
+    // `unknown_module` instead, which is why the expected message differs
+    // from the Q8_MIXED case above.
     for (const char * generator_profile : { "Q8_GEN", "Q4_K_GEN" }) {
         const std::string invalid = root + "/quantize-omnivoice-" + generator_profile + "-invalid.gguf";
         std::remove(invalid.c_str());

@@ -13,21 +13,24 @@ namespace synth::omnivoice {
 // two hand-maintained lists could.
 enum class QuantRole {
     Unknown,
-    // Read through a matrix multiply, so it *may* carry a block-quantized
-    // type -- this role is about how a tensor is read, not a promise that
-    // every consumer already handles a packed one. 85 of these tensors reach
-    // a matrix multiply through ggml_im2col, whose CPU implementation
-    // aborts on any destination type besides F16/F32
-    // (ggml/src/ggml-cpu/ops.cpp's ggml_compute_forward_im2col); this
-    // family's conv1d builders (codec.cpp's codec_conv1d, reference-
-    // encoder.cpp's conv1d) carry the same packed-safe F32 destination VITS
-    // and Kokoro use (src/arch/vits/operations.cpp:37-43,
-    // src/arch/kokoro/operations.cpp:46-79), ported by Plan 4 Task 2, so
-    // ggml_im2col never sees a quantized destination type. See
-    // quantization.cpp's classify_codec_matrix_region for which tensors this
-    // covers. All 197 of the generator's own MatrixWeight tensors are plain
-    // `ggml_mul_mat` operands with no convolution anywhere in that half, so
-    // none of the above applies to them; see classify_generator_tensor.
+    // Read through a matrix multiply, and block-quantizable. Since the
+    // conv-exempt codec policy of 2026-08-09 this role holds no convolution
+    // kernel at all: those are ConvKernel below. What is left is 197
+    // generator projections (classify_generator_tensor) and the codec's 73
+    // two-dimensional HuBERT Linears (classify_codec_matrix_region) -- all
+    // 270 of them plain `ggml_mul_mat` operands at their declared shape.
+    //
+    // Historical note, because a reader will find the older rule quoted in
+    // shipped packages' documentation: this role used to cover the codec's 85
+    // convolution kernels too, which reach a matrix multiply through
+    // ggml_im2col, whose CPU implementation aborts on any destination type
+    // besides F16/F32 (ggml/src/ggml-cpu/ops.cpp's
+    // ggml_compute_forward_im2col). Plan 4 Task 2 ported VITS's and Kokoro's
+    // packed-safe F32 destination into this family's conv1d builders
+    // (codec.cpp's codec_conv1d, reference-encoder.cpp's conv1d) so that
+    // ggml_im2col never saw a quantized destination type. That machinery is
+    // still there and still covered; this family simply no longer produces a
+    // package that needs it. See ConvKernel for why.
     MatrixWeight,
     // Read by `ggml_get_rows` rather than by a matrix multiply. Exactly two
     // tensors in this family are: `llm.embed_tokens.weight` and
@@ -56,6 +59,31 @@ enum class QuantRole {
     // block-quantized -- the same override VITS and Qwen3-TTS's decoder make
     // (policy.cpp:390-395, docs/quantization.md:52-56).
     TransposeWeight,
+    // An ordinary convolution kernel: read through a matrix multiply like
+    // MatrixWeight, and deliberately never block-quantized for this family.
+    // It carries the profile's `transpose_weight_type` -- the halved fallback
+    // column, which is what Kokoro's own quantizer already falls back to for a
+    // matrix it will not block-quantize (quantize.cpp's
+    // matrix_is_block_quantizable branch) -- at its native three-axis shape.
+    //
+    // This is the conv-exempt codec policy, adopted by jiangzhuo on
+    // 2026-08-09, and it is a POLICY choice, not an architectural constraint:
+    // Plan 4 Task 2 built the packed-convolution branch that makes packing
+    // these tensors work, it is exercised and covered, and this family now
+    // declines to use it. The reason is measured, not aesthetic. The reference
+    // port ServeurpersoCom/omnivoice.cpp never quantizes a convolution --
+    // its alignment check sees the kernel width in the native [K, Cin, Cout]
+    // layout and falls back to F16 -- and its codec drifts 0.7% of RVQ codes
+    // where our all-Q8_0 codec drifted 36.4% (1023 of 2808 positions,
+    // reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md). Our packing
+    // capability is precisely what made our codec profile worse than theirs.
+    //
+    // What this leaves quantizable in the codec is exactly the 73
+    // two-dimensional HuBERT Linears under `codec.semantic_model` -- see
+    // classify_codec_matrix_region. Note that they sit only on the
+    // clone-encode path: under this policy the acoustic decoder, which every
+    // synthesis uses, is never quantized at all.
+    ConvKernel,
     // Stays at the reference dtype. The RVQ (`codec.quantizer.*`) is here for
     // the same reason qwen3-tts's own RVQ stays exact (policy.cpp:258-265): a
     // residual codebook's later levels carry small magnitudes, so a relative
@@ -67,7 +95,12 @@ enum class QuantRole {
     // per-head q/k norms as well as the codec's. Three further tensors are
     // Sensitive for reasons specific to their shape or to how this runtime
     // reads them; see the comments beside them in quantization.cpp -- a
-    // future reader must not "fix" those three.
+    // future reader must not "fix" those three. All three are convolution
+    // kernels, so the conv-exempt policy would also have kept them out of a
+    // block-quantized type; they stay Sensitive rather than being folded into
+    // ConvKernel because Sensitive is F32 where ConvKernel is halved, and
+    // demoting them would change the bytes of the already-cut F16 and
+    // Q8_MIXED packages for no measured reason.
     //
     // History, because the role assignment above changed and a reader will
     // otherwise find the old rule quoted in shipped packages' documentation:

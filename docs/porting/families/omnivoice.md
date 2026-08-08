@@ -1,6 +1,6 @@
 # OmniVoice Family Selection and Port Plan
 
-Status: Confirmed 2026-08-08. Intake through the greedy synthesis core
+Status: Confirmed 2026-08-09. Intake through the greedy synthesis core
 (slices 4–6) done: single-forward parity, exact token grids 17/17, replay
 waveform under committed tolerances (tests/tolerances/omnivoice.json). Plan 3
 (the public sampled path, Reference Audio and Description Text Voice
@@ -28,6 +28,11 @@ Audits below. Ship artifacts are prepared as a Restricted Model Package
 (ADR 0018) under `models/publish/omnivoice-0-6b/`; publication itself is a
 separate act awaiting jiangzhuo's per-act confirmation. Plan 5's carry-over
 ledger is `docs/superpowers/plans/2026-08-07-omnivoice-plan-5-carryover.md`.
+**Updated 2026-08-09:** this family adopted the conv-exempt codec policy --
+it no longer block-quantizes any convolution kernel, which redefines what
+`Q8_MIXED` means here and cut the clone path's RVQ drift from 36.4% to 3.49%.
+It still fails the exact clone gate, so the F32-only ship position is
+unchanged; see the conv-exempt subsection under Quantization Profile Shape.
 
 ## Decision
 
@@ -1308,6 +1313,170 @@ the clone-only encode path) while still quantizing `codec.acoustic_decoder`
 option both measurements point toward — untried here because re-scoping the
 profile to make a grid pass is exactly what this task's own gate discipline
 prohibits doing unilaterally.
+
+### The conv-exempt codec policy (2026-08-09): `Q8_MIXED` redefined, and what it did to the 36.4%
+
+**The policy.** This family never block-quantizes a convolution kernel.
+`src/arch/omnivoice/quantization.h` gains a fifth `QuantRole`, `ConvKernel`,
+which the offline quantizer and the runtime catalog both read: it is held at
+the profile's halved fallback column (`Profile::transpose_weight_type`, the
+same column Kokoro's quantizer falls back to for a matrix it will not
+block-quantize) at its native three-axis shape. The only codec tensors a
+profile still block-quantizes are the **73 two-dimensional HuBERT Linears**
+under `codec.semantic_model` — whitelisted positively by the seven module
+names our converter actually emits (`q_proj`, `k_proj`, `v_proj`, `out_proj`,
+`inter_dense`, `output_dense`, `projection`), so a codec weight nobody
+anticipated lands on the unquantized side rather than being swept up by a
+catch-all.
+
+The rule is stated by NAME, not by rank, and that is load-bearing:
+`codec.acoustic_decoder.conv2.weight` is `[7, 32, 1]`, so `ggml_n_dims`
+reports it as two-dimensional and its `ne` is indistinguishable from a
+Linear's. A rule written as "exempt tensors with `ggml_n_dims >= 3`" would
+quantize the one convolution the policy most obviously means to exempt.
+
+Adopted by jiangzhuo on 2026-08-09, on the evidence that the reference port
+`ServeurpersoCom/omnivoice.cpp` never quantizes a convolution — its alignment
+check sees the kernel width in the native `[K, Cin, Cout]` layout and falls
+back to F16 — and reports 0.7% RVQ-code drift where our all-Q8_0 codec drifted
+36.4%. Our packing *capability* was precisely what made our codec profile
+worse than theirs.
+
+**`Q8_MIXED` is redefined for this family rather than given a new name.** It
+was BLOCKED, unpublished, and carried no committed tolerance cell, so
+redefining it costs only this entry. The old meaning — all 158 codec matrix
+weights at Q8_0, 85 of them packed — produced
+`omnivoice-0-6b-Q8_MIXED.gguf` at 2,703,016,576 bytes, sha256
+`b020933facda39c875f276934d3a5611c7a8836d4f243efc3fb1403d109b671e`, and **is
+no longer reproducible from the same command line**. Every figure recorded in
+the Q8_MIXED subsection above belongs to that sha256 and to that meaning.
+
+**Package.** Same source, same command line, new meaning:
+
+| | |
+| --- | --- |
+| output | `omnivoice-0-6b-Q8_MIXED.gguf`, sha256 `3de73b73f3846faf084866bd244d7d37030a51a214b7883487de8773b610ddac` |
+| size | **2,778,427,360 bytes** — predicted exactly before cutting, reproduced byte for byte on a re-cut from the reverted source |
+| against F32 | −411,526,144 bytes, −12.9% |
+| against the old `Q8_MIXED` | **+75,410,784 bytes — the package gets BIGGER** |
+| census | 640 F32, **85 F16**, **73 Q8_0** (798 total); the whole generator F32 |
+
+The census is the policy stated as arithmetic: `codec.acoustic_decoder`
+32 F16 / 78 F32, `codec.acoustic_encoder` 36 F16 / 74 F32,
+`codec.encoder_semantic` 11 F16 / 2 F32, `codec.semantic_model` 73 Q8_0 /
+6 F16 / 130 F32, `codec.quantizer`+`fc`+`fc2` 44 F32.
+
+**The finding that decides how this policy reads for this family.** All 85
+convolution kernels include **all 32 of the acoustic decoder's**, and all 73
+Linears live in `codec.semantic_model`. So a conv-exempt codec profile leaves
+the decode path — the half every synthesis runs, cloning or not — entirely
+unquantized, and quantizes only the clone-encode path, which is exactly the
+path whose `ref.tokens` gate is exact. `audio.pcm`'s min_cosine under this
+package is **0.99999743**, identical to the F16 package's own figure, because
+the decoder's weights under the two profiles are the same bytes.
+
+**THE HYPOTHESIS TEST.** Full 20-case CPU replay,
+`--require all --margin-report --profile Q8_MIXED --backend CPU --stage
+replay`, fresh `--work`:
+
+```
+token grids exact: 17/17
+ref.tokens exact: 0/2
+narrowest RVQ encode gap: 0.00143433
+free-run waveforms: 16 against the oracle, 1 exempt (decode determinism), 0 not compared
+```
+
+Both clone cases mismatch at **98 of 2808 positions (3.49%)**, against the old
+meaning's 1023 (36.4%). **The hypothesis is confirmed in direction and by a
+factor of 10.4: convolution packing was the dominant cause of the 36.4%.**
+
+**And it does not reach ~1%, which is the more useful half of the result.**
+3.49% is statistically indistinguishable from simply halving the whole codec
+(the F16 profile's 103 of 2808, 3.67%). To attribute the remainder, a
+throwaway package was cut with the convolutions at **F32** instead of F16
+(a local patch to the `ConvKernel` arm, not committed; both files restored
+and the shipped package re-cut byte-identically afterwards). That gives the
+four cells that actually separate the causes — one clip
+(`seedtts_ref_en_1.wav`), one gate, `ref.tokens` mismatches out of 2808:
+
+| conv kernels | HuBERT Linears | mismatches | share | package bytes |
+| --- | --- | ---: | ---: | ---: |
+| Q8_0, packed | Q8_0 | 1023 | 36.4% | 2,703,016,576 |
+| **F16** | **Q8_0** (this policy) | **98** | **3.49%** | **2,778,427,360** |
+| F16 | F16 (the `F16` profile) | 103 | 3.67% | 2,858,422,240 |
+| F32 | Q8_0 (diagnostic only) | **19** | **0.68%** | 2,939,302,304 |
+| F32 | F32 (the `F32` package) | 0 | 0% | 3,189,953,504 |
+
+Read down the table: quantizing the 73 Linears to Q8_0 costs **nothing
+measurable** on this gate (98 against F16's 103 — a five-position difference
+in the noise) while saving 80 MB, and **the whole of the remaining drift is
+the precision of the convolutions**. Holding them at F32 instead of F16 takes
+the drift to 0.68%, five times better, for 161 MB.
+
+Two caveats a reader must carry away with those numbers. First, **0.68% ≈
+0.7% is a coincidence of arithmetic, not a reproduction of the reference
+port's result**: their 0.7% was measured on their own reference clip and ours
+on `seedtts_ref_en_1.wav`, so the two were never directly comparable, and this
+table — one clip, one gate, five compositions — is the comparable evidence.
+Second, if the reference port really does fall back to F16 on convolutions as
+described, then our F16-conv cell (3.49%) is the row that corresponds to their
+policy, and the gap to their published 0.7% is a property of the clip or of
+their measurement, not of ours.
+
+**Status: BLOCKED, not shipped.** `ref.tokens` is 0/2 exact, which is the one
+gate that has no "different valid realization" defence: fixed clip in,
+discrete codes out. No tolerance cell is committed in
+`tests/tolerances/omnivoice.json` and no per-profile golden gate is
+registered, exactly as for the two measurements above. The plan that ordered
+this work predicted this outcome before it was measured, and the prediction
+holds.
+
+**What this family gives up, stated plainly rather than left to pass
+silently.** Adopting this policy means OmniVoice **deliberately stops using
+the packed-convolution branch this project built and ported for it**. That
+machinery all stays, and all of it is now unexercised by any omnivoice
+package:
+
+- `codec_conv1d` in `src/arch/omnivoice/codec.cpp` and `conv1d` in
+  `src/arch/omnivoice/reference-encoder.cpp` (Plan 4 Task 2's port of VITS's
+  and Kokoro's F32-im2col-destination recipe);
+- the packed-shape acceptance in `catalog.cpp`'s `find()`, now unreachable
+  under every profile this family cuts;
+- the `omnivoice_collapsed_conv_kernel` carve-out in
+  `tools/synthesize-quantize/quantize.cpp`, now inert;
+- the `feat_conv[1..6]` load-path fix that cost a whole debugging session to
+  find (the `ne[0]`-against-bare-kernel-width check documented in the
+  Q8_MIXED subsection above).
+
+They are kept because the graph builders are shared with VITS, Kokoro and
+Qwen3-TTS, because `check_packed_feat_conv1` and
+`check_packed_encoder_semantic_conv` keep the omnivoice half covered cheaply
+by building packed kernels directly rather than through a profile, and
+because a reader who reverts the policy needs them back. **Do not read their
+presence as evidence that this family packs convolutions. It does not.**
+
+**On the Tier 2 instrument, checked rather than assumed.** The replayed-grid
+codec channel is built and does gate: `audio.pcm` replays the oracle's own
+committed grid through the candidate's codec
+(`scripts/validate-omnivoice-replay.py`) and is an ordinary tolerance-gated
+measurement, and it is the channel that produced both the 36.4% package's
+0.99775438 and this one's 0.99999743. What is not built is a comparison for
+the free-run waveform once the greedy grid drifts (`mode: "not-compared"` is
+printed and counted but does not fail). That channel does not go dark for a
+codec-half profile at all: the generator is untouched, so all 17 greedy grids
+are exact and this run compared 16 free-run waveforms against the oracle plus
+one against the port's own decode of the alternate grid it matched, with zero
+not-compared. The debt is real and remains open for generator-half profiles;
+it did not bind here.
+
+**The open decision.** The policy as adopted and implemented puts
+convolutions at F16, which is what the reference port's own fallback does and
+what the size prediction this task was given assumed. The diagnostic says
+F32 convolutions are five times better on the clone gate for 161 MB more
+file. Neither composition passes `ref.tokens`, so this is not a ship
+decision; it is a decision about what the family's policy *is*, and it is
+jiangzhuo's. The measurement is here so it is made with the arithmetic in
+view.
 
 ## GGML Operator Surface
 

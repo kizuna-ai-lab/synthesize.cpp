@@ -160,6 +160,17 @@ class Resolver {
         // two-dimensional and therefore demoted to Native by the offline
         // quantizer. Those packages reach the per-axis check below with their
         // declared shapes intact.
+        //
+        // As of the conv-exempt policy of 2026-08-09 no package this family
+        // cuts reaches this branch at all: the only codec tensors Q8_MIXED
+        // still quantizes are the 73 two-dimensional HuBERT Linears, and
+        // every three-axis convolution kernel is ConvKernel at F16, which
+        // `ggml_is_quantized` rejects. It is kept rather than deleted because
+        // it is the load-side half of a capability the graph builders still
+        // carry (codec.cpp's codec_conv1d, reference-encoder.cpp's conv1d),
+        // and because a reader who reverts the policy would otherwise get a
+        // shape error instead of a working loader. Do not read its presence
+        // as evidence that this family packs convolutions -- it does not.
         if (hparams_.quantization_profile == QuantizationProfile::Q8Mixed && ggml_is_quantized(tensor->type) &&
             expected.size() == 3) {
             const auto *  want   = expected.begin();
@@ -253,28 +264,51 @@ class Resolver {
                 // and both halves were already F32.
                 return GGML_TYPE_F32;
             case QuantizationProfile::Q8Mixed:
-                // Codec half: only a MatrixWeight tensor is ever packed.
-                // TransposeWeight and Sensitive both stay F32 -- the former
-                // for the same col2im_1d/CUDA-F16 reason VITS and Qwen3-TTS's
-                // decoder do, the latter because the RVQ and every
-                // elementwise-read parameter stay exact. The whole generator
-                // half is held Sensitive by the half argument, not by its own
-                // architectural role. An Unknown role here means a catalog
-                // name the classifier does not recognise, which the type
-                // check below still catches as a mismatch against whatever
-                // the tensor actually is.
-                return classify_tensor_for_half(name, ne, ModelHalf::Codec) == QuantRole::MatrixWeight ?
-                           GGML_TYPE_Q8_0 :
-                           GGML_TYPE_F32;
+                // Codec half. Since the conv-exempt policy of 2026-08-09 the
+                // only tensors this profile packs are the 73 two-dimensional
+                // HuBERT Linears; every convolution kernel is ConvKernel and
+                // carries the profile's halved fallback, F16, at its native
+                // shape. TransposeWeight and Sensitive both stay F32 -- the
+                // former for the same col2im_1d/CUDA-F16 reason VITS and
+                // Qwen3-TTS's decoder do, the latter because the RVQ and
+                // every elementwise-read parameter stay exact. The whole
+                // generator half is held Sensitive by the half argument, not
+                // by its own architectural role. An Unknown role here means a
+                // catalog name the classifier does not recognise, which the
+                // type check below still catches as a mismatch against
+                // whatever the tensor actually is.
+                switch (classify_tensor_for_half(name, ne, ModelHalf::Codec)) {
+                    case QuantRole::MatrixWeight:
+                        return GGML_TYPE_Q8_0;
+                    case QuantRole::ConvKernel:
+                        return GGML_TYPE_F16;
+                    case QuantRole::RowLookup:
+                    case QuantRole::TransposeWeight:
+                    case QuantRole::Sensitive:
+                    case QuantRole::Unknown:
+                        return GGML_TYPE_F32;
+                }
+                return GGML_TYPE_F32;
             case QuantizationProfile::F16:
-                // Same half as Q8Mixed, halved rather than packed: the
-                // tool's profile table gives F16 TensorLayout::Native
-                // (tools/synthesize-quantize/policy.cpp), so a MatrixWeight
-                // conv kernel keeps its native three-axis shape here -- the
-                // packed-shape branch in find() below is gated on Q8Mixed
-                // specifically and never triggers for this profile.
-                return classify_tensor_for_half(name, ne, ModelHalf::Codec) == QuantRole::MatrixWeight ? GGML_TYPE_F16 :
-                                                                                                         GGML_TYPE_F32;
+                // Same half as Q8Mixed, halved rather than packed: the tool's
+                // profile table gives F16 TensorLayout::Native
+                // (tools/synthesize-quantize/policy.cpp), and its halved
+                // fallback column is F16 as well, so a MatrixWeight Linear
+                // and a ConvKernel land on the same type here. The
+                // conv-exempt policy therefore leaves an F16 package
+                // byte-identical to the one cut before it, which is why the
+                // already-measured F16 package's figures still stand.
+                switch (classify_tensor_for_half(name, ne, ModelHalf::Codec)) {
+                    case QuantRole::MatrixWeight:
+                    case QuantRole::ConvKernel:
+                        return GGML_TYPE_F16;
+                    case QuantRole::RowLookup:
+                    case QuantRole::TransposeWeight:
+                    case QuantRole::Sensitive:
+                    case QuantRole::Unknown:
+                        return GGML_TYPE_F32;
+                }
+                return GGML_TYPE_F32;
             case QuantizationProfile::Q8Gen:
                 // The generator half instead, and the one profile where
                 // RowLookup is not inert: the two `ggml_get_rows` tables
@@ -288,6 +322,11 @@ class Resolver {
                     case QuantRole::MatrixWeight:
                     case QuantRole::RowLookup:
                         return GGML_TYPE_Q8_0;
+                    // ConvKernel cannot arrive here: the generator emits no
+                    // convolution, and every codec tensor is forced Sensitive
+                    // by the half argument. Listed so the switch stays
+                    // exhaustive rather than defaulting.
+                    case QuantRole::ConvKernel:
                     case QuantRole::TransposeWeight:
                     case QuantRole::Sensitive:
                     case QuantRole::Unknown:
@@ -309,6 +348,8 @@ class Resolver {
                         return GGML_TYPE_Q4_K;
                     case QuantRole::RowLookup:
                         return GGML_TYPE_Q8_0;
+                    // Unreachable for the same reason as under Q8_GEN above.
+                    case QuantRole::ConvKernel:
                     case QuantRole::TransposeWeight:
                     case QuantRole::Sensitive:
                     case QuantRole::Unknown:

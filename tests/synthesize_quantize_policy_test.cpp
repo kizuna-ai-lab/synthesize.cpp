@@ -109,17 +109,49 @@ int check_omnivoice_halves() {
     SYNTH_TEST_CHECK(expect_omnivoice("Q4_K_GEN", "codec.quantizer.quantizers.0.codebook.embed", GGML_TYPE_F32,
                                       TensorLayout::Native) == 0);
 
-    // Q8_MIXED and F16, unchanged by the generator acquiring real roles.
-    SYNTH_TEST_CHECK(expect_omnivoice("Q8_MIXED", "codec.acoustic_decoder.conv1.weight", GGML_TYPE_Q8_0,
-                                      TensorLayout::PackedMatrix) == 0);
+    // Q8_MIXED, under the conv-exempt codec policy of 2026-08-09. The single
+    // most load-bearing assertion in this function is the first one: the
+    // decoder's input convolution used to resolve Q8_0/PackedMatrix and now
+    // resolves F16/Native, which is the whole policy in one line. Nothing
+    // three-dimensional is packed any more, and the only codec tensors that
+    // still carry a block-quantized type are the HuBERT Linears.
+    SYNTH_TEST_CHECK(
+        expect_omnivoice("Q8_MIXED", "codec.acoustic_decoder.conv1.weight", GGML_TYPE_F16, TensorLayout::Native) == 0);
+    SYNTH_TEST_CHECK(
+        expect_omnivoice("Q8_MIXED", "codec.acoustic_decoder.conv2.weight", GGML_TYPE_F16, TensorLayout::Native) == 0);
+    SYNTH_TEST_CHECK(expect_omnivoice("Q8_MIXED", "codec.acoustic_encoder.block.0.res_unit1.conv1.weight",
+                                      GGML_TYPE_F16, TensorLayout::Native) == 0);
+    SYNTH_TEST_CHECK(expect_omnivoice("Q8_MIXED", "codec.semantic_model.feat_conv.1.conv.weight", GGML_TYPE_F16,
+                                      TensorLayout::Native) == 0);
+    SYNTH_TEST_CHECK(
+        expect_omnivoice("Q8_MIXED", "codec.encoder_semantic.conv.weight", GGML_TYPE_F16, TensorLayout::Native) == 0);
+    SYNTH_TEST_CHECK(expect_omnivoice("Q8_MIXED", "codec.semantic_model.encoder.layers.0.attn.q_proj.weight",
+                                      GGML_TYPE_Q8_0, TensorLayout::PackedMatrix) == 0);
+    SYNTH_TEST_CHECK(expect_omnivoice("Q8_MIXED", "codec.semantic_model.feature_projection.projection.weight",
+                                      GGML_TYPE_Q8_0, TensorLayout::PackedMatrix) == 0);
+    // The three named Sensitive convolutions stay F32, not F16: the policy
+    // would have halved them, and they are held exact so the already-cut F16
+    // and Q8_MIXED packages keep the same bytes there.
+    SYNTH_TEST_CHECK(
+        expect_omnivoice("Q8_MIXED", "codec.acoustic_encoder.conv1.weight", GGML_TYPE_F32, TensorLayout::Native) == 0);
+    SYNTH_TEST_CHECK(expect_omnivoice("Q8_MIXED", "codec.semantic_model.feat_conv.0.conv.weight", GGML_TYPE_F32,
+                                      TensorLayout::Native) == 0);
+    SYNTH_TEST_CHECK(expect_omnivoice("Q8_MIXED", "codec.semantic_model.encoder.pos_conv_embed.conv.weight",
+                                      GGML_TYPE_F32, TensorLayout::Native) == 0);
     SYNTH_TEST_CHECK(expect_omnivoice("Q8_MIXED", "codec.acoustic_decoder.block.0.conv_t1.weight", GGML_TYPE_F32,
                                       TensorLayout::Native) == 0);
     SYNTH_TEST_CHECK(
         expect_omnivoice("Q8_MIXED", "llm.layers.0.self_attn.q_proj.weight", GGML_TYPE_F32, TensorLayout::Native) == 0);
     SYNTH_TEST_CHECK(expect_omnivoice("Q8_MIXED", "llm.embed_tokens.weight", GGML_TYPE_F32, TensorLayout::Native) == 0);
     SYNTH_TEST_CHECK(expect_omnivoice("Q8_MIXED", "audio_heads.weight", GGML_TYPE_F32, TensorLayout::Native) == 0);
+    // F16 is byte-identical across the policy change: its matrix weight type
+    // and its halved fallback column are both F16, so a Linear and a
+    // convolution land on the same type either way. The already-measured F16
+    // package's figures stand because of this.
     SYNTH_TEST_CHECK(
         expect_omnivoice("F16", "codec.acoustic_decoder.conv1.weight", GGML_TYPE_F16, TensorLayout::Native) == 0);
+    SYNTH_TEST_CHECK(expect_omnivoice("F16", "codec.semantic_model.encoder.layers.0.attn.q_proj.weight", GGML_TYPE_F16,
+                                      TensorLayout::Native) == 0);
     SYNTH_TEST_CHECK(expect_omnivoice("F16", "llm.layers.0.mlp.up_proj.weight", GGML_TYPE_F32, TensorLayout::Native) ==
                      0);
 

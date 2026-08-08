@@ -568,10 +568,12 @@ synth::omnivoice::HParams q8_mixed_hparams() {
 }
 
 // Recasts one F32 entry list to what the offline quantizer would have written
-// for it under Q8_MIXED: a MatrixWeight tensor packs to Q8_0 (a three-axis
-// entry -- a convolution kernel -- flattens to [kernel * in, out]; a two-axis
-// one -- a Linear -- keeps its shape), and every other role stays F32,
-// exactly classify_tensor's own split.
+// for it under Q8_MIXED. Since the conv-exempt policy of 2026-08-09 that is:
+// a MatrixWeight tensor -- necessarily a two-axis HuBERT Linear -- becomes
+// Q8_0 at its own shape, a ConvKernel is halved to F16 at its native
+// three-axis shape rather than flattened to [kernel * in, out], and every
+// other role stays F32. Nothing is packed, which is why no entry's shape is
+// rewritten here any more.
 std::vector<std::pair<Entry, ggml_type>> to_q8_mixed(const std::vector<Entry> & entries) {
     std::vector<std::pair<Entry, ggml_type>> out;
     out.reserve(entries.size());
@@ -580,20 +582,18 @@ std::vector<std::pair<Entry, ggml_type>> to_q8_mixed(const std::vector<Entry> & 
         for (size_t axis = 0; axis < entry.ne.size() && axis < GGML_MAX_DIMS; ++axis) {
             ne[axis] = entry.ne[axis];
         }
-        if (synth::omnivoice::classify_tensor_for_half(entry.name, ne, synth::omnivoice::ModelHalf::Codec) ==
-            synth::omnivoice::QuantRole::MatrixWeight) {
-            if (entry.ne.size() == 3) {
-                out.emplace_back(
-                    Entry{
-                        entry.name, { entry.ne[0] * entry.ne[1], entry.ne[2] }
-                },
-                    GGML_TYPE_Q8_0);
-            } else {
-                out.emplace_back(entry, GGML_TYPE_Q8_0);
-            }
-        } else {
-            out.emplace_back(entry, GGML_TYPE_F32);
+        ggml_type type = GGML_TYPE_F32;
+        switch (synth::omnivoice::classify_tensor_for_half(entry.name, ne, synth::omnivoice::ModelHalf::Codec)) {
+            case synth::omnivoice::QuantRole::MatrixWeight:
+                type = GGML_TYPE_Q8_0;
+                break;
+            case synth::omnivoice::QuantRole::ConvKernel:
+                type = GGML_TYPE_F16;
+                break;
+            default:
+                break;
         }
+        out.emplace_back(entry, type);
     }
     return out;
 }
@@ -621,15 +621,18 @@ int check_q8_mixed_resolution() {
     synth::omnivoice::ModelWeights weights;
     SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_OK);
 
-    // A packed convolution kernel: its row is kernel * in_channels, flattened
-    // out of the logical three-axis shape.
-    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->type == GGML_TYPE_Q8_0);
-    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->ne[0] == 7 * int64_t(h.codec.hidden_size));
-    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->ne[1] == h.codec.decoder_hidden_size);
-    // The one collapsed conv kernel (mono exit, out=1): packing still applies.
-    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv2.weight->type == GGML_TYPE_Q8_0);
-    // A native Linear inside the codec's HuBERT half: quantized in place,
-    // shape unchanged.
+    // A convolution kernel, since the conv-exempt policy of 2026-08-09:
+    // halved, never packed, and keeping its logical three-axis shape. Before
+    // the policy this was Q8_0 with ne[0] == 7 * in_channels.
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->type == GGML_TYPE_F16);
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->ne[0] == 7);
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->ne[1] == int64_t(h.codec.hidden_size));
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->ne[2] == h.codec.decoder_hidden_size);
+    // The one collapsed conv kernel (mono exit, out=1) -- the tensor a
+    // shape-based conv-exempt rule would misfile as a Linear.
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv2.weight->type == GGML_TYPE_F16);
+    // A native Linear inside the codec's HuBERT half, and the only thing this
+    // profile still block-quantizes: quantized in place, shape unchanged.
     SYNTH_TEST_CHECK(weights.semantic_model.layers[0].q_proj.weight->type == GGML_TYPE_Q8_0);
     SYNTH_TEST_CHECK(weights.semantic_model.layers[0].q_proj.weight->ne[0] == int64_t(h.semantic.hidden_size));
     // A transposed convolution: never packed, whatever the profile.
@@ -655,15 +658,12 @@ int check_q8_mixed_rejections() {
     const synth::omnivoice::HParams h           = q8_mixed_hparams();
     const std::vector<Entry>        f32_entries = expected_entries(h);
 
-    // A MatrixWeight tensor the offline quantizer never touched: still F32
-    // (at its unpacked shape) under a profile that packs it.
+    // A convolution kernel the offline quantizer never halved: still F32
+    // where the conv-exempt policy says F16.
     {
         std::vector<std::pair<Entry, ggml_type>> entries = to_q8_mixed(f32_entries);
         for (auto & [entry, type] : entries) {
             if (entry.name == "codec.acoustic_decoder.conv1.weight") {
-                entry = Entry{
-                    entry.name, { 7, int64_t(h.codec.hidden_size), int64_t(h.codec.decoder_hidden_size) }
-                };
                 type = GGML_TYPE_F32;
             }
         }
@@ -673,12 +673,51 @@ int check_q8_mixed_rejections() {
         SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
     }
 
-    // A packed convolution whose row does not match kernel * in_channels.
+    // A PACKED Q8_0 convolution kernel -- exactly what a Q8_MIXED package cut
+    // before 2026-08-09 contains. It must now be refused rather than
+    // silently accepted by the packed-shape branch that is still in find():
+    // the type check runs first, and the conv-exempt policy expects F16
+    // there. This is the assertion that stops a pre-policy package loading
+    // under the profile name it still carries.
+    {
+        std::vector<std::pair<Entry, ggml_type>> entries = to_q8_mixed(f32_entries);
+        for (auto & [entry, type] : entries) {
+            if (entry.name == "codec.acoustic_decoder.conv1.weight") {
+                entry = Entry{
+                    entry.name, { 7 * int64_t(h.codec.hidden_size), int64_t(h.codec.decoder_hidden_size) }
+                };
+                type = GGML_TYPE_Q8_0;
+            }
+        }
+        Context                        context = make_context();
+        synth::omnivoice::ModelWeights weights;
+        populate_typed(context.get(), entries);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
+    }
+
+    // A halved convolution whose kernel extent does not match the catalog's.
     {
         std::vector<std::pair<Entry, ggml_type>> entries = to_q8_mixed(f32_entries);
         for (auto & [entry, type] : entries) {
             if (entry.name == "codec.acoustic_decoder.conv1.weight") {
                 entry.ne[0] += 32;
+            }
+        }
+        Context                        context = make_context();
+        synth::omnivoice::ModelWeights weights;
+        populate_typed(context.get(), entries);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
+    }
+
+    // And a Linear the quantizer skipped: F32 where the profile says Q8_0.
+    // Paired with the convolution case above, this is what proves the split
+    // is enforced in both directions rather than the loader simply accepting
+    // anything narrower than F32.
+    {
+        std::vector<std::pair<Entry, ggml_type>> entries = to_q8_mixed(f32_entries);
+        for (auto & [entry, type] : entries) {
+            if (entry.name == "codec.semantic_model.encoder.layers.0.attn.q_proj.weight") {
+                type = GGML_TYPE_F32;
             }
         }
         Context                        context = make_context();
@@ -718,10 +757,15 @@ std::vector<std::pair<Entry, ggml_type>> to_f16(const std::vector<Entry> & entri
         for (size_t axis = 0; axis < entry.ne.size() && axis < GGML_MAX_DIMS; ++axis) {
             ne[axis] = entry.ne[axis];
         }
-        const bool matrix_weight =
-            synth::omnivoice::classify_tensor_for_half(entry.name, ne, synth::omnivoice::ModelHalf::Codec) ==
-            synth::omnivoice::QuantRole::MatrixWeight;
-        out.emplace_back(entry, matrix_weight ? GGML_TYPE_F16 : GGML_TYPE_F32);
+        // A Linear and a convolution kernel land on the same F16 under this
+        // profile -- its matrix weight type and its halved fallback column
+        // are both F16 -- which is why the conv-exempt policy leaves an F16
+        // package byte-identical to the one cut before it.
+        const synth::omnivoice::QuantRole role =
+            synth::omnivoice::classify_tensor_for_half(entry.name, ne, synth::omnivoice::ModelHalf::Codec);
+        const bool halved =
+            role == synth::omnivoice::QuantRole::MatrixWeight || role == synth::omnivoice::QuantRole::ConvKernel;
+        out.emplace_back(entry, halved ? GGML_TYPE_F16 : GGML_TYPE_F32);
     }
     return out;
 }

@@ -217,11 +217,13 @@ validation:
     exact. Both grids stayed byte-exact when the codec's decode graph moved
     to CUDA too. A quantized profile or a backend that flips even one of
     those tokens is not shipped. Only F32 is listed below for exactly that
-    reason: two codec-only quantized profiles (Q8_MIXED and F16) were
-    produced and measured against the cloning path's exact-token gate, and
-    both failed it -- 1,023 of 2,808 tokens (36.4%) and 103 of 2,808 (3.7%)
-    mismatched respectively, neither a knife-edge margin call -- so neither
-    ships and no perceptual claim substitutes for the gate. Every deep
+    reason: every codec-only quantized profile produced so far has been
+    measured against the cloning path's exact-token gate and has failed it.
+    F16 mismatched 103 of 2,808 tokens (3.7%); Q8_MIXED mismatched 1,023
+    (36.4%) while it still block-quantized convolution kernels, and 98
+    (3.49%) since the conv-exempt codec policy of 2026-08-09 stopped it
+    doing so. None is a knife-edge margin call, so none ships and no
+    perceptual claim substitutes for the gate. Every deep
     generator probe gates on cosine rather than a sample-wise bound because
     pre-norm outlier channels reach a max-abs of 0.08 while cosine still
     holds at eight nines; a sample-wise threshold there would reject a

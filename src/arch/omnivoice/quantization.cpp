@@ -136,6 +136,25 @@ bool is_blanket_sensitive_codec_prefix(const std::vector<std::string_view> & tok
     return tokens.size() >= 2 && one_of(tokens[1], { "quantizer", "fc", "fc2" });
 }
 
+// The HuBERT stack's Linear modules, and the whole of what this family
+// block-quantizes in the codec since the conv-exempt policy of 2026-08-09.
+// Whitelisted positively -- these seven module names, under
+// `codec.semantic_model` and nowhere else -- rather than by excluding the
+// convolutions, so that a catalog tensor nobody anticipated lands on the
+// unquantized side. Together they are exactly 73 tensors: four attention
+// projections and two feed-forward matrices across each of the twelve
+// encoder layers, plus `feature_projection.projection`.
+//
+// A shape test cannot do this job and must not be substituted for it. The
+// convolution kernel `codec.acoustic_decoder.conv2.weight` is [7, 32, 1], so
+// its ne is indistinguishable from a Linear's -- `ggml_n_dims` reports it as
+// two-dimensional and its ne[2] is 1 either way.
+bool is_semantic_model_linear(const std::vector<std::string_view> & tokens) {
+    return tokens.size() >= 3 && tokens[1] == "semantic_model" &&
+           one_of(tokens[tokens.size() - 2],
+                  { "q_proj", "k_proj", "v_proj", "out_proj", "inter_dense", "output_dense", "projection" });
+}
+
 // codec.acoustic_decoder., codec.acoustic_encoder., codec.semantic_model. and
 // codec.encoder_semantic.: the four codec modules whose parameters are read
 // through a matrix multiply. `tokens[0]` is "codec" and `tokens[1]` is the
@@ -167,8 +186,14 @@ QuantRole classify_codec_matrix_region(const std::vector<std::string_view> & tok
     // Three tensors are Sensitive for reasons specific to their shape or to
     // how this runtime reads them, named individually rather than folded
     // into a generic rule -- a future reader must not "fix" any of them.
+    // Since the conv-exempt policy they are all three also convolution
+    // kernels that the ConvKernel fall-through below would have kept out of a
+    // block-quantized type anyway, so the reasons no longer *decide* anything
+    // on their own; they stay because Sensitive is F32 where ConvKernel is
+    // halved, because the already-cut F16 and Q8_MIXED packages hold these
+    // three at F32, and because deleting them would lose the reasons.
     //
-    // A note that applies to every *other* MatrixWeight tensor returned
+    // A note that applies to the *other* convolution kernels returned
     // below, not just these three: ggml_compute_forward_im2col
     // (ggml/src/ggml-cpu/ops.cpp, ~6369-6386) aborts on any destination type
     // besides F16/F32, so all 85 conv1d-consumed MatrixWeight tensors here
@@ -183,10 +208,13 @@ QuantRole classify_codec_matrix_region(const std::vector<std::string_view> & tok
     // GGML_TYPE_F32 as im2col's destination and feeds the quantized kernel
     // straight into mul_mat as its already-2-D operand
     // (src/arch/vits/operations.cpp:37-43,
-    // src/arch/kokoro/operations.cpp:46-79). This classifier still calls
-    // these tensors MatrixWeight: the role is about how a tensor is *read*
-    // (through a matrix multiply, so packing it is not incoherent), not
-    // about whether every consumer already handles a packed one.
+    // src/arch/kokoro/operations.cpp:46-79). Under the conv-exempt policy no
+    // profile this family cuts packs any of them any more, so that branch is
+    // no longer reached by an omnivoice package -- it stays live for VITS,
+    // Kokoro and Qwen3-TTS and stays covered here by
+    // omnivoice_reference_encoder_test.cpp's check_packed_feat_conv1 and
+    // check_packed_encoder_semantic_conv, which build packed kernels
+    // directly rather than through a profile.
     if (name == "codec.acoustic_encoder.conv1.weight") {
         // Reads the raw mono reference waveform, so its packed row is
         // kernel * in_channels = 7 * 1 = 7: seven elements, never a multiple
@@ -234,7 +262,15 @@ QuantRole classify_codec_matrix_region(const std::vector<std::string_view> & tok
         return QuantRole::TransposeWeight;
     }
 
-    return QuantRole::MatrixWeight;
+    // The conv-exempt split. Everything reaching here is read through a matrix
+    // multiply; only the HuBERT Linears are block-quantized, and every
+    // remaining weight in these four modules is an ordinary convolution kernel
+    // held at the profile's halved type. See quantization.h's ConvKernel for
+    // the measurement behind the policy, and note what it costs: the 85
+    // convolutions include all 32 of the acoustic decoder's, so the decode
+    // path every synthesis runs is left entirely unquantized and the 73
+    // tensors that remain sit only on the clone-encode path.
+    return is_semantic_model_linear(tokens) ? QuantRole::MatrixWeight : QuantRole::ConvKernel;
 }
 
 }  // namespace

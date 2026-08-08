@@ -197,6 +197,14 @@ bool quantize_file(const std::string & input_path,
         // native row of 7 would not, and there is exactly one such tensor in
         // this family's whole catalog (see Task 2's report for the survey
         // that confirmed it).
+        //
+        // That carve-out is inert as of the conv-exempt codec policy of
+        // 2026-08-09: this tensor is a convolution kernel, so
+        // classify_codec_matrix_region now reports ConvKernel for it and the
+        // resolver hands back TensorLayout::Native before the demotion below
+        // is ever consulted. It stays because the [7, 32, 1] hazard it names
+        // is a real property of the catalog, and a reader who reverts the
+        // policy needs it back.
         const bool matrix_family =
             architecture == "kokoro" || architecture == "qwen3-tts" || architecture == "omnivoice";
         const bool omnivoice_collapsed_conv_kernel =

@@ -217,14 +217,18 @@ int check_the_half_split() {
     SYNTH_TEST_CHECK(classify_for(ModelHalf::Generator, "llm.norm.weight", { 1024 }) == QuantRole::Sensitive);
     SYNTH_TEST_CHECK(classify_for(ModelHalf::Generator, "codec.acoustic_decoder.conv1.weight", { 7, 256, 1024 }) ==
                      QuantRole::Sensitive);
+    SYNTH_TEST_CHECK(classify_for(ModelHalf::Generator, "codec.semantic_model.encoder.layers.0.attn.q_proj.weight",
+                                  { 768, 768 }) == QuantRole::Sensitive);
     SYNTH_TEST_CHECK(classify_for(ModelHalf::Generator, "codec.acoustic_decoder.block.0.conv_t1.weight",
                                   { 16, 512, 1024 }) == QuantRole::Sensitive);
 
-    // Codec-half profile: the mirror image, and the one that must keep
-    // behaving exactly as it did before the generator acquired real roles --
-    // Q8_MIXED and F16 packages are already cut and published.
+    // Codec-half profile: the mirror image. The decoder's input convolution
+    // is ConvKernel since the conv-exempt policy; a HuBERT Linear is what
+    // MatrixWeight now means on this side.
     SYNTH_TEST_CHECK(classify_for(ModelHalf::Codec, "codec.acoustic_decoder.conv1.weight", { 7, 256, 1024 }) ==
-                     QuantRole::MatrixWeight);
+                     QuantRole::ConvKernel);
+    SYNTH_TEST_CHECK(classify_for(ModelHalf::Codec, "codec.semantic_model.encoder.layers.0.attn.q_proj.weight",
+                                  { 768, 768 }) == QuantRole::MatrixWeight);
     SYNTH_TEST_CHECK(classify_for(ModelHalf::Codec, "codec.acoustic_decoder.block.0.conv_t1.weight",
                                   { 16, 512, 1024 }) == QuantRole::TransposeWeight);
     SYNTH_TEST_CHECK(classify_for(ModelHalf::Codec, "llm.layers.0.self_attn.q_proj.weight", { 1024, 2048 }) ==
@@ -282,8 +286,7 @@ int check_transpose_weight_override() {
     // matched "acoustic_decoder" as a substring prefix of "acoustic_encoder"
     // (or vice versa), or that matched "conv1" against the "conv_t1" pattern,
     // would misfile this as a decoder tensor or a transpose weight.
-    SYNTH_TEST_CHECK(classify("codec.acoustic_encoder.block.0.conv1.weight", { 16, 64, 128 }) ==
-                     QuantRole::MatrixWeight);
+    SYNTH_TEST_CHECK(classify("codec.acoustic_encoder.block.0.conv1.weight", { 16, 64, 128 }) == QuantRole::ConvKernel);
     return 0;
 }
 
@@ -296,11 +299,13 @@ int check_structural_exceptions() {
     // extractor's own raw-waveform convolution, packed row 10 * 1 = 10.
     SYNTH_TEST_CHECK(classify("codec.semantic_model.feat_conv.0.conv.weight", { 10, 1, 512 }) == QuantRole::Sensitive);
     // Every later feature convolution reads the previous layer's 512-wide
-    // output, not the raw waveform, so only index 0 is an exception.
+    // output, not the raw waveform, so only index 0 is a named exception --
+    // and the difference that exception now makes is F32 against ConvKernel's
+    // F16, not exact against block-quantized.
     SYNTH_TEST_CHECK(classify("codec.semantic_model.feat_conv.1.conv.weight", { 3, 512, 512 }) ==
-                     QuantRole::MatrixWeight);
+                     QuantRole::ConvKernel);
     SYNTH_TEST_CHECK(classify("codec.semantic_model.feat_conv.6.conv.weight", { 2, 512, 512 }) ==
-                     QuantRole::MatrixWeight);
+                     QuantRole::ConvKernel);
 
     // codec.semantic_model.encoder.pos_conv_embed.conv.weight: grouped by
     // sixteen and sliced per group by ggml_view_3d in reference-encoder.cpp's
@@ -347,39 +352,61 @@ int check_one_dimensional_norms_are_sensitive() {
     return 0;
 }
 
-int check_everything_else_under_the_four_codec_modules_is_matrix_weight() {
-    // codec.acoustic_decoder.
-    SYNTH_TEST_CHECK(classify("codec.acoustic_decoder.conv1.weight", { 7, 256, 1024 }) == QuantRole::MatrixWeight);
+// The conv-exempt split, which is what the codec half's policy now IS: a
+// convolution kernel is ConvKernel and is never block-quantized, and the only
+// MatrixWeight tensors left in the codec are the HuBERT Linears.
+int check_the_conv_exempt_split() {
+    // codec.acoustic_decoder. -- the path every synthesis runs, cloning or
+    // not, and under this policy none of it is ever quantized.
+    SYNTH_TEST_CHECK(classify("codec.acoustic_decoder.conv1.weight", { 7, 256, 1024 }) == QuantRole::ConvKernel);
     SYNTH_TEST_CHECK(classify("codec.acoustic_decoder.block.0.res_unit1.conv1.weight", { 7, 512, 512 }) ==
-                     QuantRole::MatrixWeight);
+                     QuantRole::ConvKernel);
     SYNTH_TEST_CHECK(classify("codec.acoustic_decoder.block.0.res_unit1.conv2.weight", { 1, 512, 512 }) ==
-                     QuantRole::MatrixWeight);
-    // The mono exit convolution: ne = [7, 32, 1], the exact shape
-    // Task 2's packing whitelist calls out as a ggml_n_dims hazard for a
-    // *different* mechanism (trailing-unit-dimension collapse). This
-    // classifier never derives a role from ne, so that hazard does not apply
-    // here -- the name alone says this is a plain convolution weight.
-    SYNTH_TEST_CHECK(classify("codec.acoustic_decoder.conv2.weight", { 7, 32, 1 }) == QuantRole::MatrixWeight);
+                     QuantRole::ConvKernel);
+    // The mono exit convolution at ne = [7, 32, 1] -- the tensor a
+    // shape-based conv-exempt rule would get wrong, because `ggml_n_dims`
+    // collapses its trailing unit axis and reports it as two-dimensional,
+    // exactly like a Linear. It is ConvKernel because the classifier reads
+    // the name, never the shape.
+    SYNTH_TEST_CHECK(classify("codec.acoustic_decoder.conv2.weight", { 7, 32, 1 }) == QuantRole::ConvKernel);
 
     // codec.acoustic_encoder.
     SYNTH_TEST_CHECK(classify("codec.acoustic_encoder.block.0.res_unit1.conv1.weight", { 7, 64, 64 }) ==
-                     QuantRole::MatrixWeight);
-    SYNTH_TEST_CHECK(classify("codec.acoustic_encoder.conv2.weight", { 3, 2048, 256 }) == QuantRole::MatrixWeight);
+                     QuantRole::ConvKernel);
+    SYNTH_TEST_CHECK(classify("codec.acoustic_encoder.conv2.weight", { 3, 2048, 256 }) == QuantRole::ConvKernel);
 
-    // codec.semantic_model.
+    // codec.semantic_model: the seven Linear module names, and nothing else.
     SYNTH_TEST_CHECK(classify("codec.semantic_model.encoder.layers.0.attn.q_proj.weight", { 768, 768 }) ==
+                     QuantRole::MatrixWeight);
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.encoder.layers.0.attn.k_proj.weight", { 768, 768 }) ==
+                     QuantRole::MatrixWeight);
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.encoder.layers.0.attn.v_proj.weight", { 768, 768 }) ==
+                     QuantRole::MatrixWeight);
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.encoder.layers.11.attn.out_proj.weight", { 768, 768 }) ==
                      QuantRole::MatrixWeight);
     SYNTH_TEST_CHECK(classify("codec.semantic_model.encoder.layers.0.ff.inter_dense.weight", { 768, 3072 }) ==
                      QuantRole::MatrixWeight);
     SYNTH_TEST_CHECK(classify("codec.semantic_model.encoder.layers.0.ff.output_dense.weight", { 3072, 768 }) ==
                      QuantRole::MatrixWeight);
+    SYNTH_TEST_CHECK(classify("codec.semantic_model.feature_projection.projection.weight", { 512, 768 }) ==
+                     QuantRole::MatrixWeight);
+    // The whitelist is scoped to semantic_model: the same module name
+    // anywhere else in the codec would be a convolution's neighbour, not a
+    // HuBERT Linear, and must not be quantized on the strength of its
+    // spelling alone.
+    SYNTH_TEST_CHECK(classify("codec.acoustic_encoder.q_proj.weight", { 768, 768 }) == QuantRole::ConvKernel);
 
     // codec.encoder_semantic.
-    SYNTH_TEST_CHECK(classify("codec.encoder_semantic.conv.weight", { 3, 768, 768 }) == QuantRole::MatrixWeight);
+    SYNTH_TEST_CHECK(classify("codec.encoder_semantic.conv.weight", { 3, 768, 768 }) == QuantRole::ConvKernel);
     SYNTH_TEST_CHECK(classify("codec.encoder_semantic.conv_blocks.0.res_units.0.conv1.weight", { 3, 768, 768 }) ==
-                     QuantRole::MatrixWeight);
+                     QuantRole::ConvKernel);
     SYNTH_TEST_CHECK(classify("codec.encoder_semantic.conv_blocks.1.conv.weight", { 3, 768, 768 }) ==
-                     QuantRole::MatrixWeight);
+                     QuantRole::ConvKernel);
+
+    // The generator's own projections are unaffected: the policy is about
+    // convolutions, and that half has none.
+    SYNTH_TEST_CHECK(classify("llm.layers.0.self_attn.q_proj.weight", { 1024, 2048 }) == QuantRole::MatrixWeight);
+    SYNTH_TEST_CHECK(classify("audio_heads.weight", { 1024, 8200 }) == QuantRole::MatrixWeight);
     return 0;
 }
 
@@ -443,20 +470,41 @@ int check_matrix_weight_count() {
     SYNTH_TEST_CHECK(entries.size() == synth::omnivoice::expected_tensor_count(h));
     SYNTH_TEST_CHECK(entries.size() == 798);
 
-    // What a codec-half profile (Q8_MIXED, F16) quantizes. This number is
-    // published against already-cut packages and must not move.
-    constexpr uint64_t kCodecMatrixWeightCount = 158;
+    // What a codec-half profile block-quantizes under the conv-exempt policy:
+    // the 73 HuBERT Linears and nothing else. The 158 that used to be
+    // quantized split 73 Linears / 85 convolution kernels, and this pair of
+    // assertions is what pins that split -- 158 is still the count of codec
+    // tensors read through a matrix multiply, but only 73 of them now carry a
+    // block-quantized type.
+    constexpr uint64_t kCodecMatrixWeightCount = 73;
+    constexpr uint64_t kCodecConvKernelCount   = 85;
     SYNTH_TEST_CHECK(count_role_for(entries, ModelHalf::Codec, QuantRole::MatrixWeight) == kCodecMatrixWeightCount);
+    SYNTH_TEST_CHECK(count_role_for(entries, ModelHalf::Codec, QuantRole::ConvKernel) == kCodecConvKernelCount);
+    SYNTH_TEST_CHECK(kCodecMatrixWeightCount + kCodecConvKernelCount == 158);
 
-    // The per-module breakdown behind the total: the two DAC halves, HuBERT,
-    // and the codec's own semantic encoder. 32 + 36 + 79 + 11 = 158.
-    SYNTH_TEST_CHECK(count_role(filter_prefix(entries, "codec.acoustic_decoder."), QuantRole::MatrixWeight) == 32);
-    SYNTH_TEST_CHECK(count_role(filter_prefix(entries, "codec.acoustic_encoder."), QuantRole::MatrixWeight) == 36);
-    SYNTH_TEST_CHECK(count_role(filter_prefix(entries, "codec.semantic_model."), QuantRole::MatrixWeight) == 79);
-    SYNTH_TEST_CHECK(count_role(filter_prefix(entries, "codec.encoder_semantic."), QuantRole::MatrixWeight) == 11);
+    // The per-module breakdown, and the finding the policy turns on: every
+    // block-quantized codec tensor is in `codec.semantic_model`, which is the
+    // clone-encode path. The acoustic decoder -- the path every synthesis
+    // runs -- keeps all 32 of its matrix-read weights at the profile's halved
+    // type, so a codec profile now buys nothing at all on the decode side.
+    SYNTH_TEST_CHECK(count_role(filter_prefix(entries, "codec.acoustic_decoder."), QuantRole::MatrixWeight) == 0);
+    SYNTH_TEST_CHECK(count_role(filter_prefix(entries, "codec.acoustic_encoder."), QuantRole::MatrixWeight) == 0);
+    SYNTH_TEST_CHECK(count_role(filter_prefix(entries, "codec.encoder_semantic."), QuantRole::MatrixWeight) == 0);
+    SYNTH_TEST_CHECK(count_role(filter_prefix(entries, "codec.semantic_model."), QuantRole::MatrixWeight) ==
+                     kCodecMatrixWeightCount);
+    SYNTH_TEST_CHECK(count_role(filter_prefix(entries, "codec.acoustic_decoder."), QuantRole::ConvKernel) == 32);
+    SYNTH_TEST_CHECK(count_role(filter_prefix(entries, "codec.acoustic_encoder."), QuantRole::ConvKernel) == 36);
+    SYNTH_TEST_CHECK(count_role(filter_prefix(entries, "codec.semantic_model."), QuantRole::ConvKernel) == 6);
+    SYNTH_TEST_CHECK(count_role(filter_prefix(entries, "codec.encoder_semantic."), QuantRole::ConvKernel) == 11);
+    // 73 = four attention projections and two feed-forward matrices across
+    // each HuBERT layer, plus the feature projection.
+    SYNTH_TEST_CHECK(kCodecMatrixWeightCount == 6 * uint64_t(h.semantic.layer_count) + 1);
     // No codec tensor is ever a RowLookup: the only two `ggml_get_rows`
     // weights in the package are the generator's canvas tables.
     SYNTH_TEST_CHECK(count_role_for(entries, ModelHalf::Codec, QuantRole::RowLookup) == 0);
+    // And no generator tensor is ever a ConvKernel: that half emits no
+    // convolution at all.
+    SYNTH_TEST_CHECK(count_role_for(entries, ModelHalf::Generator, QuantRole::ConvKernel) == 0);
 
     // What a generator-half profile (Q8_GEN) quantizes: 199 two-dimensional
     // weights, of which 2 are the `ggml_get_rows` tables and 197 are matrix
@@ -484,6 +532,7 @@ int check_matrix_weight_count() {
         SYNTH_TEST_CHECK(count_role_for(entries, half, QuantRole::Unknown) == 0);
         SYNTH_TEST_CHECK(count_role_for(entries, half, QuantRole::MatrixWeight) +
                              count_role_for(entries, half, QuantRole::RowLookup) +
+                             count_role_for(entries, half, QuantRole::ConvKernel) +
                              count_role_for(entries, half, QuantRole::TransposeWeight) +
                              count_role_for(entries, half, QuantRole::Sensitive) ==
                          entries.size());
@@ -511,7 +560,7 @@ int main() {
     SYNTH_TEST_CHECK(check_structural_exceptions() == 0);
     SYNTH_TEST_CHECK(check_snake_alphas_and_biases_are_sensitive() == 0);
     SYNTH_TEST_CHECK(check_one_dimensional_norms_are_sensitive() == 0);
-    SYNTH_TEST_CHECK(check_everything_else_under_the_four_codec_modules_is_matrix_weight() == 0);
+    SYNTH_TEST_CHECK(check_the_conv_exempt_split() == 0);
     SYNTH_TEST_CHECK(check_unknown_outside_the_catalog() == 0);
     SYNTH_TEST_CHECK(check_completeness_against_the_small_layout() == 0);
     SYNTH_TEST_CHECK(check_matrix_weight_count() == 0);

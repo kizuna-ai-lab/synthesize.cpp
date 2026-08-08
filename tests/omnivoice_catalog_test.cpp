@@ -580,7 +580,8 @@ std::vector<std::pair<Entry, ggml_type>> to_q8_mixed(const std::vector<Entry> & 
         for (size_t axis = 0; axis < entry.ne.size() && axis < GGML_MAX_DIMS; ++axis) {
             ne[axis] = entry.ne[axis];
         }
-        if (synth::omnivoice::classify_tensor(entry.name, ne) == synth::omnivoice::QuantRole::MatrixWeight) {
+        if (synth::omnivoice::classify_tensor_for_half(entry.name, ne, synth::omnivoice::ModelHalf::Codec) ==
+            synth::omnivoice::QuantRole::MatrixWeight) {
             if (entry.ne.size() == 3) {
                 out.emplace_back(
                     Entry{
@@ -639,10 +640,12 @@ int check_q8_mixed_resolution() {
     SYNTH_TEST_CHECK(weights.semantic_model.pos_conv.weight->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(weights.acoustic_decoder.blocks[0].snake1.alpha->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.bias->type == GGML_TYPE_F32);
-    // The whole generator and the RVQ stay exact under every profile.
+    // The whole generator stays exact under a codec-half profile, and the RVQ
+    // under every profile there is.
     SYNTH_TEST_CHECK(weights.generator.text_embedding->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(weights.generator.layers[0].q_proj->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(weights.generator.audio_embeddings->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.generator.audio_heads->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(weights.quantizers[0].codebook->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(weights.fc.weight->type == GGML_TYPE_F32);
     return 0;
@@ -716,7 +719,8 @@ std::vector<std::pair<Entry, ggml_type>> to_f16(const std::vector<Entry> & entri
             ne[axis] = entry.ne[axis];
         }
         const bool matrix_weight =
-            synth::omnivoice::classify_tensor(entry.name, ne) == synth::omnivoice::QuantRole::MatrixWeight;
+            synth::omnivoice::classify_tensor_for_half(entry.name, ne, synth::omnivoice::ModelHalf::Codec) ==
+            synth::omnivoice::QuantRole::MatrixWeight;
         out.emplace_back(entry, matrix_weight ? GGML_TYPE_F16 : GGML_TYPE_F32);
     }
     return out;
@@ -750,10 +754,12 @@ int check_f16_resolution() {
     SYNTH_TEST_CHECK(weights.semantic_model.pos_conv.weight->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(weights.acoustic_decoder.blocks[0].snake1.alpha->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.bias->type == GGML_TYPE_F32);
-    // The whole generator and the RVQ stay exact under every profile.
+    // The whole generator stays exact under a codec-half profile, and the RVQ
+    // under every profile there is.
     SYNTH_TEST_CHECK(weights.generator.text_embedding->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(weights.generator.layers[0].q_proj->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(weights.generator.audio_embeddings->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.generator.audio_heads->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(weights.quantizers[0].codebook->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(weights.fc.weight->type == GGML_TYPE_F32);
     return 0;
@@ -799,6 +805,151 @@ int check_f16_rejections() {
     return 0;
 }
 
+// Widths for the Q8_GEN variant of the small package. This profile quantizes
+// the generator half instead of the codec, so it is the generator's widths
+// that have to be multiples of Q8_0's 32-element block -- specifically every
+// width that lands on a quantized tensor's *row* (ne[0]): `hidden_size`
+// (which is the row of the embedding table, q/k/v_proj, gate/up_proj and both
+// canvas tables), `intermediate_size` (down_proj's row) and
+// `attention_head_count * head_dim` (o_proj's row). The key/value width is
+// only ever a column, so `key_value_head_count` is untouched, and so is the
+// entire codec half. The real checkpoint's rows are 1024, 2048 and 3072 and
+// need no such adjustment at all.
+synth::omnivoice::HParams q8_gen_hparams() {
+    synth::omnivoice::HParams h      = small_hparams();
+    h.quantization_profile           = synth::omnivoice::QuantizationProfile::Q8Gen;
+    h.generator.hidden_size          = 32;
+    h.generator.head_dim             = 8;
+    h.generator.attention_head_count = 4;
+    h.generator.key_value_head_count = 2;
+    h.generator.intermediate_size    = 32;
+    return h;
+}
+
+// Recasts one F32 entry list to what the offline quantizer would have written
+// for it under Q8_GEN: every generator MatrixWeight and RowLookup tensor
+// becomes Q8_0 at its declared shape (nothing is packed -- the generator half
+// is two-dimensional throughout), and every other tensor, the whole codec
+// included, stays F32.
+std::vector<std::pair<Entry, ggml_type>> to_q8_gen(const std::vector<Entry> & entries) {
+    std::vector<std::pair<Entry, ggml_type>> out;
+    out.reserve(entries.size());
+    for (const Entry & entry : entries) {
+        int64_t ne[GGML_MAX_DIMS] = { 1, 1, 1, 1 };
+        for (size_t axis = 0; axis < entry.ne.size() && axis < GGML_MAX_DIMS; ++axis) {
+            ne[axis] = entry.ne[axis];
+        }
+        const synth::omnivoice::QuantRole role =
+            synth::omnivoice::classify_tensor_for_half(entry.name, ne, synth::omnivoice::ModelHalf::Generator);
+        const bool quantized =
+            role == synth::omnivoice::QuantRole::MatrixWeight || role == synth::omnivoice::QuantRole::RowLookup;
+        out.emplace_back(entry, quantized ? GGML_TYPE_Q8_0 : GGML_TYPE_F32);
+    }
+    return out;
+}
+
+int check_q8_gen_resolution() {
+    const synth::omnivoice::HParams                h           = q8_gen_hparams();
+    const std::vector<Entry>                       f32_entries = expected_entries(h);
+    const std::vector<std::pair<Entry, ggml_type>> entries     = to_q8_gen(f32_entries);
+
+    Context context = make_context();
+    populate_typed(context.get(), entries);
+
+    synth::omnivoice::ModelWeights weights;
+    SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_OK);
+
+    // Both `ggml_get_rows` tables, and both at their declared shape: a packed
+    // lookup table would be unindexable.
+    SYNTH_TEST_CHECK(weights.generator.text_embedding->type == GGML_TYPE_Q8_0);
+    SYNTH_TEST_CHECK(weights.generator.text_embedding->ne[0] == int64_t(h.generator.hidden_size));
+    SYNTH_TEST_CHECK(weights.generator.text_embedding->ne[1] == int64_t(h.generator.text_vocab_size));
+    SYNTH_TEST_CHECK(weights.generator.audio_embeddings->type == GGML_TYPE_Q8_0);
+    SYNTH_TEST_CHECK(weights.generator.audio_embeddings->ne[0] == int64_t(h.generator.hidden_size));
+    // The heads are a plain matrix multiply, not the embeddings' transpose.
+    SYNTH_TEST_CHECK(weights.generator.audio_heads->type == GGML_TYPE_Q8_0);
+
+    // The seven projections per layer.
+    SYNTH_TEST_CHECK(weights.generator.layers[0].q_proj->type == GGML_TYPE_Q8_0);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].k_proj->type == GGML_TYPE_Q8_0);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].v_proj->type == GGML_TYPE_Q8_0);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].o_proj->type == GGML_TYPE_Q8_0);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].gate_proj->type == GGML_TYPE_Q8_0);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].up_proj->type == GGML_TYPE_Q8_0);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].down_proj->type == GGML_TYPE_Q8_0);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].q_proj->ne[0] == int64_t(h.generator.hidden_size));
+
+    // Every norm in the half stays exact.
+    SYNTH_TEST_CHECK(weights.generator.norm->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].input_layernorm->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].post_attention_layernorm->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].q_norm->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].k_norm->type == GGML_TYPE_F32);
+
+    // And the whole codec half, at its own unpacked shape: the tensors a
+    // codec-half profile would pack, halve or hold native are all untouched
+    // here, which is what makes this package's codec byte-identical to F32.
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->ne[0] == 7);
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->ne[1] == int64_t(h.codec.hidden_size));
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.blocks[0].conv_t1.weight->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.semantic_model.layers[0].q_proj.weight->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.quantizers[0].codebook->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.fc.weight->type == GGML_TYPE_F32);
+    return 0;
+}
+
+int check_q8_gen_rejections() {
+    const synth::omnivoice::HParams h           = q8_gen_hparams();
+    const std::vector<Entry>        f32_entries = expected_entries(h);
+
+    // A generator matrix the offline quantizer never touched.
+    {
+        std::vector<std::pair<Entry, ggml_type>> entries = to_q8_gen(f32_entries);
+        for (auto & [entry, type] : entries) {
+            if (entry.name == "llm.layers.0.self_attn.q_proj.weight") {
+                type = GGML_TYPE_F32;
+            }
+        }
+        Context                        context = make_context();
+        synth::omnivoice::ModelWeights weights;
+        populate_typed(context.get(), entries);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
+    }
+
+    // A generator norm that was quantized anyway.
+    {
+        std::vector<std::pair<Entry, ggml_type>> entries = to_q8_gen(f32_entries);
+        for (auto & [entry, type] : entries) {
+            if (entry.name == "llm.norm.weight") {
+                type = GGML_TYPE_F16;
+            }
+        }
+        Context                        context = make_context();
+        synth::omnivoice::ModelWeights weights;
+        populate_typed(context.get(), entries);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
+    }
+
+    // A codec tensor this profile must not have touched. This is the check
+    // that would fire if the half split leaked -- the failure mode that makes
+    // Q8_GEN's "codec byte-identical to F32" claim worth asserting at load
+    // time and not only at cut time.
+    {
+        std::vector<std::pair<Entry, ggml_type>> entries = to_q8_gen(f32_entries);
+        for (auto & [entry, type] : entries) {
+            if (entry.name == "codec.semantic_model.encoder.layers.0.attn.q_proj.weight") {
+                type = GGML_TYPE_Q8_0;
+            }
+        }
+        Context                        context = make_context();
+        synth::omnivoice::ModelWeights weights;
+        populate_typed(context.get(), entries);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -814,5 +965,7 @@ int main() {
     SYNTH_TEST_CHECK(check_q8_mixed_rejections() == 0);
     SYNTH_TEST_CHECK(check_f16_resolution() == 0);
     SYNTH_TEST_CHECK(check_f16_rejections() == 0);
+    SYNTH_TEST_CHECK(check_q8_gen_resolution() == 0);
+    SYNTH_TEST_CHECK(check_q8_gen_rejections() == 0);
     return 0;
 }

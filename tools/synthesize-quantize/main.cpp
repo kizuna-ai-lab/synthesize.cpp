@@ -7,7 +7,7 @@ namespace {
 
 void print_usage(const char * executable) {
     std::fprintf(stderr,
-                 "usage: %s INPUT.gguf OUTPUT.gguf --quant F16|Q8_MIXED\n"
+                 "usage: %s INPUT.gguf OUTPUT.gguf --quant F16|Q8_MIXED|Q5_K_MIXED|Q8_GEN\n"
                  "\n"
                  "The output path must not already exist.\n",
                  executable);

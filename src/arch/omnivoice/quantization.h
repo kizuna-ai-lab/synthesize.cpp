@@ -25,36 +25,88 @@ enum class QuantRole {
     // src/arch/kokoro/operations.cpp:46-79), ported by Plan 4 Task 2, so
     // ggml_im2col never sees a quantized destination type. See
     // quantization.cpp's classify_codec_matrix_region for which tensors this
-    // covers.
+    // covers. All 197 of the generator's own MatrixWeight tensors are plain
+    // `ggml_mul_mat` operands with no convolution anywhere in that half, so
+    // none of the above applies to them; see classify_generator_tensor.
     MatrixWeight,
+    // Read by `ggml_get_rows` rather than by a matrix multiply. Exactly two
+    // tensors in this family are: `llm.embed_tokens.weight` and
+    // `audio_embeddings.weight` (generator.cpp:123, 136). The role exists
+    // because CUDA's GET_ROWS accepts a strictly narrower set of types than
+    // its matrix multiply does -- F16/F32/BF16/I32/Q1_0/Q4_0/Q4_1/Q5_0/Q5_1/
+    // Q8_0 and no k-quant at all (ggml/src/ggml-cuda/ggml-cuda.cu:5190-5207)
+    // -- so a profile that puts a k-quant here does not fail loudly. It
+    // silently drops those nodes to the CPU, which
+    // scripts/validate-omnivoice-replay.py's placement proof then reports as
+    // a CUDA gate failure naming the tensor. A profile therefore gives this
+    // role its own type (Profile::row_lookup_type) instead of the matrix
+    // weight type, and the tables are never packed: `ggml_get_rows` indexes
+    // whole rows of the tensor's declared shape.
+    RowLookup,
     // A transposed convolution kernel. This runtime runs it as a column
     // matrix multiply into col2im_1d, and CUDA's F16 matrix multiply
     // accumulates in half precision, so it can be halved but not
     // block-quantized -- the same override VITS and Qwen3-TTS's decoder make
     // (policy.cpp:390-395, docs/quantization.md:52-56).
     TransposeWeight,
-    // Stays at the reference dtype. jiangzhuo's ruling of 2026-08-06 makes
-    // this the whole generator -- every `llm.*` tensor,
-    // `audio_embeddings.weight`, `audio_heads.weight` -- regardless of shape:
-    // a reference port measured exact-token agreement collapsing from 100% to
-    // roughly 7% with an F16 generator, and this family's headline claim is
-    // exact tokens. The RVQ (`codec.quantizer.*`) joins it for the same
-    // reason qwen3-tts's own RVQ stays exact (policy.cpp:258-265): a residual
-    // codebook's later levels carry small magnitudes, so a relative error
-    // there is large against the residual it corrects. The two concatenation
-    // projections around the RVQ (`codec.fc`, `codec.fc2`) stay with it.
-    // Every bias, every Snake alpha and every 1-D norm are read elementwise
-    // rather than through a matrix multiply, so packing buys nothing there
-    // either. Three further tensors are Sensitive for reasons specific to
-    // their shape or to how this runtime reads them; see the comments beside
-    // them in quantization.cpp -- a future reader must not "fix" those three.
+    // Stays at the reference dtype. The RVQ (`codec.quantizer.*`) is here for
+    // the same reason qwen3-tts's own RVQ stays exact (policy.cpp:258-265): a
+    // residual codebook's later levels carry small magnitudes, so a relative
+    // error there is large against the residual it corrects. The two
+    // concatenation projections around the RVQ (`codec.fc`, `codec.fc2`) stay
+    // with it. Every bias, every Snake alpha and every 1-D norm are read
+    // elementwise rather than through a matrix multiply, so packing buys
+    // nothing there either -- which covers the generator's RMS norms and its
+    // per-head q/k norms as well as the codec's. Three further tensors are
+    // Sensitive for reasons specific to their shape or to how this runtime
+    // reads them; see the comments beside them in quantization.cpp -- a
+    // future reader must not "fix" those three.
+    //
+    // History, because the role assignment above changed and a reader will
+    // otherwise find the old rule quoted in shipped packages' documentation:
+    // jiangzhuo's ruling of 2026-08-06 made the *whole* generator Sensitive
+    // whatever its shape, on the grounds that a reference port measured
+    // exact-token agreement collapsing from 100% to roughly 7% with an F16
+    // generator and that this family's headline claim was exact tokens. That
+    // ruling was revised on 2026-08-09: a quantized generator produces a
+    // different valid realization rather than a wrong one -- this family
+    // already ships a CUDA generator that flips 94-98% of greedy tokens and
+    // was accepted by ear -- so exact-token agreement is recorded as data and
+    // the ship decision rests on the speaker-identity F0 proxy instead. The
+    // generator is 76.9% of the package's tensor bytes, so no codec-only
+    // profile can reach the sizes this family needs.
     Sensitive,
 };
 
+// Which half of the package a tensor belongs to. Every Quantization Profile
+// this family cuts quantizes exactly one half and holds the other at the
+// reference dtype, because the two halves fail differently: the codec's
+// error shows up as measurable drift against a fixed reference grid, while
+// the generator's shows up as a different realization that only a listening
+// instrument can judge. Keeping one half exact per profile is what makes each
+// package's evidence attributable to one cause.
+enum class ModelHalf {
+    // The mask-predict generator: `llm.*` plus the two canvas tables and the
+    // audio heads. 2,450,309,120 of the F32 package's 3,184,565,636 tensor
+    // bytes.
+    Generator,
+    // Everything under `codec.` -- the Higgs Audio V2 acoustic decoder, the
+    // acoustic encoder, HuBERT and the RVQ.
+    Codec,
+};
+
+// The half `name` belongs to, from the name alone. Note this answers a
+// name-space question and nothing else: it is meaningful only for a name
+// classify_tensor already recognises, which is why classify_tensor_for_half
+// below resolves the role first.
+ModelHalf tensor_half(const std::string & name);
+
 // The family's tensor->role classifier, shared by tools/synthesize-quantize
 // and the runtime so an offline decision and a load-time expectation cannot
-// drift. Codec-only by jiangzhuo's ruling of 2026-08-06: every generator
-// tensor is Sensitive, whatever its shape.
+// drift. This reports the *architectural* role -- how the graph reads the
+// tensor -- for both halves of the package, with no profile in view. What a
+// given profile then does with that role is
+// classify_tensor_for_half's question, not this one's.
 //
 // `ne` is accepted for parity with the offline tool's per-tensor loop, which
 // always has a ggml_tensor's shape on hand, and so that a future catalog
@@ -73,5 +125,18 @@ enum class QuantRole {
 // as an error rather than assigning a fallback role, so a converter or
 // runtime change cannot quietly acquire one.
 QuantRole classify_tensor(const std::string & name, const int64_t ne[4]);
+
+// The role `name` takes under a profile that quantizes `quantized_half`:
+// classify_tensor's architectural role for a tensor in that half, and
+// Sensitive for every tensor in the other one. This is the single place the
+// half split is expressed, read by both the offline quantizer's dispatch
+// (tools/synthesize-quantize/policy.cpp) and the runtime catalog's load-time
+// expectation (catalog.cpp's expected_type), so an offline packing choice and
+// a load-time check cannot drift.
+//
+// Unknown propagates ahead of the half test rather than being flattened into
+// Sensitive. A stray name is fatal under every profile, including one that
+// leaves the half it would land in untouched.
+QuantRole classify_tensor_for_half(const std::string & name, const int64_t ne[4], ModelHalf quantized_half);
 
 }  // namespace synth::omnivoice

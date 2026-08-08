@@ -43,19 +43,87 @@ bool is_index(std::string_view value) {
     return true;
 }
 
+// One Qwen3 decoder block. The projections are the parameters; the norms are
+// four narrow vectors a profile gains nothing by quantizing and can lose
+// accuracy to. Modelled on qwen3-tts's own classify_qwen3_block
+// (tools/synthesize-quantize/policy.cpp:171-191), which handles the identical
+// block shape -- with one name difference this family must not paper over:
+// omnivoice's second norm is `post_attention_layernorm`, the Hugging Face
+// name, where qwen3-tts's converter renamed it `post_attn_norm`. Each
+// classifier matches what its own converter actually emits.
+QuantRole classify_generator_block(const std::vector<std::string_view> & tokens, size_t offset) {
+    if (tokens.size() == offset + 2 && tokens[offset + 1] == "weight" &&
+        one_of(tokens[offset], { "input_layernorm", "post_attention_layernorm" })) {
+        return QuantRole::Sensitive;
+    }
+    if (tokens.size() == offset + 3 && tokens[offset] == "self_attn" && tokens[offset + 2] == "weight") {
+        if (one_of(tokens[offset + 1], { "q_proj", "k_proj", "v_proj", "o_proj" })) {
+            return QuantRole::MatrixWeight;
+        }
+        // Qwen3 normalizes each head at head_dim, not the packed projection:
+        // 128 values against a projection's two million, applied to every
+        // head before rope.
+        if (one_of(tokens[offset + 1], { "q_norm", "k_norm" })) {
+            return QuantRole::Sensitive;
+        }
+        return QuantRole::Unknown;
+    }
+    if (tokens.size() == offset + 3 && tokens[offset] == "mlp" && tokens[offset + 2] == "weight" &&
+        one_of(tokens[offset + 1], { "gate_proj", "up_proj", "down_proj" })) {
+        return QuantRole::MatrixWeight;
+    }
+    return QuantRole::Unknown;
+}
+
 // The mask-predict generator: the Qwen3 layer stack (`llm.*`) plus its two
-// canvas tables, which are a second table each rather than a tied pair.
-// jiangzhuo's ruling of 2026-08-06 keeps all of it at the reference dtype
-// regardless of shape: a reference port measured exact-token agreement
-// collapsing from 100% to roughly 7% with an F16 generator, and this
-// family's headline claim is exact tokens.
-bool is_generator_tensor(const std::vector<std::string_view> & tokens, const std::string & name) {
+// canvas tables, which are a second table each rather than a tied pair, plus
+// the audio heads.
+//
+// Two facts hold for every MatrixWeight tensor this function returns, and
+// neither holds for the codec's:
+//
+//   * All 199 two-dimensional generator weights have rows (ne[0]) of 1024,
+//     2048 or 3072 -- divisible by 32 and by 256 -- so Q8_0 and every k-quant
+//     clear the block-size check in
+//     tools/synthesize-quantize/quantize.cpp without any per-tensor
+//     exception. The codec needed three such exceptions; this half needs
+//     none.
+//   * The generator graph (generator.cpp) emits no convolution at all, so
+//     there is no ggml_im2col destination-type hazard here -- the whole
+//     reason the codec's 85 convolution kernels needed Plan 4 Task 2's packed
+//     branch. Every generator matrix is a plain `ggml_mul_mat` operand, and
+//     rope takes no weight operand.
+//
+// Where they are read is what splits the two tables from the rest:
+// `llm.embed_tokens.weight` and `audio_embeddings.weight` reach
+// `ggml_get_rows` (generator.cpp:123, 136) and are RowLookup, while
+// `audio_heads.weight` -- the same shape, and easy to assume is the tied
+// transpose of the embeddings -- is a plain `ggml_mul_mat`
+// (generator.cpp:193) and is an ordinary MatrixWeight.
+QuantRole classify_generator_tensor(const std::vector<std::string_view> & tokens, const std::string & name) {
+    if (name == "audio_embeddings.weight") {
+        return QuantRole::RowLookup;
+    }
+    if (name == "audio_heads.weight") {
+        return QuantRole::MatrixWeight;
+    }
     // "llm.*" requires at least one child segment; a bare "llm" names nothing
     // in the catalog and falls through to Unknown like any other stray name.
-    if (tokens.size() >= 2 && tokens[0] == "llm") {
-        return true;
+    if (tokens.size() < 2 || tokens[0] != "llm") {
+        return QuantRole::Unknown;
     }
-    return name == "audio_embeddings.weight" || name == "audio_heads.weight";
+    if (name == "llm.embed_tokens.weight") {
+        // Tied to the text head, so no `lm_head` exists to classify beside it
+        // (catalog.cpp:321-322).
+        return QuantRole::RowLookup;
+    }
+    if (tokens.size() == 3 && tokens[1] == "norm" && tokens[2] == "weight") {
+        return QuantRole::Sensitive;
+    }
+    if (tokens.size() > 3 && tokens[1] == "layers" && is_index(tokens[2])) {
+        return classify_generator_block(tokens, 3);
+    }
+    return QuantRole::Unknown;
 }
 
 // codec.quantizer.*, codec.fc.* and codec.fc2.*: the RVQ and the two
@@ -171,17 +239,19 @@ QuantRole classify_codec_matrix_region(const std::vector<std::string_view> & tok
 
 }  // namespace
 
+ModelHalf tensor_half(const std::string & name) {
+    const std::vector<std::string_view> tokens = split_name(name);
+    return tokens.size() >= 2 && tokens[0] == "codec" ? ModelHalf::Codec : ModelHalf::Generator;
+}
+
 QuantRole classify_tensor(const std::string & name, const int64_t ne[4]) {
     // Every role this catalog resolves today follows from the name alone; see
     // the header comment for why the parameter still exists.
     (void) ne;
 
     const std::vector<std::string_view> tokens = split_name(name);
-    if (is_generator_tensor(tokens, name)) {
-        return QuantRole::Sensitive;
-    }
     if (tokens.size() < 2 || tokens[0] != "codec") {
-        return QuantRole::Unknown;
+        return classify_generator_tensor(tokens, name);
     }
     if (is_blanket_sensitive_codec_prefix(tokens)) {
         return QuantRole::Sensitive;
@@ -190,6 +260,14 @@ QuantRole classify_tensor(const std::string & name, const int64_t ne[4]) {
         return classify_codec_matrix_region(tokens, name);
     }
     return QuantRole::Unknown;
+}
+
+QuantRole classify_tensor_for_half(const std::string & name, const int64_t ne[4], ModelHalf quantized_half) {
+    const QuantRole role = classify_tensor(name, ne);
+    if (role == QuantRole::Unknown) {
+        return QuantRole::Unknown;
+    }
+    return tensor_half(name) == quantized_half ? role : QuantRole::Sensitive;
 }
 
 }  // namespace synth::omnivoice

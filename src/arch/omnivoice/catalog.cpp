@@ -152,6 +152,13 @@ class Resolver {
         // supplies the logical three-axis shape, so a quantized tensor whose
         // caller asked for three axes is checked against the packed row
         // instead of axis by axis.
+        //
+        // Gated on Q8_MIXED specifically, and that is exhaustive rather than
+        // an oversight: F16 is Native by its profile row, and Q8_GEN packs
+        // nothing at all -- every tensor it quantizes lives in the generator
+        // half, all of which is two-dimensional and therefore demoted to
+        // Native by the offline quantizer. A Q8_GEN package reaches the
+        // per-axis check below with its declared shape intact.
         if (hparams_.quantization_profile == QuantizationProfile::Q8Mixed && ggml_is_quantized(tensor->type) &&
             expected.size() == 3) {
             const auto *  want   = expected.begin();
@@ -245,23 +252,47 @@ class Resolver {
                 // and both halves were already F32.
                 return GGML_TYPE_F32;
             case QuantizationProfile::Q8Mixed:
-                // Codec-only: only a MatrixWeight tensor is ever packed.
+                // Codec half: only a MatrixWeight tensor is ever packed.
                 // TransposeWeight and Sensitive both stay F32 -- the former
                 // for the same col2im_1d/CUDA-F16 reason VITS and Qwen3-TTS's
-                // decoder do, the latter because jiangzhuo's 2026-08-06 ruling
-                // keeps the whole generator and the RVQ exact. An Unknown role
-                // here means a catalog name the classifier does not
-                // recognise, which the type check below still catches as a
-                // mismatch against whatever the tensor actually is.
-                return classify_tensor(name, ne) == QuantRole::MatrixWeight ? GGML_TYPE_Q8_0 : GGML_TYPE_F32;
+                // decoder do, the latter because the RVQ and every
+                // elementwise-read parameter stay exact. The whole generator
+                // half is held Sensitive by the half argument, not by its own
+                // architectural role. An Unknown role here means a catalog
+                // name the classifier does not recognise, which the type
+                // check below still catches as a mismatch against whatever
+                // the tensor actually is.
+                return classify_tensor_for_half(name, ne, ModelHalf::Codec) == QuantRole::MatrixWeight ?
+                           GGML_TYPE_Q8_0 :
+                           GGML_TYPE_F32;
             case QuantizationProfile::F16:
-                // Same split as Q8Mixed, halved rather than packed: the
+                // Same half as Q8Mixed, halved rather than packed: the
                 // tool's profile table gives F16 TensorLayout::Native
-                // (tools/synthesize-quantize/policy.cpp:14-24), so a
-                // MatrixWeight conv kernel keeps its native three-axis shape
-                // here -- the packed-shape branch in find() below is gated on
-                // Q8Mixed specifically and never triggers for this profile.
-                return classify_tensor(name, ne) == QuantRole::MatrixWeight ? GGML_TYPE_F16 : GGML_TYPE_F32;
+                // (tools/synthesize-quantize/policy.cpp), so a MatrixWeight
+                // conv kernel keeps its native three-axis shape here -- the
+                // packed-shape branch in find() below is gated on Q8Mixed
+                // specifically and never triggers for this profile.
+                return classify_tensor_for_half(name, ne, ModelHalf::Codec) == QuantRole::MatrixWeight ? GGML_TYPE_F16 :
+                                                                                                         GGML_TYPE_F32;
+            case QuantizationProfile::Q8Gen:
+                // The generator half instead, and the one profile where
+                // RowLookup is not inert: the two `ggml_get_rows` tables
+                // carry the profile's row-lookup type, which is Q8_0 here and
+                // must stay inside CUDA's GET_ROWS type list
+                // (quantization.h's RowLookup). It lands on the same Q8_0 as
+                // MatrixWeight under this profile, so the two arms agree
+                // today; they are written separately because a Q4 profile
+                // would separate them.
+                switch (classify_tensor_for_half(name, ne, ModelHalf::Generator)) {
+                    case QuantRole::MatrixWeight:
+                    case QuantRole::RowLookup:
+                        return GGML_TYPE_Q8_0;
+                    case QuantRole::TransposeWeight:
+                    case QuantRole::Sensitive:
+                    case QuantRole::Unknown:
+                        return GGML_TYPE_F32;
+                }
+                return GGML_TYPE_F32;
         }
         return GGML_TYPE_F32;
     }
@@ -274,6 +305,8 @@ class Resolver {
                 return "Q8_MIXED";
             case QuantizationProfile::F16:
                 return "F16";
+            case QuantizationProfile::Q8Gen:
+                return "Q8_GEN";
         }
         return "unknown";
     }

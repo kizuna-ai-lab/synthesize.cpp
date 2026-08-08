@@ -12,16 +12,31 @@ namespace synth::quantize {
 
 namespace {
 
+// The `row_lookup_type` column is read only by a family whose classifier
+// reports QuantRole::RowLookup, which today is omnivoice alone; for the other
+// three it is inert (policy.h).
 const Profile kProfiles[] = {
-    { "F16",        GGML_TYPE_F16,  TensorLayout::Native,       GGML_TYPE_F16, GGML_TYPE_F32, 1,                      1 },
-    { "Q8_MIXED",   GGML_TYPE_Q8_0, TensorLayout::PackedMatrix, GGML_TYPE_F16, GGML_TYPE_F32, GGML_FTYPE_MOSTLY_Q8_0, 1 },
+    { "F16",        GGML_TYPE_F16,  TensorLayout::Native,       GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_F16,  1, 1 },
+    { "Q8_MIXED",   GGML_TYPE_Q8_0, TensorLayout::PackedMatrix, GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_Q8_0,
+     GGML_FTYPE_MOSTLY_Q8_0,                                                                                     1 },
     // Q5_K is a super-block of 256, so it needs a row four times longer than
     // Q8_0 does. Qwen3-TTS clears that everywhere it quantizes -- its rows are
     // 1024, 2048 and 3072 -- while a family whose matrix weights are packed
     // convolution kernels will not, and is refused by the row-size check with
     // the tensor named rather than by a rule here.
-    { "Q5_K_MIXED", GGML_TYPE_Q5_K, TensorLayout::PackedMatrix, GGML_TYPE_F16, GGML_TYPE_F32, GGML_FTYPE_MOSTLY_Q5_K,
-     1                                                                                                                  },
+    { "Q5_K_MIXED", GGML_TYPE_Q5_K, TensorLayout::PackedMatrix, GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_Q8_0,
+     GGML_FTYPE_MOSTLY_Q5_K,                                                                                     1 },
+    // OmniVoice's generator-half profile, and the first profile in this table
+    // that quantizes something other than a codec/decoder. Its matrix weight
+    // layout says PackedMatrix like its siblings, but nothing under it is ever
+    // actually packed: every generator matrix is two-dimensional and
+    // quantize.cpp demotes a two-dimensional matrix_family tensor to Native,
+    // because packing a [1024, 3072] projection would flatten it into one
+    // meaningless row of 3,145,728. The codec stays F32 not because
+    // `sensitive_type` says so but because this profile's classifier arm holds
+    // the whole codec half at Sensitive -- see resolve_omnivoice_target_spec.
+    { "Q8_GEN",     GGML_TYPE_Q8_0, TensorLayout::PackedMatrix, GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_Q8_0,
+     GGML_FTYPE_MOSTLY_Q8_0,                                                                                     1 },
 };
 
 bool iequals(const char * lhs, const char * rhs) {
@@ -473,6 +488,21 @@ bool resolve_vits_target_type(const Profile & profile, const std::string & name,
     return true;
 }
 
+namespace {
+
+// Which half of the package a profile quantizes. Deliberately keyed on the
+// profile's own name rather than on a `Profile` field: the half is meaningless
+// for the other three families, and this family is the only reason it exists.
+// The runtime states the same mapping over its own profile enum
+// (src/arch/omnivoice/catalog.cpp's expected_type) -- the pairing is the same
+// one weights.cpp already maintains between these names and that enum.
+synth::omnivoice::ModelHalf omnivoice_quantized_half(const Profile & profile) {
+    return iequals(profile.name, "Q8_GEN") ? synth::omnivoice::ModelHalf::Generator :
+                                             synth::omnivoice::ModelHalf::Codec;
+}
+
+}  // namespace
+
 bool resolve_omnivoice_target_spec(const Profile & profile, const std::string & name, TargetSpec & spec_out) {
     // The classifier lives in the family module so the runtime's catalog and
     // this tool cannot disagree about a tensor. `ne` is unused by every role
@@ -480,9 +510,16 @@ bool resolve_omnivoice_target_spec(const Profile & profile, const std::string & 
     // so a placeholder shape is enough here -- this dispatch, like every
     // sibling family's, has no tensor shape on hand at this call site.
     const int64_t ne[4] = { 1, 1, 1, 1 };
-    switch (synth::omnivoice::classify_tensor(name, ne)) {
+    switch (synth::omnivoice::classify_tensor_for_half(name, ne, omnivoice_quantized_half(profile))) {
         case synth::omnivoice::QuantRole::MatrixWeight:
             spec_out = { profile.matrix_weight_type, profile.matrix_weight_layout };
+            return true;
+        case synth::omnivoice::QuantRole::RowLookup:
+            // Never packed: `ggml_get_rows` indexes whole rows of the
+            // tensor's declared shape, and the type is the profile's own
+            // narrower row-lookup column because CUDA's GET_ROWS accepts no
+            // k-quant (quantization.h's RowLookup).
+            spec_out = { profile.row_lookup_type, TensorLayout::Native };
             return true;
         case synth::omnivoice::QuantRole::TransposeWeight:
             // The same override VITS and Qwen3-TTS's decoder make, and for

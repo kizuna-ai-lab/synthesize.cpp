@@ -121,7 +121,15 @@ bool write_omnivoice_fixture(const std::string & path, bool include_unknown) {
         gguf_add_tensor(gguf, tensor);
     };
 
-    add1("llm.norm.weight", 4);  // generator: Sensitive whatever its shape
+    // The generator half. Widths are multiples of Q8_0's 32-element block
+    // because Q8_GEN quantizes these; the real package's rows are 1024, 2048
+    // and 3072, which clear it with room to spare.
+    add1("llm.norm.weight", 4);             // a norm: Sensitive under every profile
+    add("llm.embed_tokens.weight", 32, 3);  // RowLookup: never packed
+    add("llm.layers.0.self_attn.q_proj.weight", 32, 3);
+    add1("llm.layers.0.self_attn.q_norm.weight", 4);
+    add("audio_embeddings.weight", 32, 3);  // the second RowLookup table
+    add("audio_heads.weight", 32, 3);       // same shape, but a plain mul_mat
 
     // A genuine 2-D Linear (HuBERT's attention projections stand in for the
     // whole 73-tensor matmul-consumed group): MatrixWeight, but must land
@@ -144,7 +152,20 @@ bool write_omnivoice_fixture(const std::string & path, bool include_unknown) {
     add1("codec.acoustic_decoder.block.0.conv_t1.bias", 3);
 
     if (include_unknown) {
+        // Two different refusals, and the difference is worth naming because
+        // it is not visible from the tensor names.
+        //
+        // The first is NOT unknown to the classifier. Anything ending
+        // `.weight` under one of the four codec modules is MatrixWeight by
+        // design -- that region is deliberately permissive, with its
+        // exceptions named individually (quantization.cpp). What stops a
+        // codec-half profile here is the row-size check: packed to [16, 1],
+        // 16 is not a whole number of Q8_0 blocks. A generator-half profile
+        // holds this tensor at F32 and walks straight past it.
         add("codec.acoustic_decoder.future_module.weight", 4, 4);
+        // The second genuinely is unknown -- `codec.unknown_module` matches
+        // no module -- so it stops every profile, whichever half it lands in.
+        add("codec.unknown_module.conv.weight", 32, 4);
     }
 
     const bool ok = gguf_write_to_file(gguf, path.c_str(), false);
@@ -257,8 +278,19 @@ int check_omnivoice_q8_output(const std::string & path) {
     SYNTH_TEST_CHECK(file_type >= 0 && gguf_get_val_u32(gguf, file_type) == GGML_FTYPE_MOSTLY_Q8_0);
     SYNTH_TEST_CHECK(profile >= 0 && std::strcmp(gguf_get_val_str(gguf, profile), "Q8_MIXED") == 0);
 
-    ggml_tensor * sensitive = ggml_get_tensor(ctx, "llm.norm.weight");
-    SYNTH_TEST_CHECK(sensitive != nullptr && sensitive->type == GGML_TYPE_F32);
+    // The whole generator half is held at F32 by a codec-half profile, and
+    // that includes the two tensors a shape-only rule would happily pack.
+    for (const char * name : {
+             "llm.norm.weight",
+             "llm.embed_tokens.weight",
+             "llm.layers.0.self_attn.q_proj.weight",
+             "llm.layers.0.self_attn.q_norm.weight",
+             "audio_embeddings.weight",
+             "audio_heads.weight",
+         }) {
+        ggml_tensor * generator = ggml_get_tensor(ctx, name);
+        SYNTH_TEST_CHECK(generator != nullptr && generator->type == GGML_TYPE_F32);
+    }
 
     // A genuine 2-D Linear: MatrixWeight, but must stay Native -- packing it
     // would flatten [32, 3] into a meaningless single row of 96.
@@ -306,6 +338,78 @@ int check_omnivoice_q8_output(const std::string & path) {
     return 0;
 }
 
+// Task 1 (Plan 6): the mirror image, and the assertion that a future edit to
+// quantize.cpp's two-dimensional demotion cannot silently start packing the
+// generator. Every tensor Q8_GEN quantizes is two-dimensional, so if that
+// demotion stopped applying to omnivoice, `q_proj` here would come back as a
+// single packed row of 96 instead of [32, 3] -- shaped nothing like what
+// catalog.cpp resolves and nothing like what `ggml_mul_mat` wants.
+int check_omnivoice_q8_gen_output(const std::string & path) {
+    ggml_context *   ctx = nullptr;
+    gguf_init_params params{};
+    params.no_alloc     = false;
+    params.ctx          = &ctx;
+    gguf_context * gguf = gguf_init_from_file(path.c_str(), params);
+    SYNTH_TEST_CHECK(gguf != nullptr && ctx != nullptr);
+
+    const int64_t file_type = gguf_find_key(gguf, "general.file_type");
+    const int64_t profile   = gguf_find_key(gguf, "synthesize.quantization.profile");
+    SYNTH_TEST_CHECK(file_type >= 0 && gguf_get_val_u32(gguf, file_type) == GGML_FTYPE_MOSTLY_Q8_0);
+    SYNTH_TEST_CHECK(profile >= 0 && std::strcmp(gguf_get_val_str(gguf, profile), "Q8_GEN") == 0);
+
+    // The generator's matrices and both lookup tables: Q8_0 at their declared
+    // two-dimensional shape.
+    for (const char * name : {
+             "llm.embed_tokens.weight",
+             "llm.layers.0.self_attn.q_proj.weight",
+             "audio_embeddings.weight",
+             "audio_heads.weight",
+         }) {
+        ggml_tensor * quantized = ggml_get_tensor(ctx, name);
+        SYNTH_TEST_CHECK(quantized != nullptr && quantized->type == GGML_TYPE_Q8_0);
+        SYNTH_TEST_CHECK(quantized->ne[0] == 32 && quantized->ne[1] == 3 && quantized->ne[2] == 1);
+    }
+
+    // Every generator norm stays exact.
+    for (const char * name : { "llm.norm.weight", "llm.layers.0.self_attn.q_norm.weight" }) {
+        ggml_tensor * norm = ggml_get_tensor(ctx, name);
+        SYNTH_TEST_CHECK(norm != nullptr && norm->type == GGML_TYPE_F32);
+    }
+
+    // The whole codec half is untouched -- including the tensors a codec-half
+    // profile would pack, halve or leave native, each for its own reason.
+    for (const char * name : {
+             "codec.semantic_model.encoder.layers.0.attn.q_proj.weight",
+             "codec.semantic_model.encoder.layers.0.attn.q_proj.bias",
+             "codec.acoustic_decoder.conv1.weight",
+             "codec.acoustic_decoder.conv2.weight",
+             "codec.acoustic_decoder.block.0.conv_t1.weight",
+         }) {
+        ggml_tensor * codec = ggml_get_tensor(ctx, name);
+        SYNTH_TEST_CHECK(codec != nullptr && codec->type == GGML_TYPE_F32);
+    }
+    // Untouched means the shapes are the source's too, not merely the type:
+    // a conv kernel that reached the packing branch would come back
+    // two-dimensional even at F32.
+    ggml_tensor * conv2 = ggml_get_tensor(ctx, "codec.acoustic_decoder.conv2.weight");
+    SYNTH_TEST_CHECK(conv2 != nullptr && conv2->ne[0] == 7 && conv2->ne[1] == 32 && conv2->ne[2] == 1);
+
+    // Round-trip a quantized generator matrix to prove the bytes are a real
+    // quantization of the source values, not merely the right shape and type.
+    ggml_tensor * q_proj = ggml_get_tensor(ctx, "llm.layers.0.self_attn.q_proj.weight");
+    SYNTH_TEST_CHECK(q_proj != nullptr);
+    const ggml_type_traits * traits = ggml_get_type_traits(q_proj->type);
+    SYNTH_TEST_CHECK(traits != nullptr && traits->to_float != nullptr);
+    std::vector<float> dequantized(static_cast<size_t>(q_proj->ne[0]));
+    traits->to_float(q_proj->data, dequantized.data(), q_proj->ne[0]);
+    const int64_t probe = 20;
+    SYNTH_TEST_CHECK(std::fabs(dequantized[probe] - static_cast<float>(probe + 1) / 7.0f) < 0.2f);
+
+    gguf_free(gguf);
+    ggml_free(ctx);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
@@ -323,6 +427,8 @@ int main(int argc, char ** argv) {
     const std::string omnivoice_invalid_output = root + "/quantize-omnivoice-invalid-output.gguf";
     const std::string omnivoice_q8_first       = root + "/quantize-omnivoice-q8-first.gguf";
     const std::string omnivoice_q8_second      = root + "/quantize-omnivoice-q8-second.gguf";
+    const std::string omnivoice_gen_first      = root + "/quantize-omnivoice-q8gen-first.gguf";
+    const std::string omnivoice_gen_second     = root + "/quantize-omnivoice-q8gen-second.gguf";
     std::remove(first.c_str());
     std::remove(second.c_str());
     std::remove(invalid_output.c_str());
@@ -331,6 +437,8 @@ int main(int argc, char ** argv) {
     std::remove(omnivoice_invalid_output.c_str());
     std::remove(omnivoice_q8_first.c_str());
     std::remove(omnivoice_q8_second.c_str());
+    std::remove(omnivoice_gen_first.c_str());
+    std::remove(omnivoice_gen_second.c_str());
 
     SYNTH_TEST_CHECK(write_fixture(input, false));
     std::string error;
@@ -359,11 +467,34 @@ int main(int argc, char ** argv) {
     SYNTH_TEST_CHECK(synth::quantize::quantize_file(omnivoice_input, omnivoice_q8_second, "q8_mixed", error));
     SYNTH_TEST_CHECK(read_bytes(omnivoice_q8_first) == read_bytes(omnivoice_q8_second));
 
+    SYNTH_TEST_CHECK(synth::quantize::quantize_file(omnivoice_input, omnivoice_gen_first, "Q8_GEN", error));
+    SYNTH_TEST_CHECK(error.empty());
+    SYNTH_TEST_CHECK(check_omnivoice_q8_gen_output(omnivoice_gen_first) == 0);
+    SYNTH_TEST_CHECK(synth::quantize::quantize_file(omnivoice_input, omnivoice_gen_second, "q8_gen", error));
+    SYNTH_TEST_CHECK(read_bytes(omnivoice_gen_first) == read_bytes(omnivoice_gen_second));
+
     SYNTH_TEST_CHECK(write_omnivoice_fixture(omnivoice_invalid_input, true));
     SYNTH_TEST_CHECK(
         !synth::quantize::quantize_file(omnivoice_invalid_input, omnivoice_invalid_output, "Q8_MIXED", error));
+    // The row-size refusal, not the unknown-tensor one -- see the fixture.
+    SYNTH_TEST_CHECK(error.find("row size is incompatible") != std::string::npos);
     SYNTH_TEST_CHECK(error.find("codec.acoustic_decoder.future_module.weight") != std::string::npos);
     std::ifstream omnivoice_absent(omnivoice_invalid_output, std::ios::binary);
     SYNTH_TEST_CHECK(!omnivoice_absent.good());
+
+    // A genuinely unrecognised name is fatal under Q8_GEN too, even though
+    // the half it lands in is the one this profile leaves alone -- that is
+    // the Unknown-first ordering in classify_tensor_for_half. Without it the
+    // name would be reported as Sensitive and written out as an F32 tensor
+    // nobody recognises. Q8_GEN walks past `future_module` (F32, no row-size
+    // check to fail) and stops on `unknown_module` instead, which is why the
+    // expected message differs from the Q8_MIXED case above.
+    const std::string omnivoice_gen_invalid_output = root + "/quantize-omnivoice-q8gen-invalid.gguf";
+    std::remove(omnivoice_gen_invalid_output.c_str());
+    SYNTH_TEST_CHECK(
+        !synth::quantize::quantize_file(omnivoice_invalid_input, omnivoice_gen_invalid_output, "Q8_GEN", error));
+    SYNTH_TEST_CHECK(error.find("unknown omnivoice tensor: codec.unknown_module.conv.weight") != std::string::npos);
+    std::ifstream omnivoice_gen_absent(omnivoice_gen_invalid_output, std::ios::binary);
+    SYNTH_TEST_CHECK(!omnivoice_gen_absent.good());
     return 0;
 }

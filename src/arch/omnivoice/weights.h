@@ -11,21 +11,30 @@ struct gguf_context;
 namespace synth::omnivoice {
 
 // F32 is the source profile: the checkpoint stores both halves in it, and the
-// converter never produces anything else. Q8Mixed and F16 are Plan 4's
-// codec-only Quantization Profiles -- every generator tensor and the RVQ
-// stay at F32 regardless (src/arch/omnivoice/quantization.h's QuantRole), so
-// this enum governs the codec's own matrix weights only. Q8Mixed packs a
-// MatrixWeight conv kernel's [kernel, in, out] into a flattened
-// [kernel * in, out] row before quantizing; F16 does not -- the tool's
-// profile table gives it TensorLayout::Native (tools/synthesize-quantize/
-// policy.cpp:14-24), so an F16 MatrixWeight tensor keeps its native
-// three-axis shape, just halved, and never exercises the packed-shape branch
-// catalog.cpp's find() or reference-encoder.cpp's feat_conv check carry for
-// Q8Mixed.
+// converter never produces anything else. Every other profile quantizes
+// exactly one half of the package and holds the other at F32
+// (src/arch/omnivoice/quantization.h's ModelHalf says why).
+//
+// Q8Mixed and F16 are Plan 4's codec-half profiles: every generator tensor and
+// the RVQ stay F32, so they govern the codec's own matrix weights only.
+// Q8Mixed packs a MatrixWeight conv kernel's [kernel, in, out] into a
+// flattened [kernel * in, out] row before quantizing; F16 does not -- the
+// tool's profile table gives it TensorLayout::Native
+// (tools/synthesize-quantize/policy.cpp), so an F16 MatrixWeight tensor keeps
+// its native three-axis shape, just halved, and never exercises the
+// packed-shape branch catalog.cpp's find() or reference-encoder.cpp's
+// feat_conv check carry for Q8Mixed.
+//
+// Q8Gen is the generator-half profile: the 197 generator matrices and the two
+// `ggml_get_rows` tables become Q8_0 and the whole codec half stays F32,
+// byte-identical to the F32 package. Nothing is packed under it -- every
+// generator weight is two-dimensional, which the offline quantizer leaves
+// Native -- so the packed-shape branch is inert here too.
 enum class QuantizationProfile : uint32_t {
     F32,
     Q8Mixed,
     F16,
+    Q8Gen,
 };
 
 // The mask-predict generator: a Qwen3 block stack run bidirectionally over the

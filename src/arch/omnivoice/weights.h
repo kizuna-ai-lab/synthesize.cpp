@@ -30,11 +30,21 @@ namespace synth::omnivoice {
 // byte-identical to the F32 package. Nothing is packed under it -- every
 // generator weight is two-dimensional, which the offline quantizer leaves
 // Native -- so the packed-shape branch is inert here too.
+//
+// Q4KGen is the same half four bits deep, and it is the profile that makes
+// QuantRole::RowLookup do real work: the 197 matrices become Q4_K while the
+// two `ggml_get_rows` tables stay Q8_0, because CUDA's GET_ROWS accepts no
+// k-quant and a k-quant there silently drops those nodes to the CPU rather
+// than failing (quantization.h's RowLookup). Under Q8Gen the two roles land
+// on the same type and the distinction is invisible; under this one it is the
+// difference between a package that runs on the accelerator and one that does
+// not. Nothing is packed here either, for Q8Gen's reason.
 enum class QuantizationProfile : uint32_t {
     F32,
     Q8Mixed,
     F16,
     Q8Gen,
+    Q4KGen,
 };
 
 // The mask-predict generator: a Qwen3 block stack run bidirectionally over the

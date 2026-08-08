@@ -37,6 +37,24 @@ const Profile kProfiles[] = {
     // the whole codec half at Sensitive -- see resolve_omnivoice_target_spec.
     { "Q8_GEN",     GGML_TYPE_Q8_0, TensorLayout::PackedMatrix, GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_Q8_0,
      GGML_FTYPE_MOSTLY_Q8_0,                                                                                     1 },
+    // The same half as Q8_GEN, four bits deep -- and the first profile in this
+    // table where `row_lookup_type` differs from `matrix_weight_type` rather
+    // than agreeing with it by coincidence. Q4_K is a k-quant, and CUDA's
+    // GET_ROWS accepts none: its type list is F16/F32/BF16/I32/Q1_0/Q4_0/Q4_1/
+    // Q5_0/Q5_1/Q8_0 (ggml/src/ggml-cuda/ggml-cuda.cu:5190-5207), where its
+    // matrix multiply takes every k-quant. A k-quant on `llm.embed_tokens.
+    // weight` or `audio_embeddings.weight` therefore does not fail loudly --
+    // the scheduler silently places those nodes on the CPU. So the two lookup
+    // tables are pinned to Q8_0, at a measured cost of 81,856,512 bytes
+    // (78.06 MiB) against a package that k-quantized them too.
+    //
+    // Q4_K's super-block is 256 elements against Q8_0's 32, which this
+    // family's generator clears everywhere: all 199 of its two-dimensional
+    // weights have rows of 1024, 2048 or 3072. A row that did not would be
+    // refused by quantize.cpp's row-size check with the tensor named, not
+    // silently demoted.
+    { "Q4_K_GEN",   GGML_TYPE_Q4_K, TensorLayout::PackedMatrix, GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_Q8_0,
+     GGML_FTYPE_MOSTLY_Q4_K,                                                                                     1 },
 };
 
 bool iequals(const char * lhs, const char * rhs) {
@@ -497,8 +515,9 @@ namespace {
 // (src/arch/omnivoice/catalog.cpp's expected_type) -- the pairing is the same
 // one weights.cpp already maintains between these names and that enum.
 synth::omnivoice::ModelHalf omnivoice_quantized_half(const Profile & profile) {
-    return iequals(profile.name, "Q8_GEN") ? synth::omnivoice::ModelHalf::Generator :
-                                             synth::omnivoice::ModelHalf::Codec;
+    return iequals(profile.name, "Q8_GEN") || iequals(profile.name, "Q4_K_GEN") ?
+               synth::omnivoice::ModelHalf::Generator :
+               synth::omnivoice::ModelHalf::Codec;
 }
 
 }  // namespace

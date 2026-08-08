@@ -42,6 +42,13 @@ enum class QuantRole {
     // role its own type (Profile::row_lookup_type) instead of the matrix
     // weight type, and the tables are never packed: `ggml_get_rows` indexes
     // whole rows of the tensor's declared shape.
+    //
+    // Under Q8_GEN the row-lookup type and the matrix weight type are both
+    // Q8_0 and this role changes nothing. Under Q4_K_GEN they diverge --
+    // Q4_K for the matrices, Q8_0 for these two tables -- which is the case
+    // the role exists for and the one that measures the difference: the
+    // pin costs 81,856,512 bytes and is what keeps the whole generator on the
+    // accelerator.
     RowLookup,
     // A transposed convolution kernel. This runtime runs it as a column
     // matrix multiply into col2im_1d, and CUDA's F16 matrix multiply

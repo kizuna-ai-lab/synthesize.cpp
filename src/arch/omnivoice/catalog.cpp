@@ -154,11 +154,12 @@ class Resolver {
         // instead of axis by axis.
         //
         // Gated on Q8_MIXED specifically, and that is exhaustive rather than
-        // an oversight: F16 is Native by its profile row, and Q8_GEN packs
-        // nothing at all -- every tensor it quantizes lives in the generator
-        // half, all of which is two-dimensional and therefore demoted to
-        // Native by the offline quantizer. A Q8_GEN package reaches the
-        // per-axis check below with its declared shape intact.
+        // an oversight: F16 is Native by its profile row, and neither
+        // generator-half profile packs anything at all -- every tensor Q8_GEN
+        // and Q4_K_GEN quantize lives in the generator half, all of which is
+        // two-dimensional and therefore demoted to Native by the offline
+        // quantizer. Those packages reach the per-axis check below with their
+        // declared shapes intact.
         if (hparams_.quantization_profile == QuantizationProfile::Q8Mixed && ggml_is_quantized(tensor->type) &&
             expected.size() == 3) {
             const auto *  want   = expected.begin();
@@ -293,6 +294,27 @@ class Resolver {
                         return GGML_TYPE_F32;
                 }
                 return GGML_TYPE_F32;
+            case QuantizationProfile::Q4KGen:
+                // The same half again, and the profile the two arms above were
+                // written apart for: a matrix multiply takes Q4_K on CUDA and
+                // `ggml_get_rows` does not, so the lookup tables hold at Q8_0
+                // while everything else the generator multiplies by goes to
+                // four bits. A package that k-quantized the tables would still
+                // load -- this check would simply expect what it found -- and
+                // would then run its embedding lookups on the CPU, which is
+                // why the expectation is stated here rather than left to the
+                // offline tool alone.
+                switch (classify_tensor_for_half(name, ne, ModelHalf::Generator)) {
+                    case QuantRole::MatrixWeight:
+                        return GGML_TYPE_Q4_K;
+                    case QuantRole::RowLookup:
+                        return GGML_TYPE_Q8_0;
+                    case QuantRole::TransposeWeight:
+                    case QuantRole::Sensitive:
+                    case QuantRole::Unknown:
+                        return GGML_TYPE_F32;
+                }
+                return GGML_TYPE_F32;
         }
         return GGML_TYPE_F32;
     }
@@ -307,6 +329,8 @@ class Resolver {
                 return "F16";
             case QuantizationProfile::Q8Gen:
                 return "Q8_GEN";
+            case QuantizationProfile::Q4KGen:
+                return "Q4_K_GEN";
         }
         return "unknown";
     }

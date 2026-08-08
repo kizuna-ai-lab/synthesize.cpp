@@ -950,6 +950,149 @@ int check_q8_gen_rejections() {
     return 0;
 }
 
+// Widths for the Q4_K_GEN variant. Q4_K's super-block is 256 against Q8_0's
+// 32, so every width that lands on a quantized tensor's row has to be a
+// multiple of 256 rather than 32 -- the same three widths q8_gen_hparams()
+// names, raised. `head_dim` moves with them because `attention_head_count *
+// head_dim` is o_proj's row; the key/value width is still only ever a column.
+// The real checkpoint's rows are 1024, 2048 and 3072, all multiples of 256, so
+// this is the small package catching up with the real one rather than a
+// concession the real one also needs.
+synth::omnivoice::HParams q4_k_gen_hparams() {
+    synth::omnivoice::HParams h      = small_hparams();
+    h.quantization_profile           = synth::omnivoice::QuantizationProfile::Q4KGen;
+    h.generator.hidden_size          = 256;
+    h.generator.head_dim             = 64;
+    h.generator.attention_head_count = 4;
+    h.generator.key_value_head_count = 2;
+    h.generator.intermediate_size    = 256;
+    return h;
+}
+
+// The recast, and the one place in this file where two roles diverge: a
+// MatrixWeight goes to Q4_K, a RowLookup holds at Q8_0. Under Q8_GEN both are
+// Q8_0 and to_q8_gen can treat them as one case; here it cannot, because
+// CUDA's GET_ROWS accepts no k-quant.
+std::vector<std::pair<Entry, ggml_type>> to_q4_k_gen(const std::vector<Entry> & entries) {
+    std::vector<std::pair<Entry, ggml_type>> out;
+    out.reserve(entries.size());
+    for (const Entry & entry : entries) {
+        int64_t ne[GGML_MAX_DIMS] = { 1, 1, 1, 1 };
+        for (size_t axis = 0; axis < entry.ne.size() && axis < GGML_MAX_DIMS; ++axis) {
+            ne[axis] = entry.ne[axis];
+        }
+        ggml_type type = GGML_TYPE_F32;
+        switch (synth::omnivoice::classify_tensor_for_half(entry.name, ne, synth::omnivoice::ModelHalf::Generator)) {
+            case synth::omnivoice::QuantRole::MatrixWeight:
+                type = GGML_TYPE_Q4_K;
+                break;
+            case synth::omnivoice::QuantRole::RowLookup:
+                type = GGML_TYPE_Q8_0;
+                break;
+            default:
+                break;
+        }
+        out.emplace_back(entry, type);
+    }
+    return out;
+}
+
+int check_q4_k_gen_resolution() {
+    const synth::omnivoice::HParams                h           = q4_k_gen_hparams();
+    const std::vector<Entry>                       f32_entries = expected_entries(h);
+    const std::vector<std::pair<Entry, ggml_type>> entries     = to_q4_k_gen(f32_entries);
+
+    Context context = make_context();
+    populate_typed(context.get(), entries);
+
+    synth::omnivoice::ModelWeights weights;
+    SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_OK);
+
+    // The pin, at load time. These two are Q8_0 in a file whose every other
+    // quantized generator tensor is Q4_K.
+    SYNTH_TEST_CHECK(weights.generator.text_embedding->type == GGML_TYPE_Q8_0);
+    SYNTH_TEST_CHECK(weights.generator.text_embedding->ne[0] == int64_t(h.generator.hidden_size));
+    SYNTH_TEST_CHECK(weights.generator.text_embedding->ne[1] == int64_t(h.generator.text_vocab_size));
+    SYNTH_TEST_CHECK(weights.generator.audio_embeddings->type == GGML_TYPE_Q8_0);
+    SYNTH_TEST_CHECK(weights.generator.audio_embeddings->ne[0] == int64_t(h.generator.hidden_size));
+
+    // `audio_heads` shares the embedding tables' shape and is not one of them:
+    // a plain matrix multiply, so it takes the matrix type.
+    SYNTH_TEST_CHECK(weights.generator.audio_heads->type == GGML_TYPE_Q4_K);
+
+    // The seven projections per layer.
+    SYNTH_TEST_CHECK(weights.generator.layers[0].q_proj->type == GGML_TYPE_Q4_K);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].k_proj->type == GGML_TYPE_Q4_K);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].v_proj->type == GGML_TYPE_Q4_K);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].o_proj->type == GGML_TYPE_Q4_K);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].gate_proj->type == GGML_TYPE_Q4_K);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].up_proj->type == GGML_TYPE_Q4_K);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].down_proj->type == GGML_TYPE_Q4_K);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].q_proj->ne[0] == int64_t(h.generator.hidden_size));
+
+    // Norms exact, and the whole codec half untouched.
+    SYNTH_TEST_CHECK(weights.generator.norm->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.generator.layers[0].q_norm->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.acoustic_decoder.blocks[0].conv_t1.weight->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.semantic_model.layers[0].q_proj.weight->type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(weights.quantizers[0].codebook->type == GGML_TYPE_F32);
+    return 0;
+}
+
+int check_q4_k_gen_rejections() {
+    const synth::omnivoice::HParams h           = q4_k_gen_hparams();
+    const std::vector<Entry>        f32_entries = expected_entries(h);
+
+    // The rejection this profile exists to make, and the only one in this file
+    // that a wrong-but-plausible package would actually hit: a lookup table
+    // k-quantized along with everything else. Without the RowLookup arm in
+    // catalog.cpp's expected_type, the load succeeds and the accelerator
+    // quietly runs both embedding lookups on the CPU.
+    for (const char * table : { "llm.embed_tokens.weight", "audio_embeddings.weight" }) {
+        std::vector<std::pair<Entry, ggml_type>> entries = to_q4_k_gen(f32_entries);
+        for (auto & [entry, type] : entries) {
+            if (entry.name == table) {
+                type = GGML_TYPE_Q4_K;
+            }
+        }
+        Context                        context = make_context();
+        synth::omnivoice::ModelWeights weights;
+        populate_typed(context.get(), entries);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
+    }
+
+    // The mirror: a matrix left at the sibling profile's Q8_0. This is what a
+    // Q4_K_GEN package cut before the profile row existed would look like.
+    {
+        std::vector<std::pair<Entry, ggml_type>> entries = to_q4_k_gen(f32_entries);
+        for (auto & [entry, type] : entries) {
+            if (entry.name == "llm.layers.0.self_attn.q_proj.weight") {
+                type = GGML_TYPE_Q8_0;
+            }
+        }
+        Context                        context = make_context();
+        synth::omnivoice::ModelWeights weights;
+        populate_typed(context.get(), entries);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
+    }
+
+    // And a codec tensor this profile must not have touched.
+    {
+        std::vector<std::pair<Entry, ggml_type>> entries = to_q4_k_gen(f32_entries);
+        for (auto & [entry, type] : entries) {
+            if (entry.name == "codec.semantic_model.encoder.layers.0.attn.q_proj.weight") {
+                type = GGML_TYPE_Q8_0;
+            }
+        }
+        Context                        context = make_context();
+        synth::omnivoice::ModelWeights weights;
+        populate_typed(context.get(), entries);
+        SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -967,5 +1110,7 @@ int main() {
     SYNTH_TEST_CHECK(check_f16_rejections() == 0);
     SYNTH_TEST_CHECK(check_q8_gen_resolution() == 0);
     SYNTH_TEST_CHECK(check_q8_gen_rejections() == 0);
+    SYNTH_TEST_CHECK(check_q4_k_gen_resolution() == 0);
+    SYNTH_TEST_CHECK(check_q4_k_gen_rejections() == 0);
     return 0;
 }

@@ -257,7 +257,8 @@ int run_valid_package() {
 // profile string just resolving to a different enumerator. Q8_MIXED and F16
 // are Plan 4's codec-half profiles, measured even though neither ships -- see
 // docs/porting/families/omnivoice.md's "Quantization Profile Shape" -- and
-// Q8_GEN is the generator-half profile. The metadata reader accepts all
+// Q8_GEN and Q4_K_GEN are the generator-half profiles. The metadata reader
+// accepts all
 // three; which one a package should carry is not its question.
 int run_quantization_profile_acceptance() {
     struct Accepted {
@@ -269,6 +270,7 @@ int run_quantization_profile_acceptance() {
              Accepted{ "Q8_MIXED", synth::omnivoice::QuantizationProfile::Q8Mixed },
              Accepted{ "F16",      synth::omnivoice::QuantizationProfile::F16     },
              Accepted{ "Q8_GEN",   synth::omnivoice::QuantizationProfile::Q8Gen   },
+             Accepted{ "Q4_K_GEN", synth::omnivoice::QuantizationProfile::Q4KGen  },
     }) {
         GgufContext context = valid_metadata();
         SYNTH_TEST_CHECK(context != nullptr);
@@ -299,6 +301,12 @@ int run_identity_rejections() {
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "synthesize.quantization.profile", "BF16"); },
                         "BF16 is not a profile this family cuts") == 0);
+    // `Q4_K_M` is llama.cpp's Q4_K/Q6_K mixture. This family cuts `Q4_K_GEN`,
+    // which is neither that mixture nor a superset of it, and the near-miss
+    // spelling is exactly the kind a package author gets wrong.
+    SYNTH_TEST_CHECK(
+        expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "synthesize.quantization.profile", "Q4_K_M"); },
+                        "Q4_K_M is llama.cpp's mixture, not a profile this family cuts") == 0);
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.quantization.profile_version", 2); },
                         "an unknown quantization profile version") == 0);

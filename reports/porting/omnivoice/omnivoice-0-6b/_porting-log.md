@@ -3872,3 +3872,216 @@ CPU-backend measurement (where the graph machinery is a far smaller share of a
 much longer forward, so the win should be proportionally smaller still), and no
 concurrency measurement. The gap between the estimated and measured saving is
 recorded above as open, not resolved.
+
+## 2026-08-08 — Plan 5 throughput closeout: three changes, verified together and apart
+
+Final verification pass over the three Plan 5 throughput slices, run as an
+independent audit rather than a re-read of the implementers' reports. Every
+number below was re-measured in this session on `build/rel-dgx-spark` (Release
++ CUDA, `CMAKE_CUDA_ARCHITECTURES=121a-real`); nothing is quoted from an
+implementer's summary except the two per-item ratios, which are their own
+interleaved A/B measurements and are labelled as such.
+
+### The three changes, and what each one is
+
+| # | commit | what it is | changes output? |
+|---|---|---|---|
+| 1 | `70b62c8` | `choose_token` candidate scan parallelised across `threads`, RNG pre-drawn | no — bit-identical |
+| 2 | `582e0f7` | generator graph + scheduler reused across the 64 forwards | no — bit-identical |
+| 3 | `a472812` | 16-step commit-schedule fixtures | **no — test-only, ships nothing** |
+
+### Combined: 5.84 s → 4.82 s, 1.21x, RTF 0.203 → 0.168
+
+Two independent interleaved A/B runs against the frozen `727daff` binary
+(`sha256 e4d5929d…`), N=6 per arm each, one discarded warm-up per arm,
+contention-filtered, via the baseline slice's `measure.sh`. Case
+`omni-long-boundary`, 719 frames = 28.76 s of audio, seed 0, CUDA, threads 10.
+Timed quantity is `synthesis_seconds` from the runner JSON.
+
+| run | HEAD best / mean | frozen baseline best / mean | ratio best | ratio mean |
+|---|---|---|---|---|
+| 1 (19:16) | 4.7648 / 4.8090 | 5.7726 / 5.8239 | 0.8254 (−17.46%) | 0.8257 (−17.43%) |
+| 2 (19:21) | 4.8177 / 4.8301 | 5.8130 / 5.8625 | 0.8288 (−17.12%) | 0.8239 (−17.61%) |
+
+Pooled over all 24 measured runs: **HEAD 4.7648 best / 4.8195 mean, baseline
+5.7726 best / 5.8432 mean — ratio 0.8248 mean (−17.52%), speedup 1.2124x,
+−1.0237 s.** Zero contention discards across both runs (per-run other-cores
+0.98–1.35 against the 1.5 ceiling and this host's ~0.69 idle floor).
+
+**RTF against 28.76 s of audio: 0.2007 best / 0.2032 mean before → 0.1657 best
+/ 0.1676 mean after.**
+
+Drift control: the frozen binary read best 5.7726 s today against the 5.7606 s
+pinned when it was frozen, +0.21%. The pin reproduces; the ratio is the claim.
+
+### Stage breakdown at HEAD, and the harness cross-check
+
+Measured separately with the replay runner (`measure_steps.sh`, ARM_A=ARM_B=32
+so both arms are the shipped default — an N=8 breakdown plus a within-binary
+null control), same protocol, zero discards:
+
+| metric | best | mean | sd |
+|---|---|---|---|
+| wall | 4.7645 | 4.8059 | 0.022 |
+| generator | 4.2388 | 4.2680 | 0.016 |
+| codec | 0.2715 | 0.2801 | 0.007 |
+| host residual | 0.2463 | 0.2579 | 0.006 |
+
+The null control returned a mean wall ratio of **1.0002** — the harness reads
+zero on a zero difference. Grid digest `7b3481fb5e88…`, 1 distinct over 8 runs.
+
+Two independent runners agree on the same quantity to 0.01%: the replay
+runner's wall best 4.7645 s against the public runner's `synthesis_seconds`
+best 4.7648 s.
+
+Against the pre-Plan-5 breakdown recorded at `727daff` (wall 5.88 = generator
+4.39 + codec 0.28 + residual 1.22), the host-side residual has gone from
+**1.22 s to 0.26 s** and from 20.7% of the wall to 5.4%. Note the caveat the
+reuse slice already recorded: `generator_seconds` was **redefined** at
+`582e0f7` into a strict superset of its old meaning, so the generator and
+residual columns are not a like-for-like comparison across that boundary — the
+post-change residual is if anything understated. The wall and codec columns
+are directly comparable.
+
+### Per-item attribution, and whether it adds up
+
+Each item's ratio is its own interleaved A/B against its immediate parent, so
+the chain is `727daff → 70b62c8 → 582e0f7 → a472812`.
+
+| # | change | ratio | delta | vs noise floor | resolved? |
+|---|---|---|---|---|---|
+| 1 | candidate scan | 0.8346 | **−16.54%**, ≈0.97 s | ±0.5% (mean-of-4) | yes, ~33σ |
+| 2 | graph/sched reuse | 0.9771 | **−2.29%**, ≈0.11 s | ±0.5% (mean-of-4) | yes, ~4.6σ |
+| 3 | 16-step fixtures | 1.0000 | **0.00 s** | n/a | n/a — test-only |
+| | **product of 1–3** | **0.8155** | **−18.45%** | | |
+| | **combined, measured** | **0.8248** | **−17.52%** | ±0.5% (mean-of-6) | yes |
+
+**They add up, within the noise floor.** The product of the parts predicts
+−18.45%; the combined measures −17.52%. The gap is **+1.14 percentage points of
+ratio**, or +0.054 s on a 5.84 s baseline. Three chained ratio measurements at
+±0.5% each compound to ~0.87% at 1σ, so the gap is ~1.3σ — not resolved, and
+consistent with measurement noise rather than with a real interaction.
+
+Two things worth stating plainly about that gap. It runs in the **conservative**
+direction: the combined is slightly *worse* than the sum of the parts, so
+neither item is double-counting the other's saving — which was the specific
+failure mode to look for, since both #1 and #2 remove host-side per-step work.
+And it cannot be attributed further at this precision: 0.054 s is below what
+this host's drift and this protocol can resolve in a single comparison.
+
+Item 3's entry is not a rounding-down. `a472812` adds two fixtures and no
+runtime code; `num_step` still resolves to the package's embedded 32 (verified
+directly out of the GGUF this session:
+`synthesize.omnivoice.generation.num_step = 32`). The 44.6% that slice measured
+belongs to a step count that is **not** the default and that Plan 5 deliberately
+did not enable, and it re-draws 95.61% of committed token positions. It must
+never be added to this ledger's total.
+
+### Bit-identity at the shipped default — verified three ways
+
+1. All 24 measured runs plus 4 warm-ups in the two combined A/B runs reproduced
+   the pinned reference digest
+   `1cf89238360c07f4c8662b329f49c09c1964eb4a261a868fba83876428171523`.
+2. A standalone HEAD run `cmp`s **byte-identical** against the frozen
+   reference PCM kept beside the baseline binary.
+3. The exact-token CPU replay golden reports **17/17 token grids exact and 2/2
+   `ref.tokens` exact**, unchanged.
+
+The RNG is genuinely live on this path, so those digests are load-bearing
+rather than a greedy tautology: the package ships
+`position_temperature = 5.0` (`class_temperature = 0.0`), and three seeds give
+three distinct PCM digests (`1cf89238…`, `c825618c…`, `c9dbbd6b…`).
+
+### Determinism probed beyond the gates
+
+The gates cannot see thread-count sensitivity, so it was measured directly on
+the real model at HEAD. Seed 0, `omni-long-boundary`, CUDA, threads **1, 2, 3,
+10, 20** — all five produce the identical PCM digest `1cf89238…`, equal to the
+frozen pre-change reference. Threads 1 also confirms the mechanism: it runs the
+serial path and reads 5.7179 s, back at baseline speed.
+
+### Gates, all re-run in this session
+
+| gate | result |
+|---|---|
+| `build` — `synthesize-check-unit` | **91/91** |
+| `build-sanitize` — `synthesize-check-unit` (ASan+UBSan) | **90/90** |
+| `build/rel-dgx-spark` — whole omnivoice set (`-R omnivoice`) | **28/28** |
+| `synthesize-omnivoice-replay-golden` (CPU, exact) | pass — 17/17 grids, 2/2 `ref.tokens` |
+| `synthesize-omnivoice-replay-golden-cuda` (tolerance) | pass — 3/17 exact, 2/2 `ref.tokens`, all size invariants hold |
+
+### Adversarial read of the two bit-identical changes
+
+Both were read specifically hunting for a shared accumulator, an
+order-dependent tie-break, a scheduler reused across a shape change, a reused
+buffer not reset, and thread-count sensitivity. Nothing was found that
+warrants a code change. What was checked, and why each is closed:
+
+- **Shared accumulator in the parallel scan** — none. Each worker writes only
+  `candidates[index]`, a distinct 32-byte element with default member
+  initialisers (`argmax_gap = 0.0f`, so the `track_margin` path reads no
+  uninitialised value even when the sampled branch never writes it). Every
+  reduction is confined to one row inside `choose_token_sampled`. The only
+  cross-thread write is `scoring_status`, an atomic CAS on an unreachable
+  error path.
+- **RNG order** — the draw is hoisted out of the parallel region entirely and
+  the stride is `topk_keep(vocab)` + (pos_t > 0), fixed by the request, never
+  by the logits. `topk_keep` is now a single shared definition, so producer and
+  consumer cannot disagree about the count.
+- **`choose_token_sampled`'s stream overload** — retains a `thread_local`
+  scratch buffer, and has **no production caller left** (grep: only
+  `tests/omnivoice_sampler_test.cpp` and the scan test). The only production
+  call site is the pre-drawn overload at `model.cpp:956`.
+- **Scheduler reused across a shape change** — impossible within a call: the
+  input tensors are created once in `Persistent inputs` with fixed extents,
+  so no geometry in the loop can move. Across calls, the branches are stack
+  local. The `5 → 7 → 5` guard added with the change is the right shape of
+  test and asserts the third run equals the first.
+- **Destruction order** — verified in source: `Persistent inputs` is declared
+  at `model.cpp:720` and `cond_branch`/`uncond_branch` at ~788, so the
+  branches destruct first and the graphs never outlive the tensors they point
+  into. The comment claiming this is accurate.
+- **ggml reuse contract** — verified against the pinned submodule, not
+  assumed. `ggml_backend_sched_graph_compute_async` skips both reset and
+  allocation while `is_alloc` is set, and `is_alloc` is cleared only by
+  `ggml_backend_sched_reset`, which this code never calls. Split inputs are
+  re-copied on **every** compute (`ggml-backend.cpp:1554`), so updated leaf
+  data propagates.
+- **The `n_copies` hazard, ruled out** — a scheduler created with
+  `parallel = true` rotates `cur_copy` per compute while a non-re-split graph
+  keeps pointing at copy 0, which would silently read stale inputs under
+  exactly this reuse pattern. `BackendPlan::create_scheduler` passes
+  `parallel = false` (`backend-plan.cpp:126`, `:172`) and
+  `sched->n_copies = parallel ? GGML_SCHED_MAX_COPIES : 1`
+  (`ggml-backend.cpp:1751`), so `cur_copy` is pinned at 0. **This is a
+  constraint the reuse now depends on and that nothing in this repository
+  pins.** If `create_scheduler` ever gains `parallel = true`, graph reuse
+  breaks silently. Worth a comment at the `create_scheduler` call site; not a
+  defect today.
+
+Two observations that are not defects but that the individual slices did not
+record:
+
+- **The class-draw stride is never exercised end to end.** The package ships
+  `class_temperature = 0.0`, so `draws_per_slot` is 1 on every real-model path
+  and the `topk_keep(1025) = 103`-wide slice arithmetic — the part most likely
+  to be got wrong — is covered *only* by
+  `tests/omnivoice_candidate_scan_test.cpp`. That test is the guard, and it is
+  the only guard. It should not be weakened or deleted on the grounds that the
+  golden suite covers the sampler.
+- **The peak-memory gate was measured very near the family's maximum, which
+  strengthens its conclusion.** The +48.40 MiB was measured at 719 frames;
+  the package cap is `max_output_frames / hop_length = 720000 / 960 = 750`
+  frames, so `omni-long-boundary` is 95.9% of the largest canvas this family
+  will accept. The reuse design therefore cannot cost meaningfully more than
+  the measured 108.66 MiB both-live peak on any admissible request — the
+  ship decision was, unintentionally, taken at close to the worst case.
+
+### What this closeout does and does not establish
+
+One case, one host, one canvas geometry, CUDA only. The 1.21x is
+`omni-long-boundary`'s; item 1's saving is an absolute ~0.97 s of host work, so
+it is a *smaller* fraction of a shorter case, and the combined speedup on the
+short cases will be correspondingly lower. No CPU-backend re-measurement, no
+concurrency measurement, and no listening pass — none of these three changes
+alters a sample, so there is nothing new to listen to.

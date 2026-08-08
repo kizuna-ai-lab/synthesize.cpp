@@ -695,8 +695,10 @@ def carry_licenses(weights_dir: Path, output: Path, project_root: Path,
             "bytes": destination.stat().st_size,
             "statement": (
                 "BOSON HIGGS AUDIO 2 COMMUNITY LICENSE AGREEMENT -- redistribution must "
-                "carry the agreement text, commercial use is capped at 100k monthly active "
-                "users, and outputs may not be used to train other models"
+                "carry the agreement text; above 100k annual active users in the preceding "
+                "calendar year authorisation is withdrawn until Boson grants an expanded "
+                "license at its sole discretion; and outputs may not be used to improve "
+                "any other large language model"
             ),
         },
         {

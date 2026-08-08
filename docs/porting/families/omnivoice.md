@@ -65,8 +65,12 @@ inventing one.
 **Codec weights: Boson Higgs Audio 2 Community License.** The weights
 repository bundles `audio_tokenizer/LICENSE`, a Meta-Llama-3-derived agreement
 that permits redistribution with the agreement text, attribution and naming
-obligations, caps commercial use at 100k monthly active users, and forbids
-using the outputs to train other models. The July 2026 deferral note recorded
+obligations, and -- above 100k **annual** active users in the preceding
+calendar year -- withdraws authorisation until Boson grants an expanded
+license at its sole discretion. It also forbids using the outputs to improve
+any other large language model, Boson's own excluded. (Corrected 2026-08-08:
+this read "caps commercial use at 100k monthly active users" and "train other
+models"; both were wrong, the first in the reader's favour.) The July 2026 deferral note recorded
 only CC-BY-NC; this third license is a finding of the 2026-07-30 audit, and it
 is what makes the codec text a declared Sidecar Resource rather than a
 footnote.

@@ -37,7 +37,10 @@ Verified against the upstream Hugging Face card on 2026-07-30 (no change since
 - **Codec weights: Boson Higgs Audio 2 Community License** — the weights repo
   bundles `audio_tokenizer/LICENSE`, a Meta-Llama-3-derived agreement
   (redistribution permitted with the agreement text, attribution, and naming
-  obligations; 100k-MAU commercial cap; no-training-other-models clause). The
+  obligations; authorisation withdrawn above 100k *annual* active users; no
+  clause against improving other large language models). [Corrected
+  2026-08-08: written here as a "100k-MAU commercial cap", which is the wrong
+  period and the wrong kind of term.] The
   July intake note recorded only CC-BY-NC; this third license is a new finding.
 - **Code: Apache-2.0** (GitHub `k2-fsa/OmniVoice`).
 - The card also carries a use disclaimer against unauthorized voice cloning and

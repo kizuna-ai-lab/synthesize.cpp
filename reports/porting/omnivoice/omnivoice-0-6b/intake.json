@@ -470,8 +470,8 @@
       "obligations": [
         "redistribution must carry the agreement text",
         "attribution and naming obligations",
-        "commercial use capped at 100k monthly active users",
-        "outputs may not be used to train other models",
+        "above 100k annual active users in the preceding calendar year, authorisation is withdrawn until Boson grants an expanded license at its sole discretion (corrected 2026-08-08 from 'commercial use capped at 100k monthly active users')",
+        "outputs may not be used to improve any other large language model, excluding Boson Higgs Audio 2 and its derivatives",
         "the Meta Llama 3 Community License Agreement's terms are incorporated by reference"
       ],
       "sub_card_says_nothing": "audio_tokenizer/README.md is an unedited Hugging Face auto-generated template whose License field reads '[More Information Needed]'. The bundled LICENSE file is therefore the sole grant for the codec weights, which is exactly why it must be shipped as a declared Sidecar Resource rather than summarised",

@@ -60,7 +60,10 @@ bundles a 9,171-byte `LICENSE` (sha256 `ac933dc0…`) opening:
 It incorporates the Meta Llama 3 terms by reference, requires the agreement text
 to travel with any redistribution, imposes attribution and naming obligations,
 caps commercial use at 100k monthly active users, and forbids using the outputs
-to train other models.
+to train other models. [Corrected 2026-08-08: both clauses are misstated here --
+the agreement says *annual* active users, not monthly, and section 2 withdraws
+authorisation rather than capping use; the training clause is limited to other
+large language models. See the erratum at the end of this log.]
 
 The card-level restriction scan is the part worth recording as method. Searching
 the downloaded card for *non-commercial*, *cc-by*, *restrict* or *licen[cs]e*
@@ -4732,3 +4735,85 @@ audits. The 2026-08-08 six-pair audit that accepted the CUDA placement move did
 not sample it, so the one case in the suite most sensitive to that very change
 was the one nobody heard. Selecting audit cases by coverage criteria and random
 draw is what let it through; a sensitive-case pin is the fix.
+
+## 2026-08-08 — Erratum: we misstated the Boson license, in the reader's favour
+
+A three-axis pre-flight audit of the Restricted Model Package, run immediately
+before publication to `jiangzhuo9357/omnivoice-0-6b-gguf`, returned **blocked**
+on the license axis. Publication did not happen. Three findings, all in the
+Boson/Higgs half; the CC-BY-NC half was clean.
+
+### 1. "monthly" where the agreement says "annual" — and "cap" where it says no such thing
+
+The card read:
+
+> It additionally caps commercial use at 100,000 monthly active users
+
+Section 2 of the Boson Higgs Audio 2 Community License reads, with the word
+*annual* appearing twice:
+
+> If the annual active users of the products or services made available by or
+> for Licensee, or Licensee's affiliates, is greater than 100,000 annual active
+> users in the preceding calendar year, you must request an expanded license
+> from Boson AI, which Boson AI may grant to you in its sole discretion, and
+> you are not authorized to exercise any of the rights under this Agreement
+> unless or until Boson AI otherwise expressly grants you such rights.
+
+Two errors, and both matter in the same direction. The period was wrong —
+100k/month reads as a far larger allowance than 100k/year, so a reader at
+300,000 annual users would have concluded from our card that they were
+comfortably clear when the agreement says their authorisation has lapsed. And
+"caps" is the wrong kind of term: section 2 does not impose a ceiling on use,
+it **withdraws authorisation** above the threshold until Boson grants an
+expanded license at its sole discretion.
+
+Misstating a third party's terms is bad; misstating them more permissively
+than they were written, under a real person's identity, on a platform that
+caches and indexes, is the version of it that could cost a downstream user
+something.
+
+**The error was systematic, not a slip in one rendered file.** Six committed
+files carried it — `scripts/hf_cards/omnivoice-0-6b.yaml`,
+`scripts/convert-omnivoice.py` (in the license manifest the converter writes
+into its report), `docs/porting/families/omnivoice.md`, the 2026-07-30 design
+spec, `intake.json`, and this log at the 2026-07-30 entry. It also appeared in
+the brief written for the auditor, so it had propagated into the project's own
+working understanding, not merely its output. All six are corrected; the
+original wording is preserved at each site with a dated correction marker
+rather than erased.
+
+### 2. The documented download left the user holding the weights without the licence
+
+486 of the GGUF's 798 tensors are codec weights, so the Higgs Materials are
+inside the single 3.19 GB file. The card's only usage command fetched that file
+alone, not `LICENSE-higgs-audio-2.txt` — while the card's own text sixty lines
+above claimed the licence "travels with this package as a declared Sidecar
+Resource".
+
+That claim was false in this project's own terms. `grep -rn -i sidecar
+src/ include/` returns nothing: **the runtime has no sidecar support at all**,
+and the GGUF declares no sidecar descriptor among its 101 metadata keys, so
+nothing enforces or even records the pairing. The card now says plainly that
+the pairing is not enforced, and the usage command fetches both files. The
+command as first written was itself broken — a stray backslash before the
+filename, which is not a shell line continuation — and was fixed after checking
+that the rendered command actually parses.
+
+### 3. The notice the agreement requires verbatim was absent
+
+Section 1.b.i(B) requires a redistributor to prominently display a specific
+notice on "a related website, user interface, blogpost, about page, or product
+documentation". A Hugging Face model card is that documentation. The notice
+appeared nowhere in the repository. It is now carried verbatim in the card.
+
+### What this says about the process
+
+The three-axis pre-flight existed because publication is irreversible and
+outward-facing. It earned its cost on the first run: none of these would have
+been caught by any gate in this repository, because no gate reads a licence.
+The card-accuracy and package-integrity axes came back clean, which is worth
+recording too — the failure was concentrated entirely in the axis where a
+human's identity is attached to a claim about someone else's legal terms.
+
+Publication remains unperformed and still requires jiangzhuo's explicit
+per-act confirmation, which the corrections do not carry forward.

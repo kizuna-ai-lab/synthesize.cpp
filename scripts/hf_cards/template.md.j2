@@ -158,7 +158,7 @@ cd synthesize.cpp
 cmake -S . -B build -DSYNTH_BUILD_CLI=ON
 cmake --build build -j
 
-hf download {{ target_repo }} {{ model_slug }}-{{ usage.profile }}.gguf \
+hf download {{ target_repo }} {{ model_slug }}-{{ usage.profile }}.gguf{% for sidecar in sidecars | default([]) %} {{ sidecar.filename }}{% endfor %} \
   --local-dir models/{{ model_slug }}
 
 build/bin/synthesize-cli \

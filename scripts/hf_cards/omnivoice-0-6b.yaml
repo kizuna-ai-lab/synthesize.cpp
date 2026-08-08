@@ -45,9 +45,13 @@ license_note: |
 
   **The codec (Higgs Audio V2) weights carry a second, separate license: the
   Boson Higgs Audio 2 Community License.** The weights repository bundles it
-  as `audio_tokenizer/LICENSE`, and it travels with this package as a
-  declared Sidecar Resource (`LICENSE-higgs-audio-2.txt`, below) rather than
-  a footnote, per that agreement's own redistribution terms. It is itself
+  as `audio_tokenizer/LICENSE`, and this package republishes it beside the
+  weights as `LICENSE-higgs-audio-2.txt` (listed below), per that
+  agreement's own redistribution terms. **You must download it together with
+  the GGUF** -- the usage command below does; the runtime does not enforce
+  the pairing, and nothing in the GGUF's metadata declares the file, so a
+  download of the weights alone leaves you holding the Higgs Materials with
+  none of the agreement that governs them. It is itself
   derived from the Meta Llama 3 Community License and requires dual
   attribution in any redistribution, which this card carries forward
   verbatim from the sidecar text:
@@ -57,9 +61,36 @@ license_note: |
   > "Boson Higgs Audio 2 is licensed under the Boson Community License,
   > Copyright © Boson AI USA, Inc. All Rights Reserved."
 
-  It additionally caps commercial use at 100,000 monthly active users and
-  forbids using its outputs to train other models -- terms independent of,
-  and in addition to, the generator's own CC-BY-NC restriction above.
+  That agreement also requires a redistributor to display the following
+  notice, which it specifies verbatim and which this card carries for that
+  purpose:
+
+  > "Built with Higgs Materials licensed from Boson AI USA, Inc., Copyright
+  > Boson AI USA, Inc., All Rights Reserved and Meta Llama 3 licensed under
+  > the Meta Llama 3 Community License, Copyright Meta Platforms, Inc., All
+  > Right Reserved"
+
+  Two further obligations, stated in the agreement's own terms rather than
+  paraphrased. Corrected 2026-08-08: this card previously said "caps
+  commercial use at 100,000 monthly active users", which was wrong twice
+  over and wrong in the reader's favour -- the agreement says *annual*, and
+  it does not cap anything.
+
+  Above **100,000 annual active users in the preceding calendar year**,
+  section 2 does not impose a ceiling: it withdraws authorisation. You
+  "must request an expanded license from Boson AI, which Boson AI may grant
+  to you in its sole discretion, and you are not authorized to exercise any
+  of the rights under this Agreement unless or until Boson AI otherwise
+  expressly grants you such rights."
+
+  Section 1.b.i(v) forbids using the Higgs Materials "or any output or
+  results of the Higgs Materials to improve any other large language model
+  (excluding Boson Higgs Audio 2 or derivative works thereof)". Note the
+  scope: other *large language models*, with Boson's own carved out -- not,
+  as this card previously said, all models.
+
+  Both are independent of, and in addition to, the generator's own CC-BY-NC
+  restriction above.
 
   **Apache-2.0 covers only the upstream GitHub source code**
   (`k2-fsa/OmniVoice`) and nothing produced by this project: no weight file,

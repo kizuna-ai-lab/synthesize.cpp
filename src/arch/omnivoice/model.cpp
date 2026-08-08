@@ -77,6 +77,7 @@
 #include "random-stream.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
@@ -681,20 +682,36 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     // stream at all and therefore draws nothing: the family's recorded
     // zero-RNG property.
     //
-    // Draw-order contract: per step, still-masked candidates are visited in
-    // the scan order the nested loop below builds them in (codebook-major,
-    // frame-minor). For each candidate: the class draws happen FIRST, inside
-    // choose_token_sampled (only when class_t > 0) -- as many uniforms as
-    // survive its top-k filter, in ascending class-id order -- then, iff
-    // pos_t > 0, exactly ONE further draw perturbs that same candidate's
-    // score. A step whose budget is zero skips this whole per-candidate loop,
+    // Draw-order contract: per step, still-masked candidates are enumerated in
+    // codebook-major, frame-minor scan order, and every uniform that step will
+    // consume is drawn UP FRONT in that order, by the serial pre-pass below --
+    // then handed to each candidate by index. Per candidate the order within
+    // its own slice is unchanged: the class draws come FIRST (only when
+    // class_t > 0 -- exactly topk_keep(vocab) of them, consumed in ascending
+    // class-id order by choose_token_sampled), then, iff pos_t > 0, exactly
+    // ONE further draw perturbs that same candidate's score. The resulting
+    // sequence of next_uniform() calls is identical, value for value, to the
+    // one an inline per-candidate draw produced -- which is what makes the
+    // scoring safe to spread across threads and the output bit-identical
+    // either way. It is identical only because the count per candidate is
+    // fixed (topk_keep does not depend on the logits, and the survivor loop
+    // has no early exit): a data-dependent draw count would break the
+    // correspondence, so anything that made one must move the draws back
+    // inside and give up the parallel scan.
+    //
+    // A step whose budget is zero skips this whole per-candidate phase,
     // INCLUDING every draw it would have made: upstream's `k <= 0: continue`
     // consumes no randomness for that step either, and the `continue` below
-    // already sits above every draw site.
+    // already sits above the pre-pass.
     std::unique_ptr<NormalRandomStream> stream;
     if (pos_t > 0.0f || class_t > 0.0f) {
         stream = std::make_unique<NormalRandomStream>(request.seed);
     }
+    // How many uniforms one candidate consumes, and where inside its slice the
+    // position draw sits. Both are constants of the request, not of the data.
+    const uint32_t     class_draws    = class_t > 0.0f ? topk_keep(vocab) : 0u;
+    const size_t       draws_per_slot = size_t(class_draws) + (pos_t > 0.0f ? 1u : 0u);
+    std::vector<float> uniforms;
 
     for (uint32_t step = 0; step < num_step; ++step) {
         if (step > 0) {
@@ -742,49 +759,86 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
             // reason to run them, not necessity.
             continue;
         }
+        // --- Phase A (serial): enumerate this step's still-masked positions,
+        // and draw everything the step will consume from the stream.
+        //
+        // The enumeration is the same codebook-major, frame-minor walk it has
+        // always been, and it is what fixes both the RNG order and the
+        // candidate order; only the SCORING of each enumerated position moves
+        // off this thread. `candidates` keeps its capacity across steps, so
+        // after step 0 this allocates nothing.
         candidates.clear();
         for (uint32_t codebook = 0; codebook < codebooks; ++codebook) {
             for (uint64_t frame = 0; frame < frames; ++frame) {
                 if (canvas[size_t(codebook) * frames + frame] != int32_t(hparams.audio.mask_id)) {
                     continue;  // committed in an earlier step; cannot be revisited
                 }
-                const size_t    cond_offset   = size_t(total - frames + frame) * row + size_t(codebook) * vocab;
-                const size_t    uncond_offset = size_t(frame) * row + size_t(codebook) * vocab;
                 MaskedCandidate candidate;
                 candidate.codebook = codebook;
                 candidate.frame    = frame;
-                float log_prob     = 0.0f;
+                candidates.push_back(candidate);
+            }
+        }
+        if (draws_per_slot != 0) {
+            // Candidate i owns [i * draws_per_slot, (i + 1) * draws_per_slot):
+            // its class draws first, then its position draw. Filling the whole
+            // block in one sequential pass IS the old inline draw order (see
+            // the contract above the stream's construction).
+            uniforms.resize(candidates.size() * draws_per_slot);
+            stream->fill_uniform(uniforms.data(), uniforms.size());
+        }
+
+        // --- Phase B (parallel): score each enumerated position. Every
+        // iteration reads immutable state (two read-only logit buffers, the
+        // hparams, its own pre-drawn uniforms) and writes only its own
+        // candidate, so the split cannot reach the result: scoring is a pure
+        // function of one position's two logit rows, every reduction inside it
+        // is confined to a single 1025-entry row, and no tie-break consults
+        // another candidate. Same inputs, same bits, whichever thread runs it.
+        std::atomic<int> scoring_status{ int(SYNTH_OK) };
+        parallel_for(candidates.size(), threads, [&](size_t begin, size_t end) {
+            for (size_t index = begin; index < end; ++index) {
+                MaskedCandidate & candidate = candidates[index];
+                const size_t      cond_offset =
+                    size_t(total - frames + candidate.frame) * row + size_t(candidate.codebook) * vocab;
+                const size_t  uncond_offset = size_t(candidate.frame) * row + size_t(candidate.codebook) * vocab;
+                const float * uncond_row    = guidance != 0.0f ? uncond_logits.data() + uncond_offset : nullptr;
+                float         log_prob      = 0.0f;
                 if (class_t > 0.0f) {
-                    // The class draws for this candidate: as many uniforms as
-                    // survive choose_token_sampled's own top-k filter,
-                    // consumed BEFORE this candidate's position draw below
-                    // (the draw-order contract documented where `stream` is
-                    // constructed).
-                    status = choose_token_sampled(cond_logits.data() + cond_offset,
-                                                  guidance != 0.0f ? uncond_logits.data() + uncond_offset : nullptr,
-                                                  vocab, hparams.audio.mask_id, guidance, class_t, *stream,
-                                                  candidate.token, log_prob);
-                    if (status != SYNTH_OK) {
-                        return status;
+                    const synth_status_t chosen = choose_token_sampled(
+                        cond_logits.data() + cond_offset, uncond_row, vocab, hparams.audio.mask_id, guidance, class_t,
+                        uniforms.data() + index * draws_per_slot, candidate.token, log_prob);
+                    if (chosen != SYNTH_OK) {
+                        // Unreachable today -- this overload has no failing
+                        // path -- so the point is only that a future one would
+                        // surface rather than be swallowed by a worker thread.
+                        // First writer wins; the rest of the scan still runs
+                        // and is then discarded whole by the check below.
+                        int unset = int(SYNTH_OK);
+                        scoring_status.compare_exchange_strong(unset, int(chosen));
                     }
                 } else {
-                    choose_token(cond_logits.data() + cond_offset,
-                                 guidance != 0.0f ? uncond_logits.data() + uncond_offset : nullptr, vocab,
-                                 hparams.audio.mask_id, guidance, candidate.token, log_prob,
-                                 track_margin ? &candidate.argmax_gap : nullptr);
+                    choose_token(cond_logits.data() + cond_offset, uncond_row, vocab, hparams.audio.mask_id, guidance,
+                                 candidate.token, log_prob, track_margin ? &candidate.argmax_gap : nullptr);
                 }
                 // The layer penalty biases commitment toward the coarse
                 // codebooks first. (audio_codebook_weights is training-loss
                 // weighting and plays NO part here -- see the family doc.)
-                candidate.score = log_prob - float(codebook) * hparams.generation.layer_penalty_factor;
+                candidate.score = log_prob - float(candidate.codebook) * hparams.generation.layer_penalty_factor;
                 if (pos_t > 0.0f) {
-                    // This candidate's own position draw, consumed AFTER any
-                    // class draws above.
-                    candidate.score = gumbel_perturb(candidate.score, pos_t, stream->next_uniform());
+                    // This candidate's own position draw, the last slot of its
+                    // own slice -- after its class draws, exactly where the
+                    // inline `stream->next_uniform()` used to sit.
+                    candidate.score =
+                        gumbel_perturb(candidate.score, pos_t, uniforms[index * draws_per_slot + class_draws]);
                 }
-                candidates.push_back(candidate);
             }
+        });
+        if (scoring_status.load() != int(SYNTH_OK)) {
+            return synth_status_t(scoring_status.load());
         }
+
+        // --- Phase C (serial): selection and commit, unchanged.
         const size_t committed = select_commits(candidates, budget);
         if (track_margin) {
             if (committed < candidates.size()) {

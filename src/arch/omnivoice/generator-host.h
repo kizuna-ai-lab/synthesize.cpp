@@ -2,6 +2,7 @@
 
 #include "synthesize.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -106,6 +107,21 @@ void choose_token(const float * cond,
 // transcription.
 float gumbel_perturb(float logit, float temperature, float uniform);
 
+// How many classes upstream's `_filter_top_k` keeps for a vocabulary of
+// `vocab_size` -- and therefore EXACTLY how many uniforms `choose_token_sampled`
+// consumes for one position when `class_temperature > 0`, since its draw loop
+// runs once per survivor with no early exit. Integer ceiling division by 10
+// rather than `0.1 * vocab_size`, so the answer is exact for every vocab_size
+// instead of depending on how 0.1's binary rounding falls near a .5 boundary.
+//
+// Exposed (rather than left inline in the sampler) so a caller that pre-draws a
+// whole batch of positions' randomness up front can size that buffer from the
+// same formula the consumer uses, instead of restating it and risking a stride
+// that silently disagrees with the number of draws actually made.
+inline uint32_t topk_keep(uint32_t vocab_size) {
+    return std::min((vocab_size + 9) / 10, vocab_size);
+}
+
 // The class-branch companion to `choose_token`, transcribing upstream's
 // `if class_temperature > 0.0: ... _gumbel_sample(filtered, class_temperature
 // ).argmax(-1)` split (omnivoice.py:1443-1448). `class_temperature == 0.0`
@@ -137,6 +153,31 @@ float gumbel_perturb(float logit, float temperature, float uniform);
 // Preconditions identical to `choose_token`, including the
 // `guidance_scale != 0.0f && uncond == nullptr` assert (carryover item 1,
 // now enforced for both paths through the shared `build_guided`).
+//
+// Two overloads, and the pre-drawn one is the primitive: the stream overload
+// draws `topk_keep(vocab_size)` uniforms into a buffer and delegates, so the
+// two cannot describe different draw counts or a different consumption order.
+// A caller that scores many positions CONCURRENTLY must use the pre-drawn
+// overload -- a shared stream is a sequential accumulator, and consuming it
+// from several threads makes which uniform a position receives depend on
+// thread scheduling. Drawing the whole batch serially up front and handing
+// each position its own slice reproduces the single-threaded stream exactly,
+// which is only possible because the count per position is fixed by
+// `topk_keep` and does not depend on the logits.
+//
+// `uniforms` must point at `topk_keep(vocab_size)` values when
+// `class_temperature > 0`, and is ignored (may be null) when it is 0.0 -- the
+// short-circuit branch draws nothing.
+synth_status_t choose_token_sampled(const float * cond,
+                                    const float * uncond,
+                                    uint32_t      vocab_size,
+                                    uint32_t      mask_id,
+                                    float         guidance_scale,
+                                    float         class_temperature,
+                                    const float * uniforms,
+                                    int32_t &     token,
+                                    float &       log_prob);
+
 synth_status_t choose_token_sampled(const float *        cond,
                                     const float *        uncond,
                                     uint32_t             vocab_size,

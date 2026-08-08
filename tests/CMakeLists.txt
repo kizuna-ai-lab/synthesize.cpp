@@ -176,6 +176,7 @@ synth_add_unit_test(synthesize-omnivoice-frontend-test omnivoice_frontend_test.c
 synth_add_unit_test(synthesize-omnivoice-generator-test omnivoice_generator_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-generator-host-test omnivoice_generator_host_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-sampler-test omnivoice_sampler_test.cpp)
+synth_add_unit_test(synthesize-omnivoice-candidate-scan-test omnivoice_candidate_scan_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-codec-test omnivoice_codec_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-resampler-test omnivoice_resampler_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-reference-encoder-test omnivoice_reference_encoder_test.cpp)

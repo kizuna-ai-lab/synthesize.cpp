@@ -256,31 +256,56 @@ construction site (`src/arch/omnivoice/model.cpp`, immediately above the step
 loop), and restated here so it lives in the family record too:
 
 - **Candidates are visited in codebook-major, frame-minor scan order** — the
-  nested loop that builds them (`for codebook in 0..codebooks: for frame in
-  0..frames`) is the same order the draws happen in; there is no separate
+  nested loop that enumerates them (`for codebook in 0..codebooks: for frame
+  in 0..frames`) is the same order the draws happen in; there is no separate
   ordering step.
-- **For each candidate, the class draws happen first.** Inside
+- **All of a step's draws are taken up front, serially, in that order, and
+  consumed by index.** Before any position is scored, the loop draws
+  `candidates × stride` uniforms in one sequential pass, where `stride =
+  (class_temperature > 0 ? topk_keep(vocab_size) : 0) + (position_temperature
+  > 0 ? 1 : 0)`; candidate *i* then reads its own slice `[i × stride,
+  (i+1) × stride)`. The resulting sequence of `next_uniform()` calls is
+  identical, value for value, to drawing inline per candidate — which is the
+  point: it makes the SCORING of a step's candidates safe to spread across
+  threads while leaving the output bit-identical. The correspondence holds
+  only because the count per candidate is fixed in advance (`topk_keep` reads
+  the vocabulary size, never the logits, and the survivor loop has no early
+  exit). **A change that made the draw count data-dependent would break it,
+  and would have to move the draws back inside and give up the parallel
+  scan.** Note what this does *not* alter: no draw's value, position in the
+  sequence, or owning candidate changes.
+- **For each candidate, the class draws come first.** Inside
   `choose_token_sampled` (only reached when `class_temperature > 0`), as many
-  uniforms are drawn as survive its own top-k filter (`ceil(0.1 ×
-  vocab_size)`), one per surviving class in **ascending class-id order** —
-  never in score order, since the survivors are re-sorted by id after the
-  top-k selection specifically so the draw order does not depend on the
+  uniforms are consumed as survive its own top-k filter (`topk_keep(vocab_size)
+  = ceil(0.1 × vocab_size)`), one per surviving class in **ascending class-id
+  order** — never in score order, since the survivors are re-sorted by id after
+  the top-k selection specifically so the draw order does not depend on the
   scores themselves.
 - **Then, iff `position_temperature > 0`, exactly one further draw** perturbs
   that same candidate's already-computed score (`gumbel_perturb`, below) —
-  the position draw, consumed after any class draws for that candidate, never
-  before.
+  the position draw, the last slot of that candidate's slice, consumed after
+  any class draws for that candidate, never before.
 - **A step whose budget is zero draws nothing at all.** The `if (budget == 0)
-  { continue; }` guard sits above every draw site in the per-candidate loop,
-  so a zero-budget step does not construct a candidate, run `choose_token` or
-  `choose_token_sampled`, or consume a single uniform — matching upstream's
-  own `if k <= 0: continue`, which likewise consumes no randomness for that
-  step.
+  { continue; }` guard sits above the pre-pass and therefore above every draw
+  site, so a zero-budget step does not enumerate a candidate, run
+  `choose_token` or `choose_token_sampled`, or consume a single uniform —
+  matching upstream's own `if k <= 0: continue`, which likewise consumes no
+  randomness for that step.
 - **One stream serves the whole synthesis**, constructed once before the step
   loop, and only if either resolved temperature is positive. A fully greedy
   synthesis (both temperatures exactly 0) constructs no stream and therefore
   draws nothing — the zero-RNG property the Reference Contract above already
   states, preserved by construction rather than by a separate check.
+
+**What guards this contract, since the exact-token gate cannot.** Every one of
+the manifest's golden cases runs `position_temperature: 0.0` and
+`class_temperature: 0.0`, so the whole draw-order contract is *unreachable*
+from the exact-token gate — a wrong stride or a draw taken inside the parallel
+region would pass all 17 grids. `tests/omnivoice_candidate_scan_test.cpp`
+(unit) is the actual guard: it replays one step's scan both ways — serially
+with inline draws, then pre-drawn and spread over 1–20 workers — on all four
+temperature combinations, and compares tokens exactly and scores *bitwise*.
+Both failure modes above were confirmed to fail it before it was committed.
 
 **The Gumbel perturbation, float32 throughout.** `gumbel_perturb(logit,
 temperature, uniform)` transcribes upstream's `_gumbel_sample`
@@ -1270,6 +1295,19 @@ question are in
 `reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s 2026-08-08
 erratum; the corrected per-family cost table row and the exception's own
 writeup are in `docs/backends.md`.
+
+**Superseded in part, 2026-08-08: the host-side candidate scan is now
+parallel.** With the generator on CUDA, the per-step scoring loop was the
+largest remaining CPU cost — ~1.06 s of the ~5.9 s wall on this case, ~87% of
+the host-side residual. Spreading it over the request's own thread count (10
+here) is worth a measured **1.20x on `synthesis_seconds`** — two independent
+interleaved A/B runs against a frozen pre-change binary, N=4 per arm each,
+`build/rel-dgx-spark`: −15.78%/−16.15% and −17.66%/−16.92% (best/mean), i.e.
+~0.91 s, against a ±0.7% noise floor. The absolute figures in the table above
+are deliberately **not** restated from that: a ratio against a frozen binary
+is not an absolute RTF, this host drifted 7–8% between two measurements of the
+same commit, and two further host-side optimizations are queued behind this
+one. The table is re-measured once, at the end, not once per change.
 
 ### The codec moves, the generator does not (Plan 4, historical)
 

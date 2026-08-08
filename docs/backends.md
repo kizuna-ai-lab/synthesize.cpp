@@ -194,6 +194,40 @@ argument any better than Kokoro's duration predictor did. What is different
 is that OmniVoice's content drift is not a structural failure: it is a
 different, still-valid answer within a canvas whose size never moved.
 
+**Clause (2)'s size invariance was re-measured under a much larger
+perturbation, and held.** Added 2026-08-08. Halving the generator's denoising
+step count from 32 to 16 -- an intervention far coarser than TF32, changing the
+commit schedule itself and re-drawing 95.61% of the suite's committed token
+positions -- left `grid.i32`'s byte size identical between arms, and left
+`pcm_freerun.f32`'s sample count identical between arms, equal to the oracle's,
+and equal to frames x 960, in **17 of 17 greedy cases**. Clause (1) is what
+makes that possible: the canvas length is host arithmetic that takes no step
+count and runs before the first forward. That step count was itself rejected on
+listening grounds and is not shipped, but as evidence about clause (2) it is
+the strongest data point this family has -- the size invariance is a property
+of where the shape decision lives, not of how small the numeric perturbation
+happens to be.
+
+**"A different, still-valid answer" undersells the cost: the drift can change
+WHO IS SPEAKING.** Added 2026-08-08, and this section should not be read
+without it. OmniVoice's auto-voice mode supplies no speaker conditioning at all
+-- no speaker embedding table exists in the family -- so the speaker is
+emergent from which token grid the decode lands on, and a large enough content
+drift can land on a different one. Sweeping median F0 over voiced frames for
+all fourteen CPU-vs-CUDA generator pairs, thirteen sit within +/-3% and the
+speaker survives. **`omni-short-en` does not: 118.2 Hz on the shipped CPU path
+against 189.0 Hz on the shipped CUDA path** (normalised cross-correlation;
+140.9 -> 199.0 Hz on an independent YIN tracker), with the fraction of voiced
+frames below 165 Hz going 0.98 -> 0.00 -- complete separation on both trackers,
+a male voice and a female voice for the same request. Its CPU arm is
+byte-identical to the oracle, so this is a change the placement move introduced
+against the reference, on a shipped backend. **`omni-short-en` was not one of
+the six pairs the audit below sampled**, so nobody has heard it; the pair has
+been offered to jiangzhuo as a single follow-up. It is recorded here at its
+true cost rather than folded into "still-valid answer", and it is the reason
+this family's model documentation no longer promises that the auto-voice
+speaker follows the synthesis seed.
+
 **Why content drift this large is an acceptable answer, and why that is
 weaker evidence than the size measurement above.** jiangzhuo's own listening
 verdict settled this, not a tolerance number: a blind A/B of six pairs
@@ -205,7 +239,10 @@ listener, six pairs, on one day -- a Listening Audit in this project's own
 vocabulary, explicitly not a statistical claim, and it is cited as exactly
 that: the reason a human accepted this family's specific content drift, not
 proof that content drift is inaudible in general or that a future family's
-drift would pass the same way. There is precedent for shipping a family
+drift would pass the same way. **And the sample has a known gap**: the six
+pairs did not include `omni-short-en`, the one case where the same drift moves
+the speaker (above), so the verdict covers the pairs heard and not that case.
+There is precedent for shipping a family
 whose discrete decisions are not reproduced exactly: qwen3-tts ships
 Q8_MIXED while stating plainly that "in normal operation it will select
 different codes sometimes."

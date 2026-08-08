@@ -83,7 +83,7 @@ case.{% if validation.cuda_placement | default("full") == "full" %} CUDA placeme
 
 {% if validation.quality_evaluation == "not_run" -%}
 **Quality evaluation has not been run.** These results establish that the port,
-{% if capabilities.voice_mode | default("preset_catalog") == "preset_catalog" %}Voice selection{% elif capabilities.voice_mode | default("preset_catalog") == "fixed_default" %}the fixed-Voice request path{% else %}the seed-selected Voice request path{% endif %},
+{% if capabilities.voice_mode | default("preset_catalog") == "preset_catalog" %}Voice selection{% elif capabilities.voice_mode | default("preset_catalog") == "fixed_default" %}the fixed-Voice request path{% else %}the unconditioned default-Voice request path{% endif %},
 deterministic request path, and CPU/CUDA execution work. They do
 not claim perceptual equivalence, naturalness, intelligibility, or speaker
 similarity.
@@ -113,10 +113,13 @@ speaker catalog. It produces {{ capabilities.sample_rate_hz }} Hz mono F32
 audio. Callers omit Voice selection; the package always uses its trained Voice.
 {%- else -%}
 This package exposes no preset speaker catalog. Its package default has no
-fixed identity: with no Voice Profile supplied, which speaker a request
-produces follows the synthesis seed, so a caller who wants the same speaker
-twice reuses the seed the request reports. Callers who want a specific
-identity instead may build a Voice Profile from
+fixed identity and no speaker conditioning: with no Voice Profile supplied,
+which speaker a request produces is emergent, and the synthesis seed alone does
+not pin it. Reproducing a speaker needs the same seed **and** the same
+Execution Backend, package, and decode settings; switching between the CPU and
+CUDA backends can produce a different speaker for an otherwise identical
+request. Callers who want a stable identity should instead build a Voice
+Profile from
 {%- if "reference_audio" in capabilities.voice_profile_sources and "description_text" in capabilities.voice_profile_sources %} Reference Audio (voice cloning) or Description Text (voice design)
 {%- elif "reference_audio" in capabilities.voice_profile_sources %} Reference Audio (voice cloning)
 {%- elif "description_text" in capabilities.voice_profile_sources %} Description Text (voice design)

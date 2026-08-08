@@ -3,7 +3,10 @@
 Status: F32 is `port_validated`. **Quality evaluation has not been run.** A
 Listening Audit on 2026-08-07 found no obvious regression across six pairs
 (`no_obvious_regression`) -- see "Listening Audit," below; neither claim moves
-the Validation Level. This is a **Restricted Model Package** (ADR 0018), not a
+the Validation Level. Two corrections landed 2026-08-08 after a further audit:
+see **"Short canvases produce unintelligible output"** and the auto-voice
+speaker note under "Package" -- both describe the shipped configuration.
+This is a **Restricted Model Package** (ADR 0018), not a
 Published Model Package: the generator (LM) weights are CC-BY-NC (no version
 stated by upstream) and the codec weights carry the Boson Higgs Audio 2
 Community License. It has **not been published**. Uploading it to
@@ -28,9 +31,23 @@ decoder at hop 960.
 Voice arrives through three modes mapped onto the public Voice Profile
 sources: **Reference Audio** cloning (a transcript is required, language
 optional), **Description Text** voice design, and an unnamed auto-voice
-default with an empty Preset Voice Catalog -- with no profile supplied, the
-speaker follows the synthesis seed, so a caller who wants the same speaker
-twice reuses the seed the request reports. The package declares a validated
+default with an empty Preset Voice Catalog.
+
+**Auto-voice has no speaker conditioning, and the seed alone does not pin the
+speaker.** Corrected 2026-08-08; this page previously said the speaker follows
+the synthesis seed, full stop, which is not true. With no profile supplied
+there is no speaker signal in the prompt at all and the model carries no
+speaker embedding table, so which speaker you get is emergent from which token
+grid the decode lands on. **Reproducing a speaker requires the same seed *and*
+the same Execution Backend, package, and step count.** Switching between the
+shipped CPU and CUDA backends can produce a different speaker for an otherwise
+identical request: on one measured case the CPU path's median F0 is 118 Hz and
+the CUDA path's is 189 Hz -- a male voice and a female voice for the same call.
+Callers who need a stable identity should build a Voice Profile from Reference
+Audio or Description Text; those paths are conditioned and are not subject to
+this.
+
+The package declares a validated
 Language Capability Catalog of `en`, `zh`, `ja`; the checkpoint claims 600+
 languages through its training data and prompt format, but no language beyond
 these three has its own validation case.
@@ -52,6 +69,40 @@ the text flag.
 The public C ABI is profile-independent. C++, Rust, and Python callers load a
 local GGUF through the same model interface. The tensor catalog, RVQ dequant
 path, and execution details remain private to the architecture module.
+
+### Short canvases produce unintelligible output
+
+Recorded 2026-08-08. **This is the one hazard on this page a caller can reach
+without doing anything unusual, and nothing in the runtime warns about it.**
+
+The model paints a fixed-length canvas whose length is estimated from the text
+and then divided by the speaking rate. Below roughly **37-40 frames (~1.5-1.6
+seconds)** the rollout has too few positions to place the text and the output
+degenerates into a near-DC, sub-50 Hz rumble instead of speech: no amplitude
+envelope, no silence, a large DC offset. Two ordinary requests reach it:
+
+- **A high speaking rate on a short text.** The package declares a
+  `speaking_rate_range` of `[0.5, 2.0]` and `synthesize-cli --rate 2.0` is
+  accepted silently, but the pinned upstream oracle is already degenerate at
+  rate 1.50 on a 32-character sentence, and upstream's own demo UI caps speed
+  at 1.5. **The top of the declared range is not validated as speakable.**
+- **A very short text at the default rate.** `--text "Hi."` resolves to a
+  22-frame canvas and degenerates with no rate change at all. **No minimum
+  input length is enforced anywhere.**
+
+Rate 2.0 on a *long* text is fine, so the variable is the resolved canvas
+length, not the rate as such.
+
+**This is the upstream model's own behavior, faithfully reproduced, not a port
+defect**: on the affected golden case this port matches the pinned PyTorch
+oracle's waveform at Pearson r = 0.999670, the tightest of any case measured,
+and the oracle's own reference audio for that case is equally unintelligible.
+The golden suite does not catch it because port validation compares against the
+oracle and makes no intelligibility claim (ADR 0017). Lowering the declared
+range and emitting a diagnostic on a too-short canvas are both recommended and
+neither has been done; see
+`reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s 2026-08-08
+step-count audit entry, Finding 1.
 
 ### What the profiles quantize, and what they never do
 
@@ -219,9 +270,22 @@ non-statistical: it says no obvious problem was noticed on the pairs heard,
 not that the port and the oracle are perceptually equivalent, and it does not
 move `quality_evaluation` off `not_run` (ADR 0017's automated grid has not
 run and is not scheduled). Full identity key, seeds, and method are in
-`docs/porting/families/omnivoice.md`'s Listening Audit section and
+`docs/porting/families/omnivoice.md`'s Listening Audits section and
 `reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s 2026-08-07 Task
 16 entry.
+
+**A later audit rejected a candidate configuration, 2026-08-08.** Halving the
+decode step count from the shipped 32 to 16 buys 44.6% of the wall clock; a
+six-pair blind A/B returned four "no difference" and one clear preference for
+the 32-step arm (`omni-short-ja`, whose 16-step audio is incomplete at the
+end), so **16 steps is rejected and the shipped default stays at 32**. No code
+changed, and `num_step` is not reachable through the public C interface in any
+case. That audit is also where the short-canvas hazard above and the
+auto-voice speaker correction in "Package" came from -- both concern the
+**shipped** 32-step path, both were traced to the pinned oracle rather than to
+this port, and both produced documentation corrections rather than a code
+change. Neither alters the 2026-08-07 `no_obvious_regression` verdict, whose
+subject is what ships.
 
 ## Reproduction
 

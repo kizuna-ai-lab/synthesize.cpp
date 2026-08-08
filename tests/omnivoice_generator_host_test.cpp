@@ -133,12 +133,33 @@ int check_schedule_upstream_regression() {
 // struct-based float32 simulation of the exact formula in generator-host.cpp)
 // rather than from a run of this code.
 //
-// What the values say about the mechanism, recorded because no other artifact
-// in the tree does: halving the step count does not halve the risk evenly. At
-// 16 steps the FINAL forward jointly commits 2,294 of 5,752 positions (39.88%)
-// from one set of logits with no further refinement, against 1,388 (24.13%) at
-// 32; the last two steps commit 58.71% against 39.44%. The schedule is more
-// lopsided, not merely shorter.
+// What the values say about the mechanism: halving the step count does not
+// halve the risk evenly. At 16 steps the FINAL forward jointly commits 2,294 of
+// 5,752 positions (39.88%) from one set of logits with no further refinement,
+// against 1,388 (24.13%) at 32; the last two steps commit 58.71% against
+// 39.44%. The schedule is more lopsided, not merely shorter.
+//
+// AMENDED 2026-08-08 -- do NOT read the numbers above as "where 16 steps
+// breaks". They are arithmetically right and they point at the WRONG HALF OF
+// THE CANVAS. The commit score is `log_prob - codebook * layer_penalty_factor`
+// with the factor at 5.0, far larger than the spread of the log-probabilities,
+// so commitment is ordered by codebook: the final steps drain codebooks 4-7,
+// and codebook 0 -- the coarse layer carrying the energy envelope -- is
+// finished long before them (measured mean commit step 4.9 of 16, max 8 of 16;
+// 9.3 of 32, max 16 of 32). The audible failure the 2026-08-08 listening audit
+// found came from codebook 0's LAST commits, at step 8 of 16, not from the
+// final forward: with half the conditioning refreshes, c0's per-step block
+// grows from at most 4 frames to as many as 9, adjacent frames from one forward
+// land on the same argmax, and a constant run in c0 renders as a near-silent
+// segment. On `omni-short-ja` that silenced the last 320 ms, 48.1 dB down
+// against both the 32-step arm and the oracle, while c0's flip rate against the
+// oracle went from 0.000 (32 steps, exact) to 0.809 (16 steps). A future guard
+// for a faster step count must be coarse-layer specific -- c0 flip rate against
+// the oracle, c0 run-length distribution, per-frame tail RMS -- because the
+// aggregate token flip rate saturates near 95% between any two arms and saw
+// none of this. Full measurement:
+// reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md, the 2026-08-08
+// step-count audit entry, Finding 3.
 int check_schedule_sixteen_step_real_parameters() {
     const std::vector<uint64_t> schedule = synth::omnivoice::commit_schedule(5752, 16, 0.1);
     const uint64_t expected[16] = { 39, 43, 49, 56, 65, 76, 90, 108, 133, 167, 216, 291, 412, 630, 1083, 2294 };

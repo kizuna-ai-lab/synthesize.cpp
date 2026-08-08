@@ -20,7 +20,11 @@ pair, measured on a Release build, is 122.61 s / RTF 4.263 (CPU) versus
 codec-only figures below and a first-reported 41.8x that was itself measured
 on a `RelWithDebInfo`/`-O2` preset; see Execution Backends below for the full
 correction. The Listening Audit recorded `no_obvious_regression` on all six
-audited pairs. Ship artifacts are prepared as a Restricted Model Package
+audited pairs. **A third audit on 2026-08-08 rejected the 16-step decode**
+(one of six pairs lost; the default stays at 32, no code changed) and surfaced
+three findings about the shipped default that corrected this document's
+`speaking_rate_range` claim and its auto-voice seed claim -- see Listening
+Audits below. Ship artifacts are prepared as a Restricted Model Package
 (ADR 0018) under `models/publish/omnivoice-0-6b/`; publication itself is a
 separate act awaiting jiangzhuo's per-act confirmation. Plan 5's carry-over
 ledger is `docs/superpowers/plans/2026-08-07-omnivoice-plan-5-carryover.md`.
@@ -137,6 +141,26 @@ Native output is 24 kHz mono F32 at a 25 Hz frame rate, so one codec frame is
 exactly 960 samples. The model consumes raw text through a Qwen2 byte-level BPE
 tokenizer that ships as a single `tokenizer.json` in the weights repository.
 
+**One golden case's oracle reference is not intelligible speech, and the case
+pins oracle parity only.** Recorded 2026-08-08, because `omni-rate-fast`'s own
+`origin.locator` points at this section and a passing gate on it would
+otherwise read as a quality claim it never made. Measured on
+`build/goldens/omnivoice/omni-rate-fast/audio/pcm.f32` — 24,000 f32 = 1.00 s,
+the waveform as returned to the caller — the oracle's own output is a DC step
+plus a subsonic rumble: DC offset **−0.0756** (15% of the 0.5 peak), 94.1% of
+energy below 300 Hz, 56.5% of DC-removed energy below 50 Hz, energy-weighted
+spectral centroid 122.8 Hz, zero silence frames, frame-RMS CV 0.197. The same
+32-character text at rate 1.0 (`omni-short-en`) measures centroid 2450 Hz with
+2.2% of DC-removed power below 300 Hz. The cause is canvas length, not the
+port: `speaking_rate = 2.0` resolves this text to a 25-frame canvas (see
+"Short canvases collapse", below). This port reproduces that degenerate oracle
+at Pearson r = **0.999670**, the tightest of any case compared — so the case
+is a valid oracle-parity fixture and **only** that. Its `coverage` tag
+`speaking-rate-maximum` should be read as "pins the top of the declared range",
+not as evidence that the top of the range is speakable. The golden manifest
+schema has no free-text field for a case caveat, which is why this note lives
+here; adding one is recommended work.
+
 `trust_remote_code` is not required, so `docs/scope.md`'s rule against
 executable code in a Model Package is not engaged. Verified at intake rather
 than assumed, five ways: the weights repository contains no `.py` file at all at
@@ -172,10 +196,26 @@ transcript is required, language optional), voice design is **Description
 Text**, and auto-voice is the package default with no profile selected. The
 Preset Voice Catalog is empty and the package default is unnamed. OmniVoice is
 the first family to exercise the Reference Audio and Description Text sources.
-**Auto-voice means the voice follows the synthesis seed**: with no profile
-selected, nothing but the sampled path's draws picks the speaker, so a caller
-who wants the same speaker twice reuses the seed the request reports — there is
-no named default Voice to ask for instead.
+
+**Auto-voice is unconditioned, and the seed alone does not pin the speaker.**
+With no profile selected there is no speaker conditioning at all: the prompt
+carries style markers and text and nothing else, and this family has no speaker
+embedding table anywhere. The speaker is therefore emergent from *which* 8×T
+token grid the mask-predict loop happens to land on — and the seed is only one
+of the inputs that decides that. **Reproducing a speaker requires a fixed
+(seed, Execution Backend, package, step count) tuple**; changing any one of them
+can change who is speaking. Corrected 2026-08-08, and the correction is
+measured, not theoretical: on `omni-short-en` the shipped CPU generator path and
+the shipped CUDA generator path — same seed, same package, same request — give
+median F0 118.2 Hz and 189.0 Hz respectively, with complete separation on two
+independent pitch trackers. That is a male voice and a female voice for the same
+call. Nothing about the earlier "the voice follows the synthesis seed" phrasing
+was safe to leave standing: the seed is necessary and not sufficient. A caller
+who needs a stable identity should build a Voice Profile from Reference Audio or
+Description Text — those paths *are* conditioned and are not subject to this.
+Full measurement:
+`reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s 2026-08-08
+step-count audit entry, Finding 2.
 
 ### The prompt layout
 
@@ -665,11 +705,53 @@ requests — upstream substitutes the anchor pair `("Nice to meet you.", 25
 tokens)`, and that anchor is part of this family's contract, not an
 implementation detail. `speaking_rate` **divides** the estimate, and the result
 is `max(1, int(est))`, a truncation toward zero that the port must match
-exactly rather than rounding. The package declares a validated
-`speaking_rate_range` of `[0.5, 2.0]`; that range is a validation claim backed
-by golden cases at both ends, not a clamp inherited from upstream. Explicit
-target duration is not exposed in v1: the request's frame limit remains a cap,
-not a target.
+exactly rather than rounding. The package declares a
+`speaking_rate_range` of `[0.5, 2.0]`, and it is not a clamp inherited from
+upstream — but it is **not** the "validation claim backed by golden cases at
+both ends" this document asserted until 2026-08-08. **Corrected: the golden
+case at the top end, `omni-rate-fast`, has an unintelligible oracle
+reference** (see the Reference Contract above), so the cited evidence does not
+support the claim it was cited for. The range is at present an unvalidated
+upper bound that the loader accepts without clamp, warning, or diagnostic.
+Upstream's own Gradio demo caps Speed at **1.5**
+(`omnivoice/cli/demo.py:250-258`), so 2.0 exceeds anything upstream exposes.
+
+**The measured onset, quoted from the oracle rather than from this port.** A
+sweep of the pinned PyTorch oracle on this suite's own 32-character text found
+it speech-like at rate 1.25 (40 frames) and 1.35 (37 frames, marginal), and
+degenerate at 1.50 (33 frames) and every rate above. Rate 2.0 on a **long**
+text is fine (162 frames), and `"Hi."` at the **default** rate is degenerate
+(22 frames) — so the failure variable is the resolved canvas length, not the
+speaking rate. See "Short canvases collapse", below. The onset must be quoted
+from the oracle: in the marginal 29–33 frame band this port's free-run
+sometimes survives where the oracle does not, from ordinary token drift.
+
+**Lowering the range is recommended work and has not been done.** `[0.5, 1.25]`
+is the defensible bound on this evidence; `[0.5, 1.5]` would match upstream's
+UI while still shipping a value the oracle fails on. Whichever is chosen, the
+manifest `package_contract`, `scripts/convert-omnivoice.py`, the GGUF,
+`omni-rate-fast`'s own rate and
+`tests/omnivoice_frontend_test.cpp:597-599` move together and the golden case
+must be re-cut and re-dumped — a package re-cut, not a documentation change.
+
+Explicit target duration is not exposed in v1: the request's frame limit
+remains a cap, not a target.
+
+**Short canvases collapse, and this is the upstream model's behavior faithfully
+reproduced.** Below roughly 37–40 frames (~1.5–1.6 s) the generator's rollout
+has too few positions to place the text and the output degenerates into a
+near-DC, sub-50 Hz rumble instead of speech. The estimator's own
+`low_threshold = 50` is upstream's statement that anything under ~2 s already
+needs pulling up — but the `speaking_rate` division is applied **after** the
+cube-root pull-up and has no floor of its own, so any rate above 1 walks the
+canvas straight back through the threshold. Two ordinary requests reach it: a
+high speaking rate on a short text, **and a very short text at the default
+rate** (`--text "Hi."` resolves to 22 frames). Nothing in the runtime warns; no
+minimum input length is enforced anywhere. This port reproduces the oracle on
+exactly this case at Pearson r = 0.999670, so it is not a port defect —
+emitting a non-fatal diagnostic through the request's existing
+`synth_diagnostic_sink_t` when the resolved canvas falls below a frame
+threshold is recommended work and has not been done.
 
 **Recorded divergence: zero reference frames.** Handed a reference of *zero*
 audio tokens, upstream's estimator divides by zero and its `max(1, int(...))`
@@ -1695,7 +1777,79 @@ to re-derive them from the sections above:
    resolved `description_language` instead. See Open Questions, same
    paragraph, for the full rationale and the three places this is recorded.
 
-## Listening Audit (Plan 4 Task 16)
+## Listening Audits
+
+Three have run for this family. The **2026-08-07** audit is the one that
+produced this family's `listening_audit: no_obvious_regression` verdict; the
+**2026-08-08** generator-placement audit is what admitted the generator to
+CUDA; the **2026-08-08** decode step-count audit rejected a candidate
+configuration and is the only one that returned a loss. All three are one
+listener, non-statistical, and none moves `quality_evaluation` off `not_run`.
+
+### Decode step count, 32 vs 16 (2026-08-08) — **REJECTED**
+
+**Verdict, jiangzhuo: `regression` on one of six pairs. 16 steps is rejected;
+the shipped default stays at the package's embedded `num_step = 32`, and no
+code changed.** Halving the step count buys 44.6% of the wall clock on
+`omni-long-boundary` and re-draws 95.61% of the greedy suite's committed
+tokens, so it is exactly the shape of change that needs audible evidence.
+
+Six pairs, inheriting the placement audit's own six cases (`case_selection_seed
+12`) so the two verdicts land on the same utterances. The A/B assignment was
+**balanced** (three pairs present each arm as A) rather than drawn
+independently per pair: on `order_seed 2026080816` the precedent's per-pair
+draw would have put the 16-step arm in slot A five times out of six,
+confounding arm with slot over six trials. The departure and the draw it
+replaces are pinned in the audit manifest.
+
+Four pairs came back indistinguishable. `omni-short-ja` did not — jiangzhuo
+preferred the 32-step arm and named the reason, that the 16-step audio is
+incomplete at the end. **One loss is enough**: the precedent this is graded
+against, the generator-placement audit below, was accepted on six of six, and
+grading a candidate on a majority would retroactively weaken the bar the CUDA
+generator was admitted under.
+
+The rejection is narrow. The port's 16-step loop reproduces the suite's only
+16-step oracle (`omni-fast-mode`, same text/voice/rate/frame count as
+`omni-short-en`) to 399 of 400 tokens and 0.0 dB of per-frame RMS, so the
+decode loop is faithful where an oracle exists. `num_step` is not reachable
+through `include/synthesize.h`, so no caller can select 16 today; what the
+rejection closes is a future package cut or "fast profile" claiming acceptance
+evidence it does not have.
+
+**Three observations came back alongside the verdict, two of them about the
+shipped 32-step default.** All three were triaged against the pinned oracle and
+all three are faithful-to-oracle, not port defects:
+
+1. `omni-rate-fast` is noise in **both** arms — because the oracle's own
+   reference for that case is degenerate (Reference Contract, above). The
+   defect was the surrounding `speaking_rate_range` claim, corrected in the
+   duration-estimator section.
+2. `omni-digits` changes speaker between arms because auto-voice conditions
+   nothing; the oracle itself flips 177.8 Hz → 123.8 Hz at 16 steps and this
+   port reproduces its 16-step grid to 1,052 of 1,056 positions. The
+   by-product is below.
+3. `omni-short-ja`'s 16-step tail silences its last 320 ms (48.1 dB down
+   against both the 32-step arm and the oracle) by collapsing **codebook 0's
+   last commits** onto repeated tokens. Grid size and sample count are
+   identical between arms in 17 of 17 greedy cases, so nothing contradicts
+   `docs/backends.md`'s discrete-outputs exception.
+
+**Un-listened consequence of the placement move, recorded here and offered as a
+follow-up pair.** Sweeping all 14 CPU-vs-CUDA generator pairs for median F0,
+thirteen sit within ±3% — but `omni-short-en` goes **118.2 → 189.0 Hz** (NCC;
+140.9 → 199.0 Hz on YIN) with complete separation on both trackers: the shipped
+CPU path speaks that sentence in a male voice and the shipped CUDA path speaks
+it in a female voice, and its CPU arm is byte-identical to the oracle. That
+case was **not** among the six the placement audit sampled, so nobody has heard
+it. The placement decision is not reopened on a measurement alone; the single
+pair is offered.
+
+Full method, the identity key, every figure, and the recommended-but-not-taken
+work are in `reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s
+2026-08-08 step-count audit entry.
+
+### Port vs oracle, and CUDA vs CPU codec (Plan 4 Task 16, 2026-08-07)
 
 **Verdict, jiangzhuo, 2026-08-07: `no_obvious_regression`, all six pairs.**
 Reordered ahead of Tasks 13–15 in Slice D because a `regression` verdict is a

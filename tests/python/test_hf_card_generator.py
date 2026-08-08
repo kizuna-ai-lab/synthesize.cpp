@@ -556,15 +556,28 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
         self.generator.validate_spec(spec)
         card = self.generator.render(spec, "# stub")
         self.assertIn("no preset speaker catalog", card)
-        self.assertIn("follows the synthesis seed", card)
+        # Amended 2026-08-08. This asserted "follows the synthesis seed" until
+        # the OmniVoice step-count listening audit measured the claim false:
+        # auto-voice supplies no speaker conditioning at all, and the same
+        # seed on the CPU and CUDA backends can produce different speakers
+        # (omni-short-en, 118 Hz vs 189 Hz median F0). The card must state the
+        # seed is necessary and not sufficient, and must name the backend as
+        # part of what has to be held fixed -- a caller reading the old
+        # sentence would have believed in a reproducibility this family does
+        # not provide. See reports/porting/omnivoice/omnivoice-0-6b/
+        # _porting-log.md, the 2026-08-08 step-count audit entry, Finding 2.
+        self.assertIn("no speaker conditioning", card)
+        self.assertIn("the synthesis seed alone does\nnot pin it", card)
+        self.assertIn("Execution Backend", card)
+        self.assertNotIn("follows the synthesis seed", card)
         self.assertIn("Reference Audio (voice cloning)", card)
         self.assertIn("Description Text (voice design)", card)
         self.assertNotIn("--voice ", card)
         # The "quality evaluation has not been run" paragraph names the
-        # request path too; a seed-following default is not "fixed", so it
+        # request path too; an unconditioned default is not "fixed", so it
         # must not fall into the fixed_default wording by default-branch
         # accident.
-        self.assertIn("the seed-selected Voice request path", card)
+        self.assertIn("the unconditioned default-Voice request path", card)
         self.assertNotIn("the fixed-Voice request path", card)
 
     def test_seed_default_with_profiles_renders_a_single_declared_source(self) -> None:

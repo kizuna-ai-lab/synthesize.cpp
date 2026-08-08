@@ -108,14 +108,19 @@ summary: |
   parallel denoising steps with classifier-free guidance, and the Higgs
   Audio V2 codec's DAC-style decoder turns the finished token grid into
   24 kHz audio. Voice arrives through Reference Audio cloning, Description
-  Text voice design, or an unnamed auto-voice default whose speaker follows
-  the synthesis seed. The package carries its own byte-level BPE text
-  frontend, so raw UTF-8 text goes in and audio comes out.
+  Text voice design, or an unnamed auto-voice default with no speaker
+  conditioning, whose speaker is emergent rather than pinned by the seed
+  alone. The package carries its own byte-level BPE text frontend, so raw
+  UTF-8 text goes in and audio comes out.
 
 capabilities:
   sample_rate_hz: 24000
   voice_count: 0
-  voice_ids: "none (unnamed default; follows the synthesis seed)"
+  # Corrected 2026-08-08: this previously read "follows the synthesis seed".
+  # Auto-voice has no speaker conditioning at all, and the seed is necessary
+  # but not sufficient -- the same request on the CPU and CUDA backends can
+  # produce different speakers (omni-short-en, 118 Hz vs 189 Hz median F0).
+  voice_ids: "none (unnamed default; unconditioned, not pinned by seed alone)"
   voice_mode: seed_default_with_profiles
   voice_profile_sources:
     - reference_audio

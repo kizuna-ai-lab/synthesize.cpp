@@ -3719,3 +3719,156 @@ about the PyTorch oracle's own device choice, not this project's C++ build
 type, and is left untouched — checking whether *that* figure has its own
 provenance problem is unstarted, sibling-family work this correction does
 not do.
+
+## 2026-08-08 — Plan 5: generator graph and scheduler reuse, and a redefined timing field
+
+The 64 generator forwards of a 32-step decode used to build, allocate and then
+destroy a whole graph each: a ~1 MiB `ggml_init` arena, ~830 freshly built
+nodes, a fresh `ggml_backend_sched`, one `ggml_backend_sched_alloc_graph`, and
+a `ggml_backend_sched_free` + `ggml_free` on the way out. They now build twice
+per synthesis — once per CFG branch — and recompute. Measured on
+`build/rel-dgx-spark`, `omni-long-boundary` (719 frames, 28.76 s of audio),
+CUDA: **scheduler allocations for the generator fell from 64 to 2** per
+synthesis, counted directly by `SYNTH_DEBUG_BACKEND_PLACEMENT` line count on
+the pre- and post-change binaries, not inferred.
+
+### Two shapes means two schedulers, and one graph may be allocated once
+
+The conditional branch's canvas is `total` long (820 here, 832 non-view nodes)
+and the unconditional branch's is `target_frames` (719, 830 nodes); they
+alternate. One `ggml_backend_sched` *can* legally serve both — every
+`ggml_backend_sched_alloc_graph` re-splits from scratch and the only shape
+constraint is `hash_set.size >= n_nodes + n_leafs`, which both satisfy. But a
+*cgraph* may be allocated only once: `ggml_gallocr_init_tensor`
+(`ggml/src/ggml-alloc.c`) leaves a tensor's `data` alone once it is non-null,
+so re-allocating an already-allocated graph silently keeps addresses that the
+other branch's intervening allocation has re-planned over. **No assert fires
+and the audio stays plausible.** That rules out the tempting "one shared
+scheduler, two cached graphs, reset and alternate" design, and leaves one
+scheduler+graph pair per branch. `GraphRun` now allocates only on its
+`scheduler_ == nullptr` path and never calls `ggml_backend_sched_reset`, so a
+second allocation of a live graph is unreachable by construction rather than
+by discipline.
+
+The pair is scoped to the `run_synthesis` stack frame. `prompt.total()` and
+`prompt.target_frames` are settled before the first forward and never move
+inside the loop, so within one call there is no invalidation check to write;
+across calls the geometry does change, which is exactly why the cache must not
+be hoisted to `Model::Impl` — that would need a shape key and a mutex, and
+would break the Loaded Model's immutable-and-shareable contract.
+`tests/omnivoice_decode_loop_test.cpp`'s new
+`check_canvas_length_change_between_calls` (5 frames, then 7, then 5 again on
+one Model, third run must equal the first) is the guard, on the varied-weights
+package so the grid is genuinely sensitive to what the graph read. It was
+confirmed to fail — SIGABRT inside ggml — against a deliberately hoisted
+`static` cache before being committed. Nothing else in the suite pins a canvas
+change across calls.
+
+### `generator_setup_seconds` and `generator_seconds` were redefined
+
+**Do not compare either field's value across this change.** The old
+`generator_setup_seconds` bracketed scheduler creation and allocation only. It
+excluded the arena, the ~830-node build, and the teardown — and the teardown,
+where the compute buffer's `cudaFree` happens, was the larger of the two. It
+was also counted *inside* `generator_seconds`, so the "setup" figure quoted in
+earlier entries was never part of the host-side residual at all; it sat inside
+the generator bucket. Both fields now mean something a reader can act on:
+
+- `generator_seconds` — the whole cost of the generator's graph machinery:
+  arena, node build, scheduler creation, allocation, placement inspection,
+  compute, and teardown.
+- `generator_setup_seconds` — the non-compute part of that same total, so
+  `generator_seconds - generator_setup_seconds` is time inside
+  `ggml_backend_sched_graph_compute` and nothing else.
+
+Teardown is attributed explicitly (`release_branch`) rather than left to scope
+exit, so it lands inside the measurement instead of vanishing. Both definitions
+are recorded in `src/arch/omnivoice/omnivoice.h`. Nothing gates on either field
+— `scripts/validate-omnivoice-replay.py` reads only `stats.placement` and
+`tests/tolerances/omnivoice.json` has no timing key.
+
+Same-session interleaved, N=3 per arm, replay runner:
+
+| | pre-change (old defs) | post-change (new defs) |
+|---|---|---|
+| `generator_setup_seconds` | 0.1528–0.1862 (mean 0.172) | 0.0070–0.0072 (mean 0.0071) |
+| `generator_seconds` | mean 4.318 | mean 4.265 |
+| `wall_seconds` | mean 5.212 | mean 5.084 |
+| `placement.generator` | [53184, 53184] | [53184, 53184] |
+
+The setup comparison is conservative in the right direction: the new
+definition is a strict *superset* of the old, so the old-definition quantity
+after the change is at most 0.0071 s, down from 0.172 s.
+
+### Wall clock: −2.3%, which is well under what was estimated
+
+Two interleaved A/B runs on `build/rel-dgx-spark`, N=4 per arm, contention-
+filtered, `synthesis_seconds` through `synth_synthesize_to_buffer`:
+
+- **against the frozen pre-Plan-5-optimization binary (`727daff`)**: 4.7800 /
+  4.8022 s vs 5.7754 / 5.8414 s — best −17.24%, mean −17.79%. That figure is
+  *both* optimizations together and is not this change's own.
+- **against the post-candidate-scan binary (`70b62c8`), which isolates this
+  change**: 4.7874 / 4.8140 s vs 4.8976 / 4.9268 s — **best −2.25%, mean
+  −2.29%**, ~0.113 s. All eight runs separate cleanly: every candidate run was
+  faster than every baseline run. The replay runner, an independent binary,
+  agrees at −2.5% (0.128 s).
+
+Against a ±0.5% noise floor on the mean-of-4 ratio this is resolved, but it is
+**well below the 0.26–0.45 s the pre-implementation estimate projected**, and
+that gap is not explained here. The estimate's floor leaned on an nsys
+attribution of ~0.09–0.11 s to teardown `cudaFree` calls; removing 62 of the 64
+teardowns did not return that time as wall clock. The measured
+`generator_setup_seconds` drop (~0.165 s) also over-predicts the measured wall
+drop (~0.113–0.128 s). Whatever the residual is, it is not recovered by this
+change, and the honest number to carry forward is **−2.3%, not −4.9%**.
+
+This also revises, for CUDA, the slice-4 conclusion above that "on this
+evidence a fresh `GraphRun` per step is not where the time goes". That
+measurement was CPU-era, where setup was 0.30–0.40 ms against a 2.06 s forward
+(0.31%). On CUDA the forward is ~30x faster and the same host-side setup is no
+longer negligible — though at 2.3% it is still not where the time goes either.
+
+### The CUDA-graph path never engaged — measured, not assumed
+
+A stable graph makes ggml-cuda's CUDA-graph capture eligible, and the estimate
+flagged it as possibly-large unquantified upside. It is not: the candidate run
+with `GGML_CUDA_DISABLE_GRAPHS=1` and without, alternated three times, gives
+4.8040 / 4.8010 / 4.7972 s against 4.8288 / 4.7963 / 4.8183 s — no difference,
+with the disabled arm marginally ahead. The whole −2.3% is the reuse itself.
+
+### Peak memory: +48.40 MiB, which is why option B could ship
+
+Reuse holds both branches' compute buffers live for the whole decode loop where
+a per-forward rebuild held one at a time. Measured through
+`ggml_backend_sched_get_buffer_size` and reported by the new
+`omnivoice_generator_buffers` line under `SYNTH_DEBUG_BACKEND_PLACEMENT`:
+conditional 63,185,920 B (60.26 MiB), unconditional 50,755,712 B (48.40 MiB),
+both live 113,941,632 B (108.66 MiB). The pre-change peak was the larger alone,
+60.26 MiB, so **the added peak is 48.40 MiB** — not the "several hundred MiB"
+that would have forced the memory-neutral fallback of rebuilding the graph each
+forward behind one shared scheduler. Both branches are released before
+`decode_codes` runs, so the raised generator peak never overlaps the codec's.
+
+### Bit-identity and gates
+
+The public path's PCM on `omni-long-boundary` is **byte-identical** to the
+frozen pre-change reference (`sha256
+1cf89238360c07f4c8662b329f49c09c1964eb4a261a868fba83876428171523`), reproduced
+on every one of the measured runs. Reuse means a forward now sees the previous
+forward's bytes in its compute buffer where it used to see a fresh
+`cudaMalloc`; nothing read that uninitialized padding. Unit 91/91, sanitizer
+(ASan+UBSan) 90/90, omnivoice integration 7/7, and the exact-token CPU replay
+at 17/17 token grids and 2/2 `ref.tokens`. `placement.generator` stayed
+[53184, 53184] — the placement pair is now read once per allocation and
+retained, and still accumulated once per forward, so the documented total is
+unchanged rather than 32x smaller.
+
+### What this does and does not establish
+
+One case, one host, one canvas geometry pair, N=4 per arm on the public path
+and N=3 on the replay path. Not a sweep across the other 19 golden cases, not a
+CPU-backend measurement (where the graph machinery is a far smaller share of a
+much longer forward, so the win should be proportionally smaller still), and no
+concurrency measurement. The gap between the estimated and measured saving is
+recorded above as open, not resolved.

@@ -107,11 +107,31 @@ double now_seconds() {
 // rule is unit-testable without a Model.
 
 // Duplicated from qwen3-tts rather than shared: the third copy is the signal
-// to hoist (the BPE rule), and stage 7's graph-reuse question may reshape this
-// family's copy anyway. A fresh GraphRun per forward is the measured, known
-// pattern; its cost is what setup_seconds exists to expose.
+// to hoist (the BPE rule). This family's copy has since diverged -- it is
+// reusable across forwards where qwen3-tts's is not -- which is the second
+// reason not to have shared it.
 
 // A context sized for a graph's headers plus the graph itself.
+//
+// Setup is idempotent. The first run() creates the scheduler and allocates the
+// graph; every later run() on the same object recomputes that SAME allocated
+// graph with whatever its input leaves now hold. This is ggml's documented
+// "single-use in terms of allocation, multi-use in terms of computation"
+// contract (ggml/include/ggml-backend.h), and the allocate-once half is
+// load-bearing rather than a mere optimization: ggml_gallocr_init_tensor
+// (ggml/src/ggml-alloc.c) leaves a tensor's `data` pointer alone once it is
+// non-null, so re-allocating an already-allocated graph would silently keep
+// addresses that a differently-shaped intervening allocation has re-planned
+// over -- wrong numbers, and no assert fires. The shape below makes that
+// unreachable by construction: allocation happens only on the
+// `scheduler_ == nullptr` path, and scheduler_ becomes non-null there and
+// stays non-null until destruction. Do NOT add a ggml_backend_sched_reset
+// call; it clears the scheduler's `is_alloc` and re-opens exactly that door.
+//
+// Reuse is therefore per SHAPE, not per object lifetime: one GraphRun may only
+// ever be handed one canvas geometry. Model::run_synthesis keeps one per CFG
+// branch, on its own stack frame, because the two branches' canvases differ in
+// length and every canvas is fixed for the life of one synthesis call.
 class GraphRun {
   public:
     GraphRun(const BackendPlan & plan, size_t nodes) : plan_(plan) {
@@ -142,15 +162,18 @@ class GraphRun {
 
     bool ok() const { return context_ != nullptr && graph_ != nullptr; }
 
-    // How long the scheduler took to be created and to place the graph, as
-    // opposed to computing it. A per-step rebuild pays this every step, and
-    // whether that dominates is the question stage 7 has to answer with a
-    // number rather than an argument.
-    double setup_seconds = 0.0;
+    // The compute interval of the LAST run(): ggml_backend_sched_graph_compute
+    // and nothing else. Callers derive their non-compute overhead by
+    // subtracting this from the whole of the work they did, which is what makes
+    // that overhead complete rather than a hand-picked subset -- see
+    // SynthesisOutput::generator_setup_seconds in omnivoice.h.
+    double compute_seconds = 0.0;
 
     // Where this graph's nodes were actually placed. Read from the scheduler
-    // after allocation, which is the only moment the answer exists: before it
-    // there is no assignment, and after compute the scheduler has been freed.
+    // once, at allocation, which is the only moment the answer exists: before
+    // it there is no assignment, and after the scheduler is freed there is
+    // nothing to ask. Retained across reuse so that a caller accumulating per
+    // forward still sees one graph's worth per forward.
     uint64_t placed_nodes      = 0;
     uint64_t accelerator_nodes = 0;
 
@@ -170,27 +193,54 @@ class GraphRun {
         if (!ok() || output == nullptr) {
             return SYNTH_ERR_INTERNAL;
         }
-        const double setup_started = now_seconds();
-        ggml_build_forward_expand(graph_, output);
-        // A CPU-only scheduler over CPU-resident weights is one split; forcing
-        // nodes onto CPU inside a mixed graph is not the same thing and was
-        // measured five times slower. See docs/backends.md.
-        const size_t hash_size = size_t(ggml_graph_size(graph_)) + kSchedulerLeafAllowance;
-        scheduler_             = on_primary ? plan_.create_scheduler(hash_size) : plan_.create_cpu_scheduler(hash_size);
         if (scheduler_ == nullptr) {
-            return SYNTH_ERR_BACKEND;
+            ggml_build_forward_expand(graph_, output);
+            // A CPU-only scheduler over CPU-resident weights is one split;
+            // forcing nodes onto CPU inside a mixed graph is not the same thing
+            // and was measured five times slower. See docs/backends.md.
+            const size_t hash_size = size_t(ggml_graph_size(graph_)) + kSchedulerLeafAllowance;
+            scheduler_ = on_primary ? plan_.create_scheduler(hash_size) : plan_.create_cpu_scheduler(hash_size);
+            if (scheduler_ == nullptr) {
+                return SYNTH_ERR_BACKEND;
+            }
+            if (!ggml_backend_sched_alloc_graph(scheduler_, graph_)) {
+                return SYNTH_ERR_OOM;
+            }
+            const BackendPlacement placement = plan_.inspect_placement(scheduler_, graph_);
+            placed_nodes                     = placement.node_count - placement.view_node_count;
+            accelerator_nodes                = placement.off_cpu_node_count;
+            plan_.log_placement_if_enabled(stage, scheduler_, graph_);
         }
-        if (!ggml_backend_sched_alloc_graph(scheduler_, graph_)) {
-            return SYNTH_ERR_OOM;
-        }
-        const BackendPlacement placement = plan_.inspect_placement(scheduler_, graph_);
-        placed_nodes                     = placement.node_count - placement.view_node_count;
-        accelerator_nodes                = placement.off_cpu_node_count;
-        plan_.log_placement_if_enabled(stage, scheduler_, graph_);
+        // Every forward, not only the first. set_threads pokes every backend
+        // globally rather than this scheduler, so making it conditional would
+        // be a behavior change for anything else that reads a thread count
+        // mid-loop. It costs microseconds; the reuse win is not in it.
         plan_.set_threads(threads);
-        setup_seconds = now_seconds() - setup_started;
-        return ggml_backend_sched_graph_compute(scheduler_, graph_) == GGML_STATUS_SUCCESS ? SYNTH_OK :
-                                                                                             SYNTH_ERR_BACKEND;
+        const double      compute_started = now_seconds();
+        const ggml_status status          = ggml_backend_sched_graph_compute(scheduler_, graph_);
+        compute_seconds                   = now_seconds() - compute_started;
+        return status == GGML_STATUS_SUCCESS ? SYNTH_OK : SYNTH_ERR_BACKEND;
+    }
+
+    // Whether this object has been set up, i.e. whether run() would take the
+    // allocation path. Callers use it to decide whether the graph still needs
+    // building; see GeneratorBranch.
+    bool prepared() const { return scheduler_ != nullptr; }
+
+    // The compute buffers this graph's allocation owns, summed over the
+    // scheduler's backends. Only meaningful once prepared(); reuse holds this
+    // live for the whole synthesis where a per-forward rebuild held it for one
+    // forward, which is the peak-memory cost of reuse and is reported by
+    // log_placement_if_enabled's own line.
+    size_t buffer_bytes() const {
+        if (scheduler_ == nullptr) {
+            return 0;
+        }
+        size_t total = 0;
+        for (int index = 0; index < ggml_backend_sched_get_n_backends(scheduler_); ++index) {
+            total += ggml_backend_sched_get_buffer_size(scheduler_, ggml_backend_sched_get_backend(scheduler_, index));
+        }
+        return total;
     }
 
   private:
@@ -300,6 +350,19 @@ bool is_generator_tensor(const char * name) {
     return false;
 }
 
+// One CFG branch's graph, kept alive across the forwards that share its canvas
+// geometry. Built on the first forward and recomputed by every later one; see
+// GraphRun's own comment for why the pairing is per shape and why the two
+// branches may not share one.
+//
+// `logits` is the built graph's output tensor, which the caller reads back
+// after each compute. It is owned by the GraphRun's arena, so it is only valid
+// while `run` is.
+struct GeneratorBranch {
+    std::unique_ptr<GraphRun> run;
+    ggml_tensor *             logits = nullptr;
+};
+
 // Which probe buffers a forward should fill; empty = no probes.
 struct ForwardProbeSinks {
     const std::vector<uint32_t> *     layer_indices = nullptr;
@@ -322,9 +385,14 @@ struct ForwardProbeSinks {
 // never `Model::Impl::weights` directly -- see this file's top-of-file
 // placement note and catalog.h's bind_generator_weights for why the two must
 // not be conflated.
+//
+// `branch` carries the graph between calls: the first forward of a branch
+// builds it, every later forward with the same canvas geometry recomputes it.
+// The caller owns the pairing of a branch to a shape -- see GeneratorBranch.
 synth_status_t generator_branch_forward(const BackendPlan &       plan,
                                         const ModelWeights &      weights,
                                         const HParams &           hparams,
+                                        GeneratorBranch &         branch,
                                         ggml_tensor *             text_ids,
                                         ggml_tensor *             audio_ids,
                                         ggml_tensor *             positions,
@@ -333,51 +401,73 @@ synth_status_t generator_branch_forward(const BackendPlan &       plan,
                                         const ForwardProbeSinks & probes,
                                         std::vector<float> &      logits,
                                         SynthesisOutput &         output) {
-    const AttentionShape shape{ hparams.generator.hidden_size,          hparams.generator.attention_head_count,
-                                hparams.generator.key_value_head_count, hparams.generator.head_dim,
-                                hparams.generator.rms_norm_eps,         hparams.generator.rope_theta };
-    // Each block is under fifty nodes; the embedding merge and the head add a
-    // fixed tail (the qwen3-tts budget formula).
-    const size_t         nodes = size_t(hparams.generator.layer_count) * 64 + 512;
-    GraphRun             run(plan, nodes);
-    if (!run.ok()) {
-        return SYNTH_ERR_OOM;
-    }
-    ggml_tensor * embeddings =
-        build_canvas_embedding(run.context(), weights.generator, text_ids, audio_ids, hparams.audio.num_codebooks);
+    // Everything this function does that is NOT the compute is overhead the
+    // reuse work exists to delete, so the bracket opens here -- ahead of the
+    // arena and the node build, which the pre-reuse instrumentation omitted
+    // entirely. See SynthesisOutput::generator_setup_seconds in omnivoice.h.
+    const double               entered = now_seconds();
+    const bool                 probing = probes.logits_full != nullptr;
     std::vector<ggml_tensor *> layer_tensors;
     ggml_tensor *              final_tensor = nullptr;
-    const bool                 probing      = probes.logits_full != nullptr;
-    ggml_tensor *              logits_tensor =
-        build_generator_forward(run.context(), embeddings, positions, nullptr, weights.generator, shape, hparams.audio,
-                                probing ? &layer_tensors : nullptr, probing ? &final_tensor : nullptr);
-    if (logits_tensor == nullptr) {
+    if (branch.run == nullptr) {
+        const AttentionShape shape{ hparams.generator.hidden_size,          hparams.generator.attention_head_count,
+                                    hparams.generator.key_value_head_count, hparams.generator.head_dim,
+                                    hparams.generator.rms_norm_eps,         hparams.generator.rope_theta };
+        // Each block is under fifty nodes; the embedding merge and the head add
+        // a fixed tail (the qwen3-tts budget formula).
+        const size_t         nodes = size_t(hparams.generator.layer_count) * 64 + 512;
+        // Built into a local and only handed to `branch` once it is whole, so a
+        // failed build leaves the branch empty rather than poisoned with a
+        // half-built graph a later forward would happily reuse.
+        auto                 run   = std::make_unique<GraphRun>(plan, nodes);
+        if (!run->ok()) {
+            return SYNTH_ERR_OOM;
+        }
+        ggml_tensor * embeddings =
+            build_canvas_embedding(run->context(), weights.generator, text_ids, audio_ids, hparams.audio.num_codebooks);
+        ggml_tensor * logits_tensor = build_generator_forward(
+            run->context(), embeddings, positions, nullptr, weights.generator, shape, hparams.audio,
+            probing ? &layer_tensors : nullptr, probing ? &final_tensor : nullptr);
+        if (logits_tensor == nullptr) {
+            return SYNTH_ERR_INTERNAL;
+        }
+        if (probing) {
+            // Read-back tensors that are not the graph output must be marked and
+            // expanded before allocation, or the allocator reuses their buffers.
+            for (ggml_tensor * tensor : layer_tensors) {
+                ggml_set_output(tensor);
+                ggml_build_forward_expand(run->graph(), tensor);
+            }
+            ggml_set_output(final_tensor);
+            ggml_build_forward_expand(run->graph(), final_tensor);
+        }
+        branch.run    = std::move(run);
+        branch.logits = logits_tensor;
+    } else if (probing) {
+        // Unreachable from Model::run_synthesis, which gives the probing
+        // forward a branch of its own: those ggml_set_output marks make the
+        // probe graph a third shape, and the layer/final handles the read-back
+        // needs exist only on the build path above. Refused rather than
+        // silently returning a forward with no probes filled in.
         return SYNTH_ERR_INTERNAL;
     }
-    if (probing) {
-        // Read-back tensors that are not the graph output must be marked and
-        // expanded before allocation, or the allocator reuses their buffers.
-        for (ggml_tensor * tensor : layer_tensors) {
-            ggml_set_output(tensor);
-            ggml_build_forward_expand(run.graph(), tensor);
-        }
-        ggml_set_output(final_tensor);
-        ggml_build_forward_expand(run.graph(), final_tensor);
-    }
-    const double         started = now_seconds();
-    const synth_status_t status  = run.run(logits_tensor, "omnivoice.generator", threads, on_primary);
+    const synth_status_t status = branch.run->run(branch.logits, "omnivoice.generator", threads, on_primary);
     if (status != SYNTH_OK) {
         return status;
     }
     // All four accumulate ACROSS forwards, and a decode run makes two per step:
     // `generator_placement.nodes` is a running total, not a graph's node count.
     // Only the probe-only path (one forward) leaves it equal to one graph's.
-    output.generator_seconds += now_seconds() - started;
-    output.generator_setup_seconds += run.setup_seconds;
-    output.generator_placement.nodes += run.placed_nodes;
-    output.generator_placement.accelerator_nodes += run.accelerator_nodes;
+    // The placement pair is the GraphRun's retained answer from its single
+    // allocation, so a reused branch still contributes one graph's worth per
+    // forward and the running total is what it was before reuse.
+    const double elapsed = now_seconds() - entered;
+    output.generator_seconds += elapsed;
+    output.generator_setup_seconds += elapsed - branch.run->compute_seconds;
+    output.generator_placement.nodes += branch.run->placed_nodes;
+    output.generator_placement.accelerator_nodes += branch.run->accelerator_nodes;
 
-    read_floats(logits_tensor, logits);
+    read_floats(branch.logits, logits);
     if (probing) {
         *probes.logits_full = logits;
         read_floats(final_tensor, *probes.final_hidden);
@@ -392,6 +482,44 @@ synth_status_t generator_branch_forward(const BackendPlan &       plan,
         }
     }
     return SYNTH_OK;
+}
+
+// The compute-buffer cost of holding both branches at once, behind the same
+// switch the placement dump uses. Reuse raises peak device memory: a
+// per-forward rebuild held one branch's buffer at a time, and this holds the
+// conditional and unconditional buffers together for the whole decode loop.
+// That is irrelevant on a large unified-memory device and is exactly the number
+// that decides it on a small discrete one, so it is reportable rather than
+// argued about. Called while both branches are still live.
+void log_branch_buffers_if_enabled(const GeneratorBranch & conditional, const GeneratorBranch & unconditional) {
+    const char * enabled = std::getenv("SYNTH_DEBUG_BACKEND_PLACEMENT");
+    if (enabled == nullptr || enabled[0] == '\0') {
+        return;
+    }
+    const size_t cond_bytes   = conditional.run == nullptr ? 0 : conditional.run->buffer_bytes();
+    const size_t uncond_bytes = unconditional.run == nullptr ? 0 : unconditional.run->buffer_bytes();
+    std::fprintf(stderr, "omnivoice_generator_buffers: conditional=%llu unconditional=%llu both_live=%llu\n",
+                 static_cast<unsigned long long>(cond_bytes), static_cast<unsigned long long>(uncond_bytes),
+                 static_cast<unsigned long long>(cond_bytes + uncond_bytes));
+}
+
+// Frees a branch's scheduler and arena, charging the cost to the same field the
+// rest of the branch's non-compute time goes to. Teardown is not a rounding
+// error -- ggml_backend_sched_free is where the compute buffer's device free
+// happens -- and before reuse it was paid 64 times per synthesis while being
+// counted by no field at all. Called explicitly rather than left to scope exit
+// so it lands inside the measurement; the destructor still runs on the error
+// paths, which report no timings anyway.
+void release_branch(GeneratorBranch & branch, SynthesisOutput & output) {
+    if (branch.run == nullptr) {
+        return;
+    }
+    const double started = now_seconds();
+    branch.run.reset();
+    branch.logits        = nullptr;
+    const double elapsed = now_seconds() - started;
+    output.generator_seconds += elapsed;
+    output.generator_setup_seconds += elapsed;
 }
 
 }  // namespace
@@ -647,13 +775,33 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         sinks.layer_hidden  = &output.layer_hidden;
     }
     std::vector<float> cond_logits;
-    status =
-        generator_branch_forward(*impl.backend_plan, impl.generator_weights, hparams, t_text, t_cond_audio, t_cond_pos,
-                                 threads, impl.generator_context != nullptr, sinks, cond_logits, output);
-    if (status != SYNTH_OK) {
-        return status;
+    // The two graphs this synthesis reuses, one per CFG branch. They are scoped
+    // to THIS CALL and must stay that way: the canvas geometry each one is
+    // allocated for is fixed for the life of the call (prompt.total() and
+    // prompt.target_frames are settled above, before the first forward, and
+    // nothing in the loop moves them) but differs from call to call, so there
+    // is no invalidation check to get wrong here -- and hoisting them to
+    // Model::Impl would need a shape key, a mutex, and would break the
+    // Loaded Model's immutable-and-shareable contract. Declared AFTER `inputs`
+    // so they destruct BEFORE it: the built graphs hold pointers into that
+    // buffer's tensors.
+    GeneratorBranch    cond_branch;
+    GeneratorBranch    uncond_branch;
+    {
+        // Probing expands extra ggml_set_output tensors into the graph, making
+        // it a third shape that no later forward wants; it happens once, so it
+        // gets a branch of its own that is released as soon as it is read.
+        GeneratorBranch probe_branch;
+        status = generator_branch_forward(*impl.backend_plan, impl.generator_weights, hparams,
+                                          probing ? probe_branch : cond_branch, t_text, t_cond_audio, t_cond_pos,
+                                          threads, impl.generator_context != nullptr, sinks, cond_logits, output);
+        release_branch(probe_branch, output);
+        if (status != SYNTH_OK) {
+            return status;
+        }
     }
     if (request.probe_only) {
+        release_branch(cond_branch, output);
         return SYNTH_OK;
     }
 
@@ -726,9 +874,9 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
             fill_shifted_audio_ids(prompt.grid.data(), total, prompt.audio_start(), prompt.audio_length(), codebooks,
                                    vocab, shifted);
             ggml_backend_tensor_set(t_cond_audio, shifted.data(), 0, ggml_nbytes(t_cond_audio));
-            status = generator_branch_forward(*impl.backend_plan, impl.generator_weights, hparams, t_text, t_cond_audio,
-                                              t_cond_pos, threads, impl.generator_context != nullptr, no_probes,
-                                              cond_logits, output);
+            status = generator_branch_forward(*impl.backend_plan, impl.generator_weights, hparams, cond_branch, t_text,
+                                              t_cond_audio, t_cond_pos, threads, impl.generator_context != nullptr,
+                                              no_probes, cond_logits, output);
             if (status != SYNTH_OK) {
                 return status;
             }
@@ -741,9 +889,9 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
             // identical generator weights.
             fill_shifted_audio_ids(canvas.data(), frames, 0, frames, codebooks, vocab, uncond_shifted);
             ggml_backend_tensor_set(t_uncond_audio, uncond_shifted.data(), 0, ggml_nbytes(t_uncond_audio));
-            status = generator_branch_forward(*impl.backend_plan, impl.generator_weights, hparams, nullptr,
-                                              t_uncond_audio, t_uncond_pos, threads, impl.generator_context != nullptr,
-                                              no_probes, uncond_logits, output);
+            status = generator_branch_forward(*impl.backend_plan, impl.generator_weights, hparams, uncond_branch,
+                                              nullptr, t_uncond_audio, t_uncond_pos, threads,
+                                              impl.generator_context != nullptr, no_probes, uncond_logits, output);
             if (status != SYNTH_OK) {
                 return status;
             }
@@ -875,6 +1023,14 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         }
     }
     output.codes = std::move(canvas);
+
+    // The generator is finished with, so give its two compute buffers back
+    // before the codec asks for its own. Reuse holds both branches live for the
+    // whole decode loop where a per-forward rebuild held one at a time; freeing
+    // here keeps that raised peak from also overlapping the codec's.
+    log_branch_buffers_if_enabled(cond_branch, uncond_branch);
+    release_branch(cond_branch, output);
+    release_branch(uncond_branch, output);
 
     status = decode_codes(output.codes, frames, threads, output.audio, &output.codec_seconds, &output.codec_placement);
     if (status != SYNTH_OK) {

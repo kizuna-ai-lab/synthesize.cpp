@@ -133,8 +133,32 @@ dtype, regardless of shape. The reason a codec-only scope was chosen at all is
 a measured, prior finding rather than a convention: a reference port measured
 greedy-decode token agreement collapsing from 100% to roughly 7% under an F16
 *generator*, because an argmax flip at one committed step feeds back into
-every later step of the same synthesis. Quantizing the generator was never
-attempted here for that reason.
+every later step of the same synthesis.
+
+**The codec-only scope was lifted on 2026-08-09, and the first sentence still
+holds: this family remains F32-only.** jiangzhuo directed that generator
+profiles be built and measured, because the generator is 76.9% of the tensor
+bytes and no codec-only profile can go below about 2.62 GB however aggressive
+it is. Two were produced. Both confirm the prior finding about token agreement
+and neither is refuted by it — a quantized generator emits a *different valid
+realization*, not a wrong one, so token flip is recorded as data and is not a
+gate. What decides them is whether the voice changed, which only a listener can
+say.
+
+| Generator profile | Bytes | Reduction | Greedy token flip | Status |
+| --- | ---: | ---: | ---: | --- |
+| `Q8_GEN` (Q8_0) | 1,390,699,680 | 56.4% | 95.83% | measured; **held for a Listening Audit** |
+| `Q4_K_GEN` (Q4_K + Q8_0 pin) | 1,166,300,320 | 63.4% | 98.99% | **rejected on quality** |
+
+`Q8_GEN`'s codec half is bit-identical to the F32 package, so its clone RVQ
+encode is byte-exact and it passes every hard gate; what holds it is a
+speaker-identity sweep moving 6 of 16 cases into a different register against
+an accepted baseline of 1. `Q4_K_GEN` is rejected because ten of seventeen
+renders acquire a DC pedestal and collapse their envelope while buying no
+throughput at all. Neither profile name is confirmed and neither package is
+published; the full comparison, both packages' digests and the reasoning are in
+`reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md` (2026-08-09) and
+`docs/quantization.md`.
 
 Codec-only profiles were produced and measured against this family's own
 exact-token gate (below), and **every one of them failed it**:

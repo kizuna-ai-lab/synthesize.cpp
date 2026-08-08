@@ -3,6 +3,9 @@
 Status: VITS F16 and Q8_MIXED version 1 functionally validated on 2026-07-23;
 both profiles re-cut on 2026-07-27 with transpose-convolution weights held at F32.
 Kokoro F16 and Q8_MIXED version 1 functionally validated on 2026-07-26.
+OmniVoice profiles measured on 2026-08-09 and **none shipped**: `Q8_GEN` awaits a
+Listening Audit, `Q4_K_GEN` is rejected on quality, and `Q8_MIXED` is blocked on
+the exact-token gate. See "OmniVoice Profiles," below.
 
 ## Validation Sequence
 
@@ -137,6 +140,92 @@ build/bin/synthesize-quantize \
   models/kokoro-v1-0/kokoro-v1-0-Q8_MIXED.gguf \
   --quant Q8_MIXED
 ```
+
+## OmniVoice Profiles
+
+OmniVoice is the first family here to need **family-specific profile names**,
+and the first whose profiles split by model half. Every other family's
+`Q8_MIXED` means "this family's large matrix weights, halved or blocked"; this
+family has two halves with opposite risk, so a profile quantizes exactly one of
+them and the name says which. `classify_tensor_for_half` enforces that
+invariant — there is no combined profile.
+
+| profile | quantizes | bytes | off F32 | status as of 2026-08-09 |
+| --- | --- | ---: | ---: | --- |
+| F32 | nothing | 3,189,953,504 | — | reference, shipped |
+| F16 | everything halved | 2,858,422,240 | 10.4% | measured |
+| `Q8_MIXED` | codec only, convolutions exempt | 2,778,427,360 | 12.9% | **BLOCKED** on the exact-token gate |
+| `Q8_GEN` | generator only, Q8_0 | 1,390,699,680 | 56.4% | **measured, not shipped** — awaits a Listening Audit |
+| `Q4_K_GEN` | generator only, Q4_K + pin | 1,166,300,320 | 63.4% | **REJECTED on quality** |
+
+**The generator is 76.9% of the tensor bytes** (2,450,309,120 of 3,184,565,636),
+so no codec-only profile can go below about 2.62 GB. That single fact is why
+this family grew generator profiles at all.
+
+### `Q8_GEN` — generator only
+
+199 two-dimensional generator weights at Q8_0; all 486 `codec.*` tensors and the
+113 generator norms stay F32 and are **bit-identical** to the F32 package. The
+codec half therefore inherits its validation exactly rather than within a
+tolerance, and RVQ encode stays byte-exact — the argument for cutting this
+profile before any codec profile.
+
+Two tables are pinned to Q8_0 rather than following the profile: CUDA's
+`GET_ROWS` supports no k-quant, and `llm.embed_tokens.weight` and
+`audio_embeddings.weight` are read by `ggml_get_rows`. Under `Q8_GEN` the pin is
+free; under `Q4_K_GEN` it costs 78.06 MiB and is what keeps the whole graph off
+the CPU.
+
+It buys size, memory and load time, and **no throughput**: 1.2% on CUDA and
+nothing on CPU, both inside run-to-run spread. Accelerator twin 2,336.80 MiB →
+620.90 MiB; peak CUDA RSS 4,019 MiB → 1,915 MiB, which is what puts a
+deployment under 2 GiB. Load time 2.58 s → 1.16 s.
+
+It is **not shipped.** Its speaker-identity F0 sweep moves 6 of 16 cases into a
+different register where the accepted CPU→CUDA placement baseline moves 1 — and
+that baseline case is one a listener called *different people*. Two independent
+pitch instruments agree on the count. A quantized generator produces a different
+valid realization rather than a wrong one, so the exact-token gate cannot
+adjudicate this and the ear has to.
+
+### `Q4_K_GEN` — rejected
+
+197 generator weights at Q4_K, the two lookup tables pinned Q8_0. It passes every
+hard gate, its placement proof is clean, and the pin is demonstrated necessary
+rather than predicted. It is rejected anyway: over `Q8_GEN` it buys 224 MB and
+**zero throughput** (0.3% slower on CUDA, 1.6% slower on CPU), while ten of
+seventeen renders acquire a DC pedestal reaching −0.0924 and envelope ratios
+collapse by two to three orders of magnitude.
+
+Recorded because it generalizes: **the speaker-identity proxy fails in the
+dangerous direction here.** A render degraded until the pitch tracker finds no
+voiced frame is scored *not comparable* rather than *changed*, so the proxy's
+headline reads clean on a profile the degeneracy screen says is broken. A pitch
+instrument answers "different speaker"; it cannot answer "not a voice". Both
+must run.
+
+### `Q8_MIXED` — codec only, convolutions exempt
+
+Redefined on 2026-08-09 rather than renamed, being blocked and unpublished at
+the time. This family **never block-quantizes a convolution kernel**: a fifth
+`QuantRole`, `ConvKernel`, holds all 85 codec convolutions at the profile's
+halved fallback at native three-axis shape, and the only codec tensors a profile
+still quantizes are 73 HuBERT Linears whitelisted positively by module name. The
+rule reads the name and never the rank — `codec.acoustic_decoder.conv2.weight`
+is `[7, 32, 1]`, which `ggml_n_dims` collapses into something indistinguishable
+from a Linear.
+
+That took clone-path RVQ drift from 1,023 of 2,808 positions to 98, a factor of
+10.4, and attribution showed all of the remainder is convolution precision:
+quantizing the 73 Linears to Q8_0 costs nothing measurable (98 against F16's
+103) while saving 80 MB, whereas convolutions at F32 instead of F16 reach 19 of
+2,808 for 161 MB more. The profile is still **blocked** — `ref.tokens` is 0/2
+exact, the one gate with no "different valid realization" defence.
+
+Consequently this family deliberately does not use the packed-convolution branch
+this project built for it. That code stays, shared with three other families and
+covered by tests that build packed kernels directly; its presence is not
+evidence that OmniVoice packs convolutions.
 
 ## Validation
 

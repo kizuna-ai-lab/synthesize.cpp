@@ -5063,3 +5063,214 @@ would be quantized again) makes all four of
 
 No timing was measured in this task, so the load average during the correctness
 runs (2.8 one-minute) does not affect any number recorded here.
+
+## 2026-08-09 — The three profiles compared, independently re-verified, and put up as one decision
+
+Three agents built and measured `Q8_GEN`, `Q4_K_GEN` and the conv-exempt
+redefinition of `Q8_MIXED` in sequence. This entry is the cross-check and the
+comparison: every gate re-run on the committed tree at `b5668de`, the single
+most consequential measurement of each report reproduced with a *different*
+instrument, and the whole ladder in one table. Nothing here was published
+anywhere and no package was cut.
+
+### What was re-run, not inherited
+
+| gate | result at `b5668de` |
+| --- | --- |
+| `ctest -L unit` on `build/rel-dgx-spark` | **90/90 passed**, exit 0 (51.0 s) |
+| `ctest -L omnivoice -L integration` | **9/9 passed**, exit 0 (1088.4 s) |
+| — incl. `synthesize-omnivoice-replay-golden` (CPU) | passed, 456.7 s |
+| — incl. `synthesize-omnivoice-replay-golden-cuda` | passed, 96.6 s |
+| — incl. `synthesize-omnivoice-load-real` | passed, 4.8 s |
+| — incl. `synthesize-omnivoice-profile-test` | passed, 108.0 s |
+| package sizes + sha256, all five, re-hashed | all reproduce exactly |
+
+**A trap in the golden fixtures, found while verifying and worth fixing.**
+`synthesize-omnivoice-replay-golden` and `synthesize-omnivoice-replay-golden-cuda`
+pass no `--work`, so both write to the validator's default
+`build/goldens/omnivoice-replay`. The CUDA test runs second and **overwrites the
+CPU test's renders**, while `full-report.json` in that directory is a stale
+artifact from 2026-07-31 that still says `backend: CPU`. Anyone who inspects
+that directory after a full `ctest` run is reading CUDA audio under a CPU
+label. This nearly produced a false alarm here: the "F32/CPU" renders the Q8
+measurement used disagreed with that directory and looked mislabelled. They are
+not — resolved by comparing against the oracle itself, and
+`/tmp/q8gen/scratch/f32-cpu` is **grid-exact against
+`build/goldens/omnivoice/<case>/codes/grid.i32`** on every case checked, while
+the directory written by the test run is not. The fixtures should take distinct
+`--work` paths.
+
+### The comparison
+
+Sizes and hashes re-verified by direct `stat`/`sha256sum`. Predicted-vs-actual
+uses each profile's own pre-cut prediction.
+
+| profile | predicted bytes | actual bytes | Δ | off F32 | sha256 (16) |
+| --- | ---: | ---: | ---: | ---: | --- |
+| F32 (reference) | — | 3,189,953,504 | — | — | `f6d504ffaddcbf32` |
+| F16 | — | 2,858,422,240 | — | 10.4% | `530b2b85d7d1950f` |
+| `Q8_MIXED` conv-exempt | 2,778,427,360 | 2,778,427,360 | **0** | 12.9% | `3de73b73f3846faf` |
+| `Q8_GEN` | 1,390,700,256 | 1,390,699,680 | **−576** | **56.4%** | `27c3a5dcd769a491` |
+| `Q4_K_GEN` | 1,166,300,320 | 1,166,300,320 | **0** | 63.4% | `bd59811918d2b05f` |
+
+The −576 on `Q8_GEN` is the only miss and it is fully explained: the brief's
+model assumed the metadata block would be byte-identical to F32's, but
+`ggml_n_dims` collapses a trailing unit axis on 73 tensors (72 Snake alpha
+curves at `[1, C, 1]` plus the mono exit convolution at `[7, 32, 1]`), costing
+8 bytes of tensor-info each, against a +3-byte profile string, re-rounded to
+32-byte alignment. Both later profiles anchored on the shipped header instead
+and predicted exactly. **The correct rule for any package this tool cuts** is
+`raw tensor bytes + 5,387,840 − 584 − (8 × packed kernels) + (profile string
+delta)`, re-rounded to 32.
+
+| measure | F32 | `Q8_MIXED` (codec) | **`Q8_GEN`** | `Q4_K_GEN` |
+| --- | ---: | ---: | ---: | ---: |
+| quantized tensors | 0 | 73 Q8_0 + 85 F16 | 199 Q8_0 (generator) | 197 Q4_K + 2 Q8_0 |
+| CUDA RTF (re-measured here) | 0.15448 | not measured | **0.15267** (1.2% faster) | 0.15314 (0.9%) |
+| CPU RTF (two agents) | 4.04 / 4.30 | not measured | 4.02 / 4.35 | 4.37 |
+| load time, CUDA | 2.58 s | — | **1.16 s** | 1.05 s |
+| accelerator twin (generator) | 2,336.80 MiB | unchanged | **620.90 MiB** | 406.89 MiB |
+| peak RSS, CUDA | 4,019 MiB | — | **1,915 MiB** | 1,702 MiB |
+| clone RVQ drift / 2,808 | 0 | 98 (3.49%) | **0** (codec bit-identical) | **0** |
+| F0 sweep, committed proxy | 1/16 (baseline) | n/a (generator untouched) | **6/16** | 6/16 CPU, 8/16 CUDA |
+| F0 sweep, independent cepstral | 1/17 (baseline) | n/a | **6/17** | not swept |
+| degeneracy: renders with \|DC\|>0.03 | 1 of 17 | n/a | **1 of 17** | **10 of 17** |
+| Tier 1 hard gates | pass | pass | **pass** | pass |
+| exact-token gate | pass | **0/2 `ref.tokens` — BLOCKED** | n/a (generator-half) | n/a |
+
+CPU RTF is quoted as both agents' medians because they measured on differently
+loaded hosts; the arms are indistinguishable inside each agent's own noise
+floor and no speed claim is made from either.
+
+### The two measurements re-derived with a different instrument
+
+**F0 sweep.** The committed proxy (`scripts/omnivoice-speaker-proxy.py`) uses
+YIN and a normalised cross-correlation tracker. This check used **cepstral
+pitch detection** — a third method, so agreement is evidence rather than a
+re-run. Absolute values differ, as two pitch estimators on the same audio
+will; the structure does not. On the accepted `F32/CPU → F32/CUDA` baseline the
+independent instrument puts **every case at or below 0.088 except
+`omni-short-en` at 0.136** — the one case a human listened to on 2026-08-08 and
+called *different people*. Taking that ear-confirmed value as the line, the
+same instrument scores `F32/CPU → Q8_GEN/CPU` at **6 of 17**, against **1 of
+17** for the baseline. The committed proxy's 6-of-16 reproduces.
+
+The two instruments disagree about *which* six — the cepstral method puts
+`omni-medium-en` at 0.053 (the committed proxy says 0.33) and `omni-nonverbal`
+at 0.167 (the committed proxy says unmoved) — so the count is solid and the
+per-case attribution is not. Both disagreements are pinned into the listening
+material below rather than argued.
+
+| case | committed proxy shift | independent cepstral shift |
+| --- | ---: | ---: |
+| `omni-short-ja` | 0.70 | **0.83** |
+| `omni-short-en` | 0.58 | 0.20 |
+| `omni-fast-mode` (16-step, rejected config) | 0.36 | 0.37 |
+| `omni-digits` | 0.34 | 0.29 |
+| `omni-medium-en` | 0.33 | **0.05** ← disagree |
+| `omni-clone-zh` | 0.29 | 0.23 |
+| `omni-nonverbal` | unmoved | **0.17** ← disagree |
+| `omni-upstream-readme` (control) | unmoved | 0.04 |
+
+**Degeneracy.** An independently written screen (DC offset, zero-crossing rate,
+95th/5th-percentile 20 ms envelope ratio) confirms the `Q4_K_GEN` verdict
+without qualification. Counting renders with `|DC| > 0.03`: F32/CPU **1**
+(the pre-existing `omni-rate-fast`), `Q8_GEN`/CPU **1** (the same one),
+`Q4_K_GEN`/CPU **10**, reaching **−0.0924** on `omni-lang-none` — the figure the
+Q4 agent reported, reproduced. Envelope ratios collapse from F32's hundreds-to-
+thousands to **1.8–6.2** on ten `Q4_K_GEN` renders.
+
+The qualitative separation is the part worth keeping: **`Q8_GEN` moves envelope
+in both directions** (`omni-short-en` 11 → 310, `omni-short-zh` 1,037 → 11,289,
+against `omni-design-zh` 965 → 76 and `omni-nonverbal` 3,272 → 132) — the
+signature of a different valid realization. **`Q4_K_GEN` moves it one way only,
+collapse, on nearly everything, with a DC pedestal underneath.** That is the
+signature of a broken decode, and it is why the two profiles get different
+verdicts despite similar F0 counts.
+
+One `Q8_GEN` observation the earlier screen did not surface, recorded because
+it is a real loss: `omni-design-zh` loses 12.7× of its dynamic range
+(envelope 965 → 76) and `omni-nonverbal` 24.8×. Neither is degenerate by the
+DC/ZCR test, and `omni-nonverbal` is one of the two cases the instruments
+disagree about, so it is in the listening set.
+
+### The listening material — built, not just recommended
+
+Six blind pairs plus two clone triples, ready for jiangzhuo. **Both arms are
+CPU**, deliberately: the generator's CPU-vs-CUDA token drift is then present in
+both arms and cancels, so every audible difference is attributable to the
+profile alone — the same construction the 2026-08-08 step-count audit used.
+
+Cases are **pinned by measurement, not sampled.** The 2026-08-08 audit's own
+closing recommendation was that coverage-plus-random-draw let the most
+sensitive case go unheard; this set spends all six slots on information.
+`omni-fast-mode` is deliberately excluded despite moving on both instruments —
+it runs at 16 steps, a configuration this project already rejected, and hearing
+it would confound the profile question with a decision already made.
+
+| pair | case | why this case | slot A |
+| --- | --- | --- | --- |
+| 1 | `omni-short-ja` | largest move on both instruments (0.70 / 0.83) | `Q8_GEN` |
+| 2 | `omni-short-en` | the case the 2026-08-08 ear called *different people* | `Q8_GEN` |
+| 3 | `omni-digits` | both move (0.34 / 0.29); intelligibility | F32 |
+| 4 | `omni-medium-en` | **instruments disagree** (0.33 vs 0.05) | F32 |
+| 5 | `omni-nonverbal` | **disagree the other way** (unmoved vs 0.17); envelope 3,272 → 132 | F32 |
+| 6 | `omni-upstream-readme` | **control**, both agree unmoved | `Q8_GEN` |
+| clone 1 | `omni-clone-en` | target-relative; F32 already within 13% of the clip | `Q8_GEN` |
+| clone 2 | `omni-clone-zh` | F32 sits 37% *above* the target, `Q8_GEN` lands nearer | F32 |
+
+Assignment is **balanced** by construction — `swap_flags = [True]*3 + [False]*3`
+then `random.Random(2026080901).shuffle` — so exactly three pairs present
+`Q8_GEN` as A. `order_seed 2026080901` is distinct from `20260808`,
+`2026080816` and `2026080817` so the four orderings cannot be confused; the
+naive per-pair draw it replaces is recorded in the manifest, per precedent.
+Clone triples present the reference clip **not blind** and labelled as the
+target, because clone identity is judged against the clip rather than against
+F32.
+
+Audio: `$CLAUDE_JOB_DIR/q8gen-audit/audio/` (`pair_N_{A,B}.wav`,
+`clone_N_{reference,A,B}.wav`, 24 kHz mono). The answer key, with sha256 for
+every WAV and every source `pcm_freerun.f32`, is
+`$CLAUDE_JOB_DIR/q8gen-audit/audit-manifest.json` — a **sibling of** the audio
+directory, never inside it. Checked for identity leaks before release: no
+arm-identifying filename, no string metadata in any WAV, and every pair
+byte-length identical (structural invariance makes this free). No HTML page was
+built.
+
+### Recommendation, and what is jiangzhuo's to decide
+
+**Recommended: ship `Q8_GEN` only after the listening pass above returns; do
+not ship `Q4_K_GEN` at all; keep the conv-exempt policy as policy.**
+
+`Q4_K_GEN` is settled on evidence rather than taste. Over `Q8_GEN` it buys 224
+MB of package, 213 MiB of RSS and 0.11 s of load, and **zero throughput** —
+re-measured here at 0.3% *slower* than `Q8_GEN` on CUDA. Against that: ten of
+seventeen renders carry a DC pedestal, envelopes collapse by two to three
+orders of magnitude, and the committed proxy **fails in the dangerous
+direction** — a render degraded until YIN finds no voiced frame is scored "not
+comparable" rather than counted, so the instrument's own headline reads clean
+on a profile the degeneracy screen says is broken. The code is correct and
+tested and the Q8_0 embedding pin is demonstrated necessary; nothing about that
+argues for cutting a release package from it.
+
+`Q8_GEN` is the honest candidate and its case is strong everywhere except the
+one place that decides it. Confirmed here: 56.4% off the file, the accelerator
+twin at 620.90 MiB, peak CUDA RSS under 2 GiB, the codec half **bit-identical**
+to F32 (486 tensors, 734,256,516 bytes, zero differing), RVQ codes byte-exact,
+clone fidelity unharmed against the target, every hard gate green. Against it:
+six of sixteen cases move register where the accepted baseline moves one, and
+that baseline of one is not a tolerance — it is a case a human called *different
+people*. Two independent instruments agree on the count. That is 4–6× the
+accepted rate and it has never been adjudicated by ear.
+
+**The claim this profile may honestly make is size, memory and load time. Not
+speed** — 1.2% on CUDA, nothing on CPU, both inside run-to-run spread. The
+plan's Task 7 anchor (RTF 0.1906) is stale and comparing against it would
+re-publish the Plan 5 closeout's already-banked win as if it were new.
+
+Open items this entry does not close: `tests/omnivoice_load_real.cpp:267`
+hard-codes `info.quantization_profile == "F32"` and must widen before any
+per-profile load gate can register; the free-run waveform is still compared
+against nothing once the grid drifts, which is why the `Q4_K_GEN` degeneracy
+had to be found by hand; and neither generator profile has a tolerance cell or
+a registered CTest target.

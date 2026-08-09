@@ -15,29 +15,71 @@ namespace {
 // The `row_lookup_type` column is read only by a family whose classifier
 // reports QuantRole::RowLookup, which today is omnivoice alone; for the other
 // three it is inert (policy.h).
+//
+// Naming, ruled by jiangzhuo on 2026-08-09: for omnivoice -- the one family
+// whose profiles do not all quantize the same half -- **the half a profile
+// quantizes determines its name**. The generator half takes the plain name
+// (`F16`, `Q8`, `Q4_K`, `BF16`) and the codec half takes a `_CODEC` qualifier
+// (`F16_CODEC`, `Q8_CODEC_MIXED`). This lands omnivoice's shipping profiles on
+// the names the three sibling families already publish, and it is a rule about
+// the artifact rather than about ship status, so a codec profile becoming
+// shippable later does not force another rename. The former `_GEN`-suffixed
+// names are gone; see the porting log's 2026-08-09 entry for the full mapping.
+//
+// Which rows are shared and which are one family's is load-bearing here. `F16`,
+// `Q8_MIXED` and `Q5_K_MIXED` predate omnivoice and are what VITS, Kokoro and
+// Qwen3-TTS publish; their names are a public contract with already-shipped
+// packages and cannot move. So omnivoice's codec-half profiles get their own
+// rows below rather than renaming those, while omnivoice's generator-half F16
+// reuses the shared `F16` row -- see omnivoice_quantized_half for why that row
+// serves both meanings without ambiguity.
 const Profile kProfiles[] = {
-    { "F16",        GGML_TYPE_F16,  TensorLayout::Native,       GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_F16,  1, 1 },
-    { "Q8_MIXED",   GGML_TYPE_Q8_0, TensorLayout::PackedMatrix, GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_Q8_0,
-     GGML_FTYPE_MOSTLY_Q8_0,                                                                                     1 },
+    // Shared. For VITS/Kokoro/Qwen3-TTS this is the codec/decoder-half F16 it
+    // has always been. For omnivoice it is the **generator** half, per the
+    // naming rule above; `transpose_weight_type` is inert on that path, so the
+    // one row means both things without a second F16 entry. See
+    // omnivoice_quantized_half.
+    { "F16",            GGML_TYPE_F16,  TensorLayout::Native,       GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_F16,  1, 1 },
+    // Shared, and NOT an omnivoice profile: omnivoice's codec-half mixed
+    // profile is `Q8_CODEC_MIXED` below. Cutting an omnivoice package with this
+    // name still produces a codec-half package -- omnivoice_quantized_half's
+    // default -- but the omnivoice runtime refuses to load the resulting
+    // profile string, which is the same loud refusal `Q5_K_MIXED` already gets
+    // from that family.
+    { "Q8_MIXED",       GGML_TYPE_Q8_0, TensorLayout::PackedMatrix, GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_Q8_0,
+     GGML_FTYPE_MOSTLY_Q8_0,                                                                                         1 },
     // Q5_K is a super-block of 256, so it needs a row four times longer than
     // Q8_0 does. Qwen3-TTS clears that everywhere it quantizes -- its rows are
     // 1024, 2048 and 3072 -- while a family whose matrix weights are packed
     // convolution kernels will not, and is refused by the row-size check with
     // the tensor named rather than by a rule here.
-    { "Q5_K_MIXED", GGML_TYPE_Q5_K, TensorLayout::PackedMatrix, GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_Q8_0,
-     GGML_FTYPE_MOSTLY_Q5_K,                                                                                     1 },
-    // OmniVoice's generator-half profile, and the first profile in this table
-    // that quantizes something other than a codec/decoder. Its matrix weight
-    // layout says PackedMatrix like its siblings, but nothing under it is ever
-    // actually packed: every generator matrix is two-dimensional and
+    { "Q5_K_MIXED",     GGML_TYPE_Q5_K, TensorLayout::PackedMatrix, GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_Q8_0,
+     GGML_FTYPE_MOSTLY_Q5_K,                                                                                         1 },
+    // OmniVoice's two codec-half profiles. Field-for-field these duplicate the
+    // shared `F16` and `Q8_MIXED` rows above; only the name differs, and the
+    // name is the whole point -- it is what omnivoice_quantized_half reads to
+    // decide the half, and what the package's
+    // `synthesize.quantization.profile` string then carries to a reader. They
+    // exist as separate rows rather than as a rename of the shared pair
+    // because those two names belong to three other families' published
+    // packages. Both are BLOCKED and unpublished for omnivoice: the codec is
+    // only 23.1% of this package's tensor bytes, so no codec-only profile
+    // reaches the sizes this family needs.
+    { "F16_CODEC",      GGML_TYPE_F16,  TensorLayout::Native,       GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_F16,  1, 1 },
+    { "Q8_CODEC_MIXED", GGML_TYPE_Q8_0, TensorLayout::PackedMatrix, GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_Q8_0,
+     GGML_FTYPE_MOSTLY_Q8_0,                                                                                         1 },
+    // OmniVoice's generator-half Q8_0 profile, and the first profile in this
+    // table that quantizes something other than a codec/decoder. Its matrix
+    // weight layout says PackedMatrix like its siblings, but nothing under it
+    // is ever actually packed: every generator matrix is two-dimensional and
     // quantize.cpp demotes a two-dimensional matrix_family tensor to Native,
     // because packing a [1024, 3072] projection would flatten it into one
     // meaningless row of 3,145,728. The codec stays F32 not because
     // `sensitive_type` says so but because this profile's classifier arm holds
     // the whole codec half at Sensitive -- see resolve_omnivoice_target_spec.
-    { "Q8_GEN",     GGML_TYPE_Q8_0, TensorLayout::PackedMatrix, GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_Q8_0,
-     GGML_FTYPE_MOSTLY_Q8_0,                                                                                     1 },
-    // The same half as Q8_GEN, four bits deep -- and the first profile in this
+    { "Q8",             GGML_TYPE_Q8_0, TensorLayout::PackedMatrix, GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_Q8_0,
+     GGML_FTYPE_MOSTLY_Q8_0,                                                                                         1 },
+    // The same half as Q8, four bits deep -- and the first profile in this
     // table where `row_lookup_type` differs from `matrix_weight_type` rather
     // than agreeing with it by coincidence. Q4_K is a k-quant, and CUDA's
     // GET_ROWS accepts none: its type list is F16/F32/BF16/I32/Q1_0/Q4_0/Q4_1/
@@ -53,28 +95,33 @@ const Profile kProfiles[] = {
     // weights have rows of 1024, 2048 or 3072. A row that did not would be
     // refused by quantize.cpp's row-size check with the tensor named, not
     // silently demoted.
-    { "Q4_K_GEN",   GGML_TYPE_Q4_K, TensorLayout::PackedMatrix, GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_Q8_0,
-     GGML_FTYPE_MOSTLY_Q4_K,                                                                                     1 },
-    // PROVISIONAL NAME -- not yet confirmed with jiangzhuo (Task 3 Step 1's
-    // naming rule applies here too). The same generator half as Q8_GEN, at
-    // the reference dtype narrowed rather than block-quantized: F16 has a
+    { "Q4_K",           GGML_TYPE_Q4_K, TensorLayout::PackedMatrix, GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_Q8_0,
+     GGML_FTYPE_MOSTLY_Q4_K,                                                                                         1 },
+    // There is deliberately no fourth generator row for F16. The same
+    // generator half at a narrowed reference dtype rather than a
+    // block-quantized one is cut with the shared `F16` row at the top of this
+    // table, which omnivoice_quantized_half reads as the generator half. That
+    // row's only disagreement with a hypothetical omnivoice-specific one is
+    // `transpose_weight_type` (F16 there, F32 here), and that column is never
+    // read on a generator-half omnivoice cut: TransposeWeight hardcodes F32 in
+    // resolve_omnivoice_target_spec, and the ConvKernel arm that does read the
+    // column cannot be reached, because classify_tensor_for_half holds the
+    // whole codec half -- where every convolution in this family lives -- at
+    // Sensitive. Verified by re-cutting rather than by reading: against the
+    // package the removed `F16_GEN` row produced, the only differing GGUF KV
+    // value is `synthesize.quantization.profile` itself, the 798 tensor infos
+    // are identical, and no byte at or after the tensor-data offset differs.
+    //
+    // F16 is viable on this backend for the two ops this half uses: it has a
     // native CUDA matrix-multiply path (ggml/src/ggml-cuda/mmf.cu's
     // GGML_TYPE_F16 case, MMA-backed on Ampere+) and a native GET_ROWS path
-    // (ggml/src/ggml-cuda/getrows.cu), so unlike Q8_0/Q4_K this profile never
-    // dequantizes before either op. `matrix_weight_layout` is Native, like the
-    // codec-half `F16` row above: F16 is not `ggml_is_quantized`, so it is
-    // never a candidate for the packed-matrix branch quantize.cpp's demotion
-    // exists to guard, and there is nothing to pack in a two-dimensional
-    // generator weight regardless. `row_lookup_type` matches
-    // `matrix_weight_type` because CUDA's GET_ROWS accepts F16
-    // (quantization.h's RowLookup), so the two roles do not need to diverge
-    // the way Q4_K_GEN's do.
-    { "F16_GEN",    GGML_TYPE_F16,  TensorLayout::Native,       GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F16,  1, 1 },
-    // PROVISIONAL NAME, same caveat as F16_GEN above. bfloat16 rather than
-    // IEEE half: wider exponent, fewer mantissa bits, no dynamic-range
-    // rescaling needed going in or out. Verified viable on this backend by
-    // reading ggml-cuda.cu's own `supports_op` before writing this row rather
-    // than assuming it from F16's presence: MUL_MAT accepts
+    // (ggml/src/ggml-cuda/getrows.cu), so unlike Q8_0/Q4_K it never
+    // dequantizes before either.
+    //
+    // bfloat16 rather than IEEE half: wider exponent, fewer mantissa bits, no
+    // dynamic-range rescaling needed going in or out. Verified viable on this
+    // backend by reading ggml-cuda.cu's own `supports_op` before writing this
+    // row rather than assuming it from F16's presence: MUL_MAT accepts
     // GGML_TYPE_BF16 (ggml/src/ggml-cuda/ggml-cuda.cu:5121-5187, checked at
     // line 5182) and so does GET_ROWS
     // (ggml/src/ggml-cuda/ggml-cuda.cu:5190-5207, checked at line 5195) --
@@ -82,10 +129,10 @@ const Profile kProfiles[] = {
     // narrower list Q8_0 and Q4_K sit inside. mmf.cu's
     // `ggml_cuda_should_use_mmf` further confirms BF16 reaches the same
     // MMA-backed kernel F16 does on Ampere-and-later compute capability, not
-    // a dequantize-then-F32 fallback. `matrix_weight_layout` is Native for
-    // the same reason as F16_GEN's: BF16 is not `ggml_is_quantized` either.
-    { "BF16_GEN",   GGML_TYPE_BF16, TensorLayout::Native,       GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_BF16,
-     GGML_FTYPE_MOSTLY_BF16,                                                                                     1 },
+    // a dequantize-then-F32 fallback. `matrix_weight_layout` is Native because
+    // BF16, like F16, is not `ggml_is_quantized`.
+    { "BF16",           GGML_TYPE_BF16, TensorLayout::Native,       GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_BF16,
+     GGML_FTYPE_MOSTLY_BF16,                                                                                         1 },
 };
 
 bool iequals(const char * lhs, const char * rhs) {
@@ -545,9 +592,24 @@ namespace {
 // The runtime states the same mapping over its own profile enum
 // (src/arch/omnivoice/catalog.cpp's expected_type) -- the pairing is the same
 // one weights.cpp already maintains between these names and that enum.
+//
+// Since jiangzhuo's naming ruling of 2026-08-09 the name IS the half, so this
+// function reads as the rule rather than as a lookup table that happens to
+// agree with one: the four plain names are the generator, and anything else --
+// `F16_CODEC`, `Q8_CODEC_MIXED`, and the sibling families' `Q8_MIXED` and
+// `Q5_K_MIXED` -- is the codec. Note `F16` is listed here and is also the row
+// VITS, Kokoro and Qwen3-TTS cut their codec/decoder halves with; that is not
+// a contradiction, because this function is only ever consulted on the
+// omnivoice dispatch path (quantize.cpp keys on general.architecture).
+//
+// The two sibling names falling through to Codec is a reachable but harmless
+// state: cutting an omnivoice package as `Q8_MIXED` writes a codec-half
+// package whose profile string the omnivoice runtime then refuses by name
+// (weights.cpp's read_quantization), which is the same loud refusal
+// `Q5_K_MIXED` has always got from this family.
 synth::omnivoice::ModelHalf omnivoice_quantized_half(const Profile & profile) {
-    return iequals(profile.name, "Q8_GEN") || iequals(profile.name, "Q4_K_GEN") || iequals(profile.name, "F16_GEN") ||
-                   iequals(profile.name, "BF16_GEN") ?
+    return iequals(profile.name, "Q8") || iequals(profile.name, "Q4_K") || iequals(profile.name, "F16") ||
+                   iequals(profile.name, "BF16") ?
                synth::omnivoice::ModelHalf::Generator :
                synth::omnivoice::ModelHalf::Codec;
 }
@@ -586,9 +648,9 @@ bool resolve_omnivoice_target_spec(const Profile & profile, const std::string & 
             // quantizer falls back to for a matrix it will not block-quantize
             // (quantize.cpp's matrix_is_block_quantizable branch), which is
             // what it means here too -- not "this is a transposed
-            // convolution". Under `Q8_MIXED` and `F16` it is F16; under the
-            // two generator-half profiles the codec is all Sensitive and this
-            // arm is never reached.
+            // convolution". Under `Q8_CODEC_MIXED` and `F16_CODEC` it is F16;
+            // under the four generator-half profiles the codec is all
+            // Sensitive and this arm is never reached.
             spec_out = { profile.transpose_weight_type, TensorLayout::Native };
             return true;
         case synth::omnivoice::QuantRole::Sensitive:

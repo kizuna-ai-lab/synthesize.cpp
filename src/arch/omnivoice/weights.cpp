@@ -59,29 +59,35 @@ bool read_quantization(const GgufMetadata & meta, HParams & hparams) {
         return false;
     }
     // The checkpoint stores F32 in both halves, so F32 is also the source
-    // profile. Q8_MIXED and F16 are Plan 4's codec-half Quantization
-    // Profiles; Q8_GEN, Q4_K_GEN, F16_GEN and BF16_GEN quantize the generator
-    // half instead and leave the codec byte-identical to F32. F16_GEN and
-    // BF16_GEN are provisional names, not yet confirmed with jiangzhuo. See
-    // quantization.h's QuantRole and ModelHalf for which tensors each actually
-    // touches. These strings are the same ones
+    // profile. Q8_CODEC_MIXED and F16_CODEC are Plan 4's codec-half
+    // Quantization Profiles; Q8, Q4_K, F16 and BF16 quantize the generator
+    // half instead and leave the codec byte-identical to F32. The `_CODEC`
+    // qualifier is the whole naming rule -- the half a profile quantizes
+    // determines its name (weights.h) -- so this list can be read as the rule
+    // rather than memorised. See quantization.h's QuantRole and ModelHalf for
+    // which tensors each actually touches. These strings are the same ones
     // tools/synthesize-quantize/policy.cpp's profile table carries -- that
     // table is where a new name is introduced, and this is where a package
     // carrying it becomes loadable.
+    //
+    // `Q8_MIXED` and `Q5_K_MIXED` are deliberately absent. They are the
+    // sibling families' names, they exist in that shared table, and a package
+    // cut for omnivoice under either of them lands here and is refused by
+    // name rather than being quietly aliased onto a codec profile.
     if (profile == "F32") {
         hparams.quantization_profile = QuantizationProfile::F32;
-    } else if (profile == "Q8_MIXED") {
-        hparams.quantization_profile = QuantizationProfile::Q8Mixed;
+    } else if (profile == "Q8_CODEC_MIXED") {
+        hparams.quantization_profile = QuantizationProfile::Q8CodecMixed;
+    } else if (profile == "F16_CODEC") {
+        hparams.quantization_profile = QuantizationProfile::F16Codec;
+    } else if (profile == "Q8") {
+        hparams.quantization_profile = QuantizationProfile::Q8;
+    } else if (profile == "Q4_K") {
+        hparams.quantization_profile = QuantizationProfile::Q4K;
     } else if (profile == "F16") {
         hparams.quantization_profile = QuantizationProfile::F16;
-    } else if (profile == "Q8_GEN") {
-        hparams.quantization_profile = QuantizationProfile::Q8Gen;
-    } else if (profile == "Q4_K_GEN") {
-        hparams.quantization_profile = QuantizationProfile::Q4KGen;
-    } else if (profile == "F16_GEN") {
-        hparams.quantization_profile = QuantizationProfile::F16Gen;
-    } else if (profile == "BF16_GEN") {
-        hparams.quantization_profile = QuantizationProfile::BF16Gen;
+    } else if (profile == "BF16") {
+        hparams.quantization_profile = QuantizationProfile::BF16;
     } else {
         std::fprintf(stderr, "omnivoice: unsupported quantization profile %s\n", profile.c_str());
         return false;

@@ -544,7 +544,7 @@ int check_real_package_count() {
     return 0;
 }
 
-// Widths for the Q8_MIXED variant of the small package. Every "in" dimension
+// Widths for the Q8_CODEC_MIXED variant of the small package. Every "in" dimension
 // a MatrixWeight tensor is ever block-quantized against -- packed (kernel *
 // in_channels) or native (a Linear's own row) -- has to be a multiple of
 // Q8_0's 32-element block, or ggml_new_tensor's own row-size assert fires
@@ -558,7 +558,7 @@ int check_real_package_count() {
 // `semantic.hidden_size` (already 32) are untouched.
 synth::omnivoice::HParams q8_mixed_hparams() {
     synth::omnivoice::HParams h  = small_hparams();
-    h.quantization_profile       = synth::omnivoice::QuantizationProfile::Q8Mixed;
+    h.quantization_profile       = synth::omnivoice::QuantizationProfile::Q8CodecMixed;
     h.codec.decoder_hidden_size  = 128;
     h.codec.encoder_hidden_size  = 32;
     h.codec.hidden_size          = 32;
@@ -568,7 +568,7 @@ synth::omnivoice::HParams q8_mixed_hparams() {
 }
 
 // Recasts one F32 entry list to what the offline quantizer would have written
-// for it under Q8_MIXED. Since the conv-exempt policy of 2026-08-09 that is:
+// for it under Q8_CODEC_MIXED. Since the conv-exempt policy of 2026-08-09 that is:
 // a MatrixWeight tensor -- necessarily a two-axis HuBERT Linear -- becomes
 // Q8_0 at its own shape, a ConvKernel is halved to F16 at its native
 // three-axis shape rather than flattened to [kernel * in, out], and every
@@ -673,7 +673,7 @@ int check_q8_mixed_rejections() {
         SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_ERR_GGUF);
     }
 
-    // A PACKED Q8_0 convolution kernel -- exactly what a Q8_MIXED package cut
+    // A PACKED Q8_0 convolution kernel -- exactly what a Q8_CODEC_MIXED package cut
     // before 2026-08-09 contains. It must now be refused rather than
     // silently accepted by the packed-shape branch that is still in find():
     // the type check runs first, and the conv-exempt policy expects F16
@@ -772,7 +772,7 @@ std::vector<std::pair<Entry, ggml_type>> to_f16(const std::vector<Entry> & entri
 
 int check_f16_resolution() {
     synth::omnivoice::HParams h                                = small_hparams();
-    h.quantization_profile                                     = synth::omnivoice::QuantizationProfile::F16;
+    h.quantization_profile                                     = synth::omnivoice::QuantizationProfile::F16Codec;
     const std::vector<Entry>                       f32_entries = expected_entries(h);
     const std::vector<std::pair<Entry, ggml_type>> entries     = to_f16(f32_entries);
 
@@ -812,7 +812,7 @@ int check_f16_resolution() {
 int check_f16_rejections() {
     const synth::omnivoice::HParams h = [] {
         synth::omnivoice::HParams hp = small_hparams();
-        hp.quantization_profile      = synth::omnivoice::QuantizationProfile::F16;
+        hp.quantization_profile      = synth::omnivoice::QuantizationProfile::F16Codec;
         return hp;
     }();
     const std::vector<Entry> f32_entries = expected_entries(h);
@@ -849,7 +849,7 @@ int check_f16_rejections() {
     return 0;
 }
 
-// Widths for the Q8_GEN variant of the small package. This profile quantizes
+// Widths for the Q8 variant of the small package. This profile quantizes
 // the generator half instead of the codec, so it is the generator's widths
 // that have to be multiples of Q8_0's 32-element block -- specifically every
 // width that lands on a quantized tensor's *row* (ne[0]): `hidden_size`
@@ -861,7 +861,7 @@ int check_f16_rejections() {
 // need no such adjustment at all.
 synth::omnivoice::HParams q8_gen_hparams() {
     synth::omnivoice::HParams h      = small_hparams();
-    h.quantization_profile           = synth::omnivoice::QuantizationProfile::Q8Gen;
+    h.quantization_profile           = synth::omnivoice::QuantizationProfile::Q8;
     h.generator.hidden_size          = 32;
     h.generator.head_dim             = 8;
     h.generator.attention_head_count = 4;
@@ -871,7 +871,7 @@ synth::omnivoice::HParams q8_gen_hparams() {
 }
 
 // Recasts one F32 entry list to what the offline quantizer would have written
-// for it under Q8_GEN: every generator MatrixWeight and RowLookup tensor
+// for it under Q8: every generator MatrixWeight and RowLookup tensor
 // becomes Q8_0 at its declared shape (nothing is packed -- the generator half
 // is two-dimensional throughout), and every other tensor, the whole codec
 // included, stays F32.
@@ -977,7 +977,7 @@ int check_q8_gen_rejections() {
 
     // A codec tensor this profile must not have touched. This is the check
     // that would fire if the half split leaked -- the failure mode that makes
-    // Q8_GEN's "codec byte-identical to F32" claim worth asserting at load
+    // Q8's "codec byte-identical to F32" claim worth asserting at load
     // time and not only at cut time.
     {
         std::vector<std::pair<Entry, ggml_type>> entries = to_q8_gen(f32_entries);
@@ -994,7 +994,7 @@ int check_q8_gen_rejections() {
     return 0;
 }
 
-// Widths for the Q4_K_GEN variant. Q4_K's super-block is 256 against Q8_0's
+// Widths for the Q4_K variant. Q4_K's super-block is 256 against Q8_0's
 // 32, so every width that lands on a quantized tensor's row has to be a
 // multiple of 256 rather than 32 -- the same three widths q8_gen_hparams()
 // names, raised. `head_dim` moves with them because `attention_head_count *
@@ -1004,7 +1004,7 @@ int check_q8_gen_rejections() {
 // concession the real one also needs.
 synth::omnivoice::HParams q4_k_gen_hparams() {
     synth::omnivoice::HParams h      = small_hparams();
-    h.quantization_profile           = synth::omnivoice::QuantizationProfile::Q4KGen;
+    h.quantization_profile           = synth::omnivoice::QuantizationProfile::Q4K;
     h.generator.hidden_size          = 256;
     h.generator.head_dim             = 64;
     h.generator.attention_head_count = 4;
@@ -1014,7 +1014,7 @@ synth::omnivoice::HParams q4_k_gen_hparams() {
 }
 
 // The recast, and the one place in this file where two roles diverge: a
-// MatrixWeight goes to Q4_K, a RowLookup holds at Q8_0. Under Q8_GEN both are
+// MatrixWeight goes to Q4_K, a RowLookup holds at Q8_0. Under Q8 both are
 // Q8_0 and to_q8_gen can treat them as one case; here it cannot, because
 // CUDA's GET_ROWS accepts no k-quant.
 std::vector<std::pair<Entry, ggml_type>> to_q4_k_gen(const std::vector<Entry> & entries) {
@@ -1107,7 +1107,7 @@ int check_q4_k_gen_rejections() {
     }
 
     // The mirror: a matrix left at the sibling profile's Q8_0. This is what a
-    // Q4_K_GEN package cut before the profile row existed would look like.
+    // Q4_K package cut before the profile row existed would look like.
     {
         std::vector<std::pair<Entry, ggml_type>> entries = to_q4_k_gen(f32_entries);
         for (auto & [entry, type] : entries) {
@@ -1137,10 +1137,10 @@ int check_q4_k_gen_rejections() {
     return 0;
 }
 
-// F16_GEN and BF16_GEN (provisional names, see weights.h) quantize the same
-// generator half as Q8_GEN, narrowed rather than block-quantized. Neither
+// F16 and BF16 quantize the same
+// generator half as Q8, narrowed rather than block-quantized. Neither
 // format is `ggml_is_quantized`, so -- like the codec-half F16 profile above,
-// and unlike Q8_GEN/Q4_K_GEN -- there is no block-size divisibility to
+// and unlike Q8/Q4_K -- there is no block-size divisibility to
 // satisfy and small_hparams()'s own widths are unmodified.
 std::vector<std::pair<Entry, ggml_type>> to_generator_narrowed(const std::vector<Entry> & entries, ggml_type narrow) {
     std::vector<std::pair<Entry, ggml_type>> out;
@@ -1172,7 +1172,7 @@ int check_generator_narrowed_resolution(synth::omnivoice::QuantizationProfile pr
     SYNTH_TEST_CHECK(synth::omnivoice::build_model_weights(context.get(), h, weights) == SYNTH_OK);
 
     // Both `ggml_get_rows` tables, at their declared shape: row_lookup_type
-    // equals matrix_weight_type for both these profiles, unlike Q4_K_GEN.
+    // equals matrix_weight_type for both these profiles, unlike Q4_K.
     SYNTH_TEST_CHECK(weights.generator.text_embedding->type == narrow);
     SYNTH_TEST_CHECK(weights.generator.text_embedding->ne[0] == int64_t(h.generator.hidden_size));
     SYNTH_TEST_CHECK(weights.generator.text_embedding->ne[1] == int64_t(h.generator.text_vocab_size));
@@ -1199,7 +1199,7 @@ int check_generator_narrowed_resolution(synth::omnivoice::QuantizationProfile pr
     SYNTH_TEST_CHECK(weights.generator.layers[0].k_norm->type == GGML_TYPE_F32);
 
     // And the whole codec half, at its own unpacked shape -- byte-identical to
-    // F32, the same claim Q8_GEN makes.
+    // F32, the same claim Q8 makes.
     SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->type == GGML_TYPE_F32);
     SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->ne[0] == 7);
     SYNTH_TEST_CHECK(weights.acoustic_decoder.conv1.weight->ne[1] == int64_t(h.codec.hidden_size));
@@ -1279,13 +1279,13 @@ int main() {
     SYNTH_TEST_CHECK(check_q8_gen_rejections() == 0);
     SYNTH_TEST_CHECK(check_q4_k_gen_resolution() == 0);
     SYNTH_TEST_CHECK(check_q4_k_gen_rejections() == 0);
-    SYNTH_TEST_CHECK(
-        check_generator_narrowed_resolution(synth::omnivoice::QuantizationProfile::F16Gen, GGML_TYPE_F16) == 0);
-    SYNTH_TEST_CHECK(
-        check_generator_narrowed_rejections(synth::omnivoice::QuantizationProfile::F16Gen, GGML_TYPE_F16) == 0);
-    SYNTH_TEST_CHECK(
-        check_generator_narrowed_resolution(synth::omnivoice::QuantizationProfile::BF16Gen, GGML_TYPE_BF16) == 0);
-    SYNTH_TEST_CHECK(
-        check_generator_narrowed_rejections(synth::omnivoice::QuantizationProfile::BF16Gen, GGML_TYPE_BF16) == 0);
+    SYNTH_TEST_CHECK(check_generator_narrowed_resolution(synth::omnivoice::QuantizationProfile::F16, GGML_TYPE_F16) ==
+                     0);
+    SYNTH_TEST_CHECK(check_generator_narrowed_rejections(synth::omnivoice::QuantizationProfile::F16, GGML_TYPE_F16) ==
+                     0);
+    SYNTH_TEST_CHECK(check_generator_narrowed_resolution(synth::omnivoice::QuantizationProfile::BF16, GGML_TYPE_BF16) ==
+                     0);
+    SYNTH_TEST_CHECK(check_generator_narrowed_rejections(synth::omnivoice::QuantizationProfile::BF16, GGML_TYPE_BF16) ==
+                     0);
     return 0;
 }

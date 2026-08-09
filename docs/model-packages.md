@@ -69,7 +69,11 @@ Each Model Variant has one repository named
 Profiles are flat files at its root using the llama.cpp-style
 `<variant-slug>-<QUANT>.gguf` convention, such as `F32`, `F16`, or `Q8_MIXED`.
 The filename carries the stable profile name while GGUF metadata carries its
-version and exact tensor assignment. Variants, quantizations, and Execution
+version and exact tensor assignment. A family whose profiles do not all
+quantize the same half of the model names the half in the profile: OmniVoice's
+generator-half profiles take the plain name and its codec-half profiles take a
+`_CODEC` qualifier (`F16_CODEC`, `Q8_CODEC_MIXED`). See
+`docs/quantization.md`. Variants, quantizations, and Execution
 Backends do not receive nested repositories or backend-specific copies.
 
 The root also contains `README.md` and any license or attribution material required

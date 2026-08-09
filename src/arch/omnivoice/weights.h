@@ -15,50 +15,61 @@ namespace synth::omnivoice {
 // exactly one half of the package and holds the other at F32
 // (src/arch/omnivoice/quantization.h's ModelHalf says why).
 //
-// Q8Mixed and F16 are Plan 4's codec-half profiles: every generator tensor and
-// the RVQ stay F32, so they govern the codec's own matrix weights only.
-// Q8Mixed packs a MatrixWeight conv kernel's [kernel, in, out] into a
-// flattened [kernel * in, out] row before quantizing; F16 does not -- the
-// tool's profile table gives it TensorLayout::Native
-// (tools/synthesize-quantize/policy.cpp), so an F16 MatrixWeight tensor keeps
-// its native three-axis shape, just halved, and never exercises the
-// packed-shape branch catalog.cpp's find() or reference-encoder.cpp's
-// feat_conv check carry for Q8Mixed.
+// Because this family is the only one whose profiles do not all quantize the
+// same half, its profile NAMES carry the half -- jiangzhuo's ruling of
+// 2026-08-09. The generator half takes the plain name and the codec half takes
+// a `_CODEC` qualifier, which puts this family's shipping profiles on the same
+// names the three siblings already publish. The enumerators below mirror those
+// strings one-for-one; weights.cpp maps between them and catalog.cpp's
+// profile_name() maps back.
 //
-// Q8Gen is the generator-half profile: the 197 generator matrices and the two
-// `ggml_get_rows` tables become Q8_0 and the whole codec half stays F32,
+// Q8CodecMixed and F16Codec are Plan 4's codec-half profiles: every generator
+// tensor and the RVQ stay F32, so they govern the codec's own matrix weights
+// only. Q8CodecMixed packs a MatrixWeight conv kernel's [kernel, in, out] into
+// a flattened [kernel * in, out] row before quantizing; F16Codec does not --
+// the tool's profile table gives it TensorLayout::Native
+// (tools/synthesize-quantize/policy.cpp), so an F16Codec MatrixWeight tensor
+// keeps its native three-axis shape, just halved, and never exercises the
+// packed-shape branch catalog.cpp's find() or reference-encoder.cpp's
+// feat_conv check carry for Q8CodecMixed. Both are BLOCKED and unpublished:
+// the codec is 23.1% of this package's tensor bytes, so no codec-only profile
+// reaches the sizes this family needs.
+//
+// Q8 is the generator-half Q8_0 profile: the 197 generator matrices and the
+// two `ggml_get_rows` tables become Q8_0 and the whole codec half stays F32,
 // byte-identical to the F32 package. Nothing is packed under it -- every
 // generator weight is two-dimensional, which the offline quantizer leaves
 // Native -- so the packed-shape branch is inert here too.
 //
-// Q4KGen is the same half four bits deep, and it is the profile that makes
+// Q4K is the same half four bits deep, and it is the profile that makes
 // QuantRole::RowLookup do real work: the 197 matrices become Q4_K while the
 // two `ggml_get_rows` tables stay Q8_0, because CUDA's GET_ROWS accepts no
 // k-quant and a k-quant there silently drops those nodes to the CPU rather
-// than failing (quantization.h's RowLookup). Under Q8Gen the two roles land
-// on the same type and the distinction is invisible; under this one it is the
+// than failing (quantization.h's RowLookup). Under Q8 the two roles land on
+// the same type and the distinction is invisible; under this one it is the
 // difference between a package that runs on the accelerator and one that does
-// not. Nothing is packed here either, for Q8Gen's reason.
+// not. Nothing is packed here either, for Q8's reason.
 //
-// F16Gen and BF16Gen (provisional names -- not yet confirmed with jiangzhuo,
-// same as Q8_GEN's own naming carried a confirmation caveat when it was
-// added) are the same generator half held at a narrowed reference dtype
+// F16 and BF16 are the same generator half held at a narrowed reference dtype
 // instead of a block-quantized one. Both formats have native CUDA paths for
 // the two ops this half actually uses -- MUL_MAT and GET_ROWS -- verified by
 // reading ggml-cuda.cu's own `supports_op` rather than assumed (see
-// tools/synthesize-quantize/policy.cpp's F16_GEN/BF16_GEN rows), so unlike
-// Q8_0 and Q4_K neither format dequantizes to F32 before either op. Both give
-// `row_lookup_type` the same value as `matrix_weight_type`, unlike Q4KGen: a
-// matrix multiply and a table lookup accept the same narrowed type here, so
-// nothing pins the tables apart the way Q4_K_GEN's k-quant does.
+// tools/synthesize-quantize/policy.cpp), so unlike Q8_0 and Q4_K neither
+// format dequantizes to F32 before either op. Both give `row_lookup_type` the
+// same value as `matrix_weight_type`, unlike Q4K: a matrix multiply and a
+// table lookup accept the same narrowed type here, so nothing pins the tables
+// apart the way Q4_K's k-quant does.
+//
+// F16 is the family's default recommendation and Q8 the smaller option; Q4_K
+// and BF16 are kept here and measured but are not published.
 enum class QuantizationProfile : uint32_t {
     F32,
-    Q8Mixed,
+    Q8CodecMixed,
+    F16Codec,
+    Q8,
+    Q4K,
     F16,
-    Q8Gen,
-    Q4KGen,
-    F16Gen,
-    BF16Gen,
+    BF16,
 };
 
 // The mask-predict generator: a Qwen3 block stack run bidirectionally over the

@@ -66,9 +66,11 @@ bool resolve_qwen3_tts_target_type(const Profile & profile, const std::string & 
 bool resolve_qwen3_tts_target_spec(const Profile & profile, const std::string & name, TargetSpec & spec_out);
 
 // And for OmniVoice, which is the one family whose profiles do not all
-// quantize the same half of the package. `Q8_MIXED` and `F16` quantize the
-// codec and hold the generator at F32; `Q8_GEN` does the reverse. The split
-// is expressed once, in the family module's classify_tensor_for_half
+// quantize the same half of the package -- and so the one family whose profile
+// names encode a half. `F16_CODEC` and `Q8_CODEC_MIXED` quantize the codec and
+// hold the generator at F32; the plain-named `F16`, `Q8`, `Q4_K` and `BF16` do
+// the reverse. The split is expressed once, in the family's
+// classify_tensor_for_half
 // (src/arch/omnivoice/quantization.h), which this dispatch and the runtime's
 // catalog both read so they cannot disagree about a tensor. See
 // omnivoice_quantized_half in policy.cpp for which profile means which half.

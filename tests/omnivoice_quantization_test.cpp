@@ -506,7 +506,7 @@ int check_matrix_weight_count() {
     // convolution at all.
     SYNTH_TEST_CHECK(count_role_for(entries, ModelHalf::Generator, QuantRole::ConvKernel) == 0);
 
-    // What a generator-half profile (Q8_GEN) quantizes: 199 two-dimensional
+    // What a generator-half profile (Q8) quantizes: 199 two-dimensional
     // weights, of which 2 are the `ggml_get_rows` tables and 197 are matrix
     // multiply operands -- 7 projections across each of 28 layers, plus
     // `audio_heads`.

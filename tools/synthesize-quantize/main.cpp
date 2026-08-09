@@ -7,7 +7,12 @@ namespace {
 
 void print_usage(const char * executable) {
     std::fprintf(stderr,
-                 "usage: %s INPUT.gguf OUTPUT.gguf --quant F16|Q8_MIXED|Q5_K_MIXED|Q8_GEN|Q4_K_GEN\n"
+                 "usage: %s INPUT.gguf OUTPUT.gguf --quant "
+                 "F16|Q8_MIXED|Q5_K_MIXED|F16_CODEC|Q8_CODEC_MIXED|Q8|Q4_K|BF16\n"
+                 "\n"
+                 "Not every profile applies to every architecture. For omnivoice the\n"
+                 "profile name states which half it quantizes: F16|Q8|Q4_K|BF16 take the\n"
+                 "generator, F16_CODEC|Q8_CODEC_MIXED take the codec.\n"
                  "\n"
                  "The output path must not already exist.\n",
                  executable);

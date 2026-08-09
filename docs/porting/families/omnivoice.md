@@ -10,7 +10,9 @@ Adapters, and this record's own close-out) is done as of Task 17. Plan 4
 CUDA Execution Backend, and ship) is done as of its own Task 17. Both
 candidate Quantization Profiles were produced and both fail the clone path's
 exact-token gate, so this family ships F32-only (see the quantization
-section). **Superseded 2026-08-08 (Plan 5 Task 1):** the generator no longer
+section). *(Both statements are Plan 4's and cover the two codec-half
+profiles only; the generator-half profiles added on 2026-08-09 supersede the
+F32-only position -- see the Quantization note at the end of this block.)* **Superseded 2026-08-08 (Plan 5 Task 1):** the generator no longer
 stays on CPU. jiangzhuo revised this family's bar from token identity to
 audible quality after a six-pair blind A/B heard no problem in
 generator-on-CUDA output, so the generator now moves too, under
@@ -33,21 +35,29 @@ Audits below. Ship artifacts are prepared as a Restricted Model Package
 (ADR 0018) under `models/publish/omnivoice-0-6b/`; publication itself is a
 separate act awaiting jiangzhuo's per-act confirmation. Plan 5's carry-over
 ledger is `docs/superpowers/plans/2026-08-07-omnivoice-plan-5-carryover.md`.
-**Quantization, 2026-08-09:** the ladder is now four profiles deep and the
-family still ships F32-only. `Q8_MIXED` was redefined conv-exempt and remains
-blocked on `ref.tokens`; two *generator* profiles were added because the
-generator is 76.9% of the bytes and no codec profile can reach past that.
-`Q4_K_GEN` is rejected on quality. `Q8_GEN` (56.4% off F32, codec half
-bit-identical, every hard gate green) is the ship candidate and is **held
-pending a Listening Audit** -- its speaker-identity sweep moves 6 of 16 cases
-against an accepted baseline of 1, and no exact gate can adjudicate that. Six
-blind pairs and two clone triples are built and waiting. See "The profile
+**Quantization, 2026-08-09:** the ladder is six profiles deep. The two
+codec-half profiles were redefined conv-exempt and remain blocked on
+`ref.tokens`; four *generator* profiles were added because the generator is
+76.9% of the bytes and no codec profile can reach past that. See "The profile
 ladder," below.
 **Updated 2026-08-09:** this family adopted the conv-exempt codec policy --
-it no longer block-quantizes any convolution kernel, which redefines what
-`Q8_MIXED` means here and cut the clone path's RVQ drift from 36.4% to 3.49%.
-It still fails the exact clone gate, so the F32-only ship position is
-unchanged; see the conv-exempt subsection under Quantization Profile Shape.
+it no longer block-quantizes any convolution kernel, which redefines what the
+codec-half mixed profile means here and cut the clone path's RVQ drift from
+36.4% to 3.49%. It still fails the exact clone gate; see the conv-exempt
+subsection under Quantization Profile Shape.
+**RENAMED 2026-08-09 (jiangzhuo's ruling):** the half a profile quantizes now
+determines its name -- generator-half takes the plain name, codec-half takes a
+`_CODEC` qualifier. `F16_GEN`->`F16`, `Q8_GEN`->`Q8`, `Q4_K_GEN`->`Q4_K`,
+`BF16_GEN`->`BF16`, and the codec-only `F16`->`F16_CODEC`,
+`Q8_MIXED`->`Q8_CODEC_MIXED`. This lands the shipping profiles on the names
+users expect and that the three sibling families already publish, and it is a
+rule about the artifact rather than its ship status, so a codec profile
+becoming shippable later would not force another rename. **Every subsection
+under "Quantization Profile Shape" below the profile ladder predates this
+ruling and is left as written** -- those sections pin specific artifacts by
+name *and* sha256, so renaming them in place would falsify the record. The
+ladder carries the mapping table. **`F16` is the default recommendation and
+`Q8` the smaller option; `Q4_K` and `BF16` are measured but not published.**
 
 ## Decision
 
@@ -1027,15 +1037,33 @@ reference dtype — the consensus of the two reusable ports and of this project'
 own qwen3-tts and Kokoro policy. Profiles are measured for this family, not
 inherited.
 
-### The profile ladder (2026-08-09) — and **nothing below F32 is shipped**
+### The profile ladder (2026-08-09) — names, and what each one is for
+
+**Naming (jiangzhuo, 2026-08-09): the half a profile quantizes determines its
+name.** The generator half takes the plain name and the codec half takes a
+`_CODEC` qualifier. The `_GEN`-suffixed names used while these profiles were
+being measured are retired and no longer resolve; every subsection below this
+one predates the ruling and is left as it was written, so read it with this
+mapping in hand:
+
+| measured as | now named |
+| --- | --- |
+| `F16_GEN` | `F16` |
+| `Q8_GEN` | `Q8` |
+| `Q4_K_GEN` | `Q4_K` |
+| `BF16_GEN` | `BF16` |
+| `F16` (codec-only) | `F16_CODEC` |
+| `Q8_MIXED` (codec-only) | `Q8_CODEC_MIXED` |
 
 | profile | half | bytes | off F32 | status |
 | --- | --- | ---: | ---: | --- |
 | F32 | — | 3,189,953,504 | — | reference, shipped |
-| F16 | both | 2,858,422,240 | 10.4% | measured |
-| `Q8_MIXED` | codec | 2,778,427,360 | 12.9% | **BLOCKED**, `ref.tokens` 0/2 |
-| `Q8_GEN` | generator | 1,390,699,680 | 56.4% | measured; **awaits a Listening Audit** |
-| `Q4_K_GEN` | generator | 1,166,300,320 | 63.4% | **REJECTED on quality** |
+| `F16` | generator | 1,964,929,440 | 38.4% | **default recommendation** |
+| `Q8` | generator | 1,390,699,680 | 56.4% | **the smaller option** |
+| `Q4_K` | generator | 1,166,300,320 | 63.4% | measured, **not published** |
+| `BF16` | generator | 1,964,929,440 | 38.4% | measured, **not published** |
+| `F16_CODEC` | codec | 2,858,422,240 | 10.4% | **BLOCKED**, `ref.tokens` |
+| `Q8_CODEC_MIXED` | codec | 2,778,427,360 | 12.9% | **BLOCKED**, `ref.tokens` 0/2 |
 
 A profile quantizes exactly one half, enforced by `classify_tensor_for_half`;
 there is no combined profile and none was asked for. The asymmetry that forced
@@ -1043,44 +1071,67 @@ generator profiles: **the generator is 2,450,309,120 of 3,184,565,636 tensor
 bytes, 76.9%**, so no codec-only profile reaches below about 2.62 GB however
 aggressive it is.
 
-`Q8_GEN`'s codec half is **bit-identical** to F32 — 486 tensors,
+Every generator profile's codec half is **bit-identical** to F32 — 486 tensors,
 734,256,516 bytes, zero differing — so it inherits the codec validation exactly
 rather than within a tolerance, and its RVQ encode is byte-exact. That is the
 whole argument for cutting a generator profile before a codec one.
 
-Two lookup tables are pinned to Q8_0 under both generator profiles.
-CUDA's `GET_ROWS` supports no k-quant, and `llm.embed_tokens.weight` and
-`audio_embeddings.weight` are read by `ggml_get_rows`, so a pure Q4_K package
-strands 544 nodes on the CPU and fails the placement gate by name. Both halves
-of that were demonstrated on a run rather than argued: the unpinned package
-fails placement with a relaxed binary, and is refused at load with the shipped
-one. The pin costs 78.06 MiB.
+Two lookup tables are pinned to Q8_0 under `Q4_K`. CUDA's `GET_ROWS` supports no
+k-quant, and `llm.embed_tokens.weight` and `audio_embeddings.weight` are read by
+`ggml_get_rows`, so a pure Q4_K package strands 544 nodes on the CPU and fails
+the placement gate by name. Both halves of that were demonstrated on a run
+rather than argued: the unpinned package fails placement with a relaxed binary,
+and is refused at load with the shipped one. The pin costs 78.06 MiB. `Q8`,
+`F16` and `BF16` need no pin — CUDA's `GET_ROWS` takes all three formats — so
+their two roles land on the same type.
 
-**No generator profile buys throughput.** Re-measured across three interleaved
-arms: 1.2% on CUDA for `Q8_GEN`, nothing on CPU, `Q4_K_GEN` 0.3% *slower* than
-`Q8_GEN`. What they buy is size, peak memory (CUDA RSS 4,019 → 1,915 MiB under
-`Q8_GEN`, which is what crosses the 2 GiB deployment line) and load time
-(2.58 s → 1.16 s). Any claim built on these packages should say so.
+**No profile may claim a speed benefit.** The generator is compute-bound at
+roughly 205 MAC per weight byte, so a narrower weight does not relieve the
+bottleneck. Against F32 on CUDA: `Q8` −0.4%, `F16` **+2.7% slower**. On CPU:
+`Q8` +1.5% slower, `F16` −1.2%; `BF16` 10.5× slower. What they buy is size,
+accelerator resident memory (F32 3506 MiB, `F16` 2353 MiB, `Q8` 1811 MiB) and
+load time (F32 2.6 s, `F16` 1.6 s, `Q8` 1.1–1.4 s). Any claim built on these
+packages should say so, and should not say "faster".
 
-**What blocks `Q8_GEN` is the ear, and the gates cannot stand in for it.**
-A quantized generator emits a different valid realization, not a wrong one, so
-token agreement is data and never a verdict — `Q8_GEN` flips 95.83% of greedy
-tokens and `omni-nonverbal` flips 99.2% without changing speaker. The
-speaker-identity F0 proxy puts 6 of 16 cases in a different register against a
-baseline of 1 of 16 for the already-accepted CPU→CUDA placement move, and that
-baseline case is one jiangzhuo listened to and called *different people*. An
-independent cepstral instrument reproduces the count. Six blind pairs and two
-clone triples are built and waiting.
+**`F16` is the default recommendation.** Long-term average spectrum distance
+from F32/CPU across all 17 greedy cases reaches a maximum of **2.87 dB**, every
+case under the ~3 dB line the listener has consistently called "same person" — a
+threshold calibrated against fourteen listener answers across two audits, with
+no exceptions. It preserves Reference Audio cloning (0.22 / 0.12 dB) and
+Description Text (0.00 / 1.38 dB).
 
-**The proxy has a blind spot, found on `Q4_K_GEN` and recorded here because it
+**`Q8` is the smaller option, and nothing is disabled under it** — all three
+voice modes work and the API is identical. It reproduces F32's voice for
+Reference Audio cloning (2.02 / 2.70 dB). For auto-voice and Description Text it
+returns a *different voice*: LTAS 4.12–12.22 dB, and a listener heard five of
+six sampled auto-voice pairs as different people **while judging quality
+indistinguishable on every one of them**.
+
+`Q8` still honors a Description Text prompt, and an earlier framing of this got
+it wrong. The design cases specify pitch explicitly and it is checkable:
+"female, young adult, high pitch" gives F32 333.3 Hz and `Q8` 343.5 Hz;
+"男，老年，低音調" (male, elderly, low pitch) gives 152.9 and 158.4 Hz, against
+ordinary voices in this suite at 118–130 Hz. The 8.61 dB on `omni-design-en`
+means "a different voice within the same description", **not** "the description
+was ignored". **Never describe `Q8` as clone-only or as breaking voice design.**
+For auto-voice the caveat is barely news: this family's docs already state the
+speaker is unstable across backends, seeds and step counts, because auto-voice
+carries no speaker conditioning at all.
+
+Token agreement is data and never a verdict here — a quantized generator emits a
+different valid realization, not a wrong one. `Q8` flips 95.83% of greedy tokens
+and `omni-nonverbal` flips 99.2% without changing speaker.
+
+**`Q4_K` and `BF16` are not published.** `Q4_K`: 10 of 17 renders go degenerate,
+62× the probe drift, and no speed. `BF16`: 11 of 17 over the quality line and
+10.5× slower on CPU. Keep the code and the rows; cut no shipping package.
+
+**The proxy has a blind spot, found on `Q4_K` and recorded here because it
 generalizes.** A render degraded until the pitch tracker finds no voiced frame
 is scored *not comparable*, not *changed* — so the proxy's headline reads clean
-on a profile whose renders are no longer speech. Ten of seventeen `Q4_K_GEN`
-renders carry a DC pedestal reaching −0.0924 with envelope ratios collapsed to
-single digits. **Always run the degeneracy screen beside the F0 sweep**; the
-first answers "different speaker" and only the second answers "still a voice".
-The two profiles separate on exactly this: `Q8_GEN` moves envelope in both
-directions, `Q4_K_GEN` only collapses it.
+on a profile whose renders are no longer speech. **Always run the degeneracy
+screen beside the F0 sweep**; the first answers "different speaker" and only the
+second answers "still a voice".
 
 ### Q8_MIXED (Plan 4 Task 3): codec-only, and BLOCKED on the exact-token gate
 

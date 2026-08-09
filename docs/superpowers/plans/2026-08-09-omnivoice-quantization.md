@@ -838,3 +838,47 @@ answer written down so it is not re-litigated.
   Global Constraints plus Tasks 5, 8, 10 and 12. The packed-conv branch this
   family gives up → Task 12 Step 4, stated plainly rather than left to pass
   silently.
+
+---
+
+## Addendum, 2026-08-09: the profiles were renamed after this plan was written
+
+Everything above is left as it was written and uses the `_GEN`-suffixed names
+this plan invented. jiangzhuo ruled on the final names after the measurements
+came in. **The half a profile quantizes determines its name:** generator-half
+takes the plain name, codec-half takes a `_CODEC` qualifier.
+
+| this plan says | shipped as |
+| --- | --- |
+| `F16_GEN` | `F16` |
+| `Q8_GEN` | `Q8` |
+| `Q4_K_GEN` | `Q4_K` |
+| `BF16_GEN` | `BF16` |
+| `F16` (codec-only, BLOCKED) | `F16_CODEC` |
+| `Q8_MIXED` (codec-only, BLOCKED) | `Q8_CODEC_MIXED` |
+
+The rule lands the shipping profiles on the names users expect and that the
+three sibling families already publish, and it is a rule about the artifact
+rather than its ship status, so a codec profile becoming shippable later would
+not force another rename.
+
+Two of this plan's own conclusions did not survive the measurements, and a
+reader should not carry them forward:
+
+- **Task 3's framing that `Q8_GEN` is "the first ship candidate."** `F16` is the
+  default recommendation — maximum 2.87 dB long-term average spectrum distance
+  from F32/CPU across all 17 greedy cases, every case under the ~3 dB "same
+  person" line. `Q8` is the smaller option, and it is not clone-only: all three
+  voice modes work, and it still honors a Description Text prompt. What it
+  changes on auto-voice and Description Text is *which* voice, not whether the
+  description is followed.
+- **Task 12's recommendation to redefine `Q8_MIXED` for omnivoice.** It was
+  redefined conv-exempt, but the name did not stay: `Q8_MIXED` names published
+  VITS and Qwen3-TTS packages and could not be given a second per-family
+  meaning, so omnivoice's codec profile is `Q8_CODEC_MIXED` on its own row in
+  the shared table.
+
+The full rename record, including why the shared profile table made the `F16`
+row serve two halves and the byte-for-byte evidence that this is safe, is in
+`reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md` under
+"2026-08-09 — Quantization Profiles renamed".

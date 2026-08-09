@@ -190,7 +190,7 @@ QuantRole classify_codec_matrix_region(const std::vector<std::string_view> & tok
     // kernels that the ConvKernel fall-through below would have kept out of a
     // block-quantized type anyway, so the reasons no longer *decide* anything
     // on their own; they stay because Sensitive is F32 where ConvKernel is
-    // halved, because the already-cut F16 and Q8_MIXED packages hold these
+    // halved, because the already-cut F16 and Q8_CODEC_MIXED packages hold these
     // three at F32, and because deleting them would lose the reasons.
     //
     // A note that applies to the *other* convolution kernels returned

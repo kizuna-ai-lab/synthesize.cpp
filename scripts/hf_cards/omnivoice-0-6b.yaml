@@ -219,7 +219,7 @@ validation:
     those tokens is not shipped. Only F32 is listed below for exactly that
     reason: every codec-only quantized profile produced so far has been
     measured against the cloning path's exact-token gate and has failed it.
-    F16 mismatched 103 of 2,808 tokens (3.7%); Q8_MIXED mismatched 1,023
+    F16_CODEC mismatched 103 of 2,808 tokens (3.7%); Q8_CODEC_MIXED mismatched 1,023
     (36.4%) while it still block-quantized convolution kernels, and 98
     (3.49%) since the conv-exempt codec policy of 2026-08-09 stopped it
     doing so. None is a knife-edge margin call, so none ships and no

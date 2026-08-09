@@ -281,7 +281,7 @@ if(SYNTH_BUILD_TOOLS)
         COMMAND synthesize-quantize --help)
     set_tests_properties(synthesize-quantize-cli-help-test PROPERTIES
         LABELS "unit;tools;quantization;cli"
-        PASS_REGULAR_EXPRESSION "F16[|]Q8_MIXED")
+        PASS_REGULAR_EXPRESSION "Q8_CODEC_MIXED[|]Q8[|]Q4_K[|]BF16")
 endif()
 add_executable(synthesize-cli-unit-test
     cli_test.cpp
@@ -834,8 +834,9 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
     endif()
 
-    # Plan 4 Task 3 measured two codec-only Quantization Profiles (Q8_MIXED,
-    # F16) against this same gate and BOTH failed the cloning path's RVQ
+    # Plan 4 Task 3 measured two codec-only Quantization Profiles
+    # (Q8_CODEC_MIXED, F16_CODEC) against this same gate and BOTH failed the
+    # cloning path's RVQ
     # encode grid -- 1023/2808 and 103/2808 positions respectively, neither a
     # knife-edge margin call (docs/porting/families/omnivoice.md's
     # "Quantization Profile Shape"). This family ships F32-only: no

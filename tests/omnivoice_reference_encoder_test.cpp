@@ -846,7 +846,7 @@ int check_packed_encoder_semantic_conv() {
 // feat_conv[1] (every feat_conv but index 0, which reads one input channel
 // and stays Sensitive -- src/arch/omnivoice/quantization.h), ne[0] becomes
 // kernel * in_channels, and the unfixed check refused every legitimately
-// packed package outright -- caught only by a real Q8_MIXED package's own
+// packed package outright -- caught only by a real Q8_CODEC_MIXED package's own
 // clone-path replay, not by any unit test, because
 // check_packed_encoder_semantic_conv above packs a different tensor
 // (encoder_semantic.conv) and never exercises this one.

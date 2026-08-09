@@ -43,7 +43,7 @@ directory of `<case>/pcm_freerun.f32` renders (what
 
     python scripts/omnivoice-speaker-proxy.py \
       --reference build/goldens/f32-cpu --candidate build/goldens/q8gen-cpu \
-      --name-reference F32/CPU --name-candidate Q8_GEN/CPU \
+      --name-reference F32/CPU --name-candidate Q8/CPU \
       --report speaker-proxy.json
 """
 from __future__ import annotations

@@ -46,8 +46,8 @@ enum class QuantRole {
     // weight type, and the tables are never packed: `ggml_get_rows` indexes
     // whole rows of the tensor's declared shape.
     //
-    // Under Q8_GEN the row-lookup type and the matrix weight type are both
-    // Q8_0 and this role changes nothing. Under Q4_K_GEN they diverge --
+    // Under Q8 the row-lookup type and the matrix weight type are both
+    // Q8_0 and this role changes nothing. Under Q4_K they diverge --
     // Q4_K for the matrices, Q8_0 for these two tables -- which is the case
     // the role exists for and the one that measures the difference: the
     // pin costs 81,856,512 bytes and is what keeps the whole generator on the
@@ -100,7 +100,7 @@ enum class QuantRole {
     // block-quantized type; they stay Sensitive rather than being folded into
     // ConvKernel because Sensitive is F32 where ConvKernel is halved, and
     // demoting them would change the bytes of the already-cut F16 and
-    // Q8_MIXED packages for no measured reason.
+    // Q8_CODEC_MIXED packages for no measured reason.
     //
     // History, because the role assignment above changed and a reader will
     // otherwise find the old rule quoted in shipped packages' documentation:

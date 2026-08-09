@@ -144,7 +144,7 @@ class Resolver {
             return fail("tensor %s has type %s, expected %s under the %s profile", name.c_str(),
                         ggml_type_name(tensor->type), ggml_type_name(want_type), profile_name());
         }
-        // A convolution kernel that a Q8_MIXED profile packed collapses its
+        // A convolution kernel that a Q8_CODEC_MIXED profile packed collapses its
         // logical [kernel, in, out] shape into the flattened
         // [kernel * in, out] a matrix multiply consumes -- the offline
         // quantizer's own layout for a MatrixWeight tensor
@@ -153,16 +153,16 @@ class Resolver {
         // caller asked for three axes is checked against the packed row
         // instead of axis by axis.
         //
-        // Gated on Q8_MIXED specifically, and that is exhaustive rather than
+        // Gated on Q8_CODEC_MIXED specifically, and that is exhaustive rather than
         // an oversight: F16 is Native by its profile row, and neither
-        // generator-half profile packs anything at all -- every tensor Q8_GEN
-        // and Q4_K_GEN quantize lives in the generator half, all of which is
+        // generator-half profile packs anything at all -- every tensor Q8
+        // and Q4_K quantize lives in the generator half, all of which is
         // two-dimensional and therefore demoted to Native by the offline
         // quantizer. Those packages reach the per-axis check below with their
         // declared shapes intact.
         //
         // As of the conv-exempt policy of 2026-08-09 no package this family
-        // cuts reaches this branch at all: the only codec tensors Q8_MIXED
+        // cuts reaches this branch at all: the only codec tensors Q8_CODEC_MIXED
         // still quantizes are the 73 two-dimensional HuBERT Linears, and
         // every three-axis convolution kernel is ConvKernel at F16, which
         // `ggml_is_quantized` rejects. It is kept rather than deleted because
@@ -171,7 +171,7 @@ class Resolver {
         // and because a reader who reverts the policy would otherwise get a
         // shape error instead of a working loader. Do not read its presence
         // as evidence that this family packs convolutions -- it does not.
-        if (hparams_.quantization_profile == QuantizationProfile::Q8Mixed && ggml_is_quantized(tensor->type) &&
+        if (hparams_.quantization_profile == QuantizationProfile::Q8CodecMixed && ggml_is_quantized(tensor->type) &&
             expected.size() == 3) {
             const auto *  want   = expected.begin();
             const int64_t packed = want[0] * want[1];
@@ -263,7 +263,7 @@ class Resolver {
                 // The source profile carries the checkpoint through unchanged,
                 // and both halves were already F32.
                 return GGML_TYPE_F32;
-            case QuantizationProfile::Q8Mixed:
+            case QuantizationProfile::Q8CodecMixed:
                 // Codec half. Since the conv-exempt policy of 2026-08-09 the
                 // only tensors this profile packs are the 73 two-dimensional
                 // HuBERT Linears; every convolution kernel is ConvKernel and
@@ -289,8 +289,8 @@ class Resolver {
                         return GGML_TYPE_F32;
                 }
                 return GGML_TYPE_F32;
-            case QuantizationProfile::F16:
-                // Same half as Q8Mixed, halved rather than packed: the tool's
+            case QuantizationProfile::F16Codec:
+                // Same half as Q8CodecMixed, halved rather than packed: the tool's
                 // profile table gives F16 TensorLayout::Native
                 // (tools/synthesize-quantize/policy.cpp), and its halved
                 // fallback column is F16 as well, so a MatrixWeight Linear
@@ -309,7 +309,7 @@ class Resolver {
                         return GGML_TYPE_F32;
                 }
                 return GGML_TYPE_F32;
-            case QuantizationProfile::Q8Gen:
+            case QuantizationProfile::Q8:
                 // The generator half instead, and the one profile where
                 // RowLookup is not inert: the two `ggml_get_rows` tables
                 // carry the profile's row-lookup type, which is Q8_0 here and
@@ -333,7 +333,7 @@ class Resolver {
                         return GGML_TYPE_F32;
                 }
                 return GGML_TYPE_F32;
-            case QuantizationProfile::Q4KGen:
+            case QuantizationProfile::Q4K:
                 // The same half again, and the profile the two arms above were
                 // written apart for: a matrix multiply takes Q4_K on CUDA and
                 // `ggml_get_rows` does not, so the lookup tables hold at Q8_0
@@ -348,7 +348,7 @@ class Resolver {
                         return GGML_TYPE_Q4_K;
                     case QuantRole::RowLookup:
                         return GGML_TYPE_Q8_0;
-                    // Unreachable for the same reason as under Q8_GEN above.
+                    // Unreachable for the same reason as under Q8 above.
                     case QuantRole::ConvKernel:
                     case QuantRole::TransposeWeight:
                     case QuantRole::Sensitive:
@@ -356,19 +356,19 @@ class Resolver {
                         return GGML_TYPE_F32;
                 }
                 return GGML_TYPE_F32;
-            case QuantizationProfile::F16Gen:
-                // PROVISIONAL NAME (weights.h). The generator half again, at
+            case QuantizationProfile::F16:
+                // The generator half again, at
                 // F16 instead of a block-quantized type: MatrixWeight and
                 // RowLookup land on the same narrowed type here because
                 // CUDA's GET_ROWS accepts F16 directly (quantization.h's
                 // RowLookup; ggml/src/ggml-cuda/ggml-cuda.cu:5190-5207), so
-                // -- like Q8_GEN and unlike Q4_K_GEN -- the two roles never
+                // -- like Q8 and unlike Q4_K -- the two roles never
                 // need to diverge.
                 switch (classify_tensor_for_half(name, ne, ModelHalf::Generator)) {
                     case QuantRole::MatrixWeight:
                     case QuantRole::RowLookup:
                         return GGML_TYPE_F16;
-                    // Unreachable for the same reason as under Q8_GEN above.
+                    // Unreachable for the same reason as under Q8 above.
                     case QuantRole::ConvKernel:
                     case QuantRole::TransposeWeight:
                     case QuantRole::Sensitive:
@@ -376,8 +376,8 @@ class Resolver {
                         return GGML_TYPE_F32;
                 }
                 return GGML_TYPE_F32;
-            case QuantizationProfile::BF16Gen:
-                // PROVISIONAL NAME (weights.h). Same shape as F16Gen, bfloat16
+            case QuantizationProfile::BF16:
+                // Same shape as F16, bfloat16
                 // instead of IEEE half. CUDA's GET_ROWS accepts BF16 too
                 // (ggml/src/ggml-cuda/ggml-cuda.cu:5190-5207), verified before
                 // this row was written rather than assumed from F16's
@@ -386,7 +386,7 @@ class Resolver {
                     case QuantRole::MatrixWeight:
                     case QuantRole::RowLookup:
                         return GGML_TYPE_BF16;
-                    // Unreachable for the same reason as under Q8_GEN above.
+                    // Unreachable for the same reason as under Q8 above.
                     case QuantRole::ConvKernel:
                     case QuantRole::TransposeWeight:
                     case QuantRole::Sensitive:
@@ -402,18 +402,18 @@ class Resolver {
         switch (hparams_.quantization_profile) {
             case QuantizationProfile::F32:
                 return "F32";
-            case QuantizationProfile::Q8Mixed:
-                return "Q8_MIXED";
+            case QuantizationProfile::Q8CodecMixed:
+                return "Q8_CODEC_MIXED";
+            case QuantizationProfile::F16Codec:
+                return "F16_CODEC";
+            case QuantizationProfile::Q8:
+                return "Q8";
+            case QuantizationProfile::Q4K:
+                return "Q4_K";
             case QuantizationProfile::F16:
                 return "F16";
-            case QuantizationProfile::Q8Gen:
-                return "Q8_GEN";
-            case QuantizationProfile::Q4KGen:
-                return "Q4_K_GEN";
-            case QuantizationProfile::F16Gen:
-                return "F16_GEN";
-            case QuantizationProfile::BF16Gen:
-                return "BF16_GEN";
+            case QuantizationProfile::BF16:
+                return "BF16";
         }
         return "unknown";
     }

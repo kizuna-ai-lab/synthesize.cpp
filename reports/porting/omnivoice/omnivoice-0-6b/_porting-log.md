@@ -5491,3 +5491,120 @@ auto-voice pairs; **no Description Text case was listened to**, and the pitch
 check above is an instrument reading, not an ear. And F16 remains the better
 default regardless — it is under the "same person" line on all 17 cases, so it
 needs none of this explanation.
+
+---
+
+## 2026-08-09 — Quantization Profiles renamed: the half decides the name
+
+jiangzhuo ruled on the profile names. **The half a profile quantizes determines
+its name.** The generator half takes the plain name; the codec half takes a
+`_CODEC` qualifier.
+
+| measured and recorded above as | renamed to |
+| --- | --- |
+| `F16_GEN` | `F16` |
+| `Q8_GEN` | `Q8` |
+| `Q4_K_GEN` | `Q4_K` |
+| `BF16_GEN` | `BF16` |
+| `F16` (codec-only, BLOCKED) | `F16_CODEC` |
+| `Q8_MIXED` (codec-only, BLOCKED) | `Q8_CODEC_MIXED` |
+
+Two reasons, both jiangzhuo's. It lands the shipping profiles on the names users
+expect and that the three sibling families already publish. And it is a rule
+about the artifact rather than about its ship status, so a codec profile
+becoming shippable later would not force a second rename.
+
+**Every entry above this one is left as it was written.** They record specific
+artifacts by name *and* sha256, and rewriting the names in place would falsify
+the record rather than clarify it. Read them with the mapping table above.
+
+### What the rename touched
+
+The `_GEN`-suffixed names are gone from the profile table, the runtime enum, the
+metadata reader, `get_info`, the CLI usage line and every test, and none of them
+resolves any more — `find_profile("Q8_GEN")` returns null and a package whose
+`synthesize.quantization.profile` says `Q8_GEN` is refused at load with its
+profile string named. Both are asserted by tests rather than left to inspection.
+
+One structural consequence is worth stating, because it is not obvious from the
+mapping table. `tools/synthesize-quantize/policy.cpp`'s profile table is
+**shared across all four families**, and its `F16`, `Q8_MIXED` and `Q5_K_MIXED`
+rows name packages VITS, Kokoro and Qwen3-TTS have already published. Those
+names cannot move. So:
+
+- OmniVoice's generator-half F16 **reuses the shared `F16` row**; the former
+  `F16_GEN` row is deleted. `omnivoice_quantized_half` now reads `F16` as the
+  generator half, which is safe because that function is only ever consulted on
+  the omnivoice dispatch path (`quantize.cpp` keys on `general.architecture`).
+  The one column where the shared row disagrees with the deleted one is
+  `transpose_weight_type` (F16 against F32), and that column is never read on a
+  generator-half omnivoice cut: `TransposeWeight` hardcodes F32, and the
+  `ConvKernel` arm that does read it is unreachable because
+  `classify_tensor_for_half` holds the whole codec half — where every
+  convolution in this family lives — at `Sensitive`. Verified by re-cutting, not
+  by reading: see the byte-for-byte comparison below.
+- OmniVoice's two codec-half profiles get **new rows** `F16_CODEC` and
+  `Q8_CODEC_MIXED`, field-for-field duplicates of the shared `F16` and
+  `Q8_MIXED` rows. Only the name differs, and the name is the point: it is what
+  selects the half and what the package's profile string then carries.
+- `Q8_MIXED` and `Q5_K_MIXED` therefore fall through to the codec half for
+  omnivoice but are **not** omnivoice profile names. Cutting an omnivoice
+  package under either still produces a file; the omnivoice runtime then refuses
+  its profile string by name. That is the same loud refusal `Q5_K_MIXED` has
+  always got from this family, and it is asserted.
+
+### The four generator packages, re-cut under the new names
+
+Re-cut from the committed `omnivoice-0-6b-F32.gguf` (sha256 `f6d504ff…f9fa3`)
+with the rebuilt tool.
+
+| profile | old name | bytes (old) | bytes (new) | delta | new sha256 |
+| --- | --- | ---: | ---: | ---: | --- |
+| `F16` | `F16_GEN` | 1,964,929,440 | 1,964,929,440 | 0 | `65c8cca59b350ccfdc6ad96c5a683b276f8c0fd5c8e96675d6dc110da3f52f70` |
+| `Q8` | `Q8_GEN` | 1,390,699,680 | 1,390,699,680 | 0 | `61aec0de7cfa9246487e309c43508de9c95cf52fd225ce3fada3b4bb4982374e` |
+| `Q4_K` | `Q4_K_GEN` | 1,166,300,320 | 1,166,300,320 | 0 | `e8233dcec9064f9c378a8cbd485b4a9cc26e0d25d4958c9f8f9701837f447113` |
+| `BF16` | `BF16_GEN` | 1,964,929,440 | 1,964,929,440 | 0 | `163c8b0d65592ad379dc58d61d14cfdb6ad6954c0026a6360205c0d90a885554` |
+
+The digests all move and **not one byte count does.** That is not the naive
+prediction — each new name is 4 characters shorter, so the KV block should
+shrink by 4 — and the reason it is nonetheless correct was measured rather than
+assumed. Parsing both files' headers:
+
+| profile | KV-block end (old → new) | tensor-data start (old → new) |
+| --- | --- | --- |
+| `F16` | 5,387,255 → 5,387,251 (−4) | 5,387,264 → 5,387,264 (0) |
+| `Q8` | 5,387,254 → 5,387,250 (−4) | 5,387,264 → 5,387,264 (0) |
+| `Q4_K` | 5,387,256 → 5,387,252 (−4) | 5,387,264 → 5,387,264 (0) |
+| `BF16` | 5,387,256 → 5,387,252 (−4) | 5,387,264 → 5,387,264 (0) |
+
+The KV block does shrink by exactly 4 bytes in every case. GGUF then pads to the
+32-byte alignment boundary before tensor data, and the 4-byte shift is absorbed
+by that padding — the tensor-data offset lands on 5,387,264 either way. So the
+file is the same size, the tensor payload sits at the same offset, and the
+digest changes only because ~66 KB of metadata after the profile string is
+displaced by 4 bytes.
+
+Verified three further ways, because "same size" is exactly the result that
+would also appear if the tool had silently written the old bytes:
+
+1. **The only differing KV key is `synthesize.quantization.profile`.** All 101
+   keys were compared pairwise; every other value is equal, and the tensor info
+   table (798 entries: name, shape, type, offset) is identical.
+2. **`cmp -l` finds no differing byte at or after the tensor-data offset** — the
+   whole payload is byte-identical to the package cut under the old name.
+3. **All four load and synthesize** through `synthesize-cli` on CUDA.
+
+Result (1) also settles the one substantive question the rename raised: the
+generator-half `F16` cut with the *shared* `F16` row is byte-identical to the
+one the deleted `F16_GEN` row produced. `transpose_weight_type` is genuinely
+inert on this path, as argued above, and now demonstrated.
+
+### The stale-named packages were set aside, not deleted
+
+`models/` is gitignored, so the old cuts are local artifacts only. They matter
+anyway, for one specific reason: the old codec-half package is named
+`omnivoice-0-6b-F16.gguf`, and under the new naming that filename belongs to the
+generator-half package. Re-cutting `F16` into the same directory would have
+overwritten it. The stale-named files were moved to
+`models/omnivoice-0-6b/retired-profile-names/` before anything was re-cut, so
+nobody can publish one by accident and nothing was lost.

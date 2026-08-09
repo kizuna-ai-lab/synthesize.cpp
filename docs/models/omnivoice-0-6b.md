@@ -7,7 +7,7 @@ the Validation Level. Two corrections landed 2026-08-08 after a further audit:
 see **"Short canvases produce unintelligible output"** and the auto-voice
 speaker note under "Package" -- both describe the shipped configuration. The
 quantization table under "Package" was re-measured on 2026-08-09 under the
-conv-exempt codec policy; `Q8_MIXED` means something different for this family
+conv-exempt codec policy; `Q8_CODEC_MIXED` means something different for this family
 since that date and still does not ship.
 This is a **Restricted Model Package** (ADR 0018), not a
 Published Model Package: the generator (LM) weights are CC-BY-NC (no version
@@ -147,16 +147,20 @@ say.
 
 | Generator profile | Bytes | Reduction | Greedy token flip | Status |
 | --- | ---: | ---: | ---: | --- |
-| `Q8_GEN` (Q8_0) | 1,390,699,680 | 56.4% | 95.83% | measured; **held for a Listening Audit** |
-| `Q4_K_GEN` (Q4_K + Q8_0 pin) | 1,166,300,320 | 63.4% | 98.99% | **rejected on quality** |
+| `F16` (halved) | 1,964,929,440 | 38.4% | — | **default recommendation** |
+| `Q8` (Q8_0) | 1,390,699,680 | 56.4% | 95.83% | **the smaller option** |
+| `Q4_K` (Q4_K + Q8_0 pin) | 1,166,300,320 | 63.4% | 98.99% | measured, **not published** |
+| `BF16` (bfloat16) | 1,964,929,440 | 38.4% | — | measured, **not published** |
 
-`Q8_GEN`'s codec half is bit-identical to the F32 package, so its clone RVQ
-encode is byte-exact and it passes every hard gate; what holds it is a
-speaker-identity sweep moving 6 of 16 cases into a different register against
-an accepted baseline of 1. `Q4_K_GEN` is rejected because ten of seventeen
-renders acquire a DC pedestal and collapse their envelope while buying no
-throughput at all. Neither profile name is confirmed and neither package is
-published; the full comparison, both packages' digests and the reasoning are in
+Every generator profile's codec half is bit-identical to the F32 package, so its
+clone RVQ encode is byte-exact and it passes every hard gate. `Q4_K` is not
+published because ten of seventeen renders go degenerate at 62× the probe drift
+while buying no throughput at all; `BF16` is not published because eleven of
+seventeen land over the quality line and it is 10.5× slower on CPU. The profile
+names were confirmed by jiangzhuo on 2026-08-09 — the half a profile quantizes
+determines its name, so the generator half takes the plain name and the codec
+half takes a `_CODEC` qualifier. The full comparison, the packages' digests and
+the reasoning are in
 `reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md` (2026-08-09) and
 `docs/quantization.md`.
 
@@ -165,11 +169,13 @@ exact-token gate (below), and **every one of them failed it**:
 
 | Profile | Bytes | Reduction | Clone RVQ tokens mismatched | Greedy grids |
 | --- | ---: | ---: | ---: | ---: |
-| Q8_MIXED (current, conv-exempt) | 2,778,427,360 | 12.9% | 98 of 2,808 (3.49%) | 17/17 exact |
-| F16 | 2,858,422,240 | 10.4% | 103 of 2,808 (3.7%) | 17/17 exact |
-| Q8_MIXED (superseded, packed convs) | 2,703,016,576 | 15.3% | 1,023 of 2,808 (36.4%) | 17/17 exact |
+| `Q8_CODEC_MIXED` (current, conv-exempt) | 2,778,427,360 | 12.9% | 98 of 2,808 (3.49%) | 17/17 exact |
+| `F16_CODEC` | 2,858,422,240 | 10.4% | 103 of 2,808 (3.7%) | 17/17 exact |
+| `Q8_CODEC_MIXED` (superseded, packed convs) | 2,703,016,576 | 15.3% | 1,023 of 2,808 (36.4%) | 17/17 exact |
 
-`Q8_MIXED` means something different for this family since the conv-exempt
+Both codec profiles were called `Q8_MIXED` and `F16` when they were measured;
+they took the `_CODEC` qualifier on 2026-08-09 when the plain names went to the
+generator half. `Q8_CODEC_MIXED` means something different for this family since the conv-exempt
 codec policy of 2026-08-09: it no longer block-quantizes any convolution
 kernel, so 85 of the 158 codec matrix weights are held at F16 and only the 73
 HuBERT Linears are Q8_0. The last row is what the same command line produced
@@ -187,7 +193,7 @@ identical to the F32 package's. What actually fails is the **Reference Audio
 cloning path's own RVQ encode**: quantizing the clone-encode path moves the
 fused latent that feeds the encode's nearest-neighbor codebook lookup
 (`ref.fused_latent` max_abs 9.32e-05 at F32 versus 0.123921 at the current
-Q8_MIXED, 0.129286 at F16 and 3.73227 at the superseded one), which flips a
+Q8_CODEC_MIXED, 0.129286 at F16_CODEC and 3.73227 at the superseded one), which flips a
 discrete nearest-neighbor decision at a large fraction of frames -- not a
 knife-edge margin call eligible for the dual-admissibility mechanism, in any
 case. Per this family's own gate discipline, a profile that fails the
@@ -371,7 +377,7 @@ cmake -S . -B build -DSYNTH_BUILD_TOOLS=ON
 cmake --build build --target synthesize-quantize
 build/bin/synthesize-quantize \
   models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
-  models/omnivoice-0-6b/omnivoice-0-6b-Q8_MIXED.gguf --quant Q8_MIXED
+  models/omnivoice-0-6b/omnivoice-0-6b-Q8_CODEC_MIXED.gguf --quant Q8_CODEC_MIXED
 build/bin/synthesize-quantize \
   models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
   models/omnivoice-0-6b/omnivoice-0-6b-F16.gguf --quant F16
@@ -426,7 +432,7 @@ models/publish/omnivoice-0-6b/
 ```
 
 Verified by listing it: no upstream checkpoint file, no `audio_tokenizer/`, no
-`tokenizer.json`, and no Q8_MIXED or F16 GGUF (neither ships) are present. All
+`tokenizer.json`, and no Q8_CODEC_MIXED or F16_CODEC GGUF (neither ships) are present. All
 three entries are hard links sharing the same filesystem and inode as their
 working-directory originals rather than duplicating 3 GB, which is safe
 because `models/` is entirely git-ignored and this directory is a working

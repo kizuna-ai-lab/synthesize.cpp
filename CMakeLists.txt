@@ -130,7 +130,7 @@ set(SYNTH_QWEN3_TTS_TEST_MODEL
     CACHE FILEPATH "Local Qwen3-TTS BF16 GGUF used by integration tests")
 # F32 is this family's source profile: the checkpoint stores F32 in both the
 # generator and the codec halves, so it is the package a port is checked
-# against. Plan 4 Task 3 measured both Q8_MIXED and F16 codec-only
+# against. Plan 4 Task 3 measured both Q8_CODEC_MIXED and F16_CODEC codec-only
 # Quantization Profiles against the exact-token gate and both failed the
 # cloning path's RVQ encode grid (docs/porting/families/omnivoice.md's
 # "Quantization Profile Shape"), so this family ships F32-only -- no

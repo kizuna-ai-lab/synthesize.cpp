@@ -601,23 +601,23 @@ synth_status_t Model::get_info(ModelInfo & output) const {
         case QuantizationProfile::F32:
             output.quantization_profile = "F32";
             break;
-        case QuantizationProfile::Q8Mixed:
-            output.quantization_profile = "Q8_MIXED";
+        case QuantizationProfile::Q8CodecMixed:
+            output.quantization_profile = "Q8_CODEC_MIXED";
+            break;
+        case QuantizationProfile::F16Codec:
+            output.quantization_profile = "F16_CODEC";
+            break;
+        case QuantizationProfile::Q8:
+            output.quantization_profile = "Q8";
+            break;
+        case QuantizationProfile::Q4K:
+            output.quantization_profile = "Q4_K";
             break;
         case QuantizationProfile::F16:
             output.quantization_profile = "F16";
             break;
-        case QuantizationProfile::Q8Gen:
-            output.quantization_profile = "Q8_GEN";
-            break;
-        case QuantizationProfile::Q4KGen:
-            output.quantization_profile = "Q4_K_GEN";
-            break;
-        case QuantizationProfile::F16Gen:
-            output.quantization_profile = "F16_GEN";
-            break;
-        case QuantizationProfile::BF16Gen:
-            output.quantization_profile = "BF16_GEN";
+        case QuantizationProfile::BF16:
+            output.quantization_profile = "BF16";
             break;
     }
     output.input_flags          = hparams.input_flags;

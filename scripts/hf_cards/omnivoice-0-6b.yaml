@@ -131,6 +131,25 @@ tags:
   - cpu
   - cuda
 
+# Rendered directly under the download table, where a reader choosing a file is
+# still looking. Kept short on purpose; the per-row notes carry the detail.
+downloads_note: |-
+  **A profile name here says which half of the model it quantizes.** This family
+  has two: a Qwen3-based generator that paints the token canvas, and the Higgs
+  Audio V2 codec that turns the canvas into audio. Every profile above
+  quantizes the generator half and leaves all 486 codec tensors bit-identical to
+  F32, which is why all three reproduce the Reference Audio cloning path's
+  token grid exactly. A profile that quantized the codec half instead would
+  carry a `_CODEC` qualifier in its name; none is published, because every one
+  produced so far fails that exact-token gate.
+
+  **No profile here is faster than F32, and none claims to be.** Measured
+  against F32 on this project's CUDA reference host: Q8 is 0.4% quicker, F16 is
+  2.7% *slower*; on CPU, Q8 is 1.5% slower and F16 1.2% quicker. The generator
+  is compute-bound at roughly 205 multiply-accumulates per weight byte, so a
+  narrower weight does not relieve the bottleneck. What a smaller profile buys
+  is disk, accelerator memory and load time.
+
 summary: |
   A self-contained OmniVoice inference package converted from the flagship
   `k2-fsa/OmniVoice` checkpoint. It is a non-autoregressive mask-predict
@@ -143,6 +162,22 @@ summary: |
   conditioning, whose speaker is emergent rather than pinned by the seed
   alone. The package carries its own byte-level BPE text frontend, so raw
   UTF-8 text goes in and audio comes out.
+
+  **One hazard to know before your first request, and nothing in the runtime
+  warns about it.** The canvas length is estimated from the text and then
+  divided by the speaking rate. Below roughly 37-40 frames (about 1.5 seconds)
+  there are too few positions to place the text, and the output degenerates
+  into a near-DC sub-50 Hz rumble instead of speech. Two ordinary requests
+  reach that: a very short text (`--text "Hi."` resolves to a 22-frame canvas),
+  and a high `--rate` on a short one -- the declared `speaking_rate_range` goes
+  to 2.0 and is accepted silently, but upstream's own demo UI caps speed at
+  1.5, and the pinned upstream model is already degenerate at rate 1.50 on a
+  32-character sentence. **This is upstream's behavior, faithfully reproduced,
+  not a defect in this port**: on the affected validation case this package
+  matches the reference implementation's waveform at Pearson r = 0.999670, the
+  tightest agreement of any case measured, and the reference's own audio for it
+  is equally unintelligible. Rate 2.0 on a long text is fine; the variable is
+  the resolved canvas length, not the rate.
 
 capabilities:
   sample_rate_hz: 24000
@@ -205,6 +240,16 @@ validation:
       title: CPU waveform cosine
     - key: cuda_pcm_cosine
       title: DGX Spark CUDA waveform cosine
+    # Added 2026-08-09 with the two generator profiles. The waveform-cosine
+    # columns are a comparison against the PyTorch oracle and only F32 can be
+    # held to them: a quantized generator re-draws the token grid, so it emits a
+    # different valid realization rather than a drifted copy of the same one,
+    # and a waveform metric against the oracle would be measuring the wrong
+    # thing. What separates the generator profiles is the long-term average
+    # spectrum distance from F32's own render, which is a speaker-identity
+    # proxy, so it gets its own column instead of being buried in prose.
+    - key: ltas_max_db
+      title: Worst LTAS distance from F32/CPU (17 greedy cases)
   metric_note: >-
     Waveform cosine is measured for completeness; it is not this family's
     real guarantee and is not enforced as a tolerance the way it is for
@@ -215,15 +260,30 @@ validation:
     claim, the Reference Audio cloning path's own RVQ encode grid matches on
     both clone cases -- 8 codebooks x 351 frames, 2,808 of 2,808 tokens
     exact. Both grids stayed byte-exact when the codec's decode graph moved
-    to CUDA too. A quantized profile or a backend that flips even one of
-    those tokens is not shipped. Only F32 is listed below for exactly that
-    reason: every codec-only quantized profile produced so far has been
-    measured against the cloning path's exact-token gate and has failed it.
-    F16_CODEC mismatched 103 of 2,808 tokens (3.7%); Q8_CODEC_MIXED mismatched 1,023
-    (36.4%) while it still block-quantized convolution kernels, and 98
-    (3.49%) since the conv-exempt codec policy of 2026-08-09 stopped it
-    doing so. None is a knife-edge margin call, so none ships and no
-    perceptual claim substitutes for the gate. Every deep
+    to CUDA too. A profile or a backend that flips even one of those tokens is
+    not shipped, and that rule is what decides which profiles are listed above.
+    All three listed profiles quantize the generator half only and leave every
+    one of the 486 `codec.*` tensors bit-identical to the F32 package, so the
+    cloning path's RVQ encode is byte-exact on all three and they inherit this
+    guarantee rather than approximating it. Every codec-half profile produced
+    so far fails it and none is listed: F16_CODEC mismatched 103 of 2,808
+    tokens (3.7%), and Q8_CODEC_MIXED mismatched 1,023 (36.4%) while it still
+    block-quantized convolution kernels, 98 (3.49%) since the conv-exempt
+    codec policy of 2026-08-09 stopped it doing so. None is a knife-edge margin
+    call, so none ships and no perceptual claim substitutes for the gate.
+    The two waveform-cosine columns are measured against the PyTorch oracle and
+    are reported for F32 alone. They are not withheld for the quantized
+    profiles; they do not apply to them. A quantized generator re-draws the
+    token grid rather than perturbing F32's -- Q8 commits a different token at
+    95.83% of positions -- so its output is a different valid realization of
+    the same request, and a waveform distance to the oracle would score that
+    difference as error. The last column is the measurement that does separate
+    them: long-term average spectrum distance from F32's own CPU render, the
+    speaker-identity proxy this family uses, worst case over the seventeen
+    greedy validation cases. Roughly 3 dB is the line a listener has
+    consistently called "same person", calibrated on fourteen answers across
+    two audits with no exceptions.
+    Every deep
     generator probe gates on cosine rather than a sample-wise bound because
     pre-norm outlier channels reach a max-abs of 0.08 while cosine still
     holds at eight nines; a sample-wise threshold there would reject a
@@ -232,16 +292,31 @@ validation:
     - DGX Spark CPU
     - NVIDIA GB10 CUDA 13.3
   cuda_placement: partial
+  # Corrected 2026-08-09. This note still described the Plan 4 configuration --
+  # "the generator stayed on the CPU unconditionally" -- which Plan 5 Task 1
+  # superseded on 2026-08-08 (`docs/backends.md`, "The Discrete-Outputs Rule
+  # Admits One Narrow Exception", and its family table row, which now reads
+  # "none" for held stages). The card was asserting a placement the shipped
+  # runtime no longer has; a 4.16 s render on the Release CUDA tree takes 3.1 s,
+  # which a CPU-held generator could not do.
   cuda_placement_note: >-
-    Only the codec's decode graph (the RVQ dequantizer, the acoustic
-    decoder, and the final projection -- 152 tensors) moved to CUDA: swept
-    over all twenty golden cases, every one of its 8,440 nodes left the CPU.
-    The generator -- the entire mask-predict denoising loop, every one of
-    its 880,032 measured nodes, and its whole input path -- stayed on the
-    CPU unconditionally, because the generator's own token selection feeds
-    its next step and `docs/backends.md`'s discrete-outputs rule holds a
-    discrete decision and its input path off the accelerator regardless of
-    backend.
+    Both halves now run on CUDA, and only one of them did through Plan 4.
+    The codec's decode graph (the RVQ dequantizer, the acoustic decoder, and
+    the final projection -- 152 tensors) moved first: swept over all twenty
+    golden cases, every one of its 8,440 nodes left the CPU while every one
+    of the generator's 880,032 nodes stayed on it, held there by
+    `docs/backends.md`'s discrete-outputs rule. On 2026-08-08 the generator
+    earned that rule's one narrow exception -- its per-step token choice picks
+    the *content* of a canvas whose *shape* deterministic host arithmetic fixed
+    before the first forward runs, and grid size was then measured to match the
+    CPU oracle on all seventeen greedy cases -- so it received its own
+    accelerator-resident weight twin and now moves too. 2,421.04 of the model's
+    3,042.2 MiB are mirrored, and the suite's longest case falls from 122.61 s
+    to 5.481 s, 0.1906x real time. Committed token *content* consequently
+    diverges from the CPU baseline on most cases: a different valid realization
+    inside an unchanged canvas, audited by ear before the move was accepted,
+    not a regression. The cloning path's own RVQ token grids stay byte-exact
+    across the move.
 
 publication_note: |
   This is a **Restricted Model Package** (ADR 0018), not a Published Model
@@ -260,8 +335,32 @@ publication_note: |
   own validation case, so none beyond these three is advertised.
 
 usage:
-  profile: F32
-  text: "This is a sentence without any voice prompt."
+  # F16, not F32, from 2026-08-09: the usage example is what a first-time reader
+  # copies, and it should hand them the profile the card recommends. F16 is the
+  # same voice as F32 on every measured case at 38.4% less on disk. F32 remains
+  # listed and remains the reference a measurement is reproduced against.
+  #
+  # The text changed on the same date and for a sharper reason. It used to be
+  # "This is a sentence without any voice prompt." -- upstream's own README
+  # example, and also the golden case `omni-upstream-readme`, which the
+  # 2026-08-09 listening audit identified as this suite's *second degenerate
+  # case*: the upstream model itself renders it as unintelligible output and
+  # this port reproduces that faithfully. The card was handing a first-time
+  # reader a command whose output is not speech.
+  #
+  # Note for whoever checks this: the automated degeneracy screen does NOT flag
+  # that case (measured 2026-08-09 on the F16 package -- degenerate: false,
+  # envelope ratio 2134). That is the porting log's own point about it, not a
+  # contradiction: "no gate can see it because every gate compares against the
+  # oracle", and the oracle is unintelligible here too. The finding is a
+  # listener's, and it stands.
+  #
+  # The replacement is `omni-medium-en`, a validated golden case, long enough to
+  # sit well clear of the short-canvas hazard, and measured on the F16 package
+  # on 2026-08-09: 12.28 s of output, not degenerate, envelope ratio 850 inside
+  # the published band.
+  profile: F16
+  text: "The engine reads a whole paragraph without pausing for breath. It holds one voice from the first word to the last. Nothing in the timing depends on the machine that runs it. It sounds the same everywhere."
 
 sidecars:
   - filename: LICENSE-higgs-audio-2.txt
@@ -270,6 +369,17 @@ sidecars:
     size_bytes: 9171
     sha256: ac933dc084d119bd20401956b90d11ae87c248b2da62622cd580d82cdf2fa049
 
+# Three profiles ship. All three carry a bit-identical codec half, so all three
+# inherit the exact-token guarantee that gates this family; what separates them
+# is how far the generator's rendering moves away from F32's. The `note` field
+# is deliberately per-row rather than a paragraph under the table: a reader
+# picking a file out of the download table has to see the caveat in the row they
+# are picking, not two screens below it.
+#
+# No profile is faster. Measured against F32 on CUDA: Q8 -0.4%, F16 +2.7%
+# *slower*; on CPU Q8 +1.5% slower, F16 -1.2%. The generator is compute-bound at
+# roughly 205 MAC per weight byte, so a narrower weight does not relieve the
+# bottleneck. Nothing on this card may say "faster".
 quants:
   - name: F32
     filename: omnivoice-0-6b-F32.gguf
@@ -277,6 +387,42 @@ quants:
     size_bytes: 3189953504
     sha256: f6d504ffaddcbf32f80f1f6c847f075bbd5d2c7b50fe95a194ceb635772f9fa3
     tensor_types: 798 F32
+    note: >-
+      The reference conversion, bit-for-bit from the upstream checkpoint. Take
+      it to reproduce a measurement; otherwise F16 sounds the same and is 1.2 GB
+      smaller. 3506 MiB accelerator resident, 2.6 s to load.
     validation:
       cpu_pcm_cosine: 0.99999986
       cuda_pcm_cosine: 0.99999635
+      ltas_max_db: "— (reference)"
+  - name: F16
+    filename: omnivoice-0-6b-F16.gguf
+    size: "1964.9 MB"
+    size_bytes: 1964929440
+    sha256: 65c8cca59b350ccfdc6ad96c5a683b276f8c0fd5c8e96675d6dc110da3f52f70
+    tensor_types: 599 F32 + 199 F16
+    note: >-
+      **Recommended default.** Same voice as F32 on every measured case, all
+      three voice modes, 38.4% smaller. 2353 MiB accelerator resident, 1.6 s to
+      load. Not faster than F32.
+    validation:
+      ltas_max_db: 2.87 dB
+  - name: Q8
+    filename: omnivoice-0-6b-Q8.gguf
+    size: "1390.7 MB"
+    size_bytes: 1390699680
+    sha256: 61aec0de7cfa9246487e309c43508de9c95cf52fd225ce3fada3b4bb4982374e
+    tensor_types: 599 F32 + 199 Q8_0
+    note: >-
+      **Smaller, and it renders a different voice than F32 does** for auto-voice
+      and for Description Text -- 4.12 to 12.22 dB of long-term average spectrum
+      distance, and a listener heard five of six sampled auto-voice pairs as
+      different people while judging the quality of both indistinguishable.
+      Reference Audio cloning is not affected (2.02 / 2.70 dB): it reproduces
+      F32's voice. Nothing is disabled, the API is identical, and a Description
+      Text prompt is still honored -- "female, young adult, high pitch" gives
+      343.5 Hz against F32's 333.3 Hz, so you get a different voice *within* the
+      description, not an ignored one. 56.4% smaller, 1811 MiB accelerator
+      resident, 1.1-1.4 s to load. Not faster than F32.
+    validation:
+      ltas_max_db: 12.22 dB

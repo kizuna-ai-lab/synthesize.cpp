@@ -839,12 +839,23 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     # cloning path's RVQ
     # encode grid -- 1023/2808 and 103/2808 positions respectively, neither a
     # knife-edge margin call (docs/porting/families/omnivoice.md's
-    # "Quantization Profile Shape"). This family ships F32-only: no
-    # per-profile golden gate is registered for either, deliberately --
+    # "Quantization Profile Shape"). Neither ships, and no per-profile golden
+    # gate is registered for either, deliberately --
     # a permanently-red registered test is not an acceptable end state for
     # the branch, and the measured evidence for both is recorded in that doc
     # and in reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md instead
     # of as a failing gate here.
+    #
+    # Amended 2026-08-09: this comment used to say "This family ships
+    # F32-only", which stopped being true when the generator-half F16 and Q8
+    # profiles were prepared for publication. They register no per-profile
+    # golden gate either, for the opposite reason: a generator-half profile
+    # re-draws the greedy token grid by design (Q8 flips 95.83% of positions),
+    # so there is no oracle-parity grid for a gate to compare it against. What
+    # they do inherit unconditionally is the CODEC half's guarantee -- their
+    # codec tensors are bit-identical to F32's, so the cloning path's RVQ
+    # encode stays byte-exact -- which is what makes them shippable and the
+    # two codec-half profiles above not.
 
     # Plan 4 Task 11's CUDA sweep, same manifest and sentinel as the CPU gate
     # above -- only the requested backend and the tolerance cell it checks

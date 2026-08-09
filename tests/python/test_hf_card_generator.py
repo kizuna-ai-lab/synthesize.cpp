@@ -462,6 +462,138 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
         self.assertIn("accepts raw UTF-8 text", card)
         self.assertNotIn("also accepts exact token", card)
 
+    # -- 2026-08-09: per-profile notes in the download table -----------------
+
+    def test_download_table_has_no_notes_column_when_no_quant_declares_one(
+        self,
+    ) -> None:
+        # The column is opt-in per spec. Every family that shipped before
+        # 2026-08-09 declares no `note`, and their cards must render exactly as
+        # they did -- `--check` compares byte-for-byte against a committed
+        # README, so a stray column or a stray separator cell breaks all of
+        # them at once.
+        spec = base_fixture_spec()
+        card = self.generator.render(spec, "# stub")
+        self.assertIn("| Profile | Download | Size | Tensor storage | SHA-256 |\n", card)
+        self.assertIn("| --- | --- | ---: | --- | --- |\n", card)
+        self.assertNotIn("What to know before choosing it", card)
+
+    def test_a_quant_note_renders_in_that_quant_s_own_table_row(self) -> None:
+        # The point of the field, and the reason it is not a paragraph under
+        # the table: a reader picking a file out of the download table has to
+        # meet the caveat in the row they are picking. Assert the note is on
+        # the same LINE as the profile it belongs to, and that a profile
+        # without one gets a placeholder rather than shifting the columns.
+        spec = base_fixture_spec()
+        spec["quants"].append(
+            {
+                "name": "Q8",
+                "filename": "fixture-Q8.gguf",
+                "size": "1 byte",
+                "size_bytes": 1,
+                "sha256": "b" * 64,
+                "tensor_types": "1 Q8_0",
+                "note": "Renders a different voice than F16 does.",
+                "validation": {"cpu_metric": 0},
+            }
+        )
+        card = self.generator.render(spec, "# stub")
+        self.assertIn(
+            "| Profile | Download | Size | Tensor storage | SHA-256 |"
+            " What to know before choosing it |\n",
+            card,
+        )
+        self.assertIn("| --- | --- | ---: | --- | --- | --- |\n", card)
+
+        # The validation table further down repeats every profile name in the
+        # same leading-cell position, so match on the download link too.
+        rows = {
+            line.split("|")[1].strip(): line
+            for line in card.splitlines()
+            if line.startswith(("| F16 |", "| Q8 |")) and "/resolve/main/" in line
+        }
+        self.assertEqual(set(rows), {"F16", "Q8"})
+        self.assertTrue(rows["Q8"].endswith("Renders a different voice than F16 does. |"))
+        # The un-noted profile keeps the cell, so the table stays rectangular.
+        self.assertTrue(rows["F16"].endswith(" | — |"))
+        self.assertNotIn("Renders a different voice", rows["F16"])
+
+    def test_downloads_note_is_optional_and_renders_under_the_table(self) -> None:
+        # Same optional-field shape as speaker_backend_variation, and added for
+        # the same reason: the generator runs Jinja under StrictUndefined, so a
+        # template reading an absent key raises for every family that does not
+        # set it. Both branches need a test.
+        spec = base_fixture_spec()
+        without = self.generator.render(spec, "# stub")
+        self.assertIn("profile name describes a versioned storage policy", without)
+
+        spec["downloads_note"] = "**No profile here is faster than F32.**"
+        with_note = self.generator.render(spec, "# stub")
+        self.assertIn(
+            "not the language or Execution\nBackend.\n\n"
+            "**No profile here is faster than F32.**\n",
+            with_note,
+        )
+
+    def test_omnivoice_ships_three_profiles_with_q8_s_caveat_in_its_own_row(
+        self,
+    ) -> None:
+        # Regression for the real spec. Three things this family's card must
+        # not lose, each of which a well-meaning edit has already got wrong at
+        # least once on this branch:
+        #
+        #   1. F16 and Q8 are listed at all, under their post-rename names.
+        #   2. Q8's caveat is IN the Q8 download row, not only in prose below.
+        #   3. No profile is described as faster. Measured against F32, Q8 is
+        #      0.4% quicker on CUDA and 1.5% SLOWER on CPU, and F16 is 2.7%
+        #      slower on CUDA -- the generator is compute-bound at ~205 MAC per
+        #      weight byte, so a narrower weight buys size, memory and load
+        #      time, never speed.
+        spec = self.generator.load_spec(ROOT / "scripts" / "hf_cards" / "omnivoice-0-6b.yaml")
+        self.generator.validate_spec(spec)
+        self.assertEqual([quant["name"] for quant in spec["quants"]], ["F32", "F16", "Q8"])
+
+        card = self.generator.render(spec, "# stub upstream card")
+        q8_row = next(
+            line
+            for line in card.splitlines()
+            if line.startswith("| Q8 |") and "/resolve/main/" in line
+        )
+        self.assertIn("different voice", q8_row)
+        self.assertIn("Reference Audio cloning is not affected", q8_row)
+        self.assertIn("Nothing is disabled", q8_row)
+        # The two framings jiangzhuo corrected, which the row must never
+        # reintroduce: Q8 is not clone-only, and it does honor a Description
+        # Text prompt (it renders a different voice WITHIN the description).
+        self.assertNotIn("clone-only", card)
+        self.assertIn("not an ignored one", q8_row)
+
+        f16_row = next(
+            line
+            for line in card.splitlines()
+            if line.startswith("| F16 |") and "/resolve/main/" in line
+        )
+        self.assertIn("Recommended default", f16_row)
+
+        # Every use of "faster" on the card must be a denial. Checked by
+        # enumerating the occurrences rather than by a substring blacklist, so
+        # a newly invented speed claim cannot slip past a phrase this test did
+        # not think to forbid.
+        lowered = card.lower()
+        allowed = {
+            "no profile here is faster than f32, and none claims to be.",
+            "not faster than f32.",
+        }
+        for index, _ in enumerate(lowered):
+            if lowered.startswith("faster", index):
+                context = lowered[max(0, index - 80) : index + 80]
+                self.assertTrue(
+                    any(phrase in context for phrase in allowed),
+                    f"the card must make no speed claim; found ...{context}...",
+                )
+        for forbidden in ("speedup", "speed-up", "x faster", "% faster"):
+            self.assertNotIn(forbidden, lowered)
+
     def test_omnivoice_default_readme_matches_the_generated_card(self) -> None:
         # This family's working directory (models/omnivoice-0-6b) is not flat
         # -- it holds the raw upstream checkpoint beside our GGUFs, unlike

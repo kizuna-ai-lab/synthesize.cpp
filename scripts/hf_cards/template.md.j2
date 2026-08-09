@@ -43,17 +43,20 @@ validated on {{ validation.date }} against {{ validation.reference }}.
 {{ summary }}
 
 ## Downloads
-
-| Profile | Download | Size | Tensor storage | SHA-256 |
-| --- | --- | ---: | --- | --- |
+{% set note_count = quants | map(attribute="note", default="") | reject("equalto", "") | list | length %}
+| Profile | Download | Size | Tensor storage | SHA-256 |{% if note_count %} What to know before choosing it |{% endif %}
+| --- | --- | ---: | --- | --- |{% if note_count %} --- |{% endif %}
 {%- for quant in quants %}
-| {{ quant.name }} | [{{ quant.filename }}](https://huggingface.co/{{ target_repo }}/resolve/main/{{ quant.filename }}) | {{ quant.size }} ({{ "{:,}".format(quant.size_bytes) }} bytes) | {{ quant.tensor_types }} | `{{ quant.sha256 }}` |
+| {{ quant.name }} | [{{ quant.filename }}](https://huggingface.co/{{ target_repo }}/resolve/main/{{ quant.filename }}) | {{ quant.size }} ({{ "{:,}".format(quant.size_bytes) }} bytes) | {{ quant.tensor_types }} | `{{ quant.sha256 }}` |{% if note_count %} {{ quant.note | default("—") }} |{% endif %}
 {%- endfor %}
 
 All profiles use the same {{ architecture_label }} architecture and public synthesize.cpp API. The
 profile name describes a versioned storage policy, not the language or Execution
 Backend.
-{% if sidecars is defined and sidecars %}
+{% if downloads_note is defined %}
+{{ downloads_note }}
+{% endif %}
+{%- if sidecars is defined and sidecars %}
 ## Sidecar files
 
 These files are not GGUF tensor storage; they are declared resources that must

@@ -1,12 +1,16 @@
 # OmniVoice 0.6B
 
-Status: F32 is `port_validated`. **Quality evaluation has not been run.** A
+Status: Confirmed 2026-08-09. F32, F16, and Q8 are `port_validated`, and all
+three are prepared for publication -- **F16 is the default recommendation** and
+Q8 the smaller option with a voice caveat; see "Package," below.
+`Q4_K` and `BF16` were measured and are not published. **Quality evaluation has
+not been run.** A
 Listening Audit on 2026-08-07 found no obvious regression across six pairs
 (`no_obvious_regression`) -- see "Listening Audit," below; neither claim moves
 the Validation Level. Two corrections landed 2026-08-08 after a further audit:
 see **"Short canvases produce unintelligible output"** and the auto-voice
 speaker note under "Package" -- both describe the shipped configuration. The
-quantization table under "Package" was re-measured on 2026-08-09 under the
+quantization tables under "Package" were re-measured on 2026-08-09 under the
 conv-exempt codec policy; `Q8_CODEC_MIXED` means something different for this family
 since that date and still does not ship.
 This is a **Restricted Model Package** (ADR 0018), not a
@@ -81,9 +85,53 @@ input has no consumer (`docs/porting/families/omnivoice.md`, "Amended
 2026-07-31"), and the loader refuses to load any package declaring more than
 the text flag.
 
-| Profile | Bytes | Tensor storage | SHA-256 |
-| --- | ---: | --- | --- |
-| F32 | 3,189,953,504 | 798 F32 | `f6d504ffaddcbf32f80f1f6c847f075bbd5d2c7b50fe95a194ceb635772f9fa3` |
+Three profiles are prepared for publication. Each quantizes the **generator**
+half only and leaves all 486 `codec.*` tensors bit-identical to the F32
+package, so each inherits this family's exact-token guarantee rather than
+approximating it (see "Port validation," below):
+
+| Profile | Bytes | Off F32 | Tensor storage | SHA-256 |
+| --- | ---: | ---: | --- | --- |
+| F32 | 3,189,953,504 | — | 798 F32 | `f6d504ffaddcbf32f80f1f6c847f075bbd5d2c7b50fe95a194ceb635772f9fa3` |
+| F16 | 1,964,929,440 | 38.4% | 599 F32 + 199 F16 | `65c8cca59b350ccfdc6ad96c5a683b276f8c0fd5c8e96675d6dc110da3f52f70` |
+| Q8 | 1,390,699,680 | 56.4% | 599 F32 + 199 Q8_0 | `61aec0de7cfa9246487e309c43508de9c95cf52fd225ce3fada3b4bb4982374e` |
+
+What each one costs and buys, measured 2026-08-09. "LTAS" is long-term average
+spectrum distance from F32's own CPU render, worst case over the seventeen
+greedy Golden cases; roughly 3 dB is the line a listener has consistently
+called "same person", calibrated on fourteen answers across two audits with no
+exceptions:
+
+| Profile | Worst LTAS vs F32/CPU | Accelerator resident | Load time | CUDA throughput vs F32 | CPU throughput vs F32 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| F32 | — (reference) | 3506 MiB | 2.6 s | — | — |
+| F16 | 2.87 dB | 2353 MiB | 1.6 s | **2.7% slower** | 1.2% quicker |
+| Q8 | 12.22 dB | 1811 MiB | 1.1–1.4 s | 0.4% quicker | 1.5% slower |
+
+**No profile is faster, and none may be described as faster.** The generator is
+compute-bound at roughly 205 multiply-accumulates per weight byte, so a
+narrower weight does not relieve the bottleneck; the honest claim for every
+profile is size, memory and load time.
+
+**F16 is the default recommendation.** Every one of the seventeen greedy cases
+lands under the ~3 dB line, and it preserves both conditioned paths: Reference
+Audio cloning at 0.22 / 0.12 dB and Description Text at 0.00 / 1.38 dB.
+
+**Q8's caveat is a different voice, not a smaller feature set.** Nothing is
+disabled -- all three voice modes work and the API is identical. It reproduces
+F32's voice for Reference Audio cloning (2.02 / 2.70 dB). For auto-voice and
+for Description Text it returns a *different* voice: LTAS 4.12–12.22 dB, and a
+listener heard five of six sampled auto-voice pairs as different people **while
+judging the quality of both indistinguishable on every one of them**. It still
+honors a Description Text prompt, which the design cases make directly
+checkable because they specify pitch: "female, young adult, high pitch" gives
+F32 333.3 Hz and Q8 343.5 Hz; "男，老年，低音調" (male, elderly, low pitch)
+gives 152.9 and 158.4 Hz, against ordinary voices in this suite at 118–130 Hz.
+The 8.61 dB on `omni-design-en` means "a different voice within the same
+description", **not** "the description was ignored" -- **never describe Q8 as
+clone-only or as breaking voice design.** For auto-voice the caveat is barely
+news: this page already states above that the speaker is unstable across
+backends and seeds, because auto-voice carries no speaker conditioning at all.
 
 The public C ABI is profile-independent. C++, Rust, and Python callers load a
 local GGUF through the same model interface. The tensor catalog, RVQ dequant
@@ -117,7 +165,10 @@ defect**: on the affected golden case this port matches the pinned PyTorch
 oracle's waveform at Pearson r = 0.999670, the tightest of any case measured,
 and the oracle's own reference audio for that case is equally unintelligible.
 The golden suite does not catch it because port validation compares against the
-oracle and makes no intelligibility claim (ADR 0017). Lowering the declared
+oracle and makes no intelligibility claim (ADR 0017). Added 2026-08-09: the
+generated model card now carries a short warning about this, so a downloader
+who never reads this page still meets it before their first request — but that
+is documentation, not a guard. Lowering the declared
 range and emitting a diagnostic on a too-short canvas are both recommended and
 neither has been done; see
 `reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s 2026-08-08
@@ -125,44 +176,57 @@ step-count audit entry, Finding 1.
 
 ### What the profiles quantize, and what they never do
 
-**No Quantization Profile ships. This family is F32-only.** By jiangzhuo's
-ruling of 2026-08-06, any produced profile is codec-only: the generator
-(`llm.*`, `audio_embeddings.weight`, `audio_heads.weight`) and the RVQ
-(`codec.quantizer.*`, `codec.fc`, `codec.fc2`) always stay at the reference
-dtype, regardless of shape. The reason a codec-only scope was chosen at all is
-a measured, prior finding rather than a convention: a reference port measured
-greedy-decode token agreement collapsing from 100% to roughly 7% under an F16
-*generator*, because an argmax flip at one committed step feeds back into
-every later step of the same synthesis.
+**A profile here quantizes one half of the model, never both.** This family has
+two halves with opposite risk — the Qwen3-based generator that paints the token
+canvas, and the Higgs Audio V2 codec that turns the canvas into audio — and
+`classify_tensor_for_half` enforces the split, so there is no combined profile.
+Which half a profile quantizes determines its name (jiangzhuo, 2026-08-09):
+the generator half takes the plain name, the codec half takes a `_CODEC`
+qualifier.
 
-**The codec-only scope was lifted on 2026-08-09, and the first sentence still
-holds: this family remains F32-only.** jiangzhuo directed that generator
-profiles be built and measured, because the generator is 76.9% of the tensor
+**The generator-half profiles ship; every codec-half profile is blocked.** That
+is the reverse of what this page said through 2026-08-08, and the history is
+worth keeping because the reasoning moved twice. By jiangzhuo's ruling of
+2026-08-06 the scope was codec-only, on a measured prior finding rather than a
+convention: a reference port measured greedy-decode token agreement collapsing
+from 100% to roughly 7% under an F16 *generator*, because an argmax flip at one
+committed step feeds back into every later step of the same synthesis. That
+scope was lifted on 2026-08-09, because the generator is 76.9% of the tensor
 bytes and no codec-only profile can go below about 2.62 GB however aggressive
-it is. Two were produced. Both confirm the prior finding about token agreement
-and neither is refuted by it — a quantized generator emits a *different valid
-realization*, not a wrong one, so token flip is recorded as data and is not a
-gate. What decides them is whether the voice changed, which only a listener can
-say.
+it is. Four generator profiles were produced and measured. All four confirm the
+prior finding about token agreement, and none is refuted by it — a quantized
+generator emits a *different valid realization*, not a wrong one, so token flip
+is recorded as data and is never a gate here. What decides a profile is whether
+the voice changed, which only a listener can answer.
 
 | Generator profile | Bytes | Reduction | Greedy token flip | Status |
 | --- | ---: | ---: | ---: | --- |
-| `F16` (halved) | 1,964,929,440 | 38.4% | — | **default recommendation** |
-| `Q8` (Q8_0) | 1,390,699,680 | 56.4% | 95.83% | **the smaller option** |
+| `F16` (halved) | 1,964,929,440 | 38.4% | — | **ships — default recommendation** |
+| `Q8` (Q8_0) | 1,390,699,680 | 56.4% | 95.83% | **ships — the smaller option** |
 | `Q4_K` (Q4_K + Q8_0 pin) | 1,166,300,320 | 63.4% | 98.99% | measured, **not published** |
 | `BF16` (bfloat16) | 1,964,929,440 | 38.4% | — | measured, **not published** |
 
 Every generator profile's codec half is bit-identical to the F32 package, so its
-clone RVQ encode is byte-exact and it passes every hard gate. `Q4_K` is not
+clone RVQ encode is byte-exact and it passes every hard gate — which is exactly
+why this half is the shippable one. `Q4_K` is not
 published because ten of seventeen renders go degenerate at 62× the probe drift
 while buying no throughput at all; `BF16` is not published because eleven of
-seventeen land over the quality line and it is 10.5× slower on CPU. The profile
-names were confirmed by jiangzhuo on 2026-08-09 — the half a profile quantizes
-determines its name, so the generator half takes the plain name and the codec
-half takes a `_CODEC` qualifier. The full comparison, the packages' digests and
-the reasoning are in
+seventeen land over the quality line and it is 10.5× slower on CPU. Their code
+and their rows stay; no package is cut. The full comparison, the packages'
+digests and the reasoning are in
 `reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md` (2026-08-09) and
 `docs/quantization.md`.
+
+The two shipped generator packages carry the same tensor bytes as the
+`F16_GEN` / `Q8_GEN` artifacts every measurement on this page was taken from.
+Verified 2026-08-09 rather than assumed: re-cutting under the new names changes
+only the `synthesize.quantization.profile` string in the GGUF header, which
+shifts the bytes behind it inside the header and nothing else. Both pairs
+compare byte-for-byte identical from `tensor_data_start` (offset 5,387,264, the
+same in old and new because the 32-byte alignment padding absorbs the shorter
+string) to end of file; every difference `cmp -l` reports lies in the header,
+below that offset. The measurements transfer unchanged because the weights are
+the same weights.
 
 Codec-only profiles were produced and measured against this family's own
 exact-token gate (below), and **every one of them failed it**:
@@ -186,20 +250,27 @@ nearly equal -- the drift that remains is the precision of the convolutions,
 not of the Linears (`docs/porting/families/omnivoice.md` has the four-cell
 attribution).
 
-Every profile reproduces the greedy decode loop's 8 x T token grid exactly,
-for a structural reason rather than luck: the generator and the RVQ are
-Sensitive/F32 under every profile, so the decode loop's logits are bit-for-bit
-identical to the F32 package's. What actually fails is the **Reference Audio
-cloning path's own RVQ encode**: quantizing the clone-encode path moves the
+Every *codec-half* profile reproduces the greedy decode loop's 8 x T token grid
+exactly, for a structural reason rather than luck: the generator and the RVQ
+are Sensitive/F32 under a codec-half profile, so the decode loop's logits are
+bit-for-bit identical to the F32 package's. (The shipped generator-half
+profiles are the mirror image of this: they re-draw the greedy grid, which is
+recorded as data and never gated, and leave the codec bit-identical so the
+cloning grid below stays exact.) What fails on the codec half is the
+**Reference Audio cloning path's own RVQ encode**: quantizing the clone-encode
+path moves the
 fused latent that feeds the encode's nearest-neighbor codebook lookup
 (`ref.fused_latent` max_abs 9.32e-05 at F32 versus 0.123921 at the current
 Q8_CODEC_MIXED, 0.129286 at F16_CODEC and 3.73227 at the superseded one), which flips a
 discrete nearest-neighbor decision at a large fraction of frames -- not a
 knife-edge margin call eligible for the dual-admissibility mechanism, in any
 case. Per this family's own gate discipline, a profile that fails the
-exact-token gate is not shipped and no perceptual claim substitutes for it, so
-no profile has a registered golden gate or a committed tolerance cell, and the
-measurement stands as the record instead
+exact-token gate is not shipped and no perceptual claim substitutes for it.
+`tests/tolerances/omnivoice.json` still has exactly one measured cell, F32 on
+CPU, for every profile including the two that now ship: a generator-half
+profile re-draws the grid by design, so there is nothing for a per-profile
+oracle-parity cell to hold it to, and the measurement stands as the record
+instead
 (`docs/porting/families/omnivoice.md`'s Quantization Profile Shape section;
 `reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s Plan 4 Task 3 and
 2026-08-09 entries).
@@ -369,7 +440,7 @@ invocation (`docs/backends.md`;
 `reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s 2026-08-07
 entry has the exact command line).
 
-The blocked Quantization Profiles are reproduced, not shipped, with the
+The two shipped Quantization Profiles are cut from the F32 artifact with the
 generic quantizer tool:
 
 ```bash
@@ -377,14 +448,26 @@ cmake -S . -B build -DSYNTH_BUILD_TOOLS=ON
 cmake --build build --target synthesize-quantize
 build/bin/synthesize-quantize \
   models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
-  models/omnivoice-0-6b/omnivoice-0-6b-Q8_CODEC_MIXED.gguf --quant Q8_CODEC_MIXED
+  models/omnivoice-0-6b/omnivoice-0-6b-F16.gguf --quant F16
 build/bin/synthesize-quantize \
   models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
-  models/omnivoice-0-6b/omnivoice-0-6b-F16.gguf --quant F16
+  models/omnivoice-0-6b/omnivoice-0-6b-Q8.gguf --quant Q8
 ```
 
-Neither output above passes the exact-token gate (see Package); running these
-commands reproduces the negative measurement, not a package to ship.
+The measured-but-unpublished `Q4_K` and `BF16` are cut the same way. So are the
+blocked codec-half profiles, which reproduce a negative measurement rather than
+a package:
+
+```bash
+build/bin/synthesize-quantize \
+  models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
+  models/omnivoice-0-6b/omnivoice-0-6b-F16_CODEC.gguf --quant F16_CODEC
+build/bin/synthesize-quantize \
+  models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
+  models/omnivoice-0-6b/omnivoice-0-6b-Q8_CODEC_MIXED.gguf --quant Q8_CODEC_MIXED
+```
+
+Neither codec-half output passes the exact-token gate (see Package).
 
 Generate and verify the model card. Unlike the reproduction commands above,
 this one is written as the plain sibling invocation on purpose (no
@@ -422,22 +505,38 @@ same pattern Kokoro's `models/upstream/kokoro-v1_0/README.md` already uses.
 `models/publish/omnivoice-0-6b/` is the clean, flat publication directory
 this task built because, unlike Kokoro's or VITS's working directories, this
 family's working directory is not itself flat — it still carries the
-upstream checkpoint files above. It contains **exactly**:
+upstream checkpoint files above. It contains **exactly** the four artifacts
+that would be uploaded, plus the generated card:
 
 ```text
 models/publish/omnivoice-0-6b/
-├── omnivoice-0-6b-F32.gguf       # hard link to the working directory's F32 GGUF
-├── LICENSE-higgs-audio-2.txt     # hard link; the declared Sidecar Resource
-└── README.md                     # hard link to the freshly generated models/omnivoice-0-6b/README.md
+├── omnivoice-0-6b-F32.gguf       # 3,189,953,504 bytes, sha256 f6d504ff…772f9fa3
+├── omnivoice-0-6b-F16.gguf       # 1,964,929,440 bytes, sha256 65c8cca5…a3f52f70 (default recommendation)
+├── omnivoice-0-6b-Q8.gguf        # 1,390,699,680 bytes, sha256 61aec0de…4982374e
+├── LICENSE-higgs-audio-2.txt     #         9,171 bytes, sha256 ac933dc0…df2fa049 — the declared Sidecar Resource
+└── README.md                     # the freshly generated card
 ```
 
-Verified by listing it: no upstream checkpoint file, no `audio_tokenizer/`, no
-`tokenizer.json`, and no Q8_CODEC_MIXED or F16_CODEC GGUF (neither ships) are present. All
-three entries are hard links sharing the same filesystem and inode as their
-working-directory originals rather than duplicating 3 GB, which is safe
-because `models/` is entirely git-ignored and this directory is a working
-artifact, not a tracked one — and it means the publication directory can
-never drift from the working copy that `--check` verifies.
+Every entry is a hard link to its working-directory original, sharing the same
+filesystem and inode rather than duplicating 6.5 GB, which is safe because
+`models/` is entirely git-ignored and this directory is a working artifact, not
+a tracked one — and it means the publication directory can never drift from the
+working copy that `--check` verifies. Verified 2026-08-09 by listing and
+digesting it: five entries, every one at link count 2, digests as above; no
+upstream checkpoint file, no `audio_tokenizer/`, no `tokenizer.json`, and no
+`Q4_K`, `BF16`, `Q8_CODEC_MIXED` or `F16_CODEC` GGUF (none of those ships).
+`tests/python/test_hf_card_generator.py`'s
+`test_omnivoice_publish_directory_is_flat_and_current` re-checks that set
+against the card spec on every unit run, so a profile added to the spec and not
+to this directory — or the reverse — fails the gate rather than being noticed
+at upload time.
+
+Seven stale-named packages — the four cut under the retired `_GEN` names, and
+three codec-half packages including the one whose `…-F16.gguf` filename the
+generator-half profile now claims — were moved to
+`models/omnivoice-0-6b/retired-profile-names/` before the re-cut, rather than
+deleted or overwritten. They sit outside the publication directory and cannot
+be uploaded by accident.
 
 ### Publication commands (recorded, not yet run)
 
@@ -450,13 +549,20 @@ confirmation would run, exactly as they would be typed:
 hf repos create jiangzhuo9357/omnivoice-0-6b-gguf \
   --type model --public --exist-ok
 hf upload jiangzhuo9357/omnivoice-0-6b-gguf models/publish/omnivoice-0-6b . \
-  --commit-message "Publish OmniVoice 0.6B F32 (Restricted Model Package: CC-BY-NC generator + Boson Higgs Audio 2 Community License codec)"
+  --commit-message "Publish OmniVoice 0.6B F32/F16/Q8 (Restricted Model Package: CC-BY-NC generator + Boson Higgs Audio 2 Community License codec)"
 ```
+
+That upload would carry 6.5 GB across three GGUFs, the sidecar license and the
+card. Confirmation has to be for that set, not for "the package": F16 and Q8
+were added to it on 2026-08-09 and the earlier recorded command named F32
+alone.
 
 ## Licensing
 
-Three separate upstream grants apply; only two touch the artifact in
-`models/publish/omnivoice-0-6b/`.
+Three separate upstream grants apply; only two touch the artifacts in
+`models/publish/omnivoice-0-6b/`. All three GGUFs there carry both halves of
+the model, so both of those grants apply to every one of them — quantizing the
+generator half changes nothing about which license governs it.
 
 **The generator (LM) weights are CC-BY-NC, with no version stated.** The
 upstream model card has no `license:` frontmatter key; the only statement is
@@ -488,9 +594,34 @@ dual attribution on redistribution:
 > "Boson Higgs Audio 2 is licensed under the Boson Community License,
 > Copyright © Boson AI USA, Inc. All Rights Reserved."
 
-It additionally caps commercial use at 100,000 monthly active users and
-forbids using its outputs to train other models -- independent of, and in
-addition to, the generator's own CC-BY-NC restriction above.
+Two further obligations and one required notice, in the agreement's own terms.
+**Corrected 2026-08-09**, where this page still carried a paraphrase the
+generated card fixed on 2026-08-08: it said the agreement "caps commercial use
+at 100,000 monthly active users", which was wrong twice over and wrong in the
+reader's favour.
+
+Above **100,000 annual active users in the preceding calendar year**, section 2
+imposes no ceiling: it withdraws authorisation. You "must request an expanded
+license from Boson AI, which Boson AI may grant to you in its sole discretion,
+and you are not authorized to exercise any of the rights under this Agreement
+unless or until Boson AI otherwise expressly grants you such rights."
+
+Section 1.b.i(v) forbids using the Higgs Materials "or any output or results of
+the Higgs Materials to improve any other large language model (excluding Boson
+Higgs Audio 2 or derivative works thereof)" -- other *large language models*,
+with Boson's own carved out, not all models as this page previously said.
+
+That agreement also requires a redistributor to display the following notice,
+which it specifies verbatim and which the generated card carries for that
+purpose:
+
+> "Built with Higgs Materials licensed from Boson AI USA, Inc., Copyright
+> Boson AI USA, Inc., All Rights Reserved and Meta Llama 3 licensed under the
+> Meta Llama 3 Community License, Copyright Meta Platforms, Inc., All Right
+> Reserved"
+
+All three are independent of, and in addition to, the generator's own CC-BY-NC
+restriction above.
 
 **Apache-2.0 covers only the upstream GitHub source code**
 (`k2-fsa/OmniVoice`) and nothing produced by this project: no weight file,

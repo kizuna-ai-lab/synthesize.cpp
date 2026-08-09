@@ -5737,3 +5737,37 @@ did not affect any published measurement (the replay runner writes raw `.f32`,
 which the same function reads correctly, and that is the path every recorded
 sweep used), so it is recorded here rather than changed during a verification
 pass.
+
+## 2026-08-09 — Published
+
+On jiangzhuo's explicit per-act confirmation, the Restricted Model Package was
+uploaded to **`jiangzhuo9357/omnivoice-0-6b-gguf`** (created public, matching
+the four sibling `-gguf` repositories). Commit
+`09e77552c76375df2360f1f563d7ce58262becd4`.
+
+| file | bytes | sha256 |
+| --- | ---: | --- |
+| `omnivoice-0-6b-F32.gguf` | 3,189,953,504 | `f6d504ff…772f9fa3` |
+| `omnivoice-0-6b-F16.gguf` | 1,964,929,440 | `65c8cca5…a3f52f70` |
+| `omnivoice-0-6b-Q8.gguf` | 1,390,699,680 | `61aec0de…4982374e` |
+| `LICENSE-higgs-audio-2.txt` | 9,171 | `ac933dc0…df2fa049` |
+| `README.md` | 25,154 | `4151c3e2…` |
+
+Hugging Face added its own `.gitattributes` (1,698 B) for the LFS patterns, so
+the repository holds six entries against the five uploaded.
+
+**Verified after upload rather than trusting the client**, which reported
+"0.00B transferred" — Xet content-addressed deduplication, not a failed
+transfer. Every LFS object's oid, which is its SHA-256, was compared against
+the local file: all three GGUFs match exactly. The two non-LFS text files were
+re-downloaded and hashed: both match. The published card was fetched and
+confirmed to carry the Boson "annual active users" wording, the required
+"Built with Higgs Materials…" notice, and Q8's "renders a different voice than
+F32 does" caveat in its own download-table row.
+
+`Q4_K` and `BF16` were deliberately not published: Q4_K degenerates on 10 of 17
+renders for no throughput gain, and BF16 is 10.5x slower on CPU and over the
+quality line on 11 of 17. Both remain as profile rows and code.
+
+The branch carrying all of this is `omnivoice-plan-5` at `dabb50d`, pushed to
+`kizuna-ai-lab/synthesize.cpp`; PR #8 (draft) tracks it.

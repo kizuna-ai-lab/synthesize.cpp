@@ -5608,3 +5608,132 @@ generator-half package. Re-cutting `F16` into the same directory would have
 overwritten it. The stale-named files were moved to
 `models/omnivoice-0-6b/retired-profile-names/` before anything was re-cut, so
 nobody can publish one by accident and nothing was lost.
+
+---
+
+## 2026-08-09 — Closeout: independent verification of the rename and the publication set
+
+A third pass over the rename and the card, run by an agent that wrote neither,
+re-deriving every claim rather than reading the two preceding reports. Two
+defects were found; both are fixed below. Everything else the two reports
+claimed was confirmed.
+
+### The publication set, as it stands
+
+`models/publish/omnivoice-0-6b/`, digests recomputed from the files on disk and
+compared against the card's own tables:
+
+| file | bytes | sha256 | card agrees |
+| --- | ---: | --- | --- |
+| `omnivoice-0-6b-F32.gguf` | 3,189,953,504 | `f6d504ffaddcbf32f80f1f6c847f075bbd5d2c7b50fe95a194ceb635772f9fa3` | yes |
+| `omnivoice-0-6b-F16.gguf` | 1,964,929,440 | `65c8cca59b350ccfdc6ad96c5a683b276f8c0fd5c8e96675d6dc110da3f52f70` | yes |
+| `omnivoice-0-6b-Q8.gguf` | 1,390,699,680 | `61aec0de7cfa9246487e309c43508de9c95cf52fd225ce3fada3b4bb4982374e` | yes |
+| `LICENSE-higgs-audio-2.txt` | 9,171 | `ac933dc084d119bd20401956b90d11ae87c248b2da62622cd580d82cdf2fa049` | yes |
+| `README.md` | 25,154 | — | generated |
+
+Five entries, not four: the four payload files above plus the generated model
+card. The card is written there by `generate.py`'s own hard link (same inode as
+`models/omnivoice-0-6b/README.md`, link count 2) and
+`test_omnivoice_publish_directory_is_flat_and_current` computes its expected
+set as `{README.md} ∪ quants ∪ sidecars`, so its presence is the tested state,
+not an oversight. Nothing was published; no Hugging Face repository was
+created, touched or contacted.
+
+### The rename resolves at load time, which is the failure this scheme risked
+
+A rename can compile, pass every string-comparison test, and still leave a
+package that will not open. Checked directly against the artifacts:
+
+- Every package's `synthesize.quantization.profile` KV was parsed out of the
+  GGUF header — `F32`, `F16`, `Q8`, `Q4_K`, `BF16`, each the new name, each on a
+  file whose `general.architecture` is `omnivoice`.
+- All five load and synthesize through `synthesize-cli` on CUDA (rebuilt in
+  `build/rel-dgx-spark` first), 164,160 frames each at 24 kHz, five distinct
+  waveforms.
+- The four retired-name packages preserved in
+  `models/omnivoice-0-6b/retired-profile-names/` are **refused at load**, exit 1,
+  all four. That is the negative control the positive test cannot supply.
+- All five renders pass the project's own degeneracy screen
+  (`scripts/omnivoice-speaker-proxy.py`), median F0 100–119 Hz, none excluded.
+
+### Defect 1 — the card claimed a speed benefit twice, in a synonym
+
+`scripts/hf_cards/omnivoice-0-6b.yaml` read, three lines under the sentence
+**"No profile here is faster than F32, and none claims to be"**:
+
+> Q8 is 0.4% quicker, F16 is 2.7% *slower*; on CPU, Q8 is 1.5% slower and F16
+> 1.2% quicker.
+
+"Quicker" is the claim the preceding sentence denies, and the Q8 download row's
+own "Not faster than F32" contradicted it inside the same table. The underlying
+measurements are right; the wording was not. Rewritten to signed deltas — CUDA
+Q8 −0.4%, F16 +2.7%; CPU Q8 +1.5%, F16 −1.2%, positive being slower — with a
+sentence saying plainly that the two sub-1% figures are not a reason to pick a
+profile.
+
+**The test that exists to catch exactly this did not.** `test_hf_card_generator
+.py` enumerates every occurrence of the string `faster` and requires each to sit
+inside a denial, and its own comment claims this beats a blacklist because "a
+newly invented speed claim cannot slip past a phrase this test did not think to
+forbid." It only ever searched for one spelling. `quicker` walked straight
+through, and the test's own docstring recorded the offending phrasing as if it
+were acceptable. The enumeration now also forbids `quicker`, `speedup`,
+`speed-up`, `speeds up`, `speed boost`, `x faster` and `% faster` outright.
+Verified as a real gate by re-injecting the old sentence: the test fails with
+`AssertionError: 'quicker' unexpectedly found`, then passes again once reverted.
+
+### Defect 2 — "F16 sounds the same" was an unscoped perceptual claim
+
+The F32 download row said to take F16 instead because it "sounds the same". The
+card's own Validation Status section says, four screens below, that these
+results "do not claim perceptual equivalence, naturalness, intelligibility, or
+speaker similarity" — and F16's evidence is an LTAS proxy over seventeen golden
+cases, not an ear. Narrowed to "matches it on every measured case", which is
+what was measured and what the F16 row already said.
+
+### Checked and correct as written
+
+- Q8's caveat is in the Q8 download row, worded as *different voice, cloning
+  unaffected, Description Text still honored, quality indistinguishable*. Not
+  clone-only, not "breaks voice design".
+- Every byte count and sha256 on the card matches the file on disk (table above).
+- The download command fetches `LICENSE-higgs-audio-2.txt` alongside the GGUF.
+- Boson terms: **annual** active users, and section 2 **withdraws authorisation**
+  rather than capping. The verbatim "Built with Higgs Materials…" notice and the
+  dual Meta/Boson attribution are intact.
+- The one remaining "40x faster than real-time" is inside the reproduced
+  upstream project card, under its own heading and attribution blockquote. It is
+  upstream's claim about their PyTorch implementation; reproducing it verbatim is
+  correct and editing a quoted third-party document would not be.
+- Tree-wide grep for `F16_GEN`, `Q8_GEN`, `Q4_K_GEN`, `BF16_GEN`: 15 live hits,
+  every one deliberate — the policy comment explaining the deleted row, two test
+  loops asserting the retired names do **not** resolve, and the mapping tables
+  and dated historical bodies that must keep their original wording. No live
+  doc, filename, or card points at a name that no longer exists. Omnivoice's
+  remaining `Q8_MIXED` mentions are all under this document's and the family
+  doc's dated pre-ruling sections, covered by their header notes; the three
+  sibling families' `Q8_MIXED`/`F16` references are untouched.
+
+### Gates, all run on the committed-plus-these-two-fixes state
+
+| gate | result |
+| --- | --- |
+| `build` unit gate | **91/91 passed, 0 failed** |
+| `build-sanitize` unit gate (`SYNTH_SANITIZE=ON`, RelWithDebInfo) | **90/90 passed, 0 failed** |
+| whole omnivoice set, `build/rel-dgx-spark` (Release + CUDA) | **28/28 passed** |
+| `synthesize-omnivoice-replay-golden` (CPU) | Passed, 439.40 s |
+| `synthesize-omnivoice-replay-golden-cuda` | Passed, 97.97 s |
+| `synthesize-omnivoice-public-request` / `-cuda` | Passed, 200.81 s / 62.11 s |
+| `generate.py --check`, omnivoice + three siblings | verified, all four |
+| `scripts/ci/clang-format.sh --check-diff` | exit 0 |
+
+### One incidental finding, not fixed
+
+`scripts/omnivoice-speaker-proxy.py`'s `read_render` documents itself as reading
+"a 16-bit/**float** WAV" and has a `width == 4` branch for float32 — but
+`wave.open` rejects WAV format tag 3 before that branch can run, and tag 3 is
+exactly what `synthesize-cli` writes. The float-WAV support is unreachable. It
+did not affect any published measurement (the replay runner writes raw `.f32`,
+which the same function reads correctly, and that is the path every recorded
+sweep used), so it is recorded here rather than changed during a verification
+pass.

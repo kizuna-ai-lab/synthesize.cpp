@@ -144,11 +144,13 @@ downloads_note: |-
   produced so far fails that exact-token gate.
 
   **No profile here is faster than F32, and none claims to be.** Measured
-  against F32 on this project's CUDA reference host: Q8 is 0.4% quicker, F16 is
-  2.7% *slower*; on CPU, Q8 is 1.5% slower and F16 1.2% quicker. The generator
-  is compute-bound at roughly 205 multiply-accumulates per weight byte, so a
-  narrower weight does not relieve the bottleneck. What a smaller profile buys
-  is disk, accelerator memory and load time.
+  against F32 on this project's CUDA reference host: Q8 -0.4%, F16 +2.7%; on
+  CPU, Q8 +1.5% and F16 -1.2%, where a positive number is the slower one. The
+  generator is compute-bound at roughly 205 multiply-accumulates per weight
+  byte, so a narrower weight does not relieve the bottleneck. Two of those four
+  figures land marginally under F32, by about one part in a hundred; neither is
+  a reason to pick a profile. What a smaller profile buys is disk, accelerator
+  memory and load time.
 
 summary: |
   A self-contained OmniVoice inference package converted from the flagship
@@ -379,7 +381,11 @@ sidecars:
 # No profile is faster. Measured against F32 on CUDA: Q8 -0.4%, F16 +2.7%
 # *slower*; on CPU Q8 +1.5% slower, F16 -1.2%. The generator is compute-bound at
 # roughly 205 MAC per weight byte, so a narrower weight does not relieve the
-# bottleneck. Nothing on this card may say "faster".
+# bottleneck. Nothing on this card may say "faster" -- nor any synonym for it.
+# The rule is about the claim, not the word: this prose once read "Q8 is 0.4%
+# quicker" three lines under a sentence denying any speed benefit, which is the
+# claim the rule forbids wearing a spelling the test did not enumerate. Report
+# the four figures as signed deltas and leave it there.
 quants:
   - name: F32
     filename: omnivoice-0-6b-F32.gguf
@@ -389,8 +395,8 @@ quants:
     tensor_types: 798 F32
     note: >-
       The reference conversion, bit-for-bit from the upstream checkpoint. Take
-      it to reproduce a measurement; otherwise F16 sounds the same and is 1.2 GB
-      smaller. 3506 MiB accelerator resident, 2.6 s to load.
+      it to reproduce a measurement; otherwise F16 matches it on every measured
+      case and is 1.2 GB smaller. 3506 MiB accelerator resident, 2.6 s to load.
     validation:
       cpu_pcm_cosine: 0.99999986
       cuda_pcm_cosine: 0.99999635

@@ -544,11 +544,11 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
         #
         #   1. F16 and Q8 are listed at all, under their post-rename names.
         #   2. Q8's caveat is IN the Q8 download row, not only in prose below.
-        #   3. No profile is described as faster. Measured against F32, Q8 is
-        #      0.4% quicker on CUDA and 1.5% SLOWER on CPU, and F16 is 2.7%
-        #      slower on CUDA -- the generator is compute-bound at ~205 MAC per
-        #      weight byte, so a narrower weight buys size, memory and load
-        #      time, never speed.
+        #   3. No profile is described as faster, in any spelling. Measured
+        #      against F32: on CUDA Q8 -0.4% and F16 +2.7%; on CPU Q8 +1.5% and
+        #      F16 -1.2%, positive being the slower one. The generator is
+        #      compute-bound at ~205 MAC per weight byte, so a narrower weight
+        #      buys size, memory and load time, never speed.
         spec = self.generator.load_spec(ROOT / "scripts" / "hf_cards" / "omnivoice-0-6b.yaml")
         self.generator.validate_spec(spec)
         self.assertEqual([quant["name"] for quant in spec["quants"]], ["F32", "F16", "Q8"])
@@ -591,7 +591,22 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
                     any(phrase in context for phrase in allowed),
                     f"the card must make no speed claim; found ...{context}...",
                 )
-        for forbidden in ("speedup", "speed-up", "x faster", "% faster"):
+        # Enumerating "faster" is not enough, and this test used to claim it
+        # was. A speed benefit has more than one spelling: the paragraph three
+        # lines below the denial above once read "Q8 is 0.4% quicker ... F16
+        # 1.2% quicker", which asserts exactly what the denial denies and which
+        # a search for "faster" waves straight through. These spellings have no
+        # legitimate use on this card, so they are forbidden outright rather
+        # than allowed in a denial context.
+        for forbidden in (
+            "quicker",
+            "speedup",
+            "speed-up",
+            "speeds up",
+            "speed boost",
+            "x faster",
+            "% faster",
+        ):
             self.assertNotIn(forbidden, lowered)
 
     def test_omnivoice_default_readme_matches_the_generated_card(self) -> None:

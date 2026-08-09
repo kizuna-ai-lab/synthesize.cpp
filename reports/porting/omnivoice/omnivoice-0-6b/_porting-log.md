@@ -5450,3 +5450,44 @@ Not sampled by ear: `omni-design-en` at 8.61 dB sits well inside the range the
 listener has consistently called "different people", so no listening pair was
 spent on it. That is a prediction from an instrument with fourteen confirming
 answers and no exceptions, not a measurement of a human — recorded as such.
+
+### Correction: Q8 honors Description Text; "clone-only" was wrong
+
+jiangzhuo challenged the framing — does a Q8 package only support cloning? It
+does not, and the framing was wrong twice.
+
+**Nothing is disabled.** All three voice modes work, the API is identical, and
+this is not a feature-restricted build. What LTAS distance measures is fidelity
+*to F32's particular rendering*, not whether a mode functions.
+
+**And "Description Text is broken" does not follow from its 8.61 dB either.**
+That number says the voice differs from the one F32 produced; it says nothing
+about whether the description was honored. The two design cases specify pitch
+explicitly, so this is directly checkable:
+
+| case | description | F32 median F0 | Q8 median F0 |
+| --- | --- | ---: | ---: |
+| `omni-design-en` | "female, young adult, high pitch" | 333.3 Hz | **343.5 Hz** |
+| `omni-design-zh` | "男，老年，低音调" (male, elderly, low pitch) | 152.9 Hz | **158.4 Hz** |
+
+Ordinary voices in this suite sit at 118–130 Hz. The high-pitch request stays
+high under Q8 and the low-pitch request stays low. **Q8 honors both
+descriptions** and returns a different voice within them.
+
+So the accurate statement, and the one the card should carry:
+
+> Q8 reproduces F32's voice for Reference Audio cloning. For auto-voice and
+> Description Text it returns a different voice — the description is still
+> honored, and the listener judged quality indistinguishable on every sampled
+> pair — but not the same speaker F32 would have produced.
+
+For auto-voice that is barely news: this family's documentation already states
+the speaker is unstable across backends, seeds and step counts, because
+auto-voice carries no speaker conditioning at all. "And across quantization
+profiles" is the same fact continuing.
+
+Two honesty notes. Quality was judged indistinguishable on the six sampled
+auto-voice pairs; **no Description Text case was listened to**, and the pitch
+check above is an instrument reading, not an ear. And F16 remains the better
+default regardless — it is under the "same person" line on all 17 cases, so it
+needs none of this explanation.

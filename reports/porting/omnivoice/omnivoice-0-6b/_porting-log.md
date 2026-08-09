@@ -5274,3 +5274,85 @@ per-profile load gate can register; the free-run waveform is still compared
 against nothing once the grid drifts, which is why the `Q4_K_GEN` degeneracy
 had to be found by hand; and neither generator profile has a tolerance cell or
 a registered CTest target.
+
+## 2026-08-09 — Q8_GEN rejected by ear, and the F0 proxy is the wrong instrument
+
+The Q8_GEN listening audit returned 8 of 8 "different people" — including the
+pair placed in the set as a **control**, where both pitch trackers reported the
+arms unmoved (0.00 / 0.04). A control failing is a statement about the
+instrument before it is a statement about the profile, so the material was
+checked first: all eight pairs are genuinely distinct files with correct arm
+assignment. The material is sound. The instrument is not.
+
+### What the ear was hearing, and why the proxy could not see it
+
+**Median F0 is pitch. Speaker identity is mostly timbre.** The committed proxy
+(`scripts/omnivoice-speaker-proxy.py`) measures median F0 over voiced frames
+plus the fraction below 165 Hz. It was validated on 2026-08-08 against one
+positive case and one negative — and the positive case, `omni-short-en`, was a
+male↔female flip, the one situation where pitch and timbre move together. We
+generalised a pitch instrument from a single case where pitch happened to be
+the signal.
+
+Long-term average spectrum distance — pitch-agnostic, a timbre descriptor —
+separates this audit's answers cleanly where F0 does not:
+
+| pair | case | LTAS RMS (dB) | spectral centroid | verdict |
+| --- | --- | ---: | --- | --- |
+| clone 1 | `omni-clone-en` | **2.00** | 1250 → 1408 | 差不多 |
+| clone 2 | `omni-clone-zh` | **2.70** | 564 → 504 | 差不多 |
+| 4 | `omni-medium-en` | 4.59 | 2993 → 2102 | different people |
+| 3 | `omni-digits` | 5.00 | 806 → 653 | different people |
+| 1 | `omni-short-ja` | 6.14 | 678 → 456 | different people |
+| 6 | `omni-upstream-readme` (**control**) | 7.10 | **3200 → 6682** | different people |
+| 2 | `omni-short-en` | 7.41 | 2412 → 2592 | different people |
+| 5 | `omni-nonverbal` | 12.22 | 2105 → 2504 | different people |
+
+The two "same" answers are the two lowest distances; all six "different"
+answers are above 4.5 dB. **Perfect separation at roughly 3–4 dB**, and the
+so-called control turns out to be the second-largest timbre change in the set —
+its centroid moves 52%, while its F0 does not move at all.
+
+### The same measure vindicates the change we already shipped
+
+Re-measured over the 2026-08-08 CPU-vs-CUDA renders, all 17 greedy cases:
+
+- median **1.54 dB**, max **6.00 dB**
+- exactly one case above ~3 dB: `omni-short-en` at 6.00 — **the one case the ear
+  called "different people"** in that audit
+- `omni-upstream-readme` is 0.64 dB there, which is why it was a legitimate
+  control for the backend question and not for this one
+
+So the generator-on-CUDA move stands: "1 of 17" survives the better instrument,
+and the better instrument reproduces that audit's verdict as well as this one.
+Fourteen listener answers across two audits, one threshold, no exceptions.
+
+### Consequences
+
+1. **Q8_GEN is rejected.** Six of six non-clone cases change the voice. The
+   profile's other properties are excellent — 56.4% off the file, codec half
+   bit-identical, RVQ codes exact, every hard gate green, accelerator twin
+   2,336.80 → 620.90 MiB — and none of it survives the ear. It buys no speed
+   either (1.6%), so there is not even a throughput argument to weigh against
+   the loss. Keep the code and the profile row; do not cut a shipping package.
+2. **Cloning is robust to generator quantization.** The two clone triples are
+   the two smallest distances in the set and the listener judged both "about
+   the same" against the reference. The conditioned path anchors the timbre
+   that auto-voice leaves to emerge. This is the most useful positive result
+   here and it was not predicted.
+3. **The F0 proxy must not be cited alone again.** It is not wrong — it detects
+   register flips, and it did detect the CUDA case — but it is blind to the
+   dimension that decided this audit. LTAS distance should be measured beside
+   it, and the ~3–4 dB threshold recorded above is the first calibration
+   either measure has had against more than one perturbation type.
+4. **Q8_MIXED's 36.4% and Q4's rejection are unaffected** — both were decided
+   on other evidence.
+
+### Status of the LTAS measure
+
+Reported honestly: this is a single-configuration measurement (1024-point FFT,
+Hann, half-overlap, frames below 1e-4 RMS skipped), computed post hoc, not yet
+committed as a script or pinned by a test. What it has that the F0 proxy never
+had is **cross-validation against two independent listening audits and fourteen
+human answers with no exceptions**. Committing and pinning it is recommended
+work, not done here.

@@ -5356,3 +5356,47 @@ committed as a script or pinned by a test. What it has that the F0 proxy never
 had is **cross-validation against two independent listening audits and fourteen
 human answers with no exceptions**. Committing and pinning it is recommended
 work, not done here.
+
+### Erratum, same day: pair 6 was not a Q8_GEN failure, and it was never a control
+
+jiangzhuo revised his pair-6 answer immediately after the reveal: the two arms
+are the same speaker, the "different people" answer was driven by one arm
+sounding *bad*, and the arm he marked better — A — is Q8_GEN.
+
+Measured, and it is not close. `omni-upstream-readme`, long-term average
+spectrum:
+
+| source | centroid | share of energy above 4 kHz | rms |
+| --- | ---: | ---: | ---: |
+| **PyTorch oracle** | **6682 Hz** | **0.873** | 0.0763 |
+| our F32 / CPU | 6682 Hz | 0.873 | 0.0763 |
+| our F32 / CUDA | 6631 Hz | 0.865 | 0.0772 |
+| Q8_GEN | 3200 Hz | 0.369 | 0.0522 |
+
+Typical speech in this suite sits at 400–3000 Hz. **The oracle puts 87% of its
+energy above 4 kHz on this case** — that is hiss, not voice — and our F32
+reproduces it to three decimals. Q8_GEN lands in the speech range and the
+listener preferred it.
+
+Three corrections follow, and the first is mine:
+
+1. **The tally is 5 of 6, not 6 of 6.** Q8_GEN is still rejected — five of six
+   non-clone cases change the speaker against a 1-of-17 baseline — but pair 6
+   is not one of them and the entry above overstated the case.
+2. **`omni-upstream-readme` is a second degenerate golden case**, after
+   `omni-rate-fast`. Same shape as that finding: the upstream model produces
+   unintelligible output, we reproduce it faithfully, and no gate can see it
+   because every gate compares against the oracle. The case's text is "This is
+   a sentence without any voice prompt." — the upstream README's own example.
+3. **It was never a valid control.** It was chosen because CPU-vs-CUDA left its
+   F0 unmoved (0.64 dB LTAS, genuinely unmoved for *that* question), but a case
+   whose reference render is broken cannot be a control for anything. Picking
+   controls by "the instrument says nothing moved" selects for cases the
+   instrument cannot see, which is exactly backwards.
+
+**What this does to the LTAS threshold.** Pair 6's 7.10 dB was one arm being
+broken, not two speakers differing, so the measure separates *audible
+difference* rather than *identity change* specifically. The threshold still
+holds for what it is — every answer of "same" is below it and every "different"
+above — but it does not distinguish why, and this entry should not be read as
+claiming it does.

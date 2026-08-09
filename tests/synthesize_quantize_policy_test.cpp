@@ -109,6 +109,37 @@ int check_omnivoice_halves() {
     SYNTH_TEST_CHECK(expect_omnivoice("Q4_K_GEN", "codec.quantizer.quantizers.0.codebook.embed", GGML_TYPE_F32,
                                       TensorLayout::Native) == 0);
 
+    // F16_GEN and BF16_GEN (provisional names, weights.h): the same
+    // generator half again, narrowed to a reference dtype with a native CUDA
+    // MUL_MAT and GET_ROWS path instead of block-quantized. Native layout
+    // this time not because of the two-dimensional demotion Q8_GEN needs, but
+    // because the profile row itself says Native: neither format is
+    // `ggml_is_quantized`, so there is nothing quantize.cpp's demotion needs
+    // to catch. row_lookup_type equals matrix_weight_type for both, the same
+    // as Q8_GEN and unlike Q4_K_GEN, because CUDA's GET_ROWS accepts F16 and
+    // BF16 directly (ggml/src/ggml-cuda/ggml-cuda.cu:5190-5207).
+    for (const char * profile_name : { "F16_GEN", "BF16_GEN" }) {
+        const ggml_type narrow = std::string(profile_name) == "F16_GEN" ? GGML_TYPE_F16 : GGML_TYPE_BF16;
+        SYNTH_TEST_CHECK(
+            expect_omnivoice(profile_name, "llm.layers.0.self_attn.q_proj.weight", narrow, TensorLayout::Native) == 0);
+        SYNTH_TEST_CHECK(
+            expect_omnivoice(profile_name, "llm.layers.27.mlp.down_proj.weight", narrow, TensorLayout::Native) == 0);
+        SYNTH_TEST_CHECK(expect_omnivoice(profile_name, "audio_heads.weight", narrow, TensorLayout::Native) == 0);
+        SYNTH_TEST_CHECK(expect_omnivoice(profile_name, "llm.embed_tokens.weight", narrow, TensorLayout::Native) == 0);
+        SYNTH_TEST_CHECK(expect_omnivoice(profile_name, "audio_embeddings.weight", narrow, TensorLayout::Native) == 0);
+        SYNTH_TEST_CHECK(expect_omnivoice(profile_name, "llm.norm.weight", GGML_TYPE_F32, TensorLayout::Native) == 0);
+        SYNTH_TEST_CHECK(expect_omnivoice(profile_name, "llm.layers.0.self_attn.q_norm.weight", GGML_TYPE_F32,
+                                          TensorLayout::Native) == 0);
+        SYNTH_TEST_CHECK(expect_omnivoice(profile_name, "codec.acoustic_decoder.conv1.weight", GGML_TYPE_F32,
+                                          TensorLayout::Native) == 0);
+        SYNTH_TEST_CHECK(expect_omnivoice(profile_name, "codec.semantic_model.encoder.layers.0.attn.q_proj.weight",
+                                          GGML_TYPE_F32, TensorLayout::Native) == 0);
+        SYNTH_TEST_CHECK(expect_omnivoice(profile_name, "codec.acoustic_decoder.block.0.conv_t1.weight", GGML_TYPE_F32,
+                                          TensorLayout::Native) == 0);
+        SYNTH_TEST_CHECK(expect_omnivoice(profile_name, "codec.quantizer.quantizers.0.codebook.embed", GGML_TYPE_F32,
+                                          TensorLayout::Native) == 0);
+    }
+
     // Q8_MIXED, under the conv-exempt codec policy of 2026-08-09. The single
     // most load-bearing assertion in this function is the first one: the
     // decoder's input convolution used to resolve Q8_0/PackedMatrix and now
@@ -158,7 +189,7 @@ int check_omnivoice_halves() {
     // A stray name is fatal under every profile, including one that leaves
     // the half it would land in untouched.
     synth::quantize::TargetSpec ignored{};
-    for (const char * profile_name : { "Q8_GEN", "Q4_K_GEN", "Q8_MIXED", "F16" }) {
+    for (const char * profile_name : { "Q8_GEN", "Q4_K_GEN", "F16_GEN", "BF16_GEN", "Q8_MIXED", "F16" }) {
         const auto * profile = find_profile(profile_name);
         SYNTH_TEST_CHECK(profile != nullptr);
         SYNTH_TEST_CHECK(!resolve_omnivoice_target_spec(*profile, "llm.layers.0.mlp.fc.weight", ignored));
@@ -191,6 +222,20 @@ int main() {
     SYNTH_TEST_CHECK(q4_k_gen->matrix_weight_type == GGML_TYPE_Q4_K);
     SYNTH_TEST_CHECK(q4_k_gen->row_lookup_type == GGML_TYPE_Q8_0);
     SYNTH_TEST_CHECK(q8_gen->matrix_weight_type == q8_gen->row_lookup_type);
+    // F16_GEN and BF16_GEN: provisional names (weights.h), same lookup
+    // reasoning as Q8_GEN -- row_lookup_type agrees with matrix_weight_type
+    // because CUDA's GET_ROWS takes both formats directly.
+    const auto * f16_gen = find_profile("F16_GEN");
+    SYNTH_TEST_CHECK(f16_gen != nullptr);
+    SYNTH_TEST_CHECK(find_profile("f16_gen") == f16_gen);
+    SYNTH_TEST_CHECK(f16_gen->matrix_weight_type == GGML_TYPE_F16);
+    SYNTH_TEST_CHECK(f16_gen->matrix_weight_type == f16_gen->row_lookup_type);
+    const auto * bf16_gen = find_profile("BF16_GEN");
+    SYNTH_TEST_CHECK(bf16_gen != nullptr);
+    SYNTH_TEST_CHECK(find_profile("bf16_gen") == bf16_gen);
+    SYNTH_TEST_CHECK(bf16_gen->matrix_weight_type == GGML_TYPE_BF16);
+    SYNTH_TEST_CHECK(bf16_gen->matrix_weight_type == bf16_gen->row_lookup_type);
+    SYNTH_TEST_CHECK(bf16_gen != f16_gen);
     // `Q4_K_M` is llama.cpp's mixture name for a Q4_K/Q6_K blend. This project
     // implements no such mixture, and a package asking for one must be refused
     // rather than quietly served the pure-Q4_K profile that happens to be

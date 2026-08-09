@@ -257,9 +257,9 @@ int run_valid_package() {
 // profile string just resolving to a different enumerator. Q8_MIXED and F16
 // are Plan 4's codec-half profiles, measured even though neither ships -- see
 // docs/porting/families/omnivoice.md's "Quantization Profile Shape" -- and
-// Q8_GEN and Q4_K_GEN are the generator-half profiles. The metadata reader
-// accepts all
-// three; which one a package should carry is not its question.
+// Q8_GEN, Q4_K_GEN, F16_GEN and BF16_GEN are the generator-half profiles
+// (F16_GEN and BF16_GEN provisional names, unconfirmed). The metadata reader
+// accepts all of them; which one a package should carry is not its question.
 int run_quantization_profile_acceptance() {
     struct Accepted {
         const char *                          name;
@@ -271,6 +271,8 @@ int run_quantization_profile_acceptance() {
              Accepted{ "F16",      synth::omnivoice::QuantizationProfile::F16     },
              Accepted{ "Q8_GEN",   synth::omnivoice::QuantizationProfile::Q8Gen   },
              Accepted{ "Q4_K_GEN", synth::omnivoice::QuantizationProfile::Q4KGen  },
+             Accepted{ "F16_GEN",  synth::omnivoice::QuantizationProfile::F16Gen  },
+             Accepted{ "BF16_GEN", synth::omnivoice::QuantizationProfile::BF16Gen },
     }) {
         GgufContext context = valid_metadata();
         SYNTH_TEST_CHECK(context != nullptr);

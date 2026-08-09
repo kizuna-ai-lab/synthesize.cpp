@@ -39,12 +39,26 @@ namespace synth::omnivoice {
 // on the same type and the distinction is invisible; under this one it is the
 // difference between a package that runs on the accelerator and one that does
 // not. Nothing is packed here either, for Q8Gen's reason.
+//
+// F16Gen and BF16Gen (provisional names -- not yet confirmed with jiangzhuo,
+// same as Q8_GEN's own naming carried a confirmation caveat when it was
+// added) are the same generator half held at a narrowed reference dtype
+// instead of a block-quantized one. Both formats have native CUDA paths for
+// the two ops this half actually uses -- MUL_MAT and GET_ROWS -- verified by
+// reading ggml-cuda.cu's own `supports_op` rather than assumed (see
+// tools/synthesize-quantize/policy.cpp's F16_GEN/BF16_GEN rows), so unlike
+// Q8_0 and Q4_K neither format dequantizes to F32 before either op. Both give
+// `row_lookup_type` the same value as `matrix_weight_type`, unlike Q4KGen: a
+// matrix multiply and a table lookup accept the same narrowed type here, so
+// nothing pins the tables apart the way Q4_K_GEN's k-quant does.
 enum class QuantizationProfile : uint32_t {
     F32,
     Q8Mixed,
     F16,
     Q8Gen,
     Q4KGen,
+    F16Gen,
+    BF16Gen,
 };
 
 // The mask-predict generator: a Qwen3 block stack run bidirectionally over the

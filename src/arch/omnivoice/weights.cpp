@@ -60,12 +60,14 @@ bool read_quantization(const GgufMetadata & meta, HParams & hparams) {
     }
     // The checkpoint stores F32 in both halves, so F32 is also the source
     // profile. Q8_MIXED and F16 are Plan 4's codec-half Quantization
-    // Profiles; Q8_GEN and Q4_K_GEN quantize the generator half instead and
-    // leave the codec byte-identical to F32. See quantization.h's QuantRole and
-    // ModelHalf for which tensors each actually touches. These strings are
-    // the same ones tools/synthesize-quantize/policy.cpp's profile table
-    // carries -- that table is where a new name is introduced, and this is
-    // where a package carrying it becomes loadable.
+    // Profiles; Q8_GEN, Q4_K_GEN, F16_GEN and BF16_GEN quantize the generator
+    // half instead and leave the codec byte-identical to F32. F16_GEN and
+    // BF16_GEN are provisional names, not yet confirmed with jiangzhuo. See
+    // quantization.h's QuantRole and ModelHalf for which tensors each actually
+    // touches. These strings are the same ones
+    // tools/synthesize-quantize/policy.cpp's profile table carries -- that
+    // table is where a new name is introduced, and this is where a package
+    // carrying it becomes loadable.
     if (profile == "F32") {
         hparams.quantization_profile = QuantizationProfile::F32;
     } else if (profile == "Q8_MIXED") {
@@ -76,6 +78,10 @@ bool read_quantization(const GgufMetadata & meta, HParams & hparams) {
         hparams.quantization_profile = QuantizationProfile::Q8Gen;
     } else if (profile == "Q4_K_GEN") {
         hparams.quantization_profile = QuantizationProfile::Q4KGen;
+    } else if (profile == "F16_GEN") {
+        hparams.quantization_profile = QuantizationProfile::F16Gen;
+    } else if (profile == "BF16_GEN") {
+        hparams.quantization_profile = QuantizationProfile::BF16Gen;
     } else {
         std::fprintf(stderr, "omnivoice: unsupported quantization profile %s\n", profile.c_str());
         return false;

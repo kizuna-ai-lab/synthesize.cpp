@@ -55,6 +55,37 @@ const Profile kProfiles[] = {
     // silently demoted.
     { "Q4_K_GEN",   GGML_TYPE_Q4_K, TensorLayout::PackedMatrix, GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_Q8_0,
      GGML_FTYPE_MOSTLY_Q4_K,                                                                                     1 },
+    // PROVISIONAL NAME -- not yet confirmed with jiangzhuo (Task 3 Step 1's
+    // naming rule applies here too). The same generator half as Q8_GEN, at
+    // the reference dtype narrowed rather than block-quantized: F16 has a
+    // native CUDA matrix-multiply path (ggml/src/ggml-cuda/mmf.cu's
+    // GGML_TYPE_F16 case, MMA-backed on Ampere+) and a native GET_ROWS path
+    // (ggml/src/ggml-cuda/getrows.cu), so unlike Q8_0/Q4_K this profile never
+    // dequantizes before either op. `matrix_weight_layout` is Native, like the
+    // codec-half `F16` row above: F16 is not `ggml_is_quantized`, so it is
+    // never a candidate for the packed-matrix branch quantize.cpp's demotion
+    // exists to guard, and there is nothing to pack in a two-dimensional
+    // generator weight regardless. `row_lookup_type` matches
+    // `matrix_weight_type` because CUDA's GET_ROWS accepts F16
+    // (quantization.h's RowLookup), so the two roles do not need to diverge
+    // the way Q4_K_GEN's do.
+    { "F16_GEN",    GGML_TYPE_F16,  TensorLayout::Native,       GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_F16,  1, 1 },
+    // PROVISIONAL NAME, same caveat as F16_GEN above. bfloat16 rather than
+    // IEEE half: wider exponent, fewer mantissa bits, no dynamic-range
+    // rescaling needed going in or out. Verified viable on this backend by
+    // reading ggml-cuda.cu's own `supports_op` before writing this row rather
+    // than assuming it from F16's presence: MUL_MAT accepts
+    // GGML_TYPE_BF16 (ggml/src/ggml-cuda/ggml-cuda.cu:5121-5187, checked at
+    // line 5182) and so does GET_ROWS
+    // (ggml/src/ggml-cuda/ggml-cuda.cu:5190-5207, checked at line 5195) --
+    // the same file the RowLookup role's own doc comment cites for the
+    // narrower list Q8_0 and Q4_K sit inside. mmf.cu's
+    // `ggml_cuda_should_use_mmf` further confirms BF16 reaches the same
+    // MMA-backed kernel F16 does on Ampere-and-later compute capability, not
+    // a dequantize-then-F32 fallback. `matrix_weight_layout` is Native for
+    // the same reason as F16_GEN's: BF16 is not `ggml_is_quantized` either.
+    { "BF16_GEN",   GGML_TYPE_BF16, TensorLayout::Native,       GGML_TYPE_F32, GGML_TYPE_F32, GGML_TYPE_BF16,
+     GGML_FTYPE_MOSTLY_BF16,                                                                                     1 },
 };
 
 bool iequals(const char * lhs, const char * rhs) {
@@ -515,7 +546,8 @@ namespace {
 // (src/arch/omnivoice/catalog.cpp's expected_type) -- the pairing is the same
 // one weights.cpp already maintains between these names and that enum.
 synth::omnivoice::ModelHalf omnivoice_quantized_half(const Profile & profile) {
-    return iequals(profile.name, "Q8_GEN") || iequals(profile.name, "Q4_K_GEN") ?
+    return iequals(profile.name, "Q8_GEN") || iequals(profile.name, "Q4_K_GEN") || iequals(profile.name, "F16_GEN") ||
+                   iequals(profile.name, "BF16_GEN") ?
                synth::omnivoice::ModelHalf::Generator :
                synth::omnivoice::ModelHalf::Codec;
 }

@@ -613,6 +613,12 @@ synth_status_t Model::get_info(ModelInfo & output) const {
         case QuantizationProfile::Q4KGen:
             output.quantization_profile = "Q4_K_GEN";
             break;
+        case QuantizationProfile::F16Gen:
+            output.quantization_profile = "F16_GEN";
+            break;
+        case QuantizationProfile::BF16Gen:
+            output.quantization_profile = "BF16_GEN";
+            break;
     }
     output.input_flags          = hparams.input_flags;
     output.capability_flags     = hparams.capability_flags;

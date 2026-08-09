@@ -519,6 +519,83 @@ int check_omnivoice_q4_k_gen_output(const std::string & path) {
     return 0;
 }
 
+// F16_GEN and BF16_GEN (provisional names, see src/arch/omnivoice/weights.h):
+// the same generator half as Q8_GEN and Q4_K_GEN, narrowed to a reference
+// dtype instead of block-quantized. `narrow`/`file_type`/`profile_name`
+// parameterize the one difference between the two profiles; everything else
+// -- which tensors move, which stay F32, the shapes -- is identical, because
+// both give `row_lookup_type` the same value as `matrix_weight_type` (neither
+// format needs Q4_K_GEN's pin) and both keep `matrix_weight_layout` Native at
+// the profile row itself rather than by the two-dimensional demotion Q8_GEN
+// and Q4_K_GEN rely on -- neither F16 nor BF16 is `ggml_is_quantized`, so
+// there is nothing for that demotion to catch.
+int check_omnivoice_narrowed_gen_output(const std::string & path,
+                                        ggml_type           narrow,
+                                        uint32_t            file_type,
+                                        const char *        profile_name,
+                                        float               tolerance) {
+    ggml_context *   ctx = nullptr;
+    gguf_init_params params{};
+    params.no_alloc     = false;
+    params.ctx          = &ctx;
+    gguf_context * gguf = gguf_init_from_file(path.c_str(), params);
+    SYNTH_TEST_CHECK(gguf != nullptr && ctx != nullptr);
+
+    const int64_t file_type_key = gguf_find_key(gguf, "general.file_type");
+    const int64_t profile_key   = gguf_find_key(gguf, "synthesize.quantization.profile");
+    SYNTH_TEST_CHECK(file_type_key >= 0 && gguf_get_val_u32(gguf, file_type_key) == file_type);
+    SYNTH_TEST_CHECK(profile_key >= 0 && std::strcmp(gguf_get_val_str(gguf, profile_key), profile_name) == 0);
+
+    // The generator's matrices and both lookup tables: narrowed at their
+    // declared two-dimensional shape, never packed.
+    for (const char * name : {
+             "llm.embed_tokens.weight",
+             "llm.layers.0.self_attn.q_proj.weight",
+             "audio_embeddings.weight",
+             "audio_heads.weight",
+         }) {
+        ggml_tensor * quantized = ggml_get_tensor(ctx, name);
+        SYNTH_TEST_CHECK(quantized != nullptr && quantized->type == narrow);
+        SYNTH_TEST_CHECK(quantized->ne[0] == 256 && quantized->ne[1] == 3 && quantized->ne[2] == 1);
+    }
+
+    // Every generator norm stays exact.
+    for (const char * name : { "llm.norm.weight", "llm.layers.0.self_attn.q_norm.weight" }) {
+        ggml_tensor * norm = ggml_get_tensor(ctx, name);
+        SYNTH_TEST_CHECK(norm != nullptr && norm->type == GGML_TYPE_F32);
+    }
+
+    // The whole codec half is untouched -- including the tensors a codec-half
+    // profile would pack, halve or leave native, each for its own reason.
+    for (const char * name : {
+             "codec.semantic_model.encoder.layers.0.attn.q_proj.weight",
+             "codec.semantic_model.encoder.layers.0.attn.q_proj.bias",
+             "codec.acoustic_decoder.conv1.weight",
+             "codec.acoustic_decoder.conv2.weight",
+             "codec.acoustic_decoder.block.0.conv_t1.weight",
+         }) {
+        ggml_tensor * codec = ggml_get_tensor(ctx, name);
+        SYNTH_TEST_CHECK(codec != nullptr && codec->type == GGML_TYPE_F32);
+    }
+    ggml_tensor * conv2 = ggml_get_tensor(ctx, "codec.acoustic_decoder.conv2.weight");
+    SYNTH_TEST_CHECK(conv2 != nullptr && conv2->ne[0] == 7 && conv2->ne[1] == 32 && conv2->ne[2] == 1);
+
+    // Round-trip a narrowed generator matrix to prove the bytes are a real
+    // narrowing of the source values, not merely the right shape and type.
+    ggml_tensor * q_proj = ggml_get_tensor(ctx, "llm.layers.0.self_attn.q_proj.weight");
+    SYNTH_TEST_CHECK(q_proj != nullptr);
+    const ggml_type_traits * traits = ggml_get_type_traits(q_proj->type);
+    SYNTH_TEST_CHECK(traits != nullptr && traits->to_float != nullptr);
+    std::vector<float> dequantized(static_cast<size_t>(q_proj->ne[0]));
+    traits->to_float(q_proj->data, dequantized.data(), q_proj->ne[0]);
+    const int64_t probe = 20;
+    SYNTH_TEST_CHECK(std::fabs(dequantized[probe] - static_cast<float>(probe + 1) / 7.0f) < tolerance);
+
+    gguf_free(gguf);
+    ggml_free(ctx);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
@@ -540,6 +617,10 @@ int main(int argc, char ** argv) {
     const std::string omnivoice_gen_second     = root + "/quantize-omnivoice-q8gen-second.gguf";
     const std::string omnivoice_q4_first       = root + "/quantize-omnivoice-q4kgen-first.gguf";
     const std::string omnivoice_q4_second      = root + "/quantize-omnivoice-q4kgen-second.gguf";
+    const std::string omnivoice_f16gen_first   = root + "/quantize-omnivoice-f16gen-first.gguf";
+    const std::string omnivoice_f16gen_second  = root + "/quantize-omnivoice-f16gen-second.gguf";
+    const std::string omnivoice_bf16gen_first  = root + "/quantize-omnivoice-bf16gen-first.gguf";
+    const std::string omnivoice_bf16gen_second = root + "/quantize-omnivoice-bf16gen-second.gguf";
     std::remove(first.c_str());
     std::remove(second.c_str());
     std::remove(invalid_output.c_str());
@@ -552,6 +633,10 @@ int main(int argc, char ** argv) {
     std::remove(omnivoice_gen_second.c_str());
     std::remove(omnivoice_q4_first.c_str());
     std::remove(omnivoice_q4_second.c_str());
+    std::remove(omnivoice_f16gen_first.c_str());
+    std::remove(omnivoice_f16gen_second.c_str());
+    std::remove(omnivoice_bf16gen_first.c_str());
+    std::remove(omnivoice_bf16gen_second.c_str());
 
     SYNTH_TEST_CHECK(write_fixture(input, false));
     std::string error;
@@ -598,6 +683,26 @@ int main(int argc, char ** argv) {
     SYNTH_TEST_CHECK(read_bytes(omnivoice_q4_first) != read_bytes(omnivoice_gen_first));
     SYNTH_TEST_CHECK(read_bytes(omnivoice_q4_first).size() < read_bytes(omnivoice_gen_first).size());
 
+    SYNTH_TEST_CHECK(synth::quantize::quantize_file(omnivoice_input, omnivoice_f16gen_first, "F16_GEN", error));
+    SYNTH_TEST_CHECK(error.empty());
+    SYNTH_TEST_CHECK(check_omnivoice_narrowed_gen_output(omnivoice_f16gen_first, GGML_TYPE_F16, 1, "F16_GEN", 0.01f) ==
+                     0);
+    SYNTH_TEST_CHECK(synth::quantize::quantize_file(omnivoice_input, omnivoice_f16gen_second, "f16_gen", error));
+    SYNTH_TEST_CHECK(read_bytes(omnivoice_f16gen_first) == read_bytes(omnivoice_f16gen_second));
+
+    SYNTH_TEST_CHECK(synth::quantize::quantize_file(omnivoice_input, omnivoice_bf16gen_first, "BF16_GEN", error));
+    SYNTH_TEST_CHECK(error.empty());
+    SYNTH_TEST_CHECK(check_omnivoice_narrowed_gen_output(omnivoice_bf16gen_first, GGML_TYPE_BF16,
+                                                         GGML_FTYPE_MOSTLY_BF16, "BF16_GEN", 0.05f) == 0);
+    SYNTH_TEST_CHECK(synth::quantize::quantize_file(omnivoice_input, omnivoice_bf16gen_second, "bf16_gen", error));
+    SYNTH_TEST_CHECK(read_bytes(omnivoice_bf16gen_first) == read_bytes(omnivoice_bf16gen_second));
+    // F16_GEN and BF16_GEN differ from each other and from their k-quant/Q8_0
+    // siblings in the file, not merely in metadata -- the same non-fallback
+    // proof the Q4_K_GEN/Q8_GEN pair gets above.
+    SYNTH_TEST_CHECK(read_bytes(omnivoice_f16gen_first) != read_bytes(omnivoice_bf16gen_first));
+    SYNTH_TEST_CHECK(read_bytes(omnivoice_f16gen_first) != read_bytes(omnivoice_gen_first));
+    SYNTH_TEST_CHECK(read_bytes(omnivoice_bf16gen_first) != read_bytes(omnivoice_gen_first));
+
     SYNTH_TEST_CHECK(write_omnivoice_fixture(omnivoice_invalid_input, true));
     SYNTH_TEST_CHECK(
         !synth::quantize::quantize_file(omnivoice_invalid_input, omnivoice_invalid_output, "Q8_MIXED", error));
@@ -618,7 +723,7 @@ int main(int argc, char ** argv) {
     // 17-wide Linear (F32, no row-size check to fail) and stops on
     // `unknown_module` instead, which is why the expected message differs
     // from the Q8_MIXED case above.
-    for (const char * generator_profile : { "Q8_GEN", "Q4_K_GEN" }) {
+    for (const char * generator_profile : { "Q8_GEN", "Q4_K_GEN", "F16_GEN", "BF16_GEN" }) {
         const std::string invalid = root + "/quantize-omnivoice-" + generator_profile + "-invalid.gguf";
         std::remove(invalid.c_str());
         SYNTH_TEST_CHECK(!synth::quantize::quantize_file(omnivoice_invalid_input, invalid, generator_profile, error));

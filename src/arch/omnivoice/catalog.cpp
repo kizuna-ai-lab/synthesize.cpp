@@ -356,6 +356,44 @@ class Resolver {
                         return GGML_TYPE_F32;
                 }
                 return GGML_TYPE_F32;
+            case QuantizationProfile::F16Gen:
+                // PROVISIONAL NAME (weights.h). The generator half again, at
+                // F16 instead of a block-quantized type: MatrixWeight and
+                // RowLookup land on the same narrowed type here because
+                // CUDA's GET_ROWS accepts F16 directly (quantization.h's
+                // RowLookup; ggml/src/ggml-cuda/ggml-cuda.cu:5190-5207), so
+                // -- like Q8_GEN and unlike Q4_K_GEN -- the two roles never
+                // need to diverge.
+                switch (classify_tensor_for_half(name, ne, ModelHalf::Generator)) {
+                    case QuantRole::MatrixWeight:
+                    case QuantRole::RowLookup:
+                        return GGML_TYPE_F16;
+                    // Unreachable for the same reason as under Q8_GEN above.
+                    case QuantRole::ConvKernel:
+                    case QuantRole::TransposeWeight:
+                    case QuantRole::Sensitive:
+                    case QuantRole::Unknown:
+                        return GGML_TYPE_F32;
+                }
+                return GGML_TYPE_F32;
+            case QuantizationProfile::BF16Gen:
+                // PROVISIONAL NAME (weights.h). Same shape as F16Gen, bfloat16
+                // instead of IEEE half. CUDA's GET_ROWS accepts BF16 too
+                // (ggml/src/ggml-cuda/ggml-cuda.cu:5190-5207), verified before
+                // this row was written rather than assumed from F16's
+                // presence in that list.
+                switch (classify_tensor_for_half(name, ne, ModelHalf::Generator)) {
+                    case QuantRole::MatrixWeight:
+                    case QuantRole::RowLookup:
+                        return GGML_TYPE_BF16;
+                    // Unreachable for the same reason as under Q8_GEN above.
+                    case QuantRole::ConvKernel:
+                    case QuantRole::TransposeWeight:
+                    case QuantRole::Sensitive:
+                    case QuantRole::Unknown:
+                        return GGML_TYPE_F32;
+                }
+                return GGML_TYPE_F32;
         }
         return GGML_TYPE_F32;
     }
@@ -372,6 +410,10 @@ class Resolver {
                 return "Q8_GEN";
             case QuantizationProfile::Q4KGen:
                 return "Q4_K_GEN";
+            case QuantizationProfile::F16Gen:
+                return "F16_GEN";
+            case QuantizationProfile::BF16Gen:
+                return "BF16_GEN";
         }
         return "unknown";
     }

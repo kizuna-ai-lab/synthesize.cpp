@@ -44,7 +44,9 @@
 #include "arch/omnivoice/codec-host.h"
 #include "arch/omnivoice/generator-host.h"
 #include "arch/omnivoice/omnivoice.h"
+#include "backend-device.h"
 #include "ggml-backend.h"
+#include "synthesize.h"
 
 #include <chrono>
 #include <cstdint>
@@ -131,20 +133,21 @@ std::string margin_json(const synth::omnivoice::MarginReport & margin) {
     return buffer;
 }
 
-// The first device that is not the CPU. Asking for GGML_BACKEND_DEVICE_TYPE_GPU
-// by name misses this machine entirely: its CUDA device reports as integrated.
-// Mirrors qwen3-tts's own helper (tests/qwen3_tts_replay_real.cpp) exactly --
-// nullptr on a CPU-only build that registers no accelerator at all. Plan 4
-// Task 11 proved this returns the real GB10 CUDA device on the dev-dgx-spark
-// preset.
-ggml_backend_dev_t first_accelerator() {
-    for (size_t index = 0; index < ggml_backend_dev_count(); ++index) {
-        ggml_backend_dev_t device = ggml_backend_dev_get(index);
-        if (device != nullptr && ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_CPU) {
-            return device;
-        }
+// Resolve CUDA by name, not by "whatever non-CPU device enumerates first".
+// This runner feeds a CUDA-specific golden gate and a CUDA tolerance cell, so
+// on a build that registers a second accelerator -- the CMake options permit
+// one -- picking by position could silently measure Vulkan and report it as
+// CUDA. `resolve_requested_device` is how the sibling real-runners do it
+// (tests/kokoro_stages_real.cpp), and it fails cleanly when CUDA is absent
+// instead of falling through to a device this gate cannot interpret.
+ggml_backend_dev_t cuda_device() {
+    ggml_backend_dev_t   device = nullptr;
+    const synth_status_t status = synth::resolve_requested_device(SYNTH_BACKEND_CUDA, -1, &device);
+    if (status != SYNTH_OK) {
+        std::fprintf(stderr, "--accelerate: CUDA is not available on this build (%d)\n", int(status));
+        return nullptr;
     }
-    return nullptr;
+    return device;
 }
 
 }  // namespace
@@ -269,16 +272,15 @@ int main(int argc, char ** argv) {
     // Plan 4's Task 8 gate lives in the PUBLIC seam (src/synthesize.cpp's
     // synth_model_load), not here -- this call goes straight to the family's
     // own Model::load, the same seam qwen3-tts's replay runner uses. On a
-    // build that registers no accelerator device at all, first_accelerator()
-    // returns nullptr and BackendPlan::create (backend-plan.cpp) refuses a
-    // null primary device with SYNTH_ERR_INVALID_ARG before it even inspects
-    // a device type -- reported below like any other load failure ("load ->
-    // 1"), not a crash. Plan 4 Task 11 ran this same call against a real
+    // build without CUDA, cuda_device() reports why and returns nullptr, and
+    // BackendPlan::create (backend-plan.cpp) refuses a null primary device
+    // with SYNTH_ERR_INVALID_ARG -- reported below like any other load
+    // failure ("load -> 1"), not a crash. Plan 4 Task 11 ran this same call against a real
     // GB10 device on the dev-dgx-spark preset: twenty golden cases, every
     // codec node off the CPU, every generator node on it, seventeen greedy
     // grids byte-exact (docs/porting/families/omnivoice.md's Execution
     // Backends section).
-    synth_status_t status = accelerate ? synth::omnivoice::Model::load(model_path, first_accelerator(), true, model) :
+    synth_status_t status = accelerate ? synth::omnivoice::Model::load(model_path, cuda_device(), true, model) :
                                          synth::omnivoice::Model::load_cpu(model_path, model);
     if (status != SYNTH_OK) {
         std::fprintf(stderr, "load -> %d\n", int(status));

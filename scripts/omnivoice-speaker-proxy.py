@@ -51,7 +51,6 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
-import struct
 import sys
 import wave
 
@@ -432,7 +431,30 @@ def main(argv=None) -> int:
 
     left = collect(arguments.reference, arguments.cases)
     right = collect(arguments.candidate, arguments.cases)
-    shared = [case for case in left if case in right]
+
+    # Refuse an asymmetric pair rather than intersecting it. `collect` already
+    # fails on a missing render when --cases names one, but with --cases
+    # omitted each side simply reports what it found, and quietly measuring
+    # the overlap would shrink the denominator without saying so: a candidate
+    # whose renders partly failed would score "N of 12" against a suite of 17
+    # and look better than it had earned. Every published figure from this
+    # script is an "N of 17", so the count has to be trustworthy or the
+    # instrument is worse than useless.
+    only_left = [case for case in left if case not in right]
+    only_right = [case for case in right if case not in left]
+    if only_left or only_right:
+        detail = []
+        if only_left:
+            detail.append(f"missing from {arguments.candidate}: {sorted(only_left)}")
+        if only_right:
+            detail.append(f"missing from {arguments.reference}: {sorted(only_right)}")
+        raise SystemExit(
+            "the two sides do not carry the same cases, so no total over them "
+            "would be comparable -- " + "; ".join(detail)
+            + ". Re-render the missing cases, or name the subset you mean with --cases."
+        )
+
+    shared = list(left)
     if not shared:
         raise SystemExit("no case is present on both sides")
 
@@ -458,9 +480,6 @@ def main(argv=None) -> int:
 
         def hz(value):
             return f"{value:9.1f}" if value is not None else "        -"
-
-        def fr(value):
-            return f"{value:9.2f}" if value is not None else "        -"
 
         note = r["verdict"]
         if r["reasons"]:

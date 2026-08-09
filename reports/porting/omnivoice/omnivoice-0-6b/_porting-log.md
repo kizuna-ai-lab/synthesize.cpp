@@ -5400,3 +5400,53 @@ difference* rather than *identity change* specifically. The threshold still
 holds for what it is — every answer of "same" is below it and every "different"
 above — but it does not distinguish why, and this entry should not be read as
 claiming it does.
+
+### Q8_GEN kept, with the scope the evidence actually supports
+
+jiangzhuo's decision, 2026-08-09: cloning survives the quantized generator, so
+Q8_GEN is worth keeping. Before that becomes a claim, the gap in the audit was
+closed — **no Description Text case was in the listening set.** Six pairs were
+auto-voice and both triples were Reference Audio cloning, so "conditioned paths
+are robust" rested entirely on cloning evidence.
+
+LTAS distance, F32/CPU vs Q8_GEN/CPU, all 17 greedy cases:
+
+| case | voice path | LTAS (dB) |
+| --- | --- | ---: |
+| `omni-clone-en` | Reference Audio | **2.02** |
+| `omni-clone-zh` | Reference Audio | **2.70** |
+| `omni-rate-slow` | auto | 2.87 |
+| `omni-rate-fast` | auto (degenerate, excluded) | 2.90 |
+| `omni-punctuation` | auto | 4.12 |
+| `omni-short-zh` / `omni-long-boundary` | auto | 4.54 |
+| `omni-medium-en` | auto | 4.59 |
+| **`omni-design-zh`** | **Description Text** | **4.88** |
+| `omni-digits` | auto | 5.01 |
+| `omni-short-ja` | auto | 6.14 |
+| `omni-lang-none` | auto | 6.84 |
+| `omni-upstream-readme` | auto (degenerate) | 7.10 |
+| `omni-short-en` | auto | 7.46 |
+| **`omni-design-en`** | **Description Text** | **8.61** |
+| `omni-fast-mode` | auto | 8.71 |
+| `omni-nonverbal` | auto | 12.22 |
+
+**The two cloning cases are the two smallest distances in the suite.**
+Description Text is not with them — `omni-design-en` at 8.61 dB is the third
+largest distance measured.
+
+So the earlier entry's phrase "the conditioned path anchors the timbre" is
+wrong and is corrected here: **Reference Audio anchors it; Description Text
+does not.** The mechanism agrees. Cloning injects real acoustic tokens from the
+reference clip into the prompt, so the timbre has a physical anchor that
+survives a re-drawn generator. Description Text is words steering generation
+with no acoustic anchor at all, which puts it in the same position as
+auto-voice.
+
+**The scope Q8_GEN can honestly claim: it preserves Reference Audio cloning,
+and it changes the voice for auto-voice and for Description Text.** Anything
+broader than that is unsupported by what was measured.
+
+Not sampled by ear: `omni-design-en` at 8.61 dB sits well inside the range the
+listener has consistently called "different people", so no listening pair was
+spent on it. That is a prediction from an instrument with fourteen confirming
+answers and no exceptions, not a measurement of a human — recorded as such.

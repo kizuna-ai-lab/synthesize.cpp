@@ -149,12 +149,13 @@ tags:
 downloads_note: |-
   **A profile name here says which half of the model it quantizes.** This family
   has two: a Qwen3-based generator that paints the token canvas, and the Higgs
-  Audio V2 codec that turns the canvas into audio. Every profile above
-  quantizes the generator half and leaves all 486 codec tensors bit-identical to
-  F32, which is why all three reproduce the Reference Audio cloning path's
-  token grid exactly. A profile that quantized the codec half instead would
+  Audio V2 codec that turns the canvas into audio. F16 and Q8 quantize the
+  generator half and leave all 486 codec tensors bit-identical to F32, which is
+  why all three reproduce the Reference Audio cloning path's token grid exactly
+  — and why a quantized generator re-draws the *other* grid, the greedy decode
+  canvas, on purpose. A profile that quantized the codec half instead would
   carry a `_CODEC` qualifier in its name; none is published, because every one
-  produced so far fails that exact-token gate.
+  produced so far breaks the cloning grid and fails that exact-token gate.
 
   **No profile here is faster than F32, and none claims to be.** Measured
   against F32 on this project's CUDA reference host: Q8 -0.4%, F16 +2.7%; on
@@ -268,31 +269,36 @@ validation:
   metric_note: >-
     Waveform cosine is measured for completeness; it is not this family's
     real guarantee and is not enforced as a tolerance the way it is for
-    Kokoro or VITS. What the Port Validation Suite actually gates,
-    unconditionally and independent of any threshold, is exact token
-    identity: the greedy decode loop's full 8 x T unmasking grid matches the
-    oracle's byte-for-byte on 17 of 17 golden cases, and, on a separate
-    claim, the Reference Audio cloning path's own RVQ encode grid matches on
-    both clone cases -- 8 codebooks x 351 frames, 2,808 of 2,808 tokens
-    exact. Both grids stayed byte-exact when the codec's decode graph moved
-    to CUDA too. A profile or a backend that flips even one of those tokens is
-    not shipped, and that rule is what decides which profiles are listed above.
-    All three listed profiles quantize the generator half only and leave every
-    one of the 486 `codec.*` tensors bit-identical to the F32 package, so the
-    cloning path's RVQ encode is byte-exact on all three and they inherit this
-    guarantee rather than approximating it. Every codec-half profile produced
-    so far fails it and none is listed: F16_CODEC mismatched 103 of 2,808
+    Kokoro or VITS. What the Port Validation Suite reports instead is exact
+    token identity, and it is two claims with two different scopes. First:
+    the greedy decode loop's full 8 x T unmasking grid matches the oracle's
+    byte-for-byte on 17 of 17 golden cases for F32 on CPU -- the reference
+    configuration, and the only one that certifies it. A quantized generator
+    re-draws that grid by design (Q8 commits a different token at 95.83% of
+    positions), and so does the CUDA backend, whose TF32 arithmetic moves the
+    per-step argmax; both change what the canvas contains and never how large
+    it is, both were accepted by listening rather than by a token gate, and
+    their flip counts are recorded as data, not gated. Second, and this is the
+    claim that is gated unconditionally: the Reference Audio cloning path's own
+    RVQ encode grid matches the oracle on both clone cases -- 8 codebooks x 351
+    frames, 2,808 of 2,808 tokens exact -- and it holds on every profile listed
+    above, because F16 and Q8 quantize the generator half only and leave every
+    one of the 486 `codec.*` tensors bit-identical to the F32 package. A
+    profile that flips even one of those 2,808 tokens is not shipped, and that
+    rule is what decides which profiles are listed above. Every codec-half
+    profile produced so far fails it and none is listed: F16_CODEC
+    mismatched 103 of 2,808
     tokens (3.7%), and Q8_CODEC_MIXED mismatched 1,023 (36.4%) while it still
     block-quantized convolution kernels, 98 (3.49%) since the conv-exempt
     codec policy of 2026-08-09 stopped it doing so. None is a knife-edge margin
     call, so none ships and no perceptual claim substitutes for the gate.
     The two waveform-cosine columns are measured against the PyTorch oracle and
     are reported for F32 alone. They are not withheld for the quantized
-    profiles; they do not apply to them. A quantized generator re-draws the
-    token grid rather than perturbing F32's -- Q8 commits a different token at
-    95.83% of positions -- so its output is a different valid realization of
-    the same request, and a waveform distance to the oracle would score that
-    difference as error. The last column is the measurement that does separate
+    profiles; they do not apply to them. Because a quantized generator re-draws
+    the token grid rather than perturbing F32's, its output is a different valid
+    realization of the same request, and a waveform distance to the oracle would
+    score that difference as error. The last column is the measurement that
+    does separate
     them: long-term average spectrum distance from F32's own CPU render, the
     speaker-identity proxy this family uses, worst case over the seventeen
     greedy validation cases. Roughly 3 dB is the line a listener has
@@ -408,8 +414,11 @@ sidecars:
     sha256: 475211637354ce4c14b9c3dacccbefbaba735fe1b0db97d6c4fd11cd1356819f
 
 # Three profiles ship. All three carry a bit-identical codec half, so all three
-# inherit the exact-token guarantee that gates this family; what separates them
-# is how far the generator's rendering moves away from F32's. The `note` field
+# inherit the one exact-token claim that actually gates this family -- the
+# cloning path's RVQ-encode grid. They do NOT inherit the greedy decode grid's
+# oracle parity, which only F32 on CPU carries and which a quantized generator
+# re-draws by design; what separates them is exactly how far that re-drawn
+# rendering moves away from F32's. The `note` field
 # is deliberately per-row rather than a paragraph under the table: a reader
 # picking a file out of the download table has to see the caveat in the row they
 # are picking, not two screens below it.

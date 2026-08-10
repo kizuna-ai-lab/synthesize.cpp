@@ -5884,3 +5884,126 @@ cases: the file is carried and byte-identical, the committed copy still hashes
 to the pin and still names the April 18 2024 release date, a missing source
 stops the conversion, and a substituted one stops it too. Verified
 non-vacuous by short-circuiting the copy — 4 of 7 cases fail.
+
+## 2026-08-10 — Four description defects from the PR #8 bot review
+
+The bot's review of PR #8 produced twelve findings; nine verified, three
+refuted. Four are settled here, and the shape they share is worth naming: each
+is a sentence that was true when it was written and became false when the thing
+it described moved, in a document nobody re-read afterwards. This is the same
+"correction sweeps stop short" failure the 2026-08-10 branch review named, seen
+from the other side — not a fix that missed a twin, but a claim that outlived
+its measurement.
+
+### The one that was wrong in the published artifact
+
+`docs/models/omnivoice-0-6b.md` asserted that "a flip in either grid, on any
+profile or backend, is a shipping blocker by this project's own exact-token
+discipline, and none has occurred," and the shipped model card carried its
+twin: "a profile or a backend that flips even one of those tokens is not
+shipped."
+
+**Both halves are false, and each document refutes itself twice.** The same
+model page lists `Q8` at a **95.83% greedy token flip** with status *ships*.
+The same page describes a CUDA backend whose worst case flips **98.3%** of
+committed positions, admitted on purpose under `docs/backends.md`'s narrow
+exception to the discrete-outputs rule. A reader who took the blanket sentence
+at face value would conclude that two shipped configurations cannot exist.
+
+What went wrong is a conflation, not a measurement error: this family has **two
+token grids**, they have different scopes, and the sentence collapsed them.
+
+| grid | what is actually claimed | scope |
+| --- | --- | --- |
+| greedy decode, 8 x T | byte-for-byte against the oracle, 17/17 | **F32 on CPU only** — the reference configuration |
+| cloning RVQ encode | byte-for-byte against the oracle, 2,808/2,808, 2/2 cases | **every shipped profile**, because every shipped profile's codec half is bit-identical |
+
+Verified against the record rather than restated from the page it was wrong
+on: the clone grid's exactness under a generator-half profile is this log's own
+2026-08-09 three-profile comparison (`clone RVQ drift / 2,808` = 0, "codec
+bit-identical", 486 tensors and 734,256,516 bytes with zero differing), and the
+Q8_GEN rejection-and-reinstatement entries repeat it independently.
+
+So the greedy grid is *certified* in one configuration and *re-drawn by design*
+in the two others, for two different reasons — different generator weights, and
+TF32 moving the per-step argmax — and both re-draws were accepted **by
+listening, not by a token gate**. The gate that is unconditional is the cloning
+grid, and it is exactly what blocks every codec-half profile. Both documents
+and the card's YAML now say that, in those words.
+
+The card was regenerated and re-verified (`--check`, exit 0). **No upload was
+performed.** The live repository `jiangzhuo9357/omnivoice-0-6b-gguf` therefore
+still carries the wrong sentence, and correcting it is a third upload needing
+its own per-act confirmation.
+
+`tests/python/test_hf_card_generator.py` grew
+`test_omnivoice_scopes_its_exact_token_claim_to_the_grid_that_gates_it`, which
+enumerates every "byte-for-byte" on the rendered card and requires each to name
+either its configuration or the clone path — the same enumerate-don't-blacklist
+shape the "no profile is faster" test already uses, and for the same reason: an
+unscoped claim has more spellings than a blacklist can hold. Verified
+non-vacuous by rendering the old sentence through it — **4 of 4 assertions
+fire**.
+
+### The finding that pointed at the wrong file
+
+The bot flagged a contradiction about whether `omni-short-en` — the one case of
+seventeen where the CPU and CUDA arms speak in different voices — had ever been
+heard. The contradiction is real. The file it named, the model page, is the
+**correct** side: jiangzhuo heard that pair on 2026-08-08 in the two-pair blind
+audit recorded above (order seed 2026080817, `omni-short-en` as pair 1, CPU in
+slot A) and called the two arms different people with quality
+indistinguishable.
+
+The stale documents were the two nobody thought to sweep: `docs/backends.md`
+still read "nobody has heard it; the pair has been offered to jiangzhuo as a
+single follow-up," and `docs/porting/families/omnivoice.md` still headed the
+paragraph "Un-listened consequence of the placement move." Both now carry the
+outcome, the seed, and the negative control (`omni-design-zh`, which the
+trackers declined to count and the listener also called the same person).
+
+Worth recording about the review itself: a finding can be correct about the
+existence of a contradiction and wrong about which side to fix. Taking the
+file-level verdict on trust would have deleted a confirmed listening result.
+
+### Two Open Questions answered, then contradicted, and never marked
+
+`docs/porting/families/omnivoice.md`'s Open Questions carried two answers,
+un-struck and bolded, that the same file's own status block contradicts:
+
+- *"the generator does not move, and is not claimed to"* — superseded
+  2026-08-08 by Plan 5 Task 1, which gave the generator its own
+  accelerator-resident twin.
+- *"this family ships F32-only"* — superseded by the 2026-08-09 publication of
+  `F16` and `Q8`.
+
+Neither is a dated measurement whose wording has to be preserved; both are
+questions presented as open that have since been answered the other way. Both
+now carry a `**Superseded …**` lead-in in the style this file already uses at
+its Execution Backends heading, placed *before* the stale answer rather than
+after it, so the bolded claim cannot be read on its own. The old answers stay
+underneath, because the reasoning that produced them is still the record of why
+the position moved. The F32-only supersede says explicitly which half of the
+old answer survives: every codec-half profile still fails the clone gate (98 of
+2,808 under the conv-exempt policy), and a generator-half profile is not held
+to the greedy grid at all.
+
+### The publication directory, re-verified end to end
+
+`docs/models/omnivoice-0-6b.md`'s tree and count were already corrected in the
+previous commit; what was still stale was the verification behind them, which
+read "five entries" as of 2026-08-09 with the sixth bolted on as a sentence.
+Re-listed and re-digested here: **six entries**, every one at link count 2 with
+its partner in `models/omnivoice-0-6b/`, all five artifact digests matching the
+page. The nearby "every entry is a hard link" assertion was checked rather than
+assumed, including after this task regenerated the card — `generate.py` writes
+through `Path.write_text`, which truncates in place, so the README's link to
+`models/omnivoice-0-6b/README.md` survives regeneration (inode 18648884 on both
+names, before and after). That property is what stops the publication directory
+drifting from the copy `--check` verifies, so it is now stated as tested rather
+than as design intent.
+
+### Gates
+
+`build` and `build-sanitize` `synthesize-check-unit`: 91/91 and 90/90, 100%.
+`scripts/hf_cards/generate.py … --check`: exit 0. Formatting clean.

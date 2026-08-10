@@ -1,6 +1,6 @@
 # Execution Backend Policy
 
-Status: Confirmed, last updated on 2026-08-08.
+Status: Confirmed, last updated on 2026-08-10.
 
 ## Shared Inference Graph
 
@@ -221,12 +221,18 @@ against 189.0 Hz on the shipped CUDA path** (normalised cross-correlation;
 frames below 165 Hz going 0.98 -> 0.00 -- complete separation on both trackers,
 a male voice and a female voice for the same request. Its CPU arm is
 byte-identical to the oracle, so this is a change the placement move introduced
-against the reference, on a shipped backend. **`omni-short-en` was not one of
-the six pairs the audit below sampled**, so nobody has heard it; the pair has
-been offered to jiangzhuo as a single follow-up. It is recorded here at its
-true cost rather than folded into "still-valid answer", and it is the reason
-this family's model documentation no longer promises that the auto-voice
-speaker follows the synthesis seed.
+against the reference, on a shipped backend. `omni-short-en` was not one of the
+six pairs the audit below sampled, so it was **heard separately, and the
+measurement was confirmed**: a two-pair blind audit on 2026-08-08 (order seed
+2026080817, `omni-short-en` as pair 1 with CPU in slot A) returned **"different
+people," with the two arms' audio quality judged indistinguishable**. Pair 2
+was `omni-design-zh`, the sweep's one borderline case, which the trackers
+declined to count and the listener also called the same person -- so the proxy
+was confirmed against a human ear on a positive case and a negative one. The
+effect is therefore identity, not degradation. It is recorded here at its true
+cost rather than folded into "still-valid answer", and it is the reason this
+family's model documentation no longer promises that the auto-voice speaker
+follows the synthesis seed.
 
 **Why content drift this large is an acceptable answer, and why that is
 weaker evidence than the size measurement above.** jiangzhuo's own listening
@@ -239,9 +245,12 @@ listener, six pairs, on one day -- a Listening Audit in this project's own
 vocabulary, explicitly not a statistical claim, and it is cited as exactly
 that: the reason a human accepted this family's specific content drift, not
 proof that content drift is inaudible in general or that a future family's
-drift would pass the same way. **And the sample has a known gap**: the six
-pairs did not include `omni-short-en`, the one case where the same drift moves
-the speaker (above), so the verdict covers the pairs heard and not that case.
+drift would pass the same way. **The sample had a known gap, since closed**:
+the six pairs did not include `omni-short-en`, the one case where the same
+drift moves the speaker, so this verdict covers the pairs heard and not that
+case -- the two-pair audit above heard it separately and returned "different
+people, quality indistinguishable," which is why the speaker change is stated
+as an identity effect rather than left as an unheard measurement.
 There is precedent for shipping a family
 whose discrete decisions are not reproduced exactly: qwen3-tts ships
 Q8_MIXED while stating plainly that "in normal operation it will select

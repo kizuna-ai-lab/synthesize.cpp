@@ -88,10 +88,15 @@ input has no consumer (`docs/porting/families/omnivoice.md`, "Amended
 2026-07-31"), and the loader refuses to load any package declaring more than
 the text flag.
 
-Three profiles are published. Each quantizes the **generator**
-half only and leaves all 486 `codec.*` tensors bit-identical to the F32
-package, so each inherits this family's exact-token guarantee rather than
-approximating it (see "Port validation," below):
+Three profiles are published. F32 quantizes nothing; F16 and Q8 quantize the
+**generator** half only and leave all 486 `codec.*` tensors bit-identical to
+the F32 package. That inheritance is exact for one of this family's two token
+grids and deliberately not for the other, and the two must not be run together:
+the Reference Audio cloning path's RVQ encode is byte-exact on all three,
+because a bit-identical codec half produces bit-identical codes; the greedy
+decode grid is **re-drawn by design** under a quantized generator, and matches
+the oracle only in the reference configuration, F32 on CPU (see "Port
+validation," below):
 
 | Profile | Bytes | Off F32 | Tensor storage | SHA-256 |
 | --- | ---: | ---: | --- | --- |
@@ -267,8 +272,8 @@ fused latent that feeds the encode's nearest-neighbor codebook lookup
 Q8_CODEC_MIXED, 0.129286 at F16_CODEC and 3.73227 at the superseded one), which flips a
 discrete nearest-neighbor decision at a large fraction of frames -- not a
 knife-edge margin call eligible for the dual-admissibility mechanism, in any
-case. Per this family's own gate discipline, a profile that fails the
-exact-token gate is not shipped and no perceptual claim substitutes for it.
+case. Per this family's own gate discipline, a profile that fails this
+clone-grid gate is not shipped and no perceptual claim substitutes for it.
 `tests/tolerances/omnivoice.json` still has exactly one measured cell, F32 on
 CPU, for every profile including the two that now ship: a generator-half
 profile re-draws the grid by design, so there is nothing for a per-profile
@@ -293,17 +298,40 @@ end-to-end waveform -- eight stages in total.
 it is two separate claims:**
 
 - The greedy decode loop's full 8 x T unmasking grid matches the oracle's
-  byte-for-byte on **17 of 17** golden cases (one, `omni-fast-mode`, via a
-  committed alternate grid the oracle itself also produces -- the
-  dual-admissibility mechanism for a decision narrower than this arithmetic
-  resolves, never a tolerance on a token id).
+  byte-for-byte on **17 of 17** golden cases **for F32 on CPU** -- the
+  reference configuration, and the only one that certifies this claim (one
+  case, `omni-fast-mode`, via a committed alternate grid the oracle itself also
+  produces -- the dual-admissibility mechanism for a decision narrower than
+  this arithmetic resolves, never a tolerance on a token id).
 - The Reference Audio cloning path's own RVQ encode grid matches the oracle's
   byte-for-byte on **both** clone cases -- 8 codebooks x 351 frames, **2,808 of
-  2,808 tokens exact**, on the first run.
+  2,808 tokens exact**, on the first run. This one holds on **every shipped
+  profile**, because every shipped profile's codec half is bit-identical to
+  F32's.
 
-Both grids stayed byte-exact when the codec's decode graph moved to CUDA too
-(below): a flip in either grid, on any profile or backend, is a shipping
-blocker by this project's own exact-token discipline, and none has occurred.
+**The two claims have different scopes, and conflating them overstates both.**
+The greedy grid is certified in the reference configuration only. Two shipped
+configurations re-draw it *by design* and are not held to it: a generator-half
+profile commits different tokens because its generator weights are different
+(`Q8` at 95.83% of positions; see "What the profiles quantize," above), and the
+CUDA backend does the same because TF32 arithmetic moves the per-step argmax
+(worst case 98.3%). The backend's re-draw is admitted by `docs/backends.md`'s
+narrow exception to the discrete-outputs rule, on the ground that the token
+choice changes the canvas's *content* and never its *size* -- measured to hold
+17 of 17. The profile's re-draw is not a placement question at all; it is
+admitted by this family's own reading of its gate, that a quantized generator
+emits a *different valid realization* rather than a wrong one. Both were
+accepted **by listening, not by the token gate**, and their flip counts are
+recorded as data.
+
+What the exact-token discipline does still gate, unconditionally, is the
+**cloning RVQ-encode grid**: a profile that flips even one of those 2,808
+tokens is not shipped, and that is exactly what blocks every codec-half profile
+(above). It is not a gate the shipped profiles have ever been at risk of
+failing, since none of them touches the codec half. When the codec's decode
+graph alone moved to CUDA under Plan 4 (below), both grids did stay byte-exact
+-- but that measurement predates the generator's own move and cannot be quoted
+for the configuration that ships today.
 
 Everything else -- the deep generator probes and the decoded waveform -- is
 measured for completeness rather than enforced as this family's real claim,
@@ -525,12 +553,15 @@ Every entry is a hard link to its working-directory original, sharing the same
 filesystem and inode rather than duplicating 6.5 GB, which is safe because
 `models/` is entirely git-ignored and this directory is a working artifact, not
 a tracked one — and it means the publication directory can never drift from the
-working copy that `--check` verifies. Verified 2026-08-09 by listing and
-digesting it: five entries, every one at link count 2, digests as above; no
-upstream checkpoint file, no `audio_tokenizer/`, no `tokenizer.json`, and no
-`Q4_K`, `BF16`, `Q8_CODEC_MIXED` or `F16_CODEC` GGUF (none of those ships).
-`LICENSE-meta-llama-3.txt` is the sixth entry, added 2026-08-10, and re-checked
-the same way on that date.
+working copy that `--check` verifies. Re-verified in full on 2026-08-10, after
+`LICENSE-meta-llama-3.txt` was added on that date, by listing and digesting it:
+**six entries**, every one at link count 2 with its partner in
+`models/omnivoice-0-6b/`, digests as above; no upstream checkpoint file, no
+`audio_tokenizer/`, no `tokenizer.json`, and no `Q4_K`, `BF16`,
+`Q8_CODEC_MIXED` or `F16_CODEC` GGUF (none of those ships). The hard-link
+property survived the Meta licence's arrival and the card's re-generation:
+`generate.py` truncates its output in place rather than replacing the file, so
+regenerating the card updates both names at once instead of breaking the link.
 `tests/python/test_hf_card_generator.py`'s
 `test_omnivoice_publish_directory_is_flat_and_current` re-checks that set
 against the card spec on every unit run, so a profile added to the spec and not

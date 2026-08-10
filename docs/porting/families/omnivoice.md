@@ -2150,19 +2150,30 @@ all three are faithful-to-oracle, not port defects:
    identical between arms in 17 of 17 greedy cases, so nothing contradicts
    `docs/backends.md`'s discrete-outputs exception.
 
-**Un-listened consequence of the placement move, recorded here and offered as a
-follow-up pair.** Sweeping all 14 CPU-vs-CUDA generator pairs for median F0,
-thirteen sit within ±3% — but `omni-short-en` goes **118.2 → 189.0 Hz** (NCC;
-140.9 → 199.0 Hz on YIN) with complete separation on both trackers: the shipped
-CPU path speaks that sentence in a male voice and the shipped CUDA path speaks
-it in a female voice, and its CPU arm is byte-identical to the oracle. That
-case was **not** among the six the placement audit sampled, so nobody has heard
-it. The placement decision is not reopened on a measurement alone; the single
-pair is offered.
+**Consequence of the placement move, since heard and confirmed.** Sweeping all
+14 CPU-vs-CUDA generator pairs for median F0, thirteen sit within ±3% — but
+`omni-short-en` goes **118.2 → 189.0 Hz** (NCC; 140.9 → 199.0 Hz on YIN) with
+complete separation on both trackers: the shipped CPU path speaks that sentence
+in a male voice and the shipped CUDA path speaks it in a female voice, and its
+CPU arm is byte-identical to the oracle. That case was **not** among the six the
+placement audit sampled, so it was offered as a single follow-up pair — and
+**jiangzhuo heard it**. A two-pair blind audit later the same day (order seed
+2026080817, deliberately distinct from both earlier audits' seeds) put
+`omni-short-en` in slot A as CPU and returned **"different people," with the
+two arms' quality judged indistinguishable**; pair 2, `omni-design-zh`, was the
+sweep's one borderline case, which the trackers declined to count and the
+listener also called the same person. The placement decision is therefore not
+reopened: the effect is identity, not degradation, and the 22.4x the move
+bought is unaffected. What the audit did change is what the documentation may
+claim — `docs/models/omnivoice-0-6b.md` and the shipped model card now state
+the scope (1 of 17) and the ear confirmation rather than promising a stable
+auto-voice speaker.
 
 Full method, the identity key, every figure, and the recommended-but-not-taken
 work are in `reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md`'s
-2026-08-08 step-count audit entry.
+2026-08-08 step-count audit entry; the follow-up pair's own method and verdict
+are in the same file's "Backend speaker audit: 1 of 17, confirmed by ear"
+entry, also 2026-08-08.
 
 ### Port vs oracle, and CUDA vs CPU codec (Plan 4 Task 16, 2026-08-07)
 
@@ -2239,9 +2250,25 @@ Task 14's card needs are in
 codec-on-CUDA precedent. Placing the generator on CUDA is claimed only if
 placement evidence proves the committed token grids bit-identical to CPU; one
 port measured CUDA-F32 token-exact and Metal-F32 at 83%, which is encouraging
-and not evidence. Stage 7 decides.~~ **Answered 2026-08-07 by Stage 7 (see the
-Execution Backends section above): the generator does not move, and is not
-claimed to.** The generator's own RVQ token selection feeds its next step,
+and not evidence. Stage 7 decides.~~
+
+**Superseded 2026-08-08 (Plan 5 Task 1).** The 2026-08-07 answer below is Plan
+4's, kept for the historical record and not because it is still the current
+claim: **the generator does move, and this family does claim it.** jiangzhuo
+revised this family's bar from token identity to audible quality after a
+six-pair blind A/B heard no problem in generator-on-CUDA output, and Plan 5
+Task 1 gave the generator its own accelerator-resident weight twin under
+`docs/backends.md`'s new "Discrete-Outputs Rule Admits One Narrow Exception,"
+so `--accelerate` now moves the whole graph rather than the codec's 152-tensor
+partition alone. What did not survive the move is the token-identity condition
+the question itself set: with the generator on CUDA only 3 of 17 greedy grids
+stay byte-exact, which is exactly why the placement rests on the listening
+verdict and on grid *size* invariance (17 of 17) instead. See the Execution
+Backends section above and `docs/backends.md`'s exception.
+
+**Answered 2026-08-07 by Stage 7 (see the Execution Backends section above):
+the generator does not move, and is not claimed to.** The generator's own RVQ
+token selection feeds its next step,
 so `docs/backends.md`'s discrete-outputs rule holds the generator and its
 whole input path on the CPU regardless of backend, the same way it always has
 -- this was never a live candidate for the CUDA-F32-token-exact test the
@@ -2296,8 +2323,26 @@ re-run the same experiment expecting a more favorable one.
 
 **Quantized profiles against the argmax cascade.** ~~Whether any profile below
 F32 survives the exact-token gates is an open measurement, not an
-expectation.~~ **Answered 2026-08-06: no profile below F32 survives, and this
-family ships F32-only.** Q8_MIXED and F16 were both produced and measured; both
+expectation.~~
+
+**Superseded 2026-08-09 (the profile ladder, and that day's publication).** The
+2026-08-06 answer below is kept for the historical record and is **not** the
+current claim: **this family does not ship F32-only.** `F16` and `Q8` were
+published alongside F32 on 2026-08-09. That answer's scope was the two
+*codec-half* profiles, the only ones that existed when it was written; the
+codec-only restriction was lifted the same week because the generator is 76.9%
+of the tensor bytes and no codec-half profile can go below about 2.62 GB. Four
+generator-half profiles were then cut, and two of them ship. Half of the old
+answer stands and half does not: every codec-half profile still fails the clone
+path's RVQ grid (98 of 2,808, 3.49%, under the conv-exempt policy of
+2026-08-09, down from 1,023), and none of them ships — but a generator-half
+profile is not held to the greedy grid at all. It re-draws that grid by design,
+which is recorded as data rather than gated, and it leaves the codec half
+bit-identical so the clone grid it *is* gated on stays byte-exact. What decides
+a generator-half profile is a listener. See "The profile ladder," above.
+
+**Answered 2026-08-06: no profile below F32 survives, and this family ships
+F32-only.** Q8_MIXED and F16 were both produced and measured; both
 keep the greedy grids exact (17/17 — the generator stays F32 and greedy decode
 never reads the codec's encoder half) and both break the clone path's RVQ
 grids, at 1023 and 103 of 2808 positions respectively. The measurement

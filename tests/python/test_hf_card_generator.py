@@ -608,6 +608,54 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, lowered)
 
+    def test_omnivoice_scopes_its_exact_token_claim_to_the_grid_that_gates_it(
+        self,
+    ) -> None:
+        # Regression for a claim that shipped wrong in the published artifact.
+        # The card asserted that "a profile or a backend that flips even one of
+        # those tokens is not shipped" -- while the same card lists Q8, which
+        # commits a different token at 95.83% of greedy positions, and
+        # describes a CUDA backend that re-draws the grid by design. This
+        # family has TWO token grids and only one of them is a gate:
+        #
+        #   * the greedy decode grid is certified against the oracle in the
+        #     reference configuration only, F32 on CPU. A generator-half
+        #     profile re-draws it because its weights are different, and the
+        #     CUDA backend re-draws it because TF32 moves the per-step argmax.
+        #     Both were accepted by listening, and both flip counts are data.
+        #   * the cloning RVQ-encode grid IS gated unconditionally, and holds
+        #     on all three shipped profiles because their codec halves are
+        #     bit-identical to F32's. It is what blocks every codec-half
+        #     profile.
+        #
+        # Checked by enumerating every oracle-parity claim rather than by
+        # blacklisting the sentence that was wrong: the defect is an unscoped
+        # claim, and a blacklist cannot name the spellings nobody has written
+        # yet.
+        spec = self.generator.load_spec(ROOT / "scripts" / "hf_cards" / "omnivoice-0-6b.yaml")
+        self.generator.validate_spec(spec)
+        card = self.generator.render(spec, "# stub upstream card")
+        lowered = card.lower()
+
+        for index, _ in enumerate(lowered):
+            if lowered.startswith("byte-for-byte", index):
+                context = lowered[index : index + 160]
+                self.assertTrue(
+                    "f32 on cpu" in context or "clone" in context,
+                    "every oracle-parity claim must name the configuration or the"
+                    f" grid it holds for; found ...{context}...",
+                )
+
+        # The gated claim, stated as the gate, with the count that makes it
+        # checkable.
+        self.assertIn(
+            "A profile that flips even one of those 2,808 tokens is not shipped",
+            card,
+        )
+        # And the re-draws stated as re-draws, not hidden behind the gate.
+        self.assertIn("re-draws that grid by design", card)
+        self.assertIn("95.83%", card)
+
     def test_omnivoice_default_readme_matches_the_generated_card(self) -> None:
         # This family's working directory (models/omnivoice-0-6b) is not flat
         # -- it holds the raw upstream checkpoint beside our GGUFs, unlike

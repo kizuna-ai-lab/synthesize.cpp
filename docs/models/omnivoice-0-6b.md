@@ -1,7 +1,7 @@
 # OmniVoice 0.6B
 
-Status: Confirmed 2026-08-09. F32, F16, and Q8 are `port_validated`, and all
-three are prepared for publication -- **F16 is the default recommendation** and
+Status: Confirmed 2026-08-10. F32, F16, and Q8 are `port_validated`, and all
+three were published on 2026-08-09 -- **F16 is the default recommendation** and
 Q8 the smaller option with a voice caveat; see "Package," below.
 `Q4_K` and `BF16` were measured and are not published. **Quality evaluation has
 not been run.** A
@@ -16,10 +16,13 @@ since that date and still does not ship.
 This is a **Restricted Model Package** (ADR 0018), not a
 Published Model Package: the generator (LM) weights are CC-BY-NC (no version
 stated by upstream) and the codec weights carry the Boson Higgs Audio 2
-Community License. It has **not been published**. Uploading it to
-`jiangzhuo9357/omnivoice-0-6b-gguf` requires jiangzhuo's separate, per-act
-confirmation (ADR 0018's last consequence); this document prepares the
-artifacts and records the commands that confirmation would run, without
+Community License. **It was published on 2026-08-09** to
+`jiangzhuo9357/omnivoice-0-6b-gguf` on jiangzhuo's separate, per-act
+confirmation (ADR 0018's last consequence), and corrected there on 2026-08-10
+when a review found the package short of the Meta Llama 3 licence the Boson
+agreement requires. Every later edit to this page's artifacts changes a live
+repository and needs its own confirmation to re-upload. This document records
+the artifacts and the commands that were run, without
 running them.
 
 ## Package
@@ -85,7 +88,7 @@ input has no consumer (`docs/porting/families/omnivoice.md`, "Amended
 2026-07-31"), and the loader refuses to load any package declaring more than
 the text flag.
 
-Three profiles are prepared for publication. Each quantizes the **generator**
+Three profiles are published. Each quantizes the **generator**
 half only and leaves all 486 `codec.*` tensors bit-identical to the F32
 package, so each inherits this family's exact-token guarantee rather than
 approximating it (see "Port validation," below):
@@ -538,12 +541,13 @@ generator-half profile now claims — were moved to
 deleted or overwritten. They sit outside the publication directory and cannot
 be uploaded by accident.
 
-### Publication commands (recorded, not yet run)
+### Publication commands (run 2026-08-09, and again 2026-08-10)
 
-**Not executed. Publication requires jiangzhuo's separate, per-act
-confirmation naming this exact target** (`jiangzhuo9357/omnivoice-0-6b-gguf`,
-`main`) --- an approved plan is not that confirmation. The commands that
-confirmation would run, exactly as they would be typed:
+**Executed on jiangzhuo's per-act confirmation naming this exact target**
+(`jiangzhuo9357/omnivoice-0-6b-gguf`, `main`) --- an approved plan is not that
+confirmation, and each of the two uploads was confirmed on its own. The second
+added `LICENSE-meta-llama-3.txt` and corrected the card's RTF and Q8 figures.
+The commands, exactly as they were typed:
 
 ```bash
 hf repos create jiangzhuo9357/omnivoice-0-6b-gguf \

@@ -1,7 +1,9 @@
 # Hugging Face card specification for jiangzhuo9357/omnivoice-0-6b-gguf.
 #
-# Prepared, not published. Publishing is a separate act requiring its own
-# per-act confirmation (ADR 0018's last consequence), and this is a
+# PUBLISHED 2026-08-09 to jiangzhuo9357/omnivoice-0-6b-gguf, on jiangzhuo's
+# per-act confirmation (ADR 0018's last consequence). Every later edit to this
+# file changes a live artifact and needs its own confirmation to re-upload.
+# This is a
 # Restricted Model Package, never a Published Model Package: the generator
 # weights are CC-BY-NC (no version stated by upstream) and the codec weights
 # carry the Boson Higgs Audio 2 Community License. Neither license permits
@@ -46,12 +48,23 @@ license_note: |
   **The codec (Higgs Audio V2) weights carry a second, separate license: the
   Boson Higgs Audio 2 Community License.** The weights repository bundles it
   as `audio_tokenizer/LICENSE`, and this package republishes it beside the
-  weights as `LICENSE-higgs-audio-2.txt` (listed below), per that
-  agreement's own redistribution terms. **You must download it together with
-  the GGUF** -- the usage command below does; the runtime does not enforce
-  the pairing, and nothing in the GGUF's metadata declares the file, so a
-  download of the weights alone leaves you holding the Higgs Materials with
-  none of the agreement that governs them. It is itself
+  weights as `LICENSE-higgs-audio-2.txt` (listed below).
+
+  **Two licence files travel with these weights, not one.** The Boson
+  agreement defines its own name to include Meta's -- *"Agreement" means the
+  terms and conditions ... set forth herein and the Meta License Agreement* --
+  and section 1.b.i(A) then requires "a copy of this Agreement
+  and the ... Meta License's Llama 3 agreement" to accompany any
+  redistribution of the Higgs Materials. So `LICENSE-meta-llama-3.txt` ships
+  here too. Corrected 2026-08-10: this package originally shipped only the
+  Boson text while this card said it did so "per that agreement's own
+  redistribution terms", which was a claim of compliance it did not meet.
+
+  **You must download both together with the GGUF** -- the usage command
+  below does; the runtime does not enforce the pairing, and nothing in the
+  GGUF's metadata declares either file, so a download of the weights alone
+  leaves you holding the Higgs Materials with none of the agreement that
+  governs them. The Boson agreement is itself
   derived from the Meta Llama 3 Community License and requires dual
   attribution in any redistribution, which this card carries forward
   verbatim from the sidecar text:
@@ -314,7 +327,11 @@ validation:
     CPU oracle on all seventeen greedy cases -- so it received its own
     accelerator-resident weight twin and now moves too. 2,421.04 of the model's
     3,042.2 MiB are mirrored, and the suite's longest case falls from 122.61 s
-    to 5.481 s, 0.1906x real time. Committed token *content* consequently
+    to 4.84 s, 0.168x real time. (Corrected 2026-08-10: this read 5.481 s /
+    0.1906x, which was measured before the two host-side optimizations that
+    followed it and so understated the shipped package. Re-measured on the
+    published F32 GGUF, five runs, 4.844-4.866 s.) Committed token *content*
+    consequently
     diverges from the CPU baseline on most cases: a different valid realization
     inside an unchanged canvas, audited by ear before the move was accepted,
     not a regression. The cloning path's own RVQ token grids stay byte-exact
@@ -366,10 +383,24 @@ usage:
 
 sidecars:
   - filename: LICENSE-higgs-audio-2.txt
-    role: Boson Higgs Audio 2 Community License (codec weights; derived from the Meta Llama 3 Community License; dual attribution required on redistribution)
+    role: Boson Higgs Audio 2 Community License (codec weights; dual attribution required on redistribution)
     size: "9.0 KB"
     size_bytes: 9171
     sha256: ac933dc084d119bd20401956b90d11ae87c248b2da62622cd580d82cdf2fa049
+  # Added 2026-08-10, after a review found the package incomplete against the
+  # agreement it ships. The Boson licence DEFINES its own name to include this
+  # text -- '"Agreement" means the terms and conditions ... set forth herein
+  # and the Meta License Agreement' -- and then section 1.b.i(A) names it a
+  # second time, requiring "a copy of this Agreement and the ... Meta
+  # License's Llama 3 agreement" to travel with the Higgs Materials. Shipping
+  # only the Boson text met neither reading. The file is the April 18 2024
+  # text the Boson agreement cites, taken from two independent mirrors that
+  # agree byte for byte (sha256 47521163...) and matching a third on wording.
+  - filename: LICENSE-meta-llama-3.txt
+    role: Meta Llama 3 Community License (required by the Boson agreement above, which is derived from it and defines itself to include it)
+    size: "7.8 KB"
+    size_bytes: 7801
+    sha256: 475211637354ce4c14b9c3dacccbefbaba735fe1b0db97d6c4fd11cd1356819f
 
 # Three profiles ship. All three carry a bit-identical codec half, so all three
 # inherit the exact-token guarantee that gates this family; what separates them
@@ -420,10 +451,14 @@ quants:
     sha256: 61aec0de7cfa9246487e309c43508de9c95cf52fd225ce3fada3b4bb4982374e
     tensor_types: 599 F32 + 199 Q8_0
     note: >-
-      **Smaller, and it renders a different voice than F32 does** for auto-voice
-      and for Description Text -- 4.12 to 12.22 dB of long-term average spectrum
-      distance, and a listener heard five of six sampled auto-voice pairs as
-      different people while judging the quality of both indistinguishable.
+      **Smaller, and it renders a different voice than F32 does** for most
+      auto-voice cases and for Description Text -- 2.87 to 12.22 dB of
+      long-term average spectrum distance, and a listener heard five of six
+      sampled auto-voice pairs as different people while judging the quality of
+      both indistinguishable. Not every case moves: the slowest-rate case
+      measures 2.87 dB, below the same ~3 dB line this table uses to call F16
+      unchanged, so "different voice" is the common outcome rather than a
+      universal one.
       Reference Audio cloning is not affected (2.02 / 2.70 dB): it reproduces
       F32's voice. Nothing is disabled, the API is identical, and a Description
       Text prompt is still honored -- "female, young adult, high pitch" gives

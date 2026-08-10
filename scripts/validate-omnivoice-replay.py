@@ -721,12 +721,27 @@ def main(argv=None) -> int:
             "cases": results, "worst": worst,
         }, indent=2) + "\n", encoding="utf-8")
 
-    # Comparing nothing is not passing. Both shapes of "nothing" reach here: a
-    # --cases filter that selected no case, and a case_artifact_root whose
-    # payload was never materialized, in which case every case was skipped.
+    # Comparing nothing is not passing -- and neither is comparing SOME of it.
+    # This guard used to read `if not compared`, which caught only the zero
+    # case: a partial or interrupted oracle dump left the run reporting
+    # "17/17 exact" over whatever survived and exiting 0, with the skips
+    # printed but never totalled. Reproduced: pointed at a one-case oracle
+    # root, the registered CUDA gate exited 0 having compared 1 of 20 and
+    # announced "all probes within the tolerances". The oracle payload is
+    # deliberately uncommitted and regenerated per case, so a partial dump is
+    # the ordinary way this happens rather than an exotic one.
+    #
+    # A caller who means a subset says so with --cases; anything else must
+    # cover every case the manifest selected.
+    skipped = [case["id"] for case in cases if case["id"] not in {r["case"] for r in results}]
+    if skipped:
+        print(f"\n{len(compared)} of {len(cases)} selected cases were compared; "
+              f"{len(skipped)} had no oracle artifacts under {oracle_root}: {skipped}\n"
+              f"a total over the survivors would not describe the suite -- "
+              f"materialize the missing dumps, or name the subset with --cases")
+        return 1
     if not compared:
-        print(f"\nno case produced a comparison: {len(cases)} selected, "
-              f"{len(cases) - len(results)} skipped for missing oracle artifacts under {oracle_root}")
+        print(f"\nno case produced a comparison: {len(cases)} selected")
         return 1
     if failures or structural_failures:
         return 1

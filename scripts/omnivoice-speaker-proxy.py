@@ -30,10 +30,17 @@ each other or to the 1-of-17 baseline they must be read against. The numbers
 are only citable if the instrument is.
 
 The same pass emits the **degeneracy screen**, which answers a different and
-cruder question: is this render speech at all? Speech-shaped output from this
-family sits at a zero-crossing rate of 3.4-4.2 kHz with a 20 ms-frame envelope
-ratio of 218-1988. The known failure mode is a sub-50 Hz near-DC buzz with no
-envelope at all. A render that fails this screen is not "a different speaker";
+cruder question: is this render speech at all? The known failure mode is a
+sub-50 Hz near-DC buzz with no envelope at all, and DEGENERATE_ZCR /
+DEGENERATE_ENVELOPE below are what actually decide it -- they fire on exactly
+`omni-rate-fast` across the 17 greedy goldens, which is correct.
+
+ZCR_BAND and ENVELOPE_BAND are reported alongside as context and nothing
+depends on them. Corrected 2026-08-10: this docstring used to present them as
+where "speech-shaped output from this family sits", which measurement does not
+support -- over the same 17 renders, zero-crossing rate spans 486-10,450 Hz
+with 3 of 17 inside ZCR_BAND, envelope ratio spans 17-13,998 with 6 of 17
+inside ENVELOPE_BAND, and just 1 of 17 falls inside both. A render that fails this screen is not "a different speaker";
 it is not a voice, and its F0 verdict must be read as *not comparable* rather
 than as *unchanged*.
 
@@ -311,9 +318,9 @@ def degeneracy(signal: np.ndarray, sample_rate: int, voiced_fraction: float | No
     degenerate = zcr < DEGENERATE_ZCR or ratio < DEGENERATE_ENVELOPE
     return {"samples": int(signal.size), "dc_offset": dc,
             "zero_crossing_rate_hz": float(zcr),
-            "zcr_in_published_band": bool(ZCR_BAND[0] <= zcr <= ZCR_BAND[1]),
+            "zcr_in_context_band": bool(ZCR_BAND[0] <= zcr <= ZCR_BAND[1]),
             "envelope_ratio": ratio,
-            "envelope_in_published_band": bool(ENVELOPE_BAND[0] <= ratio <= ENVELOPE_BAND[1]),
+            "envelope_in_context_band": bool(ENVELOPE_BAND[0] <= ratio <= ENVELOPE_BAND[1]),
             "voiced_frame_fraction": voiced_fraction,
             "degenerate": bool(degenerate),
             "peak": float(np.abs(signal).max()), "rms": float(np.sqrt((signal ** 2).mean()))}

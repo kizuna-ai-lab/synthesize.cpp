@@ -1,12 +1,12 @@
 # Quantization Policy
 
-Status: Confirmed 2026-08-09.
+Status: Confirmed 2026-08-10.
 VITS F16 and Q8_MIXED version 1 functionally validated on 2026-07-23;
 both profiles re-cut on 2026-07-27 with transpose-convolution weights held at F32.
 Kokoro F16 and Q8_MIXED version 1 functionally validated on 2026-07-26.
 OmniVoice profiles measured on 2026-08-09 and renamed the same day by
 jiangzhuo's naming ruling: `F16` is the default recommendation and `Q8` the
-smaller option — **both are now prepared for publication** — `Q4_K` and `BF16`
+smaller option — **both were published on 2026-08-09** — `Q4_K` and `BF16`
 are measured but not published, and the two
 codec-half profiles `F16_CODEC` and `Q8_CODEC_MIXED` are blocked on the
 exact-token gate. See "OmniVoice Profiles," below. The Q4/Q5 precondition under

@@ -5771,3 +5771,84 @@ quality line on 11 of 17. Both remain as profile rows and code.
 
 The branch carrying all of this is `omnivoice-plan-5` at `dabb50d`, pushed to
 `kizuna-ai-lab/synthesize.cpp`; PR #8 (draft) tracks it.
+
+## 2026-08-10 — Branch review, and a licence gap corrected in the live artifact
+
+An 11-agent adversarial review of the whole branch: five dimensions in
+parallel, every finding put to a refuter told to default to refuted. **21
+findings, 10 refuted, 10 survived.** Nothing survived in the inference code,
+the CUDA placement, or the quantization profiles — every confirmed defect was
+in the description layer.
+
+The review's own summary is the part worth keeping: *this branch corrects
+errors well, but its correction sweeps stop short.* The RTF caveat landed in 1
+of 4 files. The publication record landed in 1 file. The "F32-only" amendment
+fixed the twin and missed the original. That is the failure mode, not any
+single line — and it recurred while fixing this very entry: correcting "it has
+not been published" surfaced four more "prepared for publication" phrasings
+that the first pass had not looked for.
+
+### Critical, and it was wrong in public
+
+**The published package omitted the Meta Llama 3 licence, while the card
+claimed compliance with the agreement that requires it.** The Boson agreement
+defines its own name to include Meta's — *"Agreement" means the terms and
+conditions … set forth herein **and the Meta License Agreement*" — and section
+1.b.i(A) then names it again, requiring "a copy of this Agreement and the …
+Meta License's Llama 3 agreement" to accompany the Higgs Materials. We shipped
+only the Boson text, and the card said we did so "per that agreement's own
+redistribution terms".
+
+**This was raised at pre-flight and I under-weighted it.** The audit listed it
+as non-blocking on the reasoning that upstream ships the same single file, so
+we mirror upstream rather than degrade it. That reasoning fails twice:
+mirroring someone else's non-compliance is not compliance, and upstream does
+not also assert that it complies.
+
+Fixed and re-uploaded (HF commit `062efd67`): `LICENSE-meta-llama-3.txt`, 7,801
+bytes, sha256 `475211637354ce4c…`. Provenance, because it is a legal text going
+out under a real identity: the Boson agreement names
+`https://llama.meta.com/llama3/license/`, which now redirects to a JavaScript
+page nothing can extract; the file is instead the April 18 2024 text that
+agreement cites, taken from two independent mirrors that agree **byte for
+byte**, with a third agreeing on wording after whitespace normalisation.
+
+### Also corrected in the live card
+
+- **RTF.** The card quoted 5.481 s / 0.1906x, measured at `727daff` — before
+  both host-side optimizations. Re-measured on the published F32 GGUF, five
+  runs: 4.844–4.866 s, **4.84 s / 0.168x**. The "do not use as a baseline"
+  caveat existed in exactly one file.
+- **Q8's floor.** "4.12 to 12.22 dB" for auto-voice omitted `omni-rate-slow` at
+  **2.87 dB** — below the ~3 dB line the same table uses to call F16 unchanged.
+  Now 2.87–12.22 with the exception stated.
+
+### Repo-only
+
+- **The golden gate armed itself at 1 of 20.** `if not compared` caught only
+  the zero case, so a partial oracle dump — the ordinary failure, since the
+  payload is uncommitted and regenerated per case — produced "token grids
+  exact: 1/1", "all probes within the tolerances", exit 0. This is the same
+  error class as the P1 fixed in `8f8d20c` a day earlier, in a different
+  instrument. Now refuses and names the missing cases; verified by pointing a
+  manifest at a one-case root (**exit 1**, was 0), and the real 20-case suite
+  still passes (430 s).
+- The model page said three times that the package was unpublished, on a
+  `Status: Confirmed` contract doc, about an artifact live since 2026-08-09.
+  Four more "prepared for publication" phrasings went with it.
+- `CMakeLists.txt` still said "ships F32-only"; its twin in `tests/` had been
+  amended and the original missed.
+- The speaker proxy's docstring presented `ZCR_BAND`/`ENVELOPE_BAND` as where
+  "speech-shaped output from this family sits". Measured over the 17 greedy
+  goldens: 3 of 17 inside the ZCR band, 6 of 17 inside the envelope band, **1
+  of 17 inside both**. The bands decide nothing — `DEGENERATE_*` does, and it
+  fires on exactly `omni-rate-fast`, correctly. Docstring corrected and the two
+  `*_in_published_band` report fields renamed to `*_in_context_band`.
+
+### Not done
+
+The review's remaining minor items: the candidate-scan test re-implements the
+production enumeration rather than calling it (real gap, nothing currently
+wrong); `public_cleanup_test`'s CUDA arm tolerates any `SYNTH_ERR_BACKEND`
+without checking the diagnostic code; a warm work directory can mask an
+`encode_reference` non-OK status. All recorded, none fixed here.

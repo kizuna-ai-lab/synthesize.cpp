@@ -1,0 +1,60 @@
+{
+  "oracle_short_f37_r1.35": {
+    "samples": 35520,
+    "duration_s": 1.48,
+    "peak": 0.5,
+    "rms": 0.052321,
+    "dc_offset": -0.025016,
+    "silence_frac_frames_below_2pct_peak": 0.0,
+    "zcr_mean_per_sample": 0.07006,
+    "zcr_mean_hz": 840.7,
+    "spectral_flatness_mean": 0.065,
+    "spectral_flatness_energy_weighted": 0.0464,
+    "spectral_centroid_hz_energy_weighted": 805.1,
+    "band_power_fraction": {
+      "0-300Hz": 0.5409,
+      "300-1000Hz": 0.281,
+      "1000-3000Hz": 0.0426,
+      "3000-6000Hz": 0.1215,
+      "6000-9000Hz": 0.013,
+      "9000-12000Hz": 0.0009
+    },
+    "n_active_frames": 135,
+    "autocorr_peak_mean": 0.3978,
+    "autocorr_peak_p90": 0.6564,
+    "voiced_frac_autocorr_gt_0.4": 0.4667,
+    "voiced_frac_autocorr_gt_0.6": 0.163,
+    "lts_crest_db": 13.22,
+    "spectral_flux_mean": 4.7692,
+    "frame_rms_cv": 0.6029
+  },
+  "oracle_long_f162_r2.0": {
+    "samples": 155520,
+    "duration_s": 6.48,
+    "peak": 0.5,
+    "rms": 0.052935,
+    "dc_offset": 0.000108,
+    "silence_frac_frames_below_2pct_peak": 0.2086,
+    "zcr_mean_per_sample": 0.1141,
+    "zcr_mean_hz": 1369.2,
+    "spectral_flatness_mean": 0.0426,
+    "spectral_flatness_energy_weighted": 0.0121,
+    "spectral_centroid_hz_energy_weighted": 912.6,
+    "band_power_fraction": {
+      "0-300Hz": 0.2407,
+      "300-1000Hz": 0.5449,
+      "1000-3000Hz": 0.1483,
+      "3000-6000Hz": 0.0497,
+      "6000-9000Hz": 0.0136,
+      "9000-12000Hz": 0.0028
+    },
+    "n_active_frames": 478,
+    "autocorr_peak_mean": 0.3707,
+    "autocorr_peak_p90": 0.5605,
+    "voiced_frac_autocorr_gt_0.4": 0.3849,
+    "voiced_frac_autocorr_gt_0.6": 0.0523,
+    "lts_crest_db": 13.04,
+    "spectral_flux_mean": 8.4857,
+    "frame_rms_cv": 0.5632
+  }
+}

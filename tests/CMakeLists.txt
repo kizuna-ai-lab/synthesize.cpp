@@ -848,7 +848,7 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     #
     # Amended 2026-08-09: this comment used to say "This family ships
     # F32-only", which stopped being true when the generator-half F16 and Q8
-    # profiles were prepared for publication. They register no per-profile
+    # profiles were published on 2026-08-09. They register no per-profile
     # golden gate either, for the opposite reason: a generator-half profile
     # re-draws the greedy token grid by design (Q8 flips 95.83% of positions),
     # so there is no oracle-parity grid for a gate to compare it against. What

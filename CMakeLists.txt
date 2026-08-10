@@ -133,8 +133,12 @@ set(SYNTH_QWEN3_TTS_TEST_MODEL
 # against. Plan 4 Task 3 measured both Q8_CODEC_MIXED and F16_CODEC codec-only
 # Quantization Profiles against the exact-token gate and both failed the
 # cloning path's RVQ encode grid (docs/porting/families/omnivoice.md's
-# "Quantization Profile Shape"), so this family ships F32-only -- no
-# per-profile test-model variable or golden gate exists for either, on
+# "Quantization Profile Shape"). Amended 2026-08-10: this used to conclude
+# "so this family ships F32-only", which stopped being true on 2026-08-09 when
+# the generator-half F16 and Q8 profiles were published; the identically
+# worded comment in tests/CMakeLists.txt was amended then and this one was
+# missed. What still holds is the narrower claim -- no per-profile test-model
+# variable or golden gate exists for the two CODEC-half profiles, on
 # purpose: a permanently failing registered gate is not an acceptable branch
 # state, and the measured evidence for both is recorded in that doc and in
 # reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md instead.

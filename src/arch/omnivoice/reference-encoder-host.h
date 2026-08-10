@@ -149,12 +149,20 @@ bool resample_24k_to_16k(const std::vector<float> & input, std::vector<float> & 
 // codec twin (Task 9, Plan 4) does for the decode path. This branch's own
 // output is continuous, but what reads it -- rvq_encode's host-side
 // nearest-neighbour argmax (this header, below) -- is a discrete decision, so
-// docs/backends.md's discrete-outputs rule holds the whole chain on the CPU
-// the same way it holds the generator there. catalog.h's bind_decode_weights
-// documents the tensor groups this reasoning keeps off the accelerator twin --
-// including `codec.quantizer.*` itself, which rvq_encode below reads through
-// `ModelWeights::quantizers` on a binding (`Model::Impl::weights`) that is
-// never the twin, regardless of what Model::decode_codes's own binding does.
+// docs/backends.md's discrete-outputs rule holds the whole chain on the CPU.
+// The generator is the wrong thing to compare that against: since Plan 5 Task
+// 1 it runs on the accelerator instead, under the exception that rule's
+// rationale allows, because RuleDurationEstimator fixes its canvas length
+// before the first forward. That argument is unavailable here -- rvq_encode's
+// argmax feeds no downstream forward at all, so there is no fixed-shape
+// argument to make for it the way there is for the generator's own canvas
+// (model.cpp's header comment states the same pair).
+//
+// catalog.h's bind_decode_weights documents the tensor groups this reasoning
+// keeps off the accelerator twin -- including `codec.quantizer.*` itself,
+// which rvq_encode below reads through `ModelWeights::quantizers` on a binding
+// (`Model::Impl::weights`) that is never the twin, regardless of what
+// Model::decode_codes's own binding does.
 //
 // `pcm_16k` is PRE-pad (see reference-encoder.h). `semantic_mean` receives
 // the mean over all hidden states BEFORE the stride-2 downsample -- the

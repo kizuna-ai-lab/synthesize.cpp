@@ -300,9 +300,24 @@ def _summarise(f0: list[float], frames: int) -> dict:
 
 
 def degeneracy(signal: np.ndarray, sample_rate: int, voiced_fraction: float | None) -> dict:
-    """Is this a voice at all: DC, zero-crossing rate, envelope, voicing."""
+    """Is this a voice at all: DC, zero-crossing rate, envelope, voicing.
+
+    Both paths return the same eleven keys, and this dict is written verbatim
+    into the JSON report. An empty render measures nothing, so its measured
+    fields are None rather than absent -- a report whose schema depends on
+    whether the render happened is one a later reader has to work out twice,
+    and this file exists precisely so that its numbers stay citable. `reason`
+    is None whenever the screen passes, and names the tripped test otherwise.
+    """
     if signal.size == 0:
-        return {"samples": 0, "degenerate": True, "reason": "empty render"}
+        return {"samples": 0, "dc_offset": None,
+                "zero_crossing_rate_hz": None,
+                "zcr_in_context_band": None,
+                "envelope_ratio": None,
+                "envelope_in_context_band": None,
+                "voiced_frame_fraction": voiced_fraction,
+                "degenerate": True, "reason": "empty render",
+                "peak": None, "rms": None}
     dc = float(signal.mean())
     centred = signal - dc
     crossings = int(np.count_nonzero(np.diff(np.signbit(centred))))
@@ -315,14 +330,21 @@ def degeneracy(signal: np.ndarray, sample_rate: int, voiced_fraction: float | No
         ratio = float(rms.max() / floor)
     else:
         ratio = 0.0
-    degenerate = zcr < DEGENERATE_ZCR or ratio < DEGENERATE_ENVELOPE
+    # `degenerate` is read off the failure list rather than restating the
+    # disjunction, so the flag and the reason cannot drift apart.
+    tripped = []
+    if zcr < DEGENERATE_ZCR:
+        tripped.append(f"zero-crossing rate {zcr:.1f} Hz below {DEGENERATE_ZCR} Hz")
+    if ratio < DEGENERATE_ENVELOPE:
+        tripped.append(f"envelope ratio {ratio:.1f} below {DEGENERATE_ENVELOPE}")
     return {"samples": int(signal.size), "dc_offset": dc,
             "zero_crossing_rate_hz": float(zcr),
             "zcr_in_context_band": bool(ZCR_BAND[0] <= zcr <= ZCR_BAND[1]),
             "envelope_ratio": ratio,
             "envelope_in_context_band": bool(ENVELOPE_BAND[0] <= ratio <= ENVELOPE_BAND[1]),
             "voiced_frame_fraction": voiced_fraction,
-            "degenerate": bool(degenerate),
+            "degenerate": bool(tripped),
+            "reason": "; ".join(tripped) if tripped else None,
             "peak": float(np.abs(signal).max()), "rms": float(np.sqrt((signal ** 2).mean()))}
 
 

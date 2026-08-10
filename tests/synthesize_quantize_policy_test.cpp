@@ -288,16 +288,22 @@ int main() {
     SYNTH_TEST_CHECK(expect_type("decoder.upsample.3.transpose_conv.weight", GGML_TYPE_F32) == 0);
     SYNTH_TEST_CHECK(expect_type("decoder.upsample.2.resblocks.1.conv2.2.weight", GGML_TYPE_F16) == 0);
 
-    SYNTH_TEST_CHECK(expect_spec("Q8_CODEC_MIXED", "flow.blocks.3.wn.layers.2.residual_skip.weight", GGML_TYPE_Q8_0,
+    // VITS names under the VITS mixed row. `Q8_MIXED` here is not
+    // interchangeable with the `Q8_CODEC_MIXED` row asserted above: the two
+    // rows are field-for-field identical today, so a rename sweep that walked
+    // over these five would still pass, and the profile named in a VITS
+    // assertion is the only thing that says which row VITS packages are cut
+    // under. The end-to-end proof is elsewhere -- synthesize_quantize_test.cpp
+    // runs quantize_file over a VITS fixture as `Q8_MIXED` and checks the
+    // GGUF it writes -- so these five are the intent, not the coverage.
+    SYNTH_TEST_CHECK(expect_spec("Q8_MIXED", "flow.blocks.3.wn.layers.2.residual_skip.weight", GGML_TYPE_Q8_0,
                                  TensorLayout::PackedMatrix) == 0);
-    SYNTH_TEST_CHECK(expect_spec("Q8_CODEC_MIXED", "decoder.pre.weight", GGML_TYPE_Q8_0, TensorLayout::PackedMatrix) ==
-                     0);
-    SYNTH_TEST_CHECK(expect_spec("Q8_CODEC_MIXED", "decoder.post.weight", GGML_TYPE_Q8_0, TensorLayout::PackedMatrix) ==
-                     0);
-    SYNTH_TEST_CHECK(expect_spec("Q8_CODEC_MIXED", "decoder.upsample.3.transpose_conv.weight", GGML_TYPE_F32,
-                                 TensorLayout::Native) == 0);
+    SYNTH_TEST_CHECK(expect_spec("Q8_MIXED", "decoder.pre.weight", GGML_TYPE_Q8_0, TensorLayout::PackedMatrix) == 0);
+    SYNTH_TEST_CHECK(expect_spec("Q8_MIXED", "decoder.post.weight", GGML_TYPE_Q8_0, TensorLayout::PackedMatrix) == 0);
     SYNTH_TEST_CHECK(
-        expect_spec("Q8_CODEC_MIXED", "duration_predictor.pre.weight", GGML_TYPE_F32, TensorLayout::Native) == 0);
+        expect_spec("Q8_MIXED", "decoder.upsample.3.transpose_conv.weight", GGML_TYPE_F32, TensorLayout::Native) == 0);
+    SYNTH_TEST_CHECK(expect_spec("Q8_MIXED", "duration_predictor.pre.weight", GGML_TYPE_F32, TensorLayout::Native) ==
+                     0);
 
     SYNTH_TEST_CHECK(expect_type("text_encoder.blocks.0.attention.query.bias", GGML_TYPE_F32) == 0);
     SYNTH_TEST_CHECK(expect_type("text_encoder.blocks.0.attention_norm.weight", GGML_TYPE_F32) == 0);

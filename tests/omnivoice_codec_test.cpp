@@ -414,8 +414,17 @@ bool run_case(ggml_backend_dev_t device, float & max_diff) {
 int check_packed_conv1d() {
     ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
     SYNTH_TEST_CHECK(cpu != nullptr);
-    ggml_backend_t backend = ggml_backend_dev_init(cpu, nullptr);
-    SYNTH_TEST_CHECK(backend != nullptr);
+    // The handle is parked in a Fixture only for that struct's destructor: every
+    // SYNTH_TEST_CHECK below returns from this function, so a raw handle would
+    // leak on exactly the paths a real deviation takes, and the LSan report
+    // would land on top of the assertion that matters. Fixture's other members
+    // stay null and its destructor skips them. `run` already frees each buffer
+    // and allocator it takes on every one of its own paths, so the backend is
+    // the only handle here that outlives a failure.
+    Fixture fixture;
+    fixture.backend = ggml_backend_dev_init(cpu, nullptr);
+    SYNTH_TEST_CHECK(fixture.backend != nullptr);
+    ggml_backend_t backend = fixture.backend;
 
     constexpr int64_t kernel       = 3;
     constexpr int64_t in_channels  = 32;
@@ -519,7 +528,6 @@ int check_packed_conv1d() {
     // rule) rather than left at a guessed round number.
     SYNTH_TEST_CHECK(worst < 0.015f);
 
-    ggml_backend_free(backend);
     return 0;
 }
 

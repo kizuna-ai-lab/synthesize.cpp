@@ -161,9 +161,18 @@ int main(int argc, char ** argv) {
     /* Selected through the public enum, mirroring qwen3-tts's own driver
      * (tests/qwen3_tts_public_real.c): this phase validates the seam a
      * caller actually has, so which device the core resolves CUDA to is
-     * part of what is under test. Defaults to "cpu" so every pre-Task-11
-     * caller of this positional slot -- there were none, since it did not
-     * exist -- and every caller that still omits it keeps the old behavior. */
+     * part of what is under test. Defaults to "cpu", so a caller that omits
+     * it keeps the old behaviour.
+     *
+     * Slot 5 was REPURPOSED, not added: it used to be the thread count, and
+     * the usage string before Task 11 read "[max-frames] [threads]". A caller
+     * that still passes a number there now takes the unknown-backend branch
+     * and exits 2 -- loudly, not silently, but it is a break. The only caller
+     * in the tree, scripts/validate-omnivoice-public.py, was moved in the same
+     * change and passes no thread count at all, so nothing is currently
+     * broken. Corrected 2026-08-10: this comment used to claim the slot "did
+     * not exist" before, which would have told a future reader there was no
+     * compatibility break to reason about. */
     const char * backend_text = positional_count > 5 ? positional[5] : "cpu";
 
     synth_model_load_params_t load_params;

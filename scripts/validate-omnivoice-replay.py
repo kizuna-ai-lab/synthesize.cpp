@@ -484,6 +484,22 @@ def run_case(arguments, case: dict, oracle_root: pathlib.Path) -> dict | None:
     # shape_mismatch the main loop already treats as a failure -- no separate
     # "missing" status is needed the way the pre-Task-13 report-only version
     # carried.
+    # The same freshness rule pcm_freerun.f32 gets above, for the four encode
+    # artifacts. The runner treats an encode_reference failure as non-fatal --
+    # it prints "encode_reference -> N" to stderr, leaves the files unwritten
+    # and still exits 0 -- and the work directory is never cleaned, so an
+    # earlier run's artifacts sit there and get compared as this run's. That is
+    # how "ref.tokens exact: 2/2" can be reported off files this invocation
+    # never produced. `encode_reference_elements` is the runner's own counter
+    # for the channel and it is 0 on every failure path, so it settles it
+    # without a new mechanism.
+    if has_encode_reference and int(stats.get("encode_reference_elements", 0)) == 0:
+        return {"case": case_id, "status": "stale-encode-reference",
+                "stderr": "the case asks for the reference-encode channel but the runner reported "
+                          "encode_reference_elements 0, so it wrote none of pcm_16k/semantic_mean/"
+                          "fused_latent/tokens this run; anything under the work directory is a "
+                          "previous run's and must not be compared as this one's"}
+
     has_pcm16k_reference = has_encode_reference and "ref.pcm_16k" in names
     if has_pcm16k_reference:
         produced_path = work / "pcm_16k.f32"

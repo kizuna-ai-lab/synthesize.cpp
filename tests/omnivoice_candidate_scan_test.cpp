@@ -271,11 +271,61 @@ int check_draw_count_matches_topk_keep() {
 
 }  // namespace
 
+// The differential checks above prove parallel == serial. They cannot prove
+// the ENUMERATION is the one production uses: both arms now call the shared
+// walk, so flipping it flips both and they keep agreeing. That order is a
+// contract in its own right -- it fixes which pre-drawn uniform each canvas
+// position receives, so swapping the two loops silently re-assigns every
+// Gumbel draw and changes which positions a step commits. Pin it directly.
+int check_enumeration_is_codebook_major() {
+    // 3 codebooks x 4 frames, with a mask pattern that would look identical
+    // under either loop order if only the COUNT were checked.
+    constexpr uint32_t   codebooks = 3;
+    constexpr uint64_t   frames    = 4;
+    constexpr int32_t    mask      = 99;
+    std::vector<int32_t> canvas(size_t(codebooks) * size_t(frames), 0);
+    canvas[0 * frames + 1] = mask;  // (cb 0, fr 1)
+    canvas[0 * frames + 3] = mask;  // (cb 0, fr 3)
+    canvas[2 * frames + 0] = mask;  // (cb 2, fr 0)
+    canvas[1 * frames + 2] = mask;  // (cb 1, fr 2)
+
+    std::vector<synth::omnivoice::MaskedCandidate> out;
+    synth::omnivoice::enumerate_masked_candidates(canvas.data(), codebooks, frames, mask, out);
+
+    // Codebook-major, frame-minor. Frame-major would give
+    // (2,0) (0,1) (1,2) (0,3) -- a different order over the same four slots.
+    const uint32_t want_codebook[] = { 0, 0, 1, 2 };
+    const uint64_t want_frame[]    = { 1, 3, 2, 0 };
+    SYNTH_TEST_CHECK(out.size() == 4);
+    for (size_t index = 0; index < out.size(); ++index) {
+        SYNTH_TEST_CHECK(out[index].codebook == want_codebook[index]);
+        SYNTH_TEST_CHECK(out[index].frame == want_frame[index]);
+    }
+
+    // A committed slot is never revisited, whatever its value.
+    std::vector<synth::omnivoice::MaskedCandidate> none;
+    std::vector<int32_t>                           committed(size_t(codebooks) * size_t(frames), 7);
+    synth::omnivoice::enumerate_masked_candidates(committed.data(), codebooks, frames, mask, none);
+    SYNTH_TEST_CHECK(none.empty());
+
+    // The slice arithmetic the walk's order indexes into, from the same header
+    // production reads it from.
+    SYNTH_TEST_CHECK(synth::omnivoice::uniform_draws_per_slot(0, false) == 0);
+    SYNTH_TEST_CHECK(synth::omnivoice::uniform_draws_per_slot(0, true) == 1);
+    SYNTH_TEST_CHECK(synth::omnivoice::uniform_draws_per_slot(103, true) == 104);
+    SYNTH_TEST_CHECK(synth::omnivoice::candidate_uniform_offset(0, 104) == 0);
+    SYNTH_TEST_CHECK(synth::omnivoice::candidate_uniform_offset(3, 104) == 312);
+    return 0;
+}
+
 int main() {
     const size_t             row    = size_t(kCodebooks) * kVocab;
     const std::vector<float> cond   = make_logits(0x51ED, size_t(kFrames) * row);
     const std::vector<float> uncond = make_logits(0xC0FFEE, size_t(kFrames) * row);
 
+    if (check_enumeration_is_codebook_major() != 0) {
+        return 1;
+    }
     if (check_draw_count_matches_topk_keep() != 0) {
         return 1;
     }

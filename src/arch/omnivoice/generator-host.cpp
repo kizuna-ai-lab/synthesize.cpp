@@ -348,6 +348,25 @@ synth_status_t choose_token_sampled(const float *        cond,
                                 token, log_prob);
 }
 
+void enumerate_masked_candidates(const int32_t *                canvas,
+                                 uint32_t                       codebooks,
+                                 uint64_t                       frames,
+                                 int32_t                        mask_id,
+                                 std::vector<MaskedCandidate> & out) {
+    out.clear();
+    for (uint32_t codebook = 0; codebook < codebooks; ++codebook) {
+        for (uint64_t frame = 0; frame < frames; ++frame) {
+            if (canvas[size_t(codebook) * size_t(frames) + size_t(frame)] != mask_id) {
+                continue;  // committed in an earlier step; cannot be revisited
+            }
+            MaskedCandidate candidate;
+            candidate.codebook = codebook;
+            candidate.frame    = frame;
+            out.push_back(candidate);
+        }
+    }
+}
+
 bool commits_before(const MaskedCandidate & left, const MaskedCandidate & right) {
     // A NaN score compares false against everything, including itself
     // (`left.score != right.score` is true for a NaN vs. anything, even

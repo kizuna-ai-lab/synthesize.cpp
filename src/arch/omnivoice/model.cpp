@@ -870,7 +870,7 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     // How many uniforms one candidate consumes, and where inside its slice the
     // position draw sits. Both are constants of the request, not of the data.
     const uint32_t     class_draws    = class_t > 0.0f ? topk_keep(vocab) : 0u;
-    const size_t       draws_per_slot = size_t(class_draws) + (pos_t > 0.0f ? 1u : 0u);
+    const size_t       draws_per_slot = uniform_draws_per_slot(class_draws, pos_t > 0.0f);
     std::vector<float> uniforms;
 
     for (uint32_t step = 0; step < num_step; ++step) {
@@ -925,20 +925,11 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         // The enumeration is the same codebook-major, frame-minor walk it has
         // always been, and it is what fixes both the RNG order and the
         // candidate order; only the SCORING of each enumerated position moves
-        // off this thread. `candidates` keeps its capacity across steps, so
-        // after step 0 this allocates nothing.
-        candidates.clear();
-        for (uint32_t codebook = 0; codebook < codebooks; ++codebook) {
-            for (uint64_t frame = 0; frame < frames; ++frame) {
-                if (canvas[size_t(codebook) * frames + frame] != int32_t(hparams.audio.mask_id)) {
-                    continue;  // committed in an earlier step; cannot be revisited
-                }
-                MaskedCandidate candidate;
-                candidate.codebook = codebook;
-                candidate.frame    = frame;
-                candidates.push_back(candidate);
-            }
-        }
+        // off this thread. It lives in generator-host.cpp so the differential
+        // test of this parallelisation exercises this walk instead of a
+        // retyped copy. `candidates` keeps its capacity across steps, so after
+        // step 0 this allocates nothing.
+        enumerate_masked_candidates(canvas.data(), codebooks, frames, int32_t(hparams.audio.mask_id), candidates);
         if (draws_per_slot != 0) {
             // Candidate i owns [i * draws_per_slot, (i + 1) * draws_per_slot):
             // its class draws first, then its position draw. Filling the whole
@@ -967,7 +958,7 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
                 if (class_t > 0.0f) {
                     const synth_status_t chosen = choose_token_sampled(
                         cond_logits.data() + cond_offset, uncond_row, vocab, hparams.audio.mask_id, guidance, class_t,
-                        uniforms.data() + index * draws_per_slot, candidate.token, log_prob);
+                        uniforms.data() + candidate_uniform_offset(index, draws_per_slot), candidate.token, log_prob);
                     if (chosen != SYNTH_OK) {
                         // Unreachable today -- this overload has no failing
                         // path -- so the point is only that a future one would
@@ -990,7 +981,8 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
                     // own slice -- after its class draws, exactly where the
                     // inline `stream->next_uniform()` used to sit.
                     candidate.score =
-                        gumbel_perturb(candidate.score, pos_t, uniforms[index * draws_per_slot + class_draws]);
+                        gumbel_perturb(candidate.score, pos_t,
+                                       uniforms[candidate_uniform_offset(index, draws_per_slot) + class_draws]);
                 }
             }
         });

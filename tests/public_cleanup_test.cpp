@@ -304,7 +304,23 @@ int run_backend(const char *            model_path,
             SYNTH_TEST_CHECK(!ok);
             SYNTH_TEST_CHECK(diagnostic.seen);
             SYNTH_TEST_CHECK(diagnostic.status == SYNTH_ERR_BACKEND);
-            std::fprintf(stderr, "%s: refused (%s), family does not claim this backend -- skipping cycles\n", label,
+            // The status alone is not enough to skip on. Three paths reach
+            // SYNTH_ERR_BACKEND and only two of them mean "there is nothing to
+            // test here": `backend.unavailable` (the family does not claim
+            // this backend) and `backend.device_unavailable` (the machine has
+            // no such device). The third, `model.load_failed`, means the
+            // family DID claim it, the device WAS resolved, and the load then
+            // failed -- a real defect on a real device, which this arm used to
+            // swallow as the expected refusal and report as a pass. Gate on
+            // the code, not just the status.
+            const bool selection_refused =
+                diagnostic.code == "backend.unavailable" || diagnostic.code == "backend.device_unavailable";
+            if (!selection_refused) {
+                std::fprintf(stderr, "%s: load failed on a claimed backend (%s) -- this is a failure, not a skip\n",
+                             label, diagnostic.code.c_str());
+                return 1;
+            }
+            std::fprintf(stderr, "%s: refused at backend selection (%s) -- skipping cycles\n", label,
                          diagnostic.code.c_str());
             return 0;
         }

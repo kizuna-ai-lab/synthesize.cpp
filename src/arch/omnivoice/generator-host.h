@@ -202,6 +202,38 @@ struct MaskedCandidate {
     float    argmax_gap = 0.0f;
 };
 
+// The canonical scan over still-masked canvas positions: codebook-major,
+// frame-minor. This walk fixes two things at once -- the candidate order that
+// `select_commits` later ranks, and the indexing of the block of uniforms the
+// step pre-draws -- so moving a position in it moves which random draw that
+// position receives.
+//
+// It lives here, rather than inline in the decode loop, so that the
+// differential test of the parallelised scan exercises THIS walk instead of a
+// retyped copy of it. A test carrying its own enumeration keeps agreeing with
+// itself after production's order changes, which is the one regression such a
+// test exists to catch. `candidate_uniform_offset` is exposed beside it for
+// the same reason.
+void enumerate_masked_candidates(const int32_t *                canvas,
+                                 uint32_t                       codebooks,
+                                 uint64_t                       frames,
+                                 int32_t                        mask_id,
+                                 std::vector<MaskedCandidate> & out);
+
+// How many uniforms one candidate consumes: its class draws, then its single
+// position draw when position_temperature is on.
+inline size_t uniform_draws_per_slot(uint32_t class_draws, bool position_draw) {
+    return size_t(class_draws) + (position_draw ? size_t(1) : size_t(0));
+}
+
+// Candidate `index` owns [offset, offset + draws_per_slot): class draws first,
+// then the position draw. Drawing the whole block in one sequential pass and
+// consuming it by this offset reproduces the order an inline per-candidate
+// draw used to produce, which is what makes the parallel scan bit-identical.
+inline size_t candidate_uniform_offset(size_t index, size_t draws_per_slot) {
+    return index * draws_per_slot;
+}
+
 // The order select_commits keeps: higher score first, ties broken on lower
 // codebook then lower frame, NaN scores after everything real. Exposed because
 // the margin report has to find the best REJECTED candidate after the partial

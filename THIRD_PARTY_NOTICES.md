@@ -39,7 +39,12 @@ source package at revision
 pins in `scripts/envs/omnivoice/pyproject.toml`. Only the code is covered here:
 the OmniVoice weights carry two separate, non-Apache licences — CC-BY-NC for
 the language model and the Boson Higgs Audio 2 Community License for the
-codec — recorded in `docs/porting/families/omnivoice.md`.
+codec — recorded in `docs/porting/families/omnivoice.md`. That second agreement
+defines itself to include the Meta Llama 3 Community License and requires a
+copy of it to accompany any redistribution, so this repository keeps the April
+18, 2024 Meta text at `scripts/licenses/LICENSE-meta-llama-3.txt` purely for
+`scripts/convert-omnivoice.py` to republish beside a converted OmniVoice
+artifact. No Meta code is used anywhere in this project.
 
 Copyright 2026 Xiaomi Corp. (authors: Han Zhu)
 

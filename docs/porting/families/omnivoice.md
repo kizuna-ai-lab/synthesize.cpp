@@ -1,6 +1,6 @@
 # OmniVoice Family Selection and Port Plan
 
-Status: Confirmed 2026-08-09. Intake through the greedy synthesis core
+Status: Confirmed 2026-08-10. Intake through the greedy synthesis core
 (slices 4–6) done: single-forward parity, exact token grids 17/17, replay
 waveform under committed tolerances (tests/tolerances/omnivoice.json). Plan 3
 (the public sampled path, Reference Audio and Description Text Voice
@@ -104,6 +104,17 @@ models"; both were wrong, the first in the reader's favour.) The July 2026 defer
 only CC-BY-NC; this third license is a finding of the 2026-07-30 audit, and it
 is what makes the codec text a declared Sidecar Resource rather than a
 footnote.
+
+That agreement is also not self-contained, so the package carries **two**
+license texts, not one. It defines its own name to include Meta's ("'Agreement'
+means the terms and conditions … set forth herein and the Meta License
+Agreement") and section 1.b.i(A) requires a copy of the Meta Llama 3 agreement
+to accompany the Higgs Materials as well. Upstream bundles no copy of that
+text, so this repository commits one at
+`scripts/licenses/LICENSE-meta-llama-3.txt` and `scripts/convert-omnivoice.py`
+copies it beside every converted artifact as `LICENSE-meta-llama-3.txt`,
+digest-checked against the committed copy's own hash. Added 2026-08-10, after a
+review found the published package short of it.
 
 **Code: Apache-2.0**, covering the GitHub source at `k2-fsa/OmniVoice` and
 nothing else. No weight file, converted artifact, or GGUF produced by this

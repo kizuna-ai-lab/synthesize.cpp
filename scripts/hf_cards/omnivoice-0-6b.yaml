@@ -396,6 +396,11 @@ sidecars:
   # only the Boson text met neither reading. The file is the April 18 2024
   # text the Boson agreement cites, taken from two independent mirrors that
   # agree byte for byte (sha256 47521163...) and matching a third on wording.
+  # Unlike its sibling it is not extracted from the weights -- upstream bundles
+  # no copy -- so it is committed at scripts/licenses/LICENSE-meta-llama-3.txt
+  # and copied beside the artifact by scripts/convert-omnivoice.py, which
+  # digest-checks it against that committed copy's own hash. It was placed by
+  # hand for the 2026-08-10 upload, before it had that owner.
   - filename: LICENSE-meta-llama-3.txt
     role: Meta Llama 3 Community License (required by the Boson agreement above, which is derived from it and defines itself to include it)
     size: "7.8 KB"

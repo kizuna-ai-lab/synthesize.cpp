@@ -161,6 +161,32 @@ OFFSETS_REASON = (
 )
 
 CODEC_LICENSE_NAME = "LICENSE-higgs-audio-2.txt"
+
+# The Boson agreement is not self-contained. It defines its own name to include
+# Meta's -- '"Agreement" means the terms and conditions ... set forth herein and
+# the Meta License Agreement' -- and section 1.b.i(A) separately requires "a copy
+# of this Agreement and the ... Meta License's Llama 3 agreement" to accompany
+# any redistribution of the Higgs Materials. A package carrying only
+# LICENSE-higgs-audio-2.txt is therefore short of the licence it ships under, so
+# the Meta text is copied beside it by the same step.
+META_LICENSE_NAME = "LICENSE-meta-llama-3.txt"
+
+# Unlike the codec grant, this text is NOT extracted from the pinned weights --
+# upstream bundles no copy of it -- so no entry in `omnivoice_pinned_inputs` can
+# vouch for it and it cannot be digest-checked against a pinned input the way
+# its sibling is. What pins it is the digest of the copy committed to this
+# repository, asserted below on every conversion; committing a third-party
+# licence for this purpose follows `bindings/python-native-cu13/LICENSE-ggml`.
+#
+# Provenance of that committed copy: the Boson agreement cites
+# https://llama.meta.com/llama3/license/, which now redirects to a JavaScript
+# page no fetch can extract text from, so the text was taken from two
+# independent HuggingFace mirrors that agree byte for byte, with a third
+# agreeing on wording after whitespace normalisation. It is the April 18 2024
+# version the Boson agreement names.
+META_LICENSE_SOURCE = Path(__file__).resolve().parent / "licenses" / META_LICENSE_NAME
+META_LICENSE_SHA256 = "475211637354ce4c14b9c3dacccbefbaba735fe1b0db97d6c4fd11cd1356819f"
+
 # Quoted from the '## License' section of the model card at the pinned weights
 # revision. Upstream names no CC-BY-NC version; this project must not invent one.
 CHECKPOINT_LICENSE_STATEMENT = (
@@ -654,36 +680,68 @@ def read_generation_defaults(module_name: str = "omnivoice") -> dict[str, Any]:
     return defaults
 
 
+def copy_pinned_license(source: Path, destination: Path, pinned_sha256: str, *,
+                        missing: str, pinned_by: str) -> str:
+    """Copy one grant beside the artifact and check the copy against `pinned_sha256`.
+
+    The *copy* is hashed, never the source: re-hashing the source after
+    `shutil.copyfile` compares a file with itself and would vouch for a locally
+    edited grant. `pinned_by` names the outside witness the digest comes from,
+    so a failure says which pin the file disagrees with.
+    """
+    if not source.is_file():
+        raise ConverterError(missing)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+    digest = sha256_file(destination)
+    if digest != pinned_sha256:
+        raise ConverterError(
+            f"{destination} hashes to {digest} but {pinned_by} pins "
+            f"{pinned_sha256}; the grant that would ship is not the audited one"
+        )
+    return digest
+
+
 def carry_licenses(weights_dir: Path, output: Path, project_root: Path,
                    pinned_license_sha256: str) -> list[dict[str, Any]]:
-    """Copy the codec's grant beside the converted artifact and pin its hash.
+    """Copy both required grants beside the converted artifact and pin their hashes.
 
     `audio_tokenizer/README.md` is an unedited template whose License field
     reads "[More Information Needed]", so the bundled LICENSE is the sole grant
     for the codec weights -- and the agreement requires redistribution to carry
-    its text. The declarative Sidecar Resource descriptors are assembled at the
-    ship stage; what this guarantees is that the text never separates from the
-    artifact and its hash is pinned from the first cut.
+    its text. That agreement also incorporates the Meta Llama 3 Community
+    License by name and requires a copy of it to travel along (see
+    `META_LICENSE_NAME` above), so this step emits two files, not one. The
+    declarative Sidecar Resource descriptors are assembled at the ship stage;
+    what this guarantees is that neither text ever separates from the artifact
+    and both hashes are pinned from the first cut.
 
-    The copy is checked against the digest the manifest pins, not against its
-    own source: re-hashing the source after `shutil.copyfile` compares a file
-    with itself and would vouch for a locally edited grant.
+    The two are pinned by different witnesses because they have different
+    origins: the codec grant ships inside the weights and is checked against the
+    manifest's digest for it, while the Meta text is not in the weights at all
+    and is checked against the digest of the copy committed to this repository.
     """
     source = weights_dir / "audio_tokenizer" / "LICENSE"
-    if not source.is_file():
-        raise ConverterError(
+    destination = output.parent / CODEC_LICENSE_NAME
+    digest = copy_pinned_license(
+        source, destination, pinned_license_sha256,
+        missing=(
             f"{source} is missing; it is the codec weights' only grant and must travel "
             "with every converted artifact"
-        )
-    destination = output.parent / CODEC_LICENSE_NAME
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, destination)
-    digest = sha256_file(destination)
-    if digest != pinned_license_sha256:
-        raise ConverterError(
-            f"{destination} hashes to {digest} but the manifest pins "
-            f"{pinned_license_sha256}; the grant that would ship is not the audited one"
-        )
+        ),
+        pinned_by="the manifest",
+    )
+
+    meta_destination = output.parent / META_LICENSE_NAME
+    meta_digest = copy_pinned_license(
+        META_LICENSE_SOURCE, meta_destination, META_LICENSE_SHA256,
+        missing=(
+            f"{META_LICENSE_SOURCE} is missing; the Boson agreement defines itself to "
+            "include the Meta Llama 3 licence and requires a copy of it to accompany "
+            "the Higgs Materials, so it must travel with every converted artifact"
+        ),
+        pinned_by="this converter",
+    )
 
     return [
         {
@@ -699,6 +757,23 @@ def carry_licenses(weights_dir: Path, output: Path, project_root: Path,
                 "calendar year authorisation is withdrawn until Boson grants an expanded "
                 "license at its sole discretion; and outputs may not be used to improve "
                 "any other large language model"
+            ),
+        },
+        {
+            "role": "codec-weights-incorporated-agreement",
+            "spdx": "LicenseRef-Meta-Llama-3-Community",
+            "source": project_relative(META_LICENSE_SOURCE, project_root),
+            "path": project_relative(meta_destination, project_root),
+            "sha256": meta_digest,
+            "bytes": meta_destination.stat().st_size,
+            "statement": (
+                "META LLAMA 3 COMMUNITY LICENSE AGREEMENT (April 18, 2024) -- the Boson "
+                "agreement above defines its own name to include this text and section "
+                "1.b.i(A) requires a copy of it to accompany the Higgs Materials"
+            ),
+            "evidence": (
+                "committed to this repository and pinned by its own sha256; upstream "
+                "bundles no copy, so no pinned weights input can witness it"
             ),
         },
         {
@@ -1036,10 +1111,12 @@ def main() -> int:
         raise ConverterError(f"tensor names collide after prefixing: {duplicates}")
 
     # Copied and pin-checked before the GGUF write below, not after: a missing
-    # or altered license file (already ruled out for existence and digest by
-    # `verify_pinned_inputs` above, but re-checked here against its own copy)
-    # must cost nothing rather than being discovered after the multi-gigabyte
-    # write that follows.
+    # or altered license file must cost nothing rather than being discovered
+    # after the multi-gigabyte write that follows. The codec grant is already
+    # ruled out for existence and digest by `verify_pinned_inputs` above and is
+    # re-checked here against its own copy; the Meta text this step also emits
+    # is not a weights input at all, and is checked against the digest of the
+    # copy committed to this repository.
     licenses = carry_licenses(weights, args.output, project_root, digests["codec_license"])
 
     with atomic_output_path(args.output) as staging:
@@ -1111,7 +1188,9 @@ def main() -> int:
     print(f"  folded: {len(conversion.transformed)}  renamed: {len(conversion.renamed)}  "
           f"skipped: {len(conversion.skipped)}")
     print(f"  codec geometry: {geometry}  config disagreements: {len(disagreements)}")
-    print(f"  licence: {licenses[0]['path']}")
+    # Every record that names a copied file, not just the first: the operator
+    # reading this summary is checking that the package is complete.
+    print(f"  licences: {', '.join(r['path'] for r in licenses if 'path' in r)}")
     print(f"  report: {report_path}")
     return 0
 

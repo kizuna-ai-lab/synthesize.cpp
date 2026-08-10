@@ -20,6 +20,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 import torch
@@ -767,31 +768,99 @@ class SharedPinnedInputTableTests(unittest.TestCase):
 
 
 class LicenseCarriageTests(unittest.TestCase):
-    """The codec's grant must never separate from the converted artifact.
+    """Both required grants must never separate from the converted artifact.
 
     `audio_tokenizer/LICENSE` is the sole grant for the Higgs Audio 2 codec
     weights -- its own model card says "[More Information Needed]" -- and the
-    agreement requires redistribution to carry its text.
+    agreement requires redistribution to carry its text. That agreement is also
+    not self-contained: it defines its own name to include the Meta Llama 3
+    Community License, and section 1.b.i(A) requires a copy of that licence to
+    accompany the Higgs Materials too. Upstream bundles no copy of the Meta
+    text, so this repository commits one and the converter carries it.
     """
+
+    def carry(self, root: Path, codec_payload: bytes) -> tuple[Path, list[dict]]:
+        """Run `carry_licenses` over a throwaway weights directory."""
+        weights = root / "weights" / "audio_tokenizer"
+        weights.mkdir(parents=True)
+        (weights / "LICENSE").write_bytes(codec_payload)
+        output = root / "out" / "model.gguf"
+        output.parent.mkdir(parents=True)
+        digest = hashlib.sha256(codec_payload).hexdigest()
+        records = convert.carry_licenses(root / "weights", output, Path.cwd(), digest)
+        return output.parent, records
 
     def test_copies_the_codec_license_byte_identically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            weights = root / "weights" / "audio_tokenizer"
-            weights.mkdir(parents=True)
             payload = b"BOSON HIGGS AUDIO 2 COMMUNITY LICENSE AGREEMENT\n\xc2\xa0text\n"
-            (weights / "LICENSE").write_bytes(payload)
-            output = root / "out" / "model.gguf"
-            output.parent.mkdir(parents=True)
             digest = hashlib.sha256(payload).hexdigest()
 
-            records = convert.carry_licenses(root / "weights", output, Path.cwd(), digest)
+            out_dir, records = self.carry(root, payload)
 
-            copied = output.parent / convert.CODEC_LICENSE_NAME
+            copied = out_dir / convert.CODEC_LICENSE_NAME
             self.assertEqual(copied.read_bytes(), payload)
             self.assertIn(digest, [r.get("sha256") for r in records])
             statements = " ".join(r.get("statement", "") for r in records)
             self.assertIn("CC-BY-NC", statements)
+
+    def test_copies_the_meta_llama_3_license_beside_the_codec_one(self) -> None:
+        """The gap this closes: the Meta text was placed in the published
+        package by hand on 2026-08-10, so a fresh clone plus a convert produced
+        a package the card described but the tree could not reproduce. It has an
+        owner now, and this test fails if it ever stops being copied.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            out_dir, records = self.carry(root, b"BOSON HIGGS AUDIO 2 ...\n")
+
+            copied = out_dir / convert.META_LICENSE_NAME
+            self.assertTrue(copied.is_file(), f"{convert.META_LICENSE_NAME} was not carried")
+            self.assertEqual(copied.read_bytes(), convert.META_LICENSE_SOURCE.read_bytes())
+
+            carried = [r for r in records if r.get("path", "").endswith(convert.META_LICENSE_NAME)]
+            self.assertEqual(len(carried), 1, "the Meta licence needs exactly one record")
+            self.assertEqual(carried[0]["sha256"], convert.META_LICENSE_SHA256)
+            self.assertEqual(carried[0]["bytes"], copied.stat().st_size)
+            self.assertIn("META LLAMA 3", carried[0]["statement"])
+
+    def test_the_committed_meta_license_is_the_text_the_converter_pins(self) -> None:
+        """Nothing upstream witnesses this file, so its own committed digest is
+        the pin -- which is worth nothing unless something checks it. Editing
+        the committed text, or replacing it with a different Llama 3 revision,
+        fails here rather than shipping silently.
+        """
+        self.assertTrue(convert.META_LICENSE_SOURCE.is_file(), convert.META_LICENSE_SOURCE)
+        payload = convert.META_LICENSE_SOURCE.read_bytes()
+        self.assertEqual(hashlib.sha256(payload).hexdigest(), convert.META_LICENSE_SHA256)
+        self.assertEqual(len(payload), 7801)
+        text = payload.decode("utf-8")
+        self.assertIn("META LLAMA 3 COMMUNITY LICENSE AGREEMENT", text)
+        # The Boson agreement cites the April 18, 2024 version by date.
+        self.assertIn("Meta Llama 3 Version Release Date: April 18, 2024", text)
+
+    def test_a_missing_meta_license_stops_the_conversion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            absent = root / "not-committed" / convert.META_LICENSE_NAME
+            with mock.patch.object(convert, "META_LICENSE_SOURCE", absent):
+                with self.assertRaises(convert.ConverterError) as caught:
+                    self.carry(root, b"BOSON HIGGS AUDIO 2 ...\n")
+            self.assertIn(convert.META_LICENSE_NAME, str(caught.exception))
+
+    def test_an_altered_meta_license_stops_the_conversion(self) -> None:
+        """The committed copy is the only witness, so a substituted one must not
+        be carried into the package on the strength of being present.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            substituted = root / convert.META_LICENSE_NAME
+            substituted.write_bytes(b"META LLAMA 3 COMMUNITY LICENSE AGREEMENT\nedited\n")
+            with mock.patch.object(convert, "META_LICENSE_SOURCE", substituted):
+                with self.assertRaises(convert.ConverterError) as caught:
+                    self.carry(root, b"BOSON HIGGS AUDIO 2 ...\n")
+            self.assertIn(convert.META_LICENSE_SHA256, str(caught.exception))
 
     def test_the_copy_is_checked_against_the_pin_not_against_itself(self) -> None:
         """Re-hashing the source after the copy compares a file with itself."""

@@ -5852,3 +5852,35 @@ production enumeration rather than calling it (real gap, nothing currently
 wrong); `public_cleanup_test`'s CUDA arm tolerates any `SYNTH_ERR_BACKEND`
 without checking the diagnostic code; a warm work directory can mask an
 `encode_reference` non-OK status. All recorded, none fixed here.
+
+## 2026-08-10 — The Meta licence gets a pipeline owner
+
+The bot review of PR #8 found the other half of the licence gap above. The
+package was corrected; the *pipeline* was not. `LICENSE-meta-llama-3.txt` was
+placed into `models/publish/omnivoice-0-6b/` by hand, and `carry_licenses` in
+`scripts/convert-omnivoice.py` still had exactly one source and one
+destination: `<weights>/audio_tokenizer/LICENSE` →
+`<output>/LICENSE-higgs-audio-2.txt`. A fresh clone plus a conversion therefore
+produced a package this project's own documentation described but the tree
+could not reproduce — a reproducibility hole in an artifact that is already
+published, and one that would have re-opened the compliance gap at the next
+re-cut.
+
+The text is now committed at `scripts/licenses/LICENSE-meta-llama-3.txt` (7,801
+bytes, sha256 `475211637354ce4c…`) and `carry_licenses` copies it beside the
+artifact like its sibling. Committing a third-party licence for redistribution
+has precedent here: `bindings/python-native-cu13/LICENSE-ggml`.
+
+**The two grants cannot be pinned the same way, and the code says so.** The
+codec grant ships inside the weights, so `omnivoice_pinned_inputs` lists it and
+the copy is checked against the manifest's digest — an outside witness. Nothing
+upstream carries the Meta text at all, so no pinned input can witness it; what
+pins it is the committed copy's own sha256, asserted on every conversion. The
+converter states that distinction rather than implying the two checks are
+equivalent.
+
+`LicenseCarriageTests` in `tests/python/test_convert_omnivoice.py` grew four
+cases: the file is carried and byte-identical, the committed copy still hashes
+to the pin and still names the April 18 2024 release date, a missing source
+stops the conversion, and a substituted one stops it too. Verified
+non-vacuous by short-circuiting the copy — 4 of 7 cases fail.

@@ -508,7 +508,7 @@ same pattern Kokoro's `models/upstream/kokoro-v1_0/README.md` already uses.
 `models/publish/omnivoice-0-6b/` is the clean, flat publication directory
 this task built because, unlike Kokoro's or VITS's working directories, this
 family's working directory is not itself flat — it still carries the
-upstream checkpoint files above. It contains **exactly** the four artifacts
+upstream checkpoint files above. It contains **exactly** the five artifacts
 that would be uploaded, plus the generated card:
 
 ```text
@@ -516,7 +516,8 @@ models/publish/omnivoice-0-6b/
 ├── omnivoice-0-6b-F32.gguf       # 3,189,953,504 bytes, sha256 f6d504ff…772f9fa3
 ├── omnivoice-0-6b-F16.gguf       # 1,964,929,440 bytes, sha256 65c8cca5…a3f52f70 (default recommendation)
 ├── omnivoice-0-6b-Q8.gguf        # 1,390,699,680 bytes, sha256 61aec0de…4982374e
-├── LICENSE-higgs-audio-2.txt     #         9,171 bytes, sha256 ac933dc0…df2fa049 — the declared Sidecar Resource
+├── LICENSE-higgs-audio-2.txt     #         9,171 bytes, sha256 ac933dc0…df2fa049 — declared Sidecar Resource, from the weights
+├── LICENSE-meta-llama-3.txt      #         7,801 bytes, sha256 47521163…1356819f — declared Sidecar Resource, from this repository
 └── README.md                     # the freshly generated card
 ```
 
@@ -528,6 +529,8 @@ working copy that `--check` verifies. Verified 2026-08-09 by listing and
 digesting it: five entries, every one at link count 2, digests as above; no
 upstream checkpoint file, no `audio_tokenizer/`, no `tokenizer.json`, and no
 `Q4_K`, `BF16`, `Q8_CODEC_MIXED` or `F16_CODEC` GGUF (none of those ships).
+`LICENSE-meta-llama-3.txt` is the sixth entry, added 2026-08-10, and re-checked
+the same way on that date.
 `tests/python/test_hf_card_generator.py`'s
 `test_omnivoice_publish_directory_is_flat_and_current` re-checks that set
 against the card spec on every unit run, so a profile added to the spec and not
@@ -626,6 +629,38 @@ purpose:
 
 All three are independent of, and in addition to, the generator's own CC-BY-NC
 restriction above.
+
+**That agreement also carries the Meta Llama 3 Community License into the
+package as a second declared Sidecar Resource** (`LICENSE-meta-llama-3.txt`).
+It is not an optional courtesy: the Boson agreement *defines its own name* to
+include Meta's -- "'Agreement' means the terms and conditions … set forth
+herein and the Meta License Agreement" -- and section 1.b.i(A) separately
+requires "a copy of this Agreement and the … Meta License's Llama 3 agreement"
+to accompany any redistribution of the Higgs Materials. Shipping only the Boson
+text satisfied neither reading, which is the gap the 2026-08-10 correction
+closed.
+
+The two sidecars have different origins, and therefore different pins.
+`LICENSE-higgs-audio-2.txt` is extracted from the weights
+(`audio_tokenizer/LICENSE`) and is digest-checked against the manifest pin for
+that input. Upstream bundles no copy of the Meta text at all, so this
+repository commits one at `scripts/licenses/LICENSE-meta-llama-3.txt` (7,801
+bytes, sha256 `47521163…1356819f`) — committing a third-party license text for
+redistribution follows `bindings/python-native-cu13/LICENSE-ggml`. Since
+nothing upstream can witness that copy, the digest above is what pins it, and
+`scripts/convert-omnivoice.py` copies it beside the artifact on every
+conversion and checks the copy against that digest.
+
+The committed text is the April 18, 2024 version the Boson agreement cites,
+taken from two independent Hugging Face mirrors that agree byte for byte (a
+third agrees on wording after whitespace normalization), because the URL the
+agreement names now redirects to a JavaScript page no fetch can extract text
+from. Before this, the file was placed into the publication directory by hand
+for the 2026-08-10 upload and nothing in the pipeline produced it: a fresh
+clone plus a conversion yielded a package this page described but the tree
+could not reproduce. It has an owner now, and
+`tests/python/test_convert_omnivoice.py`'s `LicenseCarriageTests` fails if it
+stops being carried or its text drifts from the pinned digest.
 
 **Apache-2.0 covers only the upstream GitHub source code**
 (`k2-fsa/OmniVoice`) and nothing produced by this project: no weight file,

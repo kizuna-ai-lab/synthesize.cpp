@@ -17,6 +17,64 @@ enum class ModelFamily {
     Omnivoice,
 };
 
+// Whether a Model Family's own graphs place real work on an EXPLICITLY
+// requested execution backend (SYNTH_BACKEND_*, include/synthesize.h). This is
+// a per-family fact independent of any one Loaded Model instance -- unlike the
+// rest of what a family reports (VoiceProfileInfo below, for instance), which
+// only exists once a specific package has finished loading -- because the load
+// path (src/synthesize.cpp's synth_model_load) must refuse an unsupported
+// backend BEFORE calling that family's loader. Handing a family a device it
+// cannot really use would otherwise "load" onto that device's handle while
+// every graph quietly ran somewhere else: docs/backends.md's "a backend that
+// is present is not a backend that ran."
+//
+// Never call this for SYNTH_BACKEND_AUTO. AUTO always resolves to a CPU device
+// today (docs/backends.md's v1 Selection Policy) and every family places real
+// work on CPU, so AUTO is accepted before this function is ever reached rather
+// than by adding a case here.
+//
+// OmniVoice claims CUDA as of Plan 4 Task 11, AFTER the evidence rather than
+// before it (accumulated requirement 3): the replay runner
+// (tests/omnivoice_replay_real.cpp) calls Model::load directly and bypasses
+// this seam entirely, so the sweep measured real placement on the actual GB10
+// device while this function still said false. Task 9 gave the codec's
+// decode path an accelerator twin (src/arch/omnivoice/model.cpp's
+// `Model::Impl::codec_context`), built whenever `BackendPlan::primary()` is
+// not the CPU backend; Task 10 taught the runner and the validator to check
+// where the nodes actually landed; Task 11 is the sweep itself. Twenty golden
+// cases, `--accelerate`: every codec node (8,440 of 8,440 across the suite)
+// left the CPU, every generator node (880,032 of 880,032) did not, and the
+// seventeen greedy cases' token grids stayed byte-exact against the CPU
+// baseline -- docs/backends.md's discrete-outputs rule holding under TF32
+// exactly as it must, since the generator is what draws the codes and it
+// never moved. Only the codec's own waveform shows CUDA's TF32 arithmetic
+// (tests/tolerances/omnivoice.json's `backends.CUDA` cell). Full figures:
+// docs/porting/families/omnivoice.md's Execution Backends section.
+//
+// VITS, Kokoro, and Qwen3-TTS already place real graph work on CUDA
+// (docs/backends.md) and keep exactly that.
+//
+// CPU_ACCEL keeps CPU as the primary backend and only adds optional
+// host-memory accelerators (BLAS/AMX), degrading to plain CPU when none is
+// registered (docs/backends.md's v1 Selection Policy) -- the same
+// "everything on CPU" promise a CPU-only family already keeps -- so every
+// family accepts it.
+//
+// Metal and Vulkan are unavailable for every family today; that is unrelated
+// to this per-family split and this function reports it as such (false) for
+// all of them.
+inline bool family_supports_explicit_backend(ModelFamily family, synth_backend_request_t backend) {
+    switch (backend) {
+        case SYNTH_BACKEND_CPU:
+        case SYNTH_BACKEND_CPU_ACCEL:
+            return true;
+        case SYNTH_BACKEND_CUDA:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // One language a package declares a request may ask for, named the way the
 // public interface names languages rather than the way the package does.
 //

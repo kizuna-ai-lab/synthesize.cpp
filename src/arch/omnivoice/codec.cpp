@@ -78,18 +78,43 @@ ggml_tensor * codec_conv1d(ggml_context *        context,
     if (context == nullptr || input == nullptr || !bound(weights) || dilation <= 0 || padding < 0 || stride <= 0) {
         return nullptr;
     }
-    const int64_t kernel       = weights.weight->ne[0];
-    const int64_t in_channels  = weights.weight->ne[1];
-    const int64_t out_channels = weights.weight->ne[2];
-    const int64_t length       = input->ne[1];
-    if (kernel <= 0 || length <= 0 || in_channels != input->ne[0] || out_channels <= 0 ||
-        weights.bias->ne[0] != out_channels) {
+    // A block-quantized kernel arrives already flattened to the
+    // [kernel * in_channels, out_channels] matrix the multiply consumes,
+    // since a 32-wide block cannot straddle the kernel axis -- its logical
+    // rank is lost, so the input supplies in_channels and a throwaway F32
+    // shape tensor drives im2col instead of the kernel itself (im2col only
+    // reads a shape tensor's ne/type, never its data). The packed kernel is
+    // then used directly as mul_mat's already-2-D left operand. Same recipe
+    // as VITS's and Kokoro's own conv1d (src/arch/vits/operations.cpp:14-45,
+    // src/arch/kokoro/operations.cpp:46-79).
+    const bool    packed       = ggml_is_quantized(weights.weight->type);
+    const int64_t in_channels  = input->ne[0];
+    int64_t       kernel       = 0;
+    int64_t       out_channels = 0;
+    if (packed) {
+        if (in_channels <= 0 || weights.weight->ne[0] % in_channels != 0) {
+            return nullptr;
+        }
+        kernel       = weights.weight->ne[0] / in_channels;
+        out_channels = weights.weight->ne[1];
+    } else {
+        kernel       = weights.weight->ne[0];
+        out_channels = weights.weight->ne[2];
+        if (weights.weight->ne[1] != in_channels) {
+            return nullptr;
+        }
+    }
+    const int64_t length = input->ne[1];
+    if (kernel <= 0 || length <= 0 || out_channels <= 0 || weights.bias->ne[0] != out_channels) {
         return nullptr;
     }
     ggml_tensor * time_major = ggml_cont(context, ggml_transpose(context, input));
-    ggml_tensor * columns = ggml_im2col(context, weights.weight, time_major, stride, 0, padding, 0, dilation, 0, false,
-                                        weights.weight->type);
-    ggml_tensor * kernel_2d = ggml_reshape_2d(context, weights.weight, kernel * in_channels, out_channels);
+    ggml_tensor * shape_kernel =
+        packed ? ggml_new_tensor_3d(context, GGML_TYPE_F32, kernel, in_channels, out_channels) : weights.weight;
+    ggml_tensor * columns = ggml_im2col(context, shape_kernel, time_major, stride, 0, padding, 0, dilation, 0, false,
+                                        packed ? GGML_TYPE_F32 : weights.weight->type);
+    ggml_tensor * kernel_2d =
+        packed ? weights.weight : ggml_reshape_2d(context, weights.weight, kernel * in_channels, out_channels);
     ggml_tensor * signal =
         ggml_mul_mat(context, kernel_2d, ggml_reshape_2d(context, columns, columns->ne[0], columns->ne[1]));
     return add_channel_bias(context, signal, weights.bias);

@@ -18,6 +18,14 @@ struct Profile {
     TensorLayout matrix_weight_layout;
     ggml_type    transpose_weight_type;
     ggml_type    sensitive_type;
+    // The storage type for a weight read by `ggml_get_rows` rather than by a
+    // matrix multiply, which CUDA supports for a strictly narrower set of
+    // types (no k-quant at all; see src/arch/omnivoice/quantization.h's
+    // RowLookup). This field is **inert** for every family whose classifier
+    // never reports that role -- today VITS, Kokoro and Qwen3-TTS, all three
+    // of which have no resolver arm reading it -- so setting it on a shared
+    // profile row cannot change what those families' packages contain.
+    ggml_type    row_lookup_type;
     uint32_t     file_type;
     uint32_t     version;
 };
@@ -56,5 +64,17 @@ bool resolve_kokoro_target_spec(const Profile & profile, const std::string & nam
 // branch or head, and together they are a rounding error of the file.
 bool resolve_qwen3_tts_target_type(const Profile & profile, const std::string & name, ggml_type & type_out);
 bool resolve_qwen3_tts_target_spec(const Profile & profile, const std::string & name, TargetSpec & spec_out);
+
+// And for OmniVoice, which is the one family whose profiles do not all
+// quantize the same half of the package -- and so the one family whose profile
+// names encode a half. `F16_CODEC` and `Q8_CODEC_MIXED` quantize the codec and
+// hold the generator at F32; the plain-named `F16`, `Q8`, `Q4_K` and `BF16` do
+// the reverse. The split is expressed once, in the family's
+// classify_tensor_for_half
+// (src/arch/omnivoice/quantization.h), which this dispatch and the runtime's
+// catalog both read so they cannot disagree about a tensor. See
+// omnivoice_quantized_half in policy.cpp for which profile means which half.
+bool resolve_omnivoice_target_type(const Profile & profile, const std::string & name, ggml_type & type_out);
+bool resolve_omnivoice_target_spec(const Profile & profile, const std::string & name, TargetSpec & spec_out);
 
 }  // namespace synth::quantize

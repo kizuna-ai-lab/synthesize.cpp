@@ -746,51 +746,19 @@ bool find_u8_32_value_offset(const uint8_t * data, size_t search_size, const std
 // changes here: what used to ask "is this obviously hostile?" now asks "is
 // this exactly our format?".
 
-// The exact, closed set of metadata keys this family's writer ever emits --
-// transcribed from set_common_metadata (the 8 common keys, including
-// "general.alignment"'s absence: this writer never sets that key, so it is
-// simply not a member here, and its mere presence in an inbound buffer is
-// therefore an unknown-key rejection with no special case), plus
-// serialize_clone_prompt's 3 ClonePrompt-only keys and
-// serialize_design_instruct's 1 DesignInstruct-only key. `is_array` and
-// `count` are only meaningful together; a scalar entry's `count` is
-// ignored.
-struct PrescanKeySpec {
-    const char * key;
-    gguf_type    type;
-    bool         is_array;
-    uint64_t     count;
-};
+// PrescanKeySpec, kPrescanKnownKeys, and kPrescanKnownKeyCount -- the exact,
+// closed set of metadata keys this family's writer ever emits, and the
+// whitelist the walk below checks every key against -- now live in
+// profile.h, not here: see that header's own comment on why
+// (tests/omnivoice_serialize_writer_agreement_test.cpp needs the SAME table
+// this file's own prescan_buffer validates against, not yet another
+// hand-transcription of it).
 
-constexpr PrescanKeySpec kPrescanKnownKeys[] = {
-    // set_common_metadata (8 keys, every kind).
-    { "general.architecture",                     GGUF_TYPE_STRING,  false, 0  },
-    { "synthesize.voice_profile.format_version",  GGUF_TYPE_UINT32,  false, 0  },
-    { "synthesize.voice_profile.model_family",    GGUF_TYPE_STRING,  false, 0  },
-    { "synthesize.voice_profile.schema",          GGUF_TYPE_STRING,  false, 0  },
-    { "synthesize.voice_profile.schema_version",  GGUF_TYPE_UINT32,  false, 0  },
-    { kKeyCompatibilityId,                        GGUF_TYPE_UINT8,   true,  32 },
-    { kKeyContentSha256,                          GGUF_TYPE_UINT8,   true,  32 },
-    { "synthesize.voice_profile.kind",            GGUF_TYPE_STRING,  false, 0  },
-    // serialize_clone_prompt (3 more keys, "clone-prompt" only).
-    { "synthesize.voice_profile.transcript_text", GGUF_TYPE_STRING,  false, 0  },
-    { "synthesize.voice_profile.ref_rms",         GGUF_TYPE_FLOAT32, false, 0  },
-    { "synthesize.voice_profile.language_tag",    GGUF_TYPE_STRING,  false, 0  },
-    // serialize_design_instruct (1 more key, "design-instruct" only).
-    { "synthesize.voice_profile.instruct",        GGUF_TYPE_STRING,  false, 0  },
-};
-constexpr size_t kPrescanKnownKeyCount = sizeof(kPrescanKnownKeys) / sizeof(kPrescanKnownKeys[0]);
-
-// n_kv is exactly one of these two values: 8 common + 1 ("instruct") for
-// DesignInstruct, 8 common + 3 (transcript_text/ref_rms/language_tag) for
-// ClonePrompt -- not a generous ceiling, an exact enumeration, since this
-// writer never produces anything else. Which SPECIFIC keys are required for
-// a given `kind` is still load_profile_from_memory's own job afterward
-// (GgufMetadata's per-field reads already fail closed on a missing field);
-// this pre-scan only bounds the total count and rejects any key outside the
-// union above.
-constexpr int64_t kPrescanKvCountDesign = 9;
-constexpr int64_t kPrescanKvCountClone  = 11;
+// kPrescanKvCountDesign/kPrescanKvCountClone -- the exact per-kind metadata
+// KV count this pre-scan bounds `n_kv` against -- now live in profile.h
+// alongside kPrescanKnownKeys, for the same reason: fix-round-1's
+// tests/omnivoice_serialize_writer_agreement_test.cpp pins the REAL writer's
+// per-kind key count against these SAME two constants.
 
 constexpr uint64_t kPrescanMaxKeyLength    = 256;
 // Tied to kMaxClonePromptTranscriptLength (profile.h) rather than a second,

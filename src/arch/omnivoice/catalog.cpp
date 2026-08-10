@@ -77,6 +77,7 @@
 
 #include "arch/omnivoice/catalog.h"
 
+#include "arch/omnivoice/quantization.h"
 #include "arch/omnivoice/weights.h"
 #include "ggml.h"
 
@@ -138,9 +139,49 @@ class Resolver {
         if (tensor == nullptr) {
             return fail("missing tensor %s", name.c_str());
         }
-        if (tensor->type != expected_type()) {
+        const ggml_type want_type = expected_type(name, tensor->ne);
+        if (tensor->type != want_type) {
             return fail("tensor %s has type %s, expected %s under the %s profile", name.c_str(),
-                        ggml_type_name(tensor->type), ggml_type_name(expected_type()), profile_name());
+                        ggml_type_name(tensor->type), ggml_type_name(want_type), profile_name());
+        }
+        // A convolution kernel that a Q8_CODEC_MIXED profile packed collapses its
+        // logical [kernel, in, out] shape into the flattened
+        // [kernel * in, out] a matrix multiply consumes -- the offline
+        // quantizer's own layout for a MatrixWeight tensor
+        // (tools/synthesize-quantize/quantize.cpp). Every caller here still
+        // supplies the logical three-axis shape, so a quantized tensor whose
+        // caller asked for three axes is checked against the packed row
+        // instead of axis by axis.
+        //
+        // Gated on Q8_CODEC_MIXED specifically, and that is exhaustive rather than
+        // an oversight: F16 is Native by its profile row, and neither
+        // generator-half profile packs anything at all -- every tensor Q8
+        // and Q4_K quantize lives in the generator half, all of which is
+        // two-dimensional and therefore demoted to Native by the offline
+        // quantizer. Those packages reach the per-axis check below with their
+        // declared shapes intact.
+        //
+        // As of the conv-exempt policy of 2026-08-09 no package this family
+        // cuts reaches this branch at all: the only codec tensors Q8_CODEC_MIXED
+        // still quantizes are the 73 two-dimensional HuBERT Linears, and
+        // every three-axis convolution kernel is ConvKernel at F16, which
+        // `ggml_is_quantized` rejects. It is kept rather than deleted because
+        // it is the load-side half of a capability the graph builders still
+        // carry (codec.cpp's codec_conv1d, reference-encoder.cpp's conv1d),
+        // and because a reader who reverts the policy would otherwise get a
+        // shape error instead of a working loader. Do not read its presence
+        // as evidence that this family packs convolutions -- it does not.
+        if (hparams_.quantization_profile == QuantizationProfile::Q8CodecMixed && ggml_is_quantized(tensor->type) &&
+            expected.size() == 3) {
+            const auto *  want   = expected.begin();
+            const int64_t packed = want[0] * want[1];
+            if (want[0] <= 0 || want[1] <= 0 || tensor->ne[0] != packed || tensor->ne[1] != want[2] ||
+                tensor->ne[2] != 1 || tensor->ne[3] != 1) {
+                return fail("tensor %s does not have the packed shape [%lld, %lld]", name.c_str(), (long long) packed,
+                            (long long) want[2]);
+            }
+            resolved_.insert(name);
+            return tensor;
         }
         size_t axis = 0;
         for (int64_t want : expected) {
@@ -210,13 +251,148 @@ class Resolver {
     }
 
   private:
-    ggml_type expected_type() const {
+    // `name`/`ne` feed classify_tensor, the same classifier the offline
+    // quantizer dispatches from (quantization.h), so an offline packing
+    // decision and this load-time expectation cannot drift apart. Every role
+    // this catalog resolves today classifies from the name alone (see that
+    // header's own comment), so `ne` matters only if a future tensor's role
+    // ever needs it.
+    ggml_type expected_type(const std::string & name, const int64_t * ne) const {
         switch (hparams_.quantization_profile) {
             case QuantizationProfile::F32:
                 // The source profile carries the checkpoint through unchanged,
-                // and both halves were already F32. A profile that halves or
-                // packs anything decides by what a tensor *is*, which is what a
-                // role argument here would carry.
+                // and both halves were already F32.
+                return GGML_TYPE_F32;
+            case QuantizationProfile::Q8CodecMixed:
+                // Codec half. Since the conv-exempt policy of 2026-08-09 the
+                // only tensors this profile packs are the 73 two-dimensional
+                // HuBERT Linears; every convolution kernel is ConvKernel and
+                // carries the profile's halved fallback, F16, at its native
+                // shape. TransposeWeight and Sensitive both stay F32 -- the
+                // former for the same col2im_1d/CUDA-F16 reason VITS and
+                // Qwen3-TTS's decoder do, the latter because the RVQ and
+                // every elementwise-read parameter stay exact. The whole
+                // generator half is held Sensitive by the half argument, not
+                // by its own architectural role. An Unknown role here means a
+                // catalog name the classifier does not recognise, which the
+                // type check below still catches as a mismatch against
+                // whatever the tensor actually is.
+                switch (classify_tensor_for_half(name, ne, ModelHalf::Codec)) {
+                    case QuantRole::MatrixWeight:
+                        return GGML_TYPE_Q8_0;
+                    case QuantRole::ConvKernel:
+                        return GGML_TYPE_F16;
+                    case QuantRole::RowLookup:
+                    case QuantRole::TransposeWeight:
+                    case QuantRole::Sensitive:
+                    case QuantRole::Unknown:
+                        return GGML_TYPE_F32;
+                }
+                return GGML_TYPE_F32;
+            case QuantizationProfile::F16Codec:
+                // Same half as Q8CodecMixed, halved rather than packed: the tool's
+                // profile table gives F16 TensorLayout::Native
+                // (tools/synthesize-quantize/policy.cpp), and its halved
+                // fallback column is F16 as well, so a MatrixWeight Linear
+                // and a ConvKernel land on the same type here. The
+                // conv-exempt policy therefore leaves an F16 package
+                // byte-identical to the one cut before it, which is why the
+                // already-measured F16 package's figures still stand.
+                switch (classify_tensor_for_half(name, ne, ModelHalf::Codec)) {
+                    case QuantRole::MatrixWeight:
+                    case QuantRole::ConvKernel:
+                        return GGML_TYPE_F16;
+                    case QuantRole::RowLookup:
+                    case QuantRole::TransposeWeight:
+                    case QuantRole::Sensitive:
+                    case QuantRole::Unknown:
+                        return GGML_TYPE_F32;
+                }
+                return GGML_TYPE_F32;
+            case QuantizationProfile::Q8:
+                // The generator half instead, and the one profile where
+                // RowLookup is not inert: the two `ggml_get_rows` tables
+                // carry the profile's row-lookup type, which is Q8_0 here and
+                // must stay inside CUDA's GET_ROWS type list
+                // (quantization.h's RowLookup). It lands on the same Q8_0 as
+                // MatrixWeight under this profile, so the two arms agree
+                // today; they are written separately because a Q4 profile
+                // would separate them.
+                switch (classify_tensor_for_half(name, ne, ModelHalf::Generator)) {
+                    case QuantRole::MatrixWeight:
+                    case QuantRole::RowLookup:
+                        return GGML_TYPE_Q8_0;
+                    // ConvKernel cannot arrive here: the generator emits no
+                    // convolution, and every codec tensor is forced Sensitive
+                    // by the half argument. Listed so the switch stays
+                    // exhaustive rather than defaulting.
+                    case QuantRole::ConvKernel:
+                    case QuantRole::TransposeWeight:
+                    case QuantRole::Sensitive:
+                    case QuantRole::Unknown:
+                        return GGML_TYPE_F32;
+                }
+                return GGML_TYPE_F32;
+            case QuantizationProfile::Q4K:
+                // The same half again, and the profile the two arms above were
+                // written apart for: a matrix multiply takes Q4_K on CUDA and
+                // `ggml_get_rows` does not, so the lookup tables hold at Q8_0
+                // while everything else the generator multiplies by goes to
+                // four bits. A package that k-quantized the tables would still
+                // load -- this check would simply expect what it found -- and
+                // would then run its embedding lookups on the CPU, which is
+                // why the expectation is stated here rather than left to the
+                // offline tool alone.
+                switch (classify_tensor_for_half(name, ne, ModelHalf::Generator)) {
+                    case QuantRole::MatrixWeight:
+                        return GGML_TYPE_Q4_K;
+                    case QuantRole::RowLookup:
+                        return GGML_TYPE_Q8_0;
+                    // Unreachable for the same reason as under Q8 above.
+                    case QuantRole::ConvKernel:
+                    case QuantRole::TransposeWeight:
+                    case QuantRole::Sensitive:
+                    case QuantRole::Unknown:
+                        return GGML_TYPE_F32;
+                }
+                return GGML_TYPE_F32;
+            case QuantizationProfile::F16:
+                // The generator half again, at
+                // F16 instead of a block-quantized type: MatrixWeight and
+                // RowLookup land on the same narrowed type here because
+                // CUDA's GET_ROWS accepts F16 directly (quantization.h's
+                // RowLookup; ggml/src/ggml-cuda/ggml-cuda.cu:5190-5207), so
+                // -- like Q8 and unlike Q4_K -- the two roles never
+                // need to diverge.
+                switch (classify_tensor_for_half(name, ne, ModelHalf::Generator)) {
+                    case QuantRole::MatrixWeight:
+                    case QuantRole::RowLookup:
+                        return GGML_TYPE_F16;
+                    // Unreachable for the same reason as under Q8 above.
+                    case QuantRole::ConvKernel:
+                    case QuantRole::TransposeWeight:
+                    case QuantRole::Sensitive:
+                    case QuantRole::Unknown:
+                        return GGML_TYPE_F32;
+                }
+                return GGML_TYPE_F32;
+            case QuantizationProfile::BF16:
+                // Same shape as F16, bfloat16
+                // instead of IEEE half. CUDA's GET_ROWS accepts BF16 too
+                // (ggml/src/ggml-cuda/ggml-cuda.cu:5190-5207), verified before
+                // this row was written rather than assumed from F16's
+                // presence in that list.
+                switch (classify_tensor_for_half(name, ne, ModelHalf::Generator)) {
+                    case QuantRole::MatrixWeight:
+                    case QuantRole::RowLookup:
+                        return GGML_TYPE_BF16;
+                    // Unreachable for the same reason as under Q8 above.
+                    case QuantRole::ConvKernel:
+                    case QuantRole::TransposeWeight:
+                    case QuantRole::Sensitive:
+                    case QuantRole::Unknown:
+                        return GGML_TYPE_F32;
+                }
                 return GGML_TYPE_F32;
         }
         return GGML_TYPE_F32;
@@ -226,6 +402,18 @@ class Resolver {
         switch (hparams_.quantization_profile) {
             case QuantizationProfile::F32:
                 return "F32";
+            case QuantizationProfile::Q8CodecMixed:
+                return "Q8_CODEC_MIXED";
+            case QuantizationProfile::F16Codec:
+                return "F16_CODEC";
+            case QuantizationProfile::Q8:
+                return "Q8";
+            case QuantizationProfile::Q4K:
+                return "Q4_K";
+            case QuantizationProfile::F16:
+                return "F16";
+            case QuantizationProfile::BF16:
+                return "BF16";
         }
         return "unknown";
     }
@@ -535,6 +723,63 @@ synth_status_t build_model_weights(ggml_context * context, const HParams & hpara
             std::fprintf(stderr, "omnivoice: tensor %s is outside the catalog\n", tensor->name);
             return SYNTH_ERR_GGUF;
         }
+    }
+    return SYNTH_OK;
+}
+
+synth_status_t bind_decode_weights(ggml_context *       codec_context,
+                                   const HParams &      hparams,
+                                   const ModelWeights & weights,
+                                   ModelWeights &       decode_weights) {
+    // Starts as a plain copy: every field decode_weights does not go on to
+    // overwrite below -- generator, fc, acoustic_encoder, semantic_model,
+    // encoder_semantic, and the three movable ones too when there is no twin
+    // -- stays pointer-identical to `weights`'s own. `weights` itself is never
+    // written here, which is the whole point: the host clone-encode chain
+    // (reference-encoder-host.cpp's rvq_encode, reached through
+    // Model::encode_reference) keeps reading `weights.quantizers` regardless
+    // of what this function does, so it can never be made to read a twin.
+    decode_weights = weights;
+    if (codec_context == nullptr) {
+        return SYNTH_OK;
+    }
+
+    // Only the three movable groups are looked up again, against
+    // `codec_context` rather than `weights`'s own `context` -- see this
+    // function's header comment for the group/byte accounting and the
+    // second-consumer trap this split exists to close.
+    Resolver twins(codec_context, hparams);
+    if (!resolve_quantizers(twins, hparams, decode_weights.quantizers)) {
+        return SYNTH_ERR_GGUF;
+    }
+    const int64_t concat = concat_width(hparams);
+    twins.linear("codec.fc2", concat, hparams.codec.hidden_size, decode_weights.fc2);
+    if (!twins.ok() || !resolve_acoustic_decoder(twins, hparams, decode_weights.acoustic_decoder)) {
+        return SYNTH_ERR_GGUF;
+    }
+    return SYNTH_OK;
+}
+
+synth_status_t bind_generator_weights(ggml_context *       generator_context,
+                                      const HParams &      hparams,
+                                      const ModelWeights & weights,
+                                      ModelWeights &       generator_weights) {
+    // Same whole-struct-copy-first discipline as bind_decode_weights above:
+    // `weights` is never written here, so a reader that keeps reading it
+    // (there is none today, per catalog.h's own header comment, but the
+    // invariant does not depend on that staying true) can never observe a
+    // twin.
+    generator_weights = weights;
+    if (generator_context == nullptr) {
+        return SYNTH_OK;
+    }
+    // The whole generator group re-resolved against the twin context, using
+    // the same resolve_generator build_model_weights itself uses -- an
+    // offline decision and a load-time expectation cannot drift apart when
+    // both call the identical function.
+    Resolver twins(generator_context, hparams);
+    if (!resolve_generator(twins, hparams, generator_weights.generator)) {
+        return SYNTH_ERR_GGUF;
     }
     return SYNTH_OK;
 }

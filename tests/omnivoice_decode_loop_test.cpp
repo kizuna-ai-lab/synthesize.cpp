@@ -391,6 +391,48 @@ int check_sampled_same_seed_identical_grid(synth::omnivoice::Model & model) {
     return 0;
 }
 
+// A canvas length change BETWEEN calls on one Model, which nothing else in
+// this suite exercises. run_synthesis keeps a built generator graph per CFG
+// branch and recomputes it across that call's forwards, so the graph is
+// allocated for one canvas geometry and one only. That cache is scoped to the
+// call's own stack frame, which is what makes a differing target_frames on the
+// next call safe -- and the failure mode if it ever escapes to Model::Impl is
+// silent rather than loud: ggml's allocator leaves an already-allocated
+// tensor's data pointer alone, so a graph reused across a shape change reads
+// addresses planned for the other shape and returns plausible wrong numbers
+// with no assert and no crash.
+//
+// 5 then 7 then 5: the third run must reproduce the first exactly. A same-shape
+// repeat (check_no_reference_run's own second call) cannot catch this, because
+// a wrongly-hoisted cache would still be correct when the shape never moves;
+// the 7 in the middle is the whole test. Run against the varied-weights package
+// so the grid is genuinely sensitive to what the graph read -- the
+// constant-weight fixture commits argmax-0 everywhere and would report a pass
+// even reading the wrong addresses.
+int check_canvas_length_change_between_calls(synth::omnivoice::Model & varied_model) {
+    synth::omnivoice::SynthesisOutput five_first;
+    SYNTH_TEST_CHECK(varied_model.run_synthesis(base_request(5), five_first) == SYNTH_OK);
+    if (check_grid(five_first, 5, "shape-change run 1 (5 frames)", /*expect_constant_argmax=*/false) != 0) {
+        return 1;
+    }
+
+    synth::omnivoice::SynthesisOutput seven;
+    SYNTH_TEST_CHECK(varied_model.run_synthesis(base_request(7), seven) == SYNTH_OK);
+    if (check_grid(seven, 7, "shape-change run 2 (7 frames)", /*expect_constant_argmax=*/false) != 0) {
+        return 1;
+    }
+
+    synth::omnivoice::SynthesisOutput five_again;
+    SYNTH_TEST_CHECK(varied_model.run_synthesis(base_request(5), five_again) == SYNTH_OK);
+    SYNTH_TEST_CHECK(five_again.codes == five_first.codes);
+    SYNTH_TEST_CHECK(five_again.audio == five_first.audio);
+
+    // The intervening run was a genuinely different canvas rather than an
+    // accidental repeat, so the assertion above had something to survive.
+    SYNTH_TEST_CHECK(seven.codes.size() != five_first.codes.size());
+    return 0;
+}
+
 // NOTE: this does NOT prove run_synthesis reads request.seed -- it predates
 // (and is now redundant with) check_sampled_seed_actually_drives_the_grid
 // below, which does, on the varied-weights package. Kept only because it
@@ -701,6 +743,7 @@ int main(int argc, char ** argv) {
     failures += check_sampled_same_seed_identical_grid(*model);
     failures += check_sampled_different_seed_different_draws(*model);
     failures += check_sampled_seed_actually_drives_the_grid(*varied_model);
+    failures += check_canvas_length_change_between_calls(*varied_model);
     failures += check_sampled_explicit_greedy_matches_defaulted_request(*model);
     failures += check_margin_report_refuses_positive_temperature(*model);
     failures += check_guidance_zero_skips_uncond_forward(*model, std::string(argv[1]));

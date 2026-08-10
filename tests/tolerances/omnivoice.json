@@ -91,6 +91,90 @@
           "all_passed": true,
           "note": "all_passed flips true when the registered gate first passes; sampled seed-contract cases carry no margin screen (screen rationale is oracle-parity knife edges; this stage claims none). Task 14 (2026-08-01) added checks 8-10, the cloning path against omni-clone-en's own pinned reference and transcript: clone synthesis succeeds, same-seed reproducibility holds with a profile, and the clone digest differs from a same-seed no-profile run. Task 15 (2026-08-02) added checks 11-13, the voice-design path against omni-design-en's own pinned instruct (\"female, young adult, high pitch\"): a Description Text profile's synthesis succeeds, same-seed reproducibility holds with a design profile, and the design digest differs from a same-seed no-profile run. Re-measured with a real run against omnivoice-0-6b-F32.gguf: all 13 checks passed."
         }
+      },
+      "backends": {
+        "CUDA": {
+          "stages": {
+            "replay": {
+              "backend": "CUDA",
+              "phase": "oracle_replay",
+              "cases": 20,
+              "description": "The same twenty-case oracle replay as the CPU cell, run with --accelerate and --tokens-informational: as of Plan 5 Task 1 the generator has its own accelerator twin, so --accelerate now moves BOTH the codec's decode graph (Task 9's 152-tensor twin) and the generator (Task 1's 312-tensor twin) onto the primary CUDA device -- neither is held on CPU any longer. Greedy token CONTENT is no longer required to match the CPU oracle (docs/backends.md's discrete-outputs exception); the grid's SIZE against the oracle's is still required to match, unconditionally, on every case.",
+              "probes": {
+                "generator.hidden_l0": {
+                  "min_cosine": 0.999999,
+                  "observed_min_cosine": 0.9999998545169719,
+                  "observed_max_abs": 0.00626373291015625
+                },
+                "generator.hidden_l7": {
+                  "min_cosine": 0.999998,
+                  "observed_min_cosine": 0.9999996563719943,
+                  "observed_max_abs": 0.0691680908203125
+                },
+                "generator.hidden_l14": {
+                  "min_cosine": 0.999998,
+                  "observed_min_cosine": 0.9999997267236825,
+                  "observed_max_abs": 0.098602294921875
+                },
+                "generator.hidden_l21": {
+                  "min_cosine": 0.999998,
+                  "observed_min_cosine": 0.9999997575345304,
+                  "observed_max_abs": 0.726776123046875
+                },
+                "generator.hidden_l27": {
+                  "min_cosine": 0.999998,
+                  "observed_min_cosine": 0.9999997740110591,
+                  "observed_max_abs": 14.8662109375
+                },
+                "generator.final": {
+                  "min_cosine": 0.999998,
+                  "observed_min_cosine": 0.9999997642152171,
+                  "observed_max_abs": 0.1458892822265625
+                },
+                "generator.logits_step0": {
+                  "min_cosine": 0.999998,
+                  "observed_min_cosine": 0.9999997167775916,
+                  "observed_max_abs": 0.1009063720703125
+                },
+                "audio.pcm": {
+                  "min_cosine": 0.999981,
+                  "max_abs": 0.04,
+                  "observed_min_cosine": 0.9999963545175866,
+                  "observed_max_abs": 0.007008261978626251
+                },
+                "audio.pcm_freerun": {
+                  "min_cosine": 0.999981,
+                  "max_abs": 0.04,
+                  "observed_min_cosine": 0.9999990004382242,
+                  "observed_max_abs": 0.0024223439395427704
+                },
+                "ref.pcm_16k": {
+                  "min_cosine": 0.999999,
+                  "observed_min_cosine": 0.9999999444538425,
+                  "observed_max_abs": 1.1920928955078125e-07
+                },
+                "ref.semantic_mean": {
+                  "min_cosine": 0.999999,
+                  "observed_min_cosine": 0.9999999293211036,
+                  "observed_max_abs": 6.092339754104614e-05
+                },
+                "ref.fused_latent": {
+                  "min_cosine": 0.999999,
+                  "observed_min_cosine": 1.0,
+                  "observed_max_abs": 9.322166442871094e-05
+                }
+              },
+              "note": "Re-measured 2026-08-08 (Plan 5) on the DGX Spark/GB10 host, this time on build/rel-dgx-spark -- Release, not the dev-dgx-spark preset the 2026-08-07 figures below this note used, because dev-dgx-spark compiles ggml-cpu at -O2 -g (2.19x pessimistic on this workload; see reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md's RTF correction). Same host otherwise: native sm_121a, driver 580.159.03, CUDA 13.3.73, UVM fallback off. Command: scripts/validate-omnivoice-replay.py --accelerate --tokens-informational --check --profile F32 --backend CUDA --stage replay, all twenty cases.\n\nThis SUPERSEDES the 2026-08-07 figures below, which calibrated this cell for a codec-only CUDA claim: Plan 5 Task 1 gave the generator its own accelerator twin, and --accelerate now moves it too. Placement, aggregated over all twenty cases: codec and generator both fully off the CPU on every case (mirrored assertions in validate-omnivoice-replay.py). Token grids: 3 of 17 greedy cases and both cloning cases' ref.tokens grids stayed byte-exact (3/17, 2/2) -- ref.tokens is codec-only (RVQ reference-audio encode) and is unaffected by the generator's move, so it keeps its unconditional exact-match rule. The other 14 greedy cases differ in CONTENT from 1 of 200 positions (omni-rate-fast) to 1038 of 1056 (omni-digits) -- consistent with Plan 4 Task 12's own one-line experiment and Plan 5 Task 1's own cross-check on omni-long-boundary (4,190 of 5,752) -- but every one of the 17 greedy grids' SIZE matched the oracle's exactly: RuleDurationEstimator fixes the canvas length before the first generator forward runs, so TF32 changes WHICH token is committed but never HOW MANY frames exist, and validate-omnivoice-replay.py's primary_size_match check (unconditional, not gated by --tokens-informational) asserts exactly this. Per jiangzhuo's 2026-08-08 ruling (a six-pair blind A/B, generator-on-CPU vs generator-on-CUDA, heard no problem in any pair including a cosine-0.0515/98.3%-flipped pair), this content drift is not itself a defect and is reported, not gated -- docs/backends.md's discrete-outputs section records the argument and the precondition this depends on.\n\ngenerator.hidden_l0's committed min_cosine is unchanged from the 2026-08-07 cell; hidden_l7/l14/l21/final/logits_step0 loosen from 0.999999 to 0.999998; hidden_l27 is unchanged (it was already 0.999998, for the pre-norm-outlier reason the CPU cell's own top-of-file note gives). All seven follow this family's established rule unchanged (5x the measured deviation in (1-cosine), floored to six decimals): e.g. hidden_l27's own deviation is now 2.26e-07 (was 2.14e-07 on the CPU cell and 2.14e-07 on the 2026-08-07 CUDA cell, which only ever measured the CPU-held generator) -- larger than before because the forward itself now runs in TF32, but still the same order of magnitude, because the step-0 conditional forward this probe reads is a single deterministic pass over the oracle's own fixed inputs, not a multi-step rollout that content drift could compound. max_abs is still not gated for these seven, for the same pre-norm-outlier-channel reason as the CPU cell (hidden_l27's own max_abs, 14.87, is 185x its 2026-08-07 figure of 0.080 -- exactly this family's reason for gating this channel on cosine rather than max_abs).\n\naudio.pcm is UNCHANGED (0.999981/0.04, same as 2026-08-07): it always decodes the ORACLE's own committed grid through the port's codec, never the generator's free-run choice, so it is insulated from the generator's move by construction and this re-measurement reproduces the identical observed figures bit-for-bit. audio.pcm_freerun's own committed cell is also left mirroring audio.pcm's (0.999981/0.04) rather than independently tightened to this run's own tighter observed figures (0.999999/0.00242): its sample collapsed from a near-complete cross-section on the 2026-08-07 cell to 2 of 17 cases here (only the cases whose free-run grid happened to equal the oracle's still owe an oracle-parity waveform comparison; the other 15 are exempt-by-alternate or not-compared, per the same 'not independent evidence' reasoning this file's top-of-file note already applies to the CPU cell), so a number derived from 2 points is not committed as if it were independently informative -- mirroring audio.pcm's own (looser, codec-only) budget is the honest choice, consistent with how little this channel now exercises for a CUDA-generator run.\n\nref.pcm_16k/ref.semantic_mean/ref.fused_latent are UNCHANGED (codec-independent reference-encoder channels, untouched by the generator's move); this re-measurement's observed figures match the CPU cell's own bit-for-bit, confirming the encode-reference chain is unaffected.\n\nFull narrative, the RTF numbers, and docs/backends.md's principled exception writeup: docs/porting/families/omnivoice.md's Execution Backends section and docs/backends.md's discrete-outputs section and per-family cost table.\n\n--- 2026-08-07 figures (Plan 4 Task 11, codec-only CUDA, superseded above) ---\ngenerator.* and ref.* were copied unchanged from the CPU cell because the generator never left the CPU under --accelerate before Plan 5 Task 1: observed min_cosine ran 0.99999977-0.99999991 with max_abs at the CPU cell's own scale (e.g. hidden_l27 0.080, final 0.00104), all CPU run-to-run noise rather than CUDA precision. audio.pcm/audio.pcm_freerun's own 0.999981/0.04 cell already reflected the codec's real TF32 arithmetic and carries forward unchanged into the cell above. Token grids were 17/17 and ref.tokens 2/2 exact, because the codec's move alone does not touch the generator's discrete decision."
+            },
+            "public": {
+              "backend": "CUDA",
+              "description": "The same public-seam relations as the CPU cell, driven with --backend cuda (tests/omnivoice_public_real.c's new [cpu|cuda] positional, Plan 4 accumulated requirement 2 -- before this task the flag reached only the report dict, never the runner).",
+              "checks": 14,
+              "all_passed": true,
+              "note": "Checks 1-13 are the same relations the CPU cell gates (seed echo, same-seed byte identity, cross-seed artifact_differs, language resolution, the cloning and voice-design paths); their digests differ from the CPU run's own because the codec's CUDA arithmetic changes the waveform bytes, which is expected and not itself gated here (see the replay cell's audio.pcm probe for the actual tolerance). Check 14 is new and CUDA-only: synth_model_get_device reports \"cuda\" after the load check 1's run made -- the positive assertion accumulated requirement 1 asks for, since the repeated-run cleanup test cannot distinguish a forgotten backend-claim flip from a correct refusal by itself. Re-measured with a real run against omnivoice-0-6b-F32.gguf: all 14 checks passed."
+            }
+          }
+        }
       }
     }
   }

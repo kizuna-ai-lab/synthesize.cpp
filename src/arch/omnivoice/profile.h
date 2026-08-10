@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gguf.h"
 #include "synthesize.h"
 #include "voice-profile-handle.h"
 
@@ -205,6 +206,113 @@ synth_status_t resolve_instruct(const std::string &                     descript
 // `synthesize.profile.schema` is frozen at "omnivoice-clone-prompt"); one
 // schema with an internal kind tag is available without one.
 // ---------------------------------------------------------------------------
+
+// Which kind(s) a kPrescanKnownKeys entry is ever emitted for --
+// `kCommon` for the 8 keys set_common_metadata writes into every envelope,
+// `kCloneOnly`/`kDesignOnly` for the keys only serialize_clone_prompt/
+// serialize_design_instruct add on top. Fix-round-1 addition: without a
+// per-entry scope, a test could only check the FLAT 12-key set, which a key
+// MOVED between the two writers (say `language_tag` from clone to design)
+// leaves untouched -- the union of what both kinds emit is unchanged, so a
+// flat-set check alone cannot see the move. With `scope` on each entry, the
+// expected per-kind key set is a direct filter over this SAME table (no
+// second, position- or count-based reconstruction of "which keys belong to
+// which kind" -- filtering by a field this table already carries is the
+// smallest addition that makes the per-kind question directly answerable).
+enum class PrescanKeyScope {
+    kCommon,
+    kCloneOnly,
+    kDesignOnly,
+};
+
+// The exact, closed set of metadata keys this family's writer
+// (set_common_metadata/serialize_clone_prompt/serialize_design_instruct, all
+// in profile.cpp) ever emits: the 8 keys every kind shares (including
+// "general.alignment"'s absence -- this writer never sets that key, so it is
+// simply not a member here), plus serialize_clone_prompt's 3 ClonePrompt-only
+// keys, plus serialize_design_instruct's 1 DesignInstruct-only key -- 12
+// entries total. profile.cpp's own prescan_buffer (the untrusted-buffer
+// pre-scan guarding load_profile_from_memory; see that function's own header
+// comment for why it exists) uses this SAME table as its positive-validation
+// whitelist: a key outside this set, or a known key declared with the wrong
+// type/array-ness/count, is refused before gguf_init_from_buffer ever runs.
+// prescan_buffer itself never reads `scope` (which SPECIFIC keys are
+// required for a given `kind` is load_profile_from_memory's own job,
+// unchanged by this field) -- `scope` exists purely so
+// tests/omnivoice_serialize_writer_agreement_test.cpp can compute an exact
+// per-kind expected key set from this table alone.
+//
+// Declared here in the header -- `inline constexpr` at namespace scope, the
+// same pattern src/unicode-ranges.h already uses for its own cross-TU
+// constant tables -- rather than file-local (anonymous-namespace) to
+// profile.cpp, where the rest of the pre-scan machinery still lives, for
+// exactly one reason: tests/omnivoice_serialize_writer_agreement_test.cpp
+// drives the REAL serialize_clone_prompt/serialize_design_instruct and checks
+// their real output's key set against this SAME table, rather than yet
+// another hand-transcription of it -- the carry-over item this test closes:
+// a key REMOVED from the writer while left in this table is a silently
+// too-permissive whitelist that no other fast test would ever notice.
+// CLAUDE.md's "family internals are private; tests may reach them" rule,
+// applied to this one table.
+//
+// `is_array`/`count` are only meaningful together; a scalar entry's `count`
+// is ignored. The two array-typed entries (compatibility_id, content_sha256)
+// are spelled as raw literals here, matching how the other ten entries below
+// already are -- profile.cpp's own kKeyCompatibilityId/kKeyContentSha256
+// constants exist for the call sites that build an actual value FROM them
+// (read_u8_32_array, find_u8_32_value_offset), not for this table, which
+// never referenced the other ten keys' own literals by a shared constant
+// either.
+struct PrescanKeySpec {
+    const char *    key;
+    gguf_type       type;
+    bool            is_array;
+    uint64_t        count;
+    PrescanKeyScope scope;
+};
+
+inline constexpr PrescanKeySpec kPrescanKnownKeys[] = {
+    // set_common_metadata (8 keys, every kind).
+    { "general.architecture",                      GGUF_TYPE_STRING,  false, 0,  PrescanKeyScope::kCommon     },
+    { "synthesize.voice_profile.format_version",   GGUF_TYPE_UINT32,  false, 0,  PrescanKeyScope::kCommon     },
+    { "synthesize.voice_profile.model_family",     GGUF_TYPE_STRING,  false, 0,  PrescanKeyScope::kCommon     },
+    { "synthesize.voice_profile.schema",           GGUF_TYPE_STRING,  false, 0,  PrescanKeyScope::kCommon     },
+    { "synthesize.voice_profile.schema_version",   GGUF_TYPE_UINT32,  false, 0,  PrescanKeyScope::kCommon     },
+    { "synthesize.voice_profile.compatibility_id", GGUF_TYPE_UINT8,   true,  32, PrescanKeyScope::kCommon     },
+    { "synthesize.voice_profile.content_sha256",   GGUF_TYPE_UINT8,   true,  32, PrescanKeyScope::kCommon     },
+    { "synthesize.voice_profile.kind",             GGUF_TYPE_STRING,  false, 0,  PrescanKeyScope::kCommon     },
+    // serialize_clone_prompt (3 more keys, "clone-prompt" only).
+    { "synthesize.voice_profile.transcript_text",  GGUF_TYPE_STRING,  false, 0,  PrescanKeyScope::kCloneOnly  },
+    { "synthesize.voice_profile.ref_rms",          GGUF_TYPE_FLOAT32, false, 0,  PrescanKeyScope::kCloneOnly  },
+    { "synthesize.voice_profile.language_tag",     GGUF_TYPE_STRING,  false, 0,  PrescanKeyScope::kCloneOnly  },
+    // serialize_design_instruct (1 more key, "design-instruct" only).
+    { "synthesize.voice_profile.instruct",         GGUF_TYPE_STRING,  false, 0,  PrescanKeyScope::kDesignOnly },
+};
+inline constexpr size_t kPrescanKnownKeyCount = sizeof(kPrescanKnownKeys) / sizeof(kPrescanKnownKeys[0]);
+
+// n_kv is exactly one of these two values: 8 common + 1 ("instruct") for
+// DesignInstruct, 8 common + 3 (transcript_text/ref_rms/language_tag) for
+// ClonePrompt -- not a generous ceiling, an exact enumeration, since this
+// writer never produces anything else. Which SPECIFIC keys are required for
+// a given `kind` is still load_profile_from_memory's own job afterward
+// (GgufMetadata's per-field reads already fail closed on a missing field);
+// profile.cpp's own prescan_buffer only bounds the total count against these
+// two values and rejects any key outside kPrescanKnownKeys above.
+//
+// Declared here (`inline constexpr`, same reasoning as kPrescanKnownKeys
+// above) rather than file-local to profile.cpp: fix-round-1 addition --
+// tests/omnivoice_serialize_writer_agreement_test.cpp also pins the REAL
+// writer's per-kind key COUNT against these SAME two constants, independent
+// of (and a cheaper, coarser complement to) the per-kind key SET check
+// `scope` above enables. This matters because the two checks catch DIFFERENT
+// drifts: a key added to a writer AND correctly added to kPrescanKnownKeys
+// with the correct `scope`, but whose matching count constant here is not
+// bumped, passes the per-kind SET check (scope-filtered kPrescanKnownKeys
+// now genuinely matches what the writer emits) while still being exactly the
+// bug prescan_buffer's own n_kv gate (profile.cpp) would reject every real
+// envelope of that kind over -- only a dedicated count check catches it.
+inline constexpr int64_t kPrescanKvCountDesign = 9;
+inline constexpr int64_t kPrescanKvCountClone  = 11;
 
 // Serializes `prompt` into a fresh v1 envelope. `compatibility_id` is the
 // Loaded Model's own 32-byte Profile Compatibility ID (already decoded from

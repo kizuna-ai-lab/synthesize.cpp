@@ -19,3 +19,10 @@ CMakeUserPresets.json
 /reports/reference
 /reports/validate
 /reports/bench
+
+# Agent scratch. Nothing here is a project artifact: it is whatever a session
+# wrote while investigating. Added 2026-08-10 after `git add -A` swept 56 files
+# and 9.0 MB of rate-sweep probes, WAVs and f32 dumps into a commit -- the
+# reviewer that caught it was CodeRabbit, on files this project's own review
+# never thought to look at.
+.claude/

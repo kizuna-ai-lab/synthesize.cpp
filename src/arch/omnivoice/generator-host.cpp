@@ -220,15 +220,15 @@ float gumbel_perturb(float logit, float temperature, float uniform) {
     return scaled + noise;
 }
 
-synth_status_t choose_token_sampled(const float *        cond,
-                                    const float *        uncond,
-                                    uint32_t             vocab_size,
-                                    uint32_t             mask_id,
-                                    float                guidance_scale,
-                                    float                class_temperature,
-                                    NormalRandomStream & stream,
-                                    int32_t &            token,
-                                    float &              log_prob) {
+synth_status_t choose_token_sampled(const float * cond,
+                                    const float * uncond,
+                                    uint32_t      vocab_size,
+                                    uint32_t      mask_id,
+                                    float         guidance_scale,
+                                    float         class_temperature,
+                                    const float * uniforms,
+                                    int32_t &     token,
+                                    float &       log_prob) {
     if (class_temperature == 0.0f) {
         // Matches upstream's `if class_temperature > 0.0` split exactly: no
         // top-k filter, no stream draws, the existing greedy path decides.
@@ -255,11 +255,10 @@ synth_status_t choose_token_sampled(const float *        cond,
 
     // Upstream's `_filter_top_k`: keep = ceil(0.1 * vocab_size) largest
     // guided values (the mask entry is already -inf from build_guided's ban,
-    // so it can never be among them). Computed as integer ceiling division
-    // by 10 rather than double(0.1) * vocab_size, so the result is exact for
-    // every integer vocab_size instead of depending on how 0.1's binary
-    // rounding happens to fall relative to a .5 boundary.
-    const uint32_t keep = std::min((vocab_size + 9) / 10, vocab_size);
+    // so it can never be among them). `topk_keep` in the header is the one
+    // definition, shared with callers that pre-draw this position's uniforms
+    // and therefore have to know the count before the logits exist.
+    const uint32_t keep = topk_keep(vocab_size);
 
     // Ties break toward the lower class id, matching this port's argmax
     // first-maximal convention elsewhere (see choose_token above).
@@ -310,7 +309,7 @@ synth_status_t choose_token_sampled(const float *        cond,
     float   best_score = -std::numeric_limits<float>::infinity();
     for (uint32_t index = 0; index < keep; ++index) {
         const uint32_t class_id = order[index];
-        const float    uniform  = stream.next_uniform();
+        const float    uniform  = uniforms[index];
         const float    score    = gumbel_perturb(guided[class_id], class_temperature, uniform);
         if (score > best_score) {
             best_score = score;
@@ -320,6 +319,52 @@ synth_status_t choose_token_sampled(const float *        cond,
     token    = best;
     log_prob = full_max;
     return SYNTH_OK;
+}
+
+synth_status_t choose_token_sampled(const float *        cond,
+                                    const float *        uncond,
+                                    uint32_t             vocab_size,
+                                    uint32_t             mask_id,
+                                    float                guidance_scale,
+                                    float                class_temperature,
+                                    NormalRandomStream & stream,
+                                    int32_t &            token,
+                                    float &              log_prob) {
+    if (class_temperature == 0.0f) {
+        // The short-circuit branch draws nothing, so there is nothing to fill
+        // and no buffer to hand over. Delegating anyway (rather than calling
+        // choose_token here) keeps the branch itself in exactly one place.
+        return choose_token_sampled(cond, uncond, vocab_size, mask_id, guidance_scale, class_temperature,
+                                    static_cast<const float *>(nullptr), token, log_prob);
+    }
+    // Drawn in one pass, in the order the survivor loop consumes them: this is
+    // the same sequence of next_uniform() calls the loop used to make inline,
+    // so the stream advances identically and this overload stays a pure
+    // convenience over the pre-drawn one.
+    thread_local std::vector<float> uniforms;
+    uniforms.resize(topk_keep(vocab_size));
+    stream.fill_uniform(uniforms.data(), uniforms.size());
+    return choose_token_sampled(cond, uncond, vocab_size, mask_id, guidance_scale, class_temperature, uniforms.data(),
+                                token, log_prob);
+}
+
+void enumerate_masked_candidates(const int32_t *                canvas,
+                                 uint32_t                       codebooks,
+                                 uint64_t                       frames,
+                                 int32_t                        mask_id,
+                                 std::vector<MaskedCandidate> & out) {
+    out.clear();
+    for (uint32_t codebook = 0; codebook < codebooks; ++codebook) {
+        for (uint64_t frame = 0; frame < frames; ++frame) {
+            if (canvas[size_t(codebook) * size_t(frames) + size_t(frame)] != mask_id) {
+                continue;  // committed in an earlier step; cannot be revisited
+            }
+            MaskedCandidate candidate;
+            candidate.codebook = codebook;
+            candidate.frame    = frame;
+            out.push_back(candidate);
+        }
+    }
 }
 
 bool commits_before(const MaskedCandidate & left, const MaskedCandidate & right) {

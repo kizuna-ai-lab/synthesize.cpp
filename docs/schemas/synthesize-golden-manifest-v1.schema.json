@@ -334,6 +334,28 @@
         }
       }
     },
+    "stochasticInput": {
+      "description": "A stochastic-input capture read from the local oracle dump. `sha256`, when present, pins the digest of the file at `path` (resolved under the case's own oracle directory): a mismatch means the oracle dump on this machine is not the one the manifest describes, checked before anything is compared against it. Optional here because this type is shared across every family's manifest and only some record it; a family's own structural test is where 'every case must carry one' is enforced.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "path", "format"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "format": {
+          "type": "string",
+          "enum": ["i32le", "i64le", "f32le", "json"]
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
     "alternateGrid": {
       "description": "A second reference-produced token grid this case's port output may equal. `file` is committed and resolved relative to the manifest, and its bytes are pinned by `sha256`: the admissible set is enumerated by digest and is never widened by a tolerance. `provenance` says which reference run produced it and under which decision it was admitted.",
       "type": "object",
@@ -531,7 +553,7 @@
           "type": "array",
           "uniqueItems": true,
           "items": {
-            "$ref": "#/$defs/generatedArtifact"
+            "$ref": "#/$defs/stochasticInput"
           }
         },
         "alternate_grids": {

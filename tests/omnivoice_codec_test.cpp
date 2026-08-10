@@ -399,6 +399,138 @@ bool run_case(ggml_backend_dev_t device, float & max_diff) {
     return true;
 }
 
+// Task 2 (Plan 4): codec_conv1d's packed branch, transcribed from VITS's and
+// Kokoro's own conv1d (src/arch/vits/operations.cpp:14-45,
+// src/arch/kokoro/operations.cpp:46-79) and exercised the same way
+// tests/vits_conv_test.cpp's own Q8_0 case does -- a Q8_0 kernel of the
+// packed shape the offline quantizer emits ([kernel * in_channels,
+// out_channels]) must produce the same result as its F32 twin, within a
+// MEASURED tolerance. `in_channels` is 32, Q8_0's own block size: the
+// smallest width whose packed row (kernel * in_channels) can hold even one
+// block, and therefore the narrowest case where a block's own quantization
+// error is least averaged away by the row's length -- a harder case than
+// any real MatrixWeight conv this family packs, all of whose packed rows
+// are wider (see Task 2's report for the full survey).
+int check_packed_conv1d() {
+    ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    SYNTH_TEST_CHECK(cpu != nullptr);
+    // The handle is parked in a Fixture only for that struct's destructor: every
+    // SYNTH_TEST_CHECK below returns from this function, so a raw handle would
+    // leak on exactly the paths a real deviation takes, and the LSan report
+    // would land on top of the assertion that matters. Fixture's other members
+    // stay null and its destructor skips them. `run` already frees each buffer
+    // and allocator it takes on every one of its own paths, so the backend is
+    // the only handle here that outlives a failure.
+    Fixture fixture;
+    fixture.backend = ggml_backend_dev_init(cpu, nullptr);
+    SYNTH_TEST_CHECK(fixture.backend != nullptr);
+    ggml_backend_t backend = fixture.backend;
+
+    constexpr int64_t kernel       = 3;
+    constexpr int64_t in_channels  = 32;
+    constexpr int64_t out_channels = 4;
+    constexpr int64_t length       = 5;
+
+    // Deterministic rather than random: reproducible without a shared LCG,
+    // and varied enough in sign and magnitude that a byte-level quantization
+    // defect could not hide behind a coincidental cancellation.
+    std::vector<float> kernel_values(size_t(kernel * in_channels * out_channels));
+    for (size_t index = 0; index < kernel_values.size(); ++index) {
+        kernel_values[index] = float(int(index % 23) - 11) * 0.037f;
+    }
+    std::vector<float> bias_values(static_cast<size_t>(out_channels));
+    for (size_t index = 0; index < bias_values.size(); ++index) {
+        bias_values[index] = float(int(index) - 1) * 0.05f;
+    }
+    std::vector<float> input_values(size_t(in_channels * length));
+    for (size_t index = 0; index < input_values.size(); ++index) {
+        input_values[index] = float(int(index % 17) - 8) * 0.061f;
+    }
+
+    auto run = [&](bool packed, std::vector<float> & output_values) -> bool {
+        Context weights_ctx = make_context(ggml_tensor_overhead() * 4);
+        if (weights_ctx == nullptr) {
+            return false;
+        }
+        synth::omnivoice::Conv1dWeights weights{};
+        weights.weight = packed ?
+                             ggml_new_tensor_2d(weights_ctx.get(), GGML_TYPE_Q8_0, kernel * in_channels, out_channels) :
+                             ggml_new_tensor_3d(weights_ctx.get(), GGML_TYPE_F32, kernel, in_channels, out_channels);
+        weights.bias   = ggml_new_tensor_1d(weights_ctx.get(), GGML_TYPE_F32, out_channels);
+        if (weights.weight == nullptr || weights.bias == nullptr) {
+            return false;
+        }
+        ggml_backend_buffer_t weights_buffer = ggml_backend_alloc_ctx_tensors(weights_ctx.get(), backend);
+        if (weights_buffer == nullptr) {
+            return false;
+        }
+        if (packed) {
+            std::vector<uint8_t> quantized(ggml_nbytes(weights.weight));
+            const size_t written = ggml_quantize_chunk(GGML_TYPE_Q8_0, kernel_values.data(), quantized.data(), 0,
+                                                       out_channels, kernel * in_channels, nullptr);
+            if (written != quantized.size()) {
+                ggml_backend_buffer_free(weights_buffer);
+                return false;
+            }
+            ggml_backend_tensor_set(weights.weight, quantized.data(), 0, quantized.size());
+        } else {
+            ggml_backend_tensor_set(weights.weight, kernel_values.data(), 0, kernel_values.size() * sizeof(float));
+        }
+        ggml_backend_tensor_set(weights.bias, bias_values.data(), 0, bias_values.size() * sizeof(float));
+
+        Context               input_ctx = make_context(ggml_tensor_overhead());
+        ggml_tensor *         input     = ggml_new_tensor_2d(input_ctx.get(), GGML_TYPE_F32, in_channels, length);
+        ggml_backend_buffer_t input_buffer =
+            input == nullptr ? nullptr : ggml_backend_alloc_ctx_tensors(input_ctx.get(), backend);
+        if (input_buffer == nullptr) {
+            ggml_backend_buffer_free(weights_buffer);
+            return false;
+        }
+        ggml_backend_tensor_set(input, input_values.data(), 0, input_values.size() * sizeof(float));
+
+        Context       graph_ctx = make_graph_context();
+        ggml_cgraph * graph     = ggml_new_graph_custom(graph_ctx.get(), 32, false);
+        ggml_tensor * output    = synth::omnivoice::codec_conv1d(graph_ctx.get(), input, weights, /*dilation*/ 1,
+                                                                 /*padding*/ 0);
+        bool          ok        = output != nullptr;
+        if (ok) {
+            ggml_set_output(output);
+            ggml_build_forward_expand(graph, output);
+            ggml_gallocr_t allocator = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+            ok                       = allocator != nullptr && ggml_gallocr_alloc_graph(allocator, graph);
+            if (ok) {
+                ok = ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS;
+            }
+            if (ok) {
+                output_values.resize(size_t(ggml_nelements(output)));
+                ggml_backend_tensor_get(output, output_values.data(), 0, ggml_nbytes(output));
+            }
+            if (allocator != nullptr) {
+                ggml_gallocr_free(allocator);
+            }
+        }
+        ggml_backend_buffer_free(input_buffer);
+        ggml_backend_buffer_free(weights_buffer);
+        return ok;
+    };
+
+    std::vector<float> f32_output;
+    std::vector<float> packed_output;
+    SYNTH_TEST_CHECK(run(false, f32_output));
+    SYNTH_TEST_CHECK(run(true, packed_output));
+    SYNTH_TEST_CHECK(f32_output.size() == packed_output.size());
+
+    const float worst = deviation(packed_output, f32_output.data(), f32_output.size());
+    std::printf("omnivoice-codec: packed-vs-f32 codec_conv1d worst deviation %.6g\n", double(worst));
+    // Measured 0.00310 on this development host's CPU; gated at 0.015
+    // (~4.8x measured, within the project's <=5x-measured discipline -- see
+    // e.g. tests/omnivoice_resampler_test.cpp's own comment for the same
+    // rule) rather than left at a guessed round number.
+    SYNTH_TEST_CHECK(worst < 0.015f);
+
+    return 0;
+}
+
 // A shape the builders cannot serve is a wiring defect, so they return nullptr
 // rather than aborting inside ggml on an assertion the caller cannot catch.
 int check_rejections() {
@@ -759,6 +891,7 @@ int check_wave_has_power() {
 }  // namespace
 
 int main() {
+    SYNTH_TEST_CHECK(check_packed_conv1d() == 0);
     SYNTH_TEST_CHECK(check_rejections() == 0);
     SYNTH_TEST_CHECK(check_host_guards() == 0);
     SYNTH_TEST_CHECK(check_reference_volume() == 0);

@@ -253,6 +253,43 @@ int run_valid_package() {
     return 0;
 }
 
+// A package cut to a Quantization Profile is read the same as any other, its
+// profile string just resolving to a different enumerator. Since jiangzhuo's
+// naming ruling of 2026-08-09 the string states which half it quantizes:
+// Q8_CODEC_MIXED and F16_CODEC are Plan 4's codec-half profiles, measured even
+// though neither ships -- see docs/porting/families/omnivoice.md's
+// "Quantization Profile Shape" -- and the plain Q8, Q4_K, F16 and BF16 are the
+// generator-half profiles. The metadata reader accepts all of them; which one
+// a package should carry is not its question.
+//
+// The `F16`/`F16_CODEC` pair is the one that has to be asserted rather than
+// assumed: the two strings differ by a suffix and land on different halves, so
+// a reader that truncated or aliased either would silently mis-type a whole
+// half of the package.
+int run_quantization_profile_acceptance() {
+    struct Accepted {
+        const char *                          name;
+        synth::omnivoice::QuantizationProfile profile;
+    };
+
+    for (const Accepted & accepted : {
+             Accepted{ "Q8_CODEC_MIXED", synth::omnivoice::QuantizationProfile::Q8CodecMixed },
+             Accepted{ "F16_CODEC",      synth::omnivoice::QuantizationProfile::F16Codec     },
+             Accepted{ "Q8",             synth::omnivoice::QuantizationProfile::Q8           },
+             Accepted{ "Q4_K",           synth::omnivoice::QuantizationProfile::Q4K          },
+             Accepted{ "F16",            synth::omnivoice::QuantizationProfile::F16          },
+             Accepted{ "BF16",           synth::omnivoice::QuantizationProfile::BF16         },
+    }) {
+        GgufContext context = valid_metadata();
+        SYNTH_TEST_CHECK(context != nullptr);
+        gguf_set_val_str(context.get(), "synthesize.quantization.profile", accepted.name);
+        synth::omnivoice::HParams hparams;
+        SYNTH_TEST_CHECK(synth::omnivoice::read_hparams(context.get(), hparams) == SYNTH_OK);
+        SYNTH_TEST_CHECK(hparams.quantization_profile == accepted.profile);
+    }
+    return 0;
+}
+
 int run_identity_rejections() {
     SYNTH_TEST_CHECK(expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "general.architecture", "qwen3-tts"); },
                                      "another family's package is not this family's") == 0);
@@ -266,11 +303,33 @@ int run_identity_rejections() {
         expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.omnivoice.architecture_version", 2); },
                         "an unknown architecture version") == 0);
 
-    // F32 is this family's only source profile: the checkpoint stores F32
-    // throughout, so a BF16 package would describe weights that never existed.
+    // `Q4_K_M` is llama.cpp's Q4_K/Q6_K mixture. This family cuts `Q4_K`,
+    // which is neither that mixture nor a superset of it, and the near-miss
+    // spelling is exactly the kind a package author gets wrong.
     SYNTH_TEST_CHECK(
-        expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "synthesize.quantization.profile", "BF16"); },
-                        "BF16 is not a profile this family cuts") == 0);
+        expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "synthesize.quantization.profile", "Q4_K_M"); },
+                        "Q4_K_M is llama.cpp's mixture, not a profile this family cuts") == 0);
+    // The `_GEN`-suffixed names this family used before jiangzhuo's naming
+    // ruling of 2026-08-09. Refusing them is the point: a package cut under
+    // the old names carries tensor types this reader would otherwise have to
+    // guess a half for, and the old local packages were set aside rather than
+    // renamed in place. A stale package must fail at load with its profile
+    // string named, not load as something else.
+    for (const char * retired : { "Q8_GEN", "Q4_K_GEN", "F16_GEN", "BF16_GEN" }) {
+        SYNTH_TEST_CHECK(
+            expect_rejected(
+                [retired](gguf_context * g) { gguf_set_val_str(g, "synthesize.quantization.profile", retired); },
+                "a retired _GEN profile name is not loadable") == 0);
+    }
+    // `Q8_MIXED` is the sibling families' name and exists in the shared
+    // profile table, so the tool will happily cut an omnivoice package under
+    // it. This family's own codec profile is `Q8_CODEC_MIXED`, and the
+    // difference has to be a refusal here rather than an alias -- otherwise
+    // the one name would mean a VITS codec package and an omnivoice codec
+    // package at once.
+    SYNTH_TEST_CHECK(
+        expect_rejected([](gguf_context * g) { gguf_set_val_str(g, "synthesize.quantization.profile", "Q8_MIXED"); },
+                        "Q8_MIXED is a sibling family's name, not this family's") == 0);
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.quantization.profile_version", 2); },
                         "an unknown quantization profile version") == 0);
@@ -665,6 +724,7 @@ int main() {
     synth::omnivoice::HParams hparams;
     SYNTH_TEST_CHECK(synth::omnivoice::read_hparams(nullptr, hparams) == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(run_valid_package() == 0);
+    SYNTH_TEST_CHECK(run_quantization_profile_acceptance() == 0);
     SYNTH_TEST_CHECK(run_identity_rejections() == 0);
     SYNTH_TEST_CHECK(run_capability_rejections() == 0);
     SYNTH_TEST_CHECK(run_generation_rejections() == 0);

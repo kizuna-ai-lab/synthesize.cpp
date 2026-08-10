@@ -155,18 +155,41 @@ ggml_tensor * conv1d(ggml_context * context,
     if (context == nullptr || input == nullptr || weight == nullptr || stride <= 0 || padding < 0 || dilation <= 0) {
         return nullptr;
     }
-    const int64_t kernel       = weight->ne[0];
-    const int64_t in_channels  = weight->ne[1];
-    const int64_t out_channels = weight->ne[2];
-    const int64_t length       = input->ne[1];
-    if (kernel <= 0 || length <= 0 || in_channels != input->ne[0] || out_channels <= 0 ||
-        (bias != nullptr && bias->ne[0] != out_channels)) {
+    // The same packed dispatch codec.cpp's codec_conv1d carries: a block-
+    // quantized kernel arrives already flattened to
+    // [kernel * in_channels, out_channels], its logical rank lost, so the
+    // input supplies in_channels and a throwaway F32 shape tensor drives
+    // im2col instead of the kernel itself; the packed kernel is then used
+    // directly as mul_mat's already-2-D left operand. Same recipe as VITS's
+    // and Kokoro's own conv1d (src/arch/vits/operations.cpp:14-45,
+    // src/arch/kokoro/operations.cpp:46-79).
+    const bool    packed       = ggml_is_quantized(weight->type);
+    const int64_t in_channels  = input->ne[0];
+    int64_t       kernel       = 0;
+    int64_t       out_channels = 0;
+    if (packed) {
+        if (in_channels <= 0 || weight->ne[0] % in_channels != 0) {
+            return nullptr;
+        }
+        kernel       = weight->ne[0] / in_channels;
+        out_channels = weight->ne[1];
+    } else {
+        kernel       = weight->ne[0];
+        out_channels = weight->ne[2];
+        if (weight->ne[1] != in_channels) {
+            return nullptr;
+        }
+    }
+    const int64_t length = input->ne[1];
+    if (kernel <= 0 || length <= 0 || out_channels <= 0 || (bias != nullptr && bias->ne[0] != out_channels)) {
         return nullptr;
     }
     ggml_tensor * time_major = ggml_cont(context, ggml_transpose(context, input));
-    ggml_tensor * columns =
-        ggml_im2col(context, weight, time_major, stride, 0, padding, 0, dilation, 0, false, weight->type);
-    ggml_tensor * kernel_2d = ggml_reshape_2d(context, weight, kernel * in_channels, out_channels);
+    ggml_tensor * shape_kernel =
+        packed ? ggml_new_tensor_3d(context, GGML_TYPE_F32, kernel, in_channels, out_channels) : weight;
+    ggml_tensor * columns   = ggml_im2col(context, shape_kernel, time_major, stride, 0, padding, 0, dilation, 0, false,
+                                          packed ? GGML_TYPE_F32 : weight->type);
+    ggml_tensor * kernel_2d = packed ? weight : ggml_reshape_2d(context, weight, kernel * in_channels, out_channels);
     ggml_tensor * signal =
         ggml_mul_mat(context, kernel_2d, ggml_reshape_2d(context, columns, columns->ne[0], columns->ne[1]));
     return bias != nullptr ? add_channel_bias(context, signal, bias) : signal;
@@ -190,6 +213,17 @@ ggml_tensor * conv1d(ggml_context *        context,
 // input, concatenated back together -- the number of groups here is small
 // (16 at real scale) and this graph is built once per cloning request, not
 // once per step, so the loop costs nothing worth avoiding.
+//
+// Deliberately NOT given a packed branch. Its only caller, pos_conv_embed
+// below, always feeds it codec.semantic_model.encoder.pos_conv_embed.conv.weight,
+// which quantization.cpp's classify_codec_matrix_region keeps permanently
+// Sensitive (never packed) for exactly this reason: a block-quantized
+// weight is packed to a flattened 2-D [kernel * in, out] matrix with no
+// separate in-axis left, while the per-group slicing two lines below reads
+// the weight's NATIVE [kernel, in_per_group, out] layout with ggml_view_3d.
+// A packed tensor has nothing 3-D left for that view to address, so the one
+// tensor this function ever reads is kept unpacked rather than this function
+// gaining a packed arm it would never exercise.
 ggml_tensor * grouped_conv1d(ggml_context * context, ggml_tensor * input, const Conv1dWeights & weights, int padding) {
     if (context == nullptr || input == nullptr || !bound(weights, true)) {
         return nullptr;
@@ -354,6 +388,19 @@ ggml_tensor * semantic_layer(ggml_context *               context,
 // (dilation 1, pad 1 -- this checkpoint's block_dilations are fixed to
 // [1, 1] by catalog.cpp's own resolution) -> ELU -> bias-free kernel-1 conv,
 // added back to the branch's input.
+//
+// Padding is the fixed literal 1 (kernel 3) and 0 (kernel 1) -- catalog.cpp's
+// own kSemanticEncoderKernel/kSemanticEncoderPointwise -- rather than derived
+// from weights.conv1/conv2.weight->ne[0] the way this function used to: once
+// Task 2's packed branch lands, a block-quantized conv weight's ne[0] is
+// kernel * in_channels, not the kernel width alone, so deriving padding from
+// it would silently compute the wrong pad under any profile that packs these
+// tensors. Both kernels are compile-time architectural constants here, not
+// per-package hyperparameters (unlike HuBERT's feat_conv, whose conv_kernel
+// really does come from HParams and is cross-checked against the tensor
+// above in build_semantic_branch), so naming them is exactly codec.cpp's own
+// convention for its own fixed kernel widths (e.g. its `// kernel 7, pad 3`
+// call sites).
 ggml_tensor * semantic_encoder_res_unit(ggml_context *                 context,
                                         ggml_tensor *                  hidden,
                                         const SemanticEncoderResUnit & weights) {
@@ -361,12 +408,12 @@ ggml_tensor * semantic_encoder_res_unit(ggml_context *                 context,
         return nullptr;
     }
     ggml_tensor * branch = ggml_elu(context, hidden);
-    branch               = conv1d(context, branch, weights.conv1, 1, int((weights.conv1.weight->ne[0] - 1) / 2), 1);
+    branch               = conv1d(context, branch, weights.conv1, 1, 1, 1);  // kernel 3, pad 1
     if (branch == nullptr) {
         return nullptr;
     }
     branch = ggml_elu(context, branch);
-    branch = conv1d(context, branch, weights.conv2, 1, int((weights.conv2.weight->ne[0] - 1) / 2), 1);
+    branch = conv1d(context, branch, weights.conv2, 1, 0, 1);  // kernel 1, pad 0
     if (branch == nullptr || branch->ne[0] != hidden->ne[0] || branch->ne[1] != hidden->ne[1]) {
         return nullptr;
     }
@@ -376,7 +423,8 @@ ggml_tensor * semantic_encoder_res_unit(ggml_context *                 context,
 // HiggsAudioV2TokenizerSemanticEncoderBlock.forward: every residual unit,
 // then the block's own biased exit convolution (kernel 3, stride 1, pad 1
 // for this checkpoint's fixed strides == [1, 1] -- catalog.cpp's
-// kSemanticEncoderKernel).
+// kSemanticEncoderKernel). Padding is the same named literal
+// semantic_encoder_res_unit uses above, for the same packed-weight reason.
 ggml_tensor * semantic_encoder_block(ggml_context *               context,
                                      ggml_tensor *                hidden,
                                      const SemanticEncoderBlock & weights) {
@@ -390,7 +438,7 @@ ggml_tensor * semantic_encoder_block(ggml_context *               context,
             return nullptr;
         }
     }
-    return conv1d(context, current, weights.conv, 1, int((weights.conv.weight->ne[0] - 1) / 2), 1);
+    return conv1d(context, current, weights.conv, 1, 1, 1);  // kernel 3, pad 1
 }
 
 }  // namespace
@@ -445,7 +493,21 @@ ggml_tensor * build_semantic_branch(ggml_context *               context,
         // tensors disagree is rejected here rather than silently running the
         // real (but undeclared) kernel width -- the same defensive class this
         // catalog already applies to every other metadata/tensor pairing.
-        if (hubert.feat_conv[index].weight->ne[0] != int64_t(s.conv_kernel[index])) {
+        //
+        // Under a profile that packs this tensor, ne[0] is
+        // kernel * in_channels rather than the kernel width alone -- the same
+        // packed-row fact semantic_encoder_res_unit's own comment above names
+        // for why THIS function derives padding from a literal instead of
+        // ne[0]. feat_conv[0] reads the raw single-channel waveform and stays
+        // Sensitive/unpacked under every profile (quantization.h), so
+        // `in_channels` is 1 there regardless of what this loop computes for
+        // it; every later index's in_channels is the previous layer's own
+        // width.
+        const int64_t feat_conv_in_channels = index == 0 ? 1 : int64_t(s.conv_dim[index - 1]);
+        const bool    feat_conv_packed      = ggml_is_quantized(hubert.feat_conv[index].weight->type);
+        const int64_t feat_conv_expected_shape =
+            feat_conv_packed ? int64_t(s.conv_kernel[index]) * feat_conv_in_channels : int64_t(s.conv_kernel[index]);
+        if (hubert.feat_conv[index].weight->ne[0] != feat_conv_expected_shape) {
             return nullptr;
         }
         hidden = conv1d(context, hidden, hubert.feat_conv[index], int(s.conv_stride[index]), 0, 1);
@@ -525,12 +587,15 @@ ggml_tensor * build_semantic_branch(ggml_context *               context,
         *out_downsampled = downsampled;
     }
 
-    // SemanticEncoder.forward: the bias-free entry convolution, then every
-    // block in order.
+    // SemanticEncoder.forward: the bias-free entry convolution (kernel 3,
+    // pad 1 -- catalog.cpp's own kSemanticEncoderKernel, named here rather
+    // than derived from sem_enc.conv.weight->ne[0] for the same packed-
+    // weight reason semantic_encoder_res_unit/semantic_encoder_block name it
+    // above), then every block in order.
     if (!bound(sem_enc.conv, false)) {
         return nullptr;
     }
-    ggml_tensor * encoded = conv1d(context, downsampled, sem_enc.conv, 1, int((sem_enc.conv.weight->ne[0] - 1) / 2), 1);
+    ggml_tensor * encoded = conv1d(context, downsampled, sem_enc.conv, 1, 1, 1);  // kernel 3, pad 1
     for (const SemanticEncoderBlock & block : sem_enc.blocks) {
         if (encoded == nullptr) {
             return nullptr;

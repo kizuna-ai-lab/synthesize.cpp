@@ -177,6 +177,24 @@ struct SynthesisOutput {
     };
 
     // Also totals across forwards, for the same reason.
+    //
+    // REDEFINED when the generator's graphs became reusable across forwards
+    // (Plan 5): numbers taken before that change are not comparable with
+    // numbers taken after it, for either of these two fields.
+    //
+    // `generator_seconds` is now the WHOLE cost of the generator's graph
+    // machinery -- arena init, node build, scheduler creation, allocation,
+    // placement inspection, compute, and the scheduler/arena teardown. It used
+    // to bracket the compute call and its setup alone, leaving the arena, the
+    // node build and the teardown attributed to no field at all, where they
+    // read as unexplained host-side residual.
+    //
+    // `generator_setup_seconds` is the non-compute part of that same total, so
+    // `generator_seconds - generator_setup_seconds` is time inside
+    // ggml_backend_sched_graph_compute and nothing else. It used to be only the
+    // scheduler-creation-and-allocation slice -- a strict subset of the cost a
+    // reader would attribute to it, and notably excluding the teardown, which
+    // was the larger of the two.
     double         generator_seconds       = 0.0;
     double         generator_setup_seconds = 0.0;
     double         codec_seconds           = 0.0;

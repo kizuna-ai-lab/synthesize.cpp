@@ -176,9 +176,12 @@ synth_add_unit_test(synthesize-omnivoice-frontend-test omnivoice_frontend_test.c
 synth_add_unit_test(synthesize-omnivoice-generator-test omnivoice_generator_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-generator-host-test omnivoice_generator_host_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-sampler-test omnivoice_sampler_test.cpp)
+synth_add_unit_test(synthesize-omnivoice-candidate-scan-test omnivoice_candidate_scan_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-codec-test omnivoice_codec_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-resampler-test omnivoice_resampler_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-reference-encoder-test omnivoice_reference_encoder_test.cpp)
+synth_add_unit_test(synthesize-omnivoice-quantization-test omnivoice_quantization_test.cpp)
+synth_add_unit_test(synthesize-omnivoice-serialize-writer-agreement-test omnivoice_serialize_writer_agreement_test.cpp)
 synth_add_unit_test(synthesize-kokoro-lstm-test kokoro_lstm_test.cpp)
 synth_add_unit_test(synthesize-kokoro-catalog-test kokoro_catalog_test.cpp)
 synth_add_unit_test(synthesize-kokoro-plbert-test kokoro_plbert_test.cpp)
@@ -278,7 +281,7 @@ if(SYNTH_BUILD_TOOLS)
         COMMAND synthesize-quantize --help)
     set_tests_properties(synthesize-quantize-cli-help-test PROPERTIES
         LABELS "unit;tools;quantization;cli"
-        PASS_REGULAR_EXPRESSION "F16[|]Q8_MIXED")
+        PASS_REGULAR_EXPRESSION "Q8_CODEC_MIXED[|]Q8[|]Q4_K[|]BF16")
 endif()
 add_executable(synthesize-cli-unit-test
     cli_test.cpp
@@ -344,9 +347,23 @@ target_link_libraries(synthesize-omnivoice-serialize-test PRIVATE synthesize ggm
 add_test(NAME synthesize-omnivoice-serialize-test
     COMMAND synthesize-omnivoice-serialize-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-serialize)
 synth_register_unit_target(synthesize-omnivoice-serialize-test)
+# Task 8 (Plan 4): the per-family Execution Backend gate in
+# src/synthesize.cpp's synth_model_load, against a synthetic package -- its
+# own fixtures subdirectory for the same race-avoidance reason the other
+# synthetic-package suites keep separate ones. A genuine unit test: the
+# refusal happens before device resolution, so it holds with no CUDA device
+# present at all.
+add_executable(synthesize-omnivoice-backend-test omnivoice_backend_test.cpp)
+target_include_directories(synthesize-omnivoice-backend-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(synthesize-omnivoice-backend-test PRIVATE synthesize ggml)
+add_test(NAME synthesize-omnivoice-backend-test
+    COMMAND synthesize-omnivoice-backend-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-backend)
+synth_register_unit_target(synthesize-omnivoice-backend-test)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-synthetic)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-design)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-serialize)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/omnivoice-backend)
 set_tests_properties(
     synthesize-omnivoice-metadata-test
     synthesize-omnivoice-catalog-test
@@ -357,11 +374,14 @@ set_tests_properties(
     synthesize-omnivoice-codec-test
     synthesize-omnivoice-resampler-test
     synthesize-omnivoice-reference-encoder-test
+    synthesize-omnivoice-quantization-test
     synthesize-omnivoice-model-errors-test
     synthesize-omnivoice-load-synthetic-test
     synthesize-omnivoice-decode-loop-test
     synthesize-omnivoice-design-test
     synthesize-omnivoice-serialize-test
+    synthesize-omnivoice-serialize-writer-agreement-test
+    synthesize-omnivoice-backend-test
     PROPERTIES LABELS "unit;omnivoice")
 set_tests_properties(
     synthesize-vits-text-encoder-host-test
@@ -814,6 +834,82 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
     endif()
 
+    # Plan 4 Task 3 measured two codec-only Quantization Profiles
+    # (Q8_CODEC_MIXED, F16_CODEC) against this same gate and BOTH failed the
+    # cloning path's RVQ
+    # encode grid -- 1023/2808 and 103/2808 positions respectively, neither a
+    # knife-edge margin call (docs/porting/families/omnivoice.md's
+    # "Quantization Profile Shape"). Neither ships, and no per-profile golden
+    # gate is registered for either, deliberately --
+    # a permanently-red registered test is not an acceptable end state for
+    # the branch, and the measured evidence for both is recorded in that doc
+    # and in reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md instead
+    # of as a failing gate here.
+    #
+    # Amended 2026-08-09: this comment used to say "This family ships
+    # F32-only", which stopped being true when the generator-half F16 and Q8
+    # profiles were published on 2026-08-09. They register no per-profile
+    # golden gate either, for the opposite reason: a generator-half profile
+    # re-draws the greedy token grid by design (Q8 flips 95.83% of positions),
+    # so there is no oracle-parity grid for a gate to compare it against. What
+    # they do inherit unconditionally is the CODEC half's guarantee -- their
+    # codec tensors are bit-identical to F32's, so the cloning path's RVQ
+    # encode stays byte-exact -- which is what makes them shippable and the
+    # two codec-half profiles above not.
+
+    # Plan 4 Task 11's CUDA sweep, same manifest and sentinel as the CPU gate
+    # above -- only the requested backend and the tolerance cell it checks
+    # against change. --accelerate moves the codec's decode graph onto the
+    # primary CUDA device (Task 9's accelerator twin); as of Plan 5 Task 1 it
+    # ALSO moves the generator (Task 1's own twin) -- docs/backends.md's
+    # discrete-outputs rule no longer holds this family's generator on CPU
+    # unconditionally, per the narrow, measured exception recorded there.
+    # The validator's own placement check fails the gate if either half
+    # lands wrong (both must now be fully off the CPU under --accelerate).
+    #
+    # --tokens-informational: exact-token identity does NOT survive the
+    # generator's move (Plan 5 Task 1/2 measured 3 of 17 greedy grids exact,
+    # the rest 0.2%-98.3% content-flipped against the CPU oracle) and this
+    # flag stops that from failing the gate. What still fails the gate
+    # unconditionally, flag or not: every greedy grid's SIZE against the
+    # oracle's own (RuleDurationEstimator fixes the canvas length before the
+    # first generator forward runs, so a size mismatch here is a real
+    # regression, not the expected content drift), the cloning path's
+    # ref.tokens grids (codec-only, untouched by the generator's move, still
+    # byte-exact), and the tolerance cell's probes (re-measured against this
+    # same generator-on-CUDA configuration -- see
+    # tests/tolerances/omnivoice.json's own note for the run this cell came
+    # from). A gate with all three of those still real is not a gate that
+    # asserts nothing; it is the structural half of the old claim plus a
+    # calibrated numerical half, with only per-token content identity
+    # retired -- deliberately, per jiangzhuo's 2026-08-08 ruling and the
+    # Listening Audit backing it.
+    #
+    # TIMEOUT: measured at approximately 350-360s for the full twenty-case
+    # sweep on build/rel-dgx-spark (this task's own re-measurement, quiet
+    # host) -- markedly faster than the CPU gate's ~7 minutes now that the
+    # generator itself runs on the accelerator rather than dominating wall
+    # time on the CPU, though per-case process/model-load overhead (twenty
+    # separate runner invocations) keeps it from scaling down by anything
+    # close to the generator's own 22x RTF speedup. 14400s is kept as
+    # headroom for a slower or busier machine, consistent with the CPU
+    # gate's own rationale, rather than retuned to this measurement.
+    if(SYNTH_CUDA AND EXISTS "${SYNTH_OMNIVOICE_TEST_MODEL}" AND EXISTS "${_synth_omnivoice_golden_sentinel}")
+        add_test(
+            NAME synthesize-omnivoice-replay-golden-cuda
+            COMMAND ${SYNTH_UV_EXECUTABLE} run
+                --project ${CMAKE_SOURCE_DIR}/scripts/envs/omnivoice
+                --locked python ${CMAKE_SOURCE_DIR}/scripts/validate-omnivoice-replay.py
+                --manifest ${CMAKE_SOURCE_DIR}/tests/golden/omnivoice/omnivoice-0-6b.manifest.json
+                --model ${SYNTH_OMNIVOICE_TEST_MODEL}
+                --runner $<TARGET_FILE:synthesize-omnivoice-replay-real>
+                --accelerate --tokens-informational --check --profile F32 --backend CUDA --stage replay)
+        set_tests_properties(synthesize-omnivoice-replay-golden-cuda PROPERTIES
+            LABELS "integration;omnivoice;golden;cuda"
+            TIMEOUT 14400
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    endif()
+
     # OmniVoice's public-request validator needs no oracle payload -- it
     # asserts relations between runs of this port's public seam (seed echo,
     # same-seed byte identity, cross-seed artifact_differs), not agreement
@@ -830,6 +926,26 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                 --profile F32 --backend cpu)
         set_tests_properties(synthesize-omnivoice-public-request PROPERTIES
             LABELS "integration;omnivoice;abi"
+            TIMEOUT 1800
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    endif()
+
+    # Plan 4 Task 11: the same public-request relations driven with
+    # --backend cuda, now that tests/omnivoice_public_real.c actually forwards
+    # it (accumulated requirement 2 -- before this task the flag reached only
+    # the report dict). Check 14 (this stage's own positive assertion,
+    # accumulated requirement 1) only runs in this CUDA arm.
+    if(SYNTH_CUDA AND EXISTS "${SYNTH_OMNIVOICE_TEST_MODEL}")
+        add_test(
+            NAME synthesize-omnivoice-public-request-cuda
+            COMMAND ${SYNTH_UV_EXECUTABLE} run
+                --project ${CMAKE_SOURCE_DIR}/scripts/envs/omnivoice
+                --locked python ${CMAKE_SOURCE_DIR}/scripts/validate-omnivoice-public.py
+                --model ${SYNTH_OMNIVOICE_TEST_MODEL}
+                --runner $<TARGET_FILE:synthesize-omnivoice-public-real>
+                --profile F32 --backend cuda)
+        set_tests_properties(synthesize-omnivoice-public-request-cuda PROPERTIES
+            LABELS "integration;omnivoice;abi;cuda"
             TIMEOUT 1800
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
     endif()

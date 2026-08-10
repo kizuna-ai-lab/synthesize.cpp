@@ -129,7 +129,19 @@ set(SYNTH_QWEN3_TTS_TEST_MODEL
     "${CMAKE_SOURCE_DIR}/models/qwen3-tts-12hz-0-6b-customvoice/qwen3-tts-12hz-0-6b-customvoice-BF16.gguf"
     CACHE FILEPATH "Local Qwen3-TTS BF16 GGUF used by integration tests")
 # F32 is this family's source profile: the checkpoint stores F32 in both the
-# generator and the codec halves, so it is the package a port is checked against.
+# generator and the codec halves, so it is the package a port is checked
+# against. Plan 4 Task 3 measured both Q8_CODEC_MIXED and F16_CODEC codec-only
+# Quantization Profiles against the exact-token gate and both failed the
+# cloning path's RVQ encode grid (docs/porting/families/omnivoice.md's
+# "Quantization Profile Shape"). Amended 2026-08-10: this used to conclude
+# "so this family ships F32-only", which stopped being true on 2026-08-09 when
+# the generator-half F16 and Q8 profiles were published; the identically
+# worded comment in tests/CMakeLists.txt was amended then and this one was
+# missed. What still holds is the narrower claim -- no per-profile test-model
+# variable or golden gate exists for the two CODEC-half profiles, on
+# purpose: a permanently failing registered gate is not an acceptable branch
+# state, and the measured evidence for both is recorded in that doc and in
+# reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md instead.
 set(SYNTH_OMNIVOICE_TEST_MODEL "${CMAKE_SOURCE_DIR}/models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf"
     CACHE FILEPATH "Local OmniVoice F32 GGUF used by integration tests")
 

@@ -118,6 +118,117 @@ int check_schedule_upstream_regression() {
     return 0;
 }
 
+// The OTHER step count this family runs. `num_step` is a Synthesis Request
+// field (omnivoice.h) that falls back to the package's embedded default (32)
+// when it is 0; the Golden suite's `omni-fast-mode` case sets it to 16, and
+// 16 is the value a fast profile would use. It is pinned here on the canvas
+// this project actually measures the step count against -- `omni-long-boundary`,
+// 719 frames x 8 codebooks = 5,752 masked positions -- because the 16-step
+// schedule has no other fixture and the 32-step one cannot stand in for it:
+// shifted_timesteps' float32 shortcut is justified per-num_step (see
+// generator-host.cpp's comment), so a regression could move one schedule and
+// not the other.
+//
+// Every entry is transcribed from an independent recomputation (Python,
+// struct-based float32 simulation of the exact formula in generator-host.cpp)
+// rather than from a run of this code.
+//
+// What the values say about the mechanism: halving the step count does not
+// halve the risk evenly. At 16 steps the FINAL forward jointly commits 2,294 of
+// 5,752 positions (39.88%) from one set of logits with no further refinement,
+// against 1,388 (24.13%) at 32; the last two steps commit 58.71% against
+// 39.44%. The schedule is more lopsided, not merely shorter.
+//
+// AMENDED 2026-08-08 -- do NOT read the numbers above as "where 16 steps
+// breaks". They are arithmetically right and they point at the WRONG HALF OF
+// THE CANVAS. The commit score is `log_prob - codebook * layer_penalty_factor`
+// with the factor at 5.0, far larger than the spread of the log-probabilities,
+// so commitment is ordered by codebook: the final steps drain codebooks 4-7,
+// and codebook 0 -- the coarse layer carrying the energy envelope -- is
+// finished long before them (measured mean commit step 4.9 of 16, max 8 of 16;
+// 9.3 of 32, max 16 of 32). The audible failure the 2026-08-08 listening audit
+// found came from codebook 0's LAST commits, at step 8 of 16, not from the
+// final forward: with half the conditioning refreshes, c0's per-step block
+// grows from at most 4 frames to as many as 9, adjacent frames from one forward
+// land on the same argmax, and a constant run in c0 renders as a near-silent
+// segment. On `omni-short-ja` that silenced the last 320 ms, 48.1 dB down
+// against both the 32-step arm and the oracle, while c0's flip rate against the
+// oracle went from 0.000 (32 steps, exact) to 0.809 (16 steps). A future guard
+// for a faster step count must be coarse-layer specific -- c0 flip rate against
+// the oracle, c0 run-length distribution, per-frame tail RMS -- because the
+// aggregate token flip rate saturates near 95% between any two arms and saw
+// none of this. Full measurement:
+// reports/porting/omnivoice/omnivoice-0-6b/_porting-log.md, the 2026-08-08
+// step-count audit entry, Finding 3.
+int check_schedule_sixteen_step_real_parameters() {
+    const std::vector<uint64_t> schedule = synth::omnivoice::commit_schedule(5752, 16, 0.1);
+    const uint64_t expected[16] = { 39, 43, 49, 56, 65, 76, 90, 108, 133, 167, 216, 291, 412, 630, 1083, 2294 };
+    SYNTH_TEST_CHECK(schedule.size() == 16);
+    uint64_t sum = 0;
+    for (size_t step = 0; step < schedule.size(); ++step) {
+        SYNTH_TEST_CHECK(schedule[step] == expected[step]);
+        sum += schedule[step];
+    }
+    SYNTH_TEST_CHECK(sum == 5752);
+    // Back-loaded, like the 32-step schedule: monotone growth, last step largest.
+    for (size_t step = 1; step < schedule.size(); ++step) {
+        SYNTH_TEST_CHECK(schedule[step] >= schedule[step - 1]);
+    }
+
+    // The 50-frame canvas is `omni-fast-mode`'s own (8 x 50 = 400), the one
+    // case in the suite whose oracle is a 16-step dump. That case's committed
+    // grid is the only end-to-end check the 16-step path has, so its schedule
+    // is pinned here beside it.
+    const std::vector<uint64_t> fast_mode         = synth::omnivoice::commit_schedule(400, 16, 0.1);
+    const uint64_t              fast_expected[16] = { 3, 3, 4, 4, 5, 6, 7, 8, 10, 12, 15, 21, 29, 44, 76, 153 };
+    SYNTH_TEST_CHECK(fast_mode.size() == 16);
+    uint64_t fast_sum = 0;
+    for (size_t step = 0; step < fast_mode.size(); ++step) {
+        SYNTH_TEST_CHECK(fast_mode[step] == fast_expected[step]);
+        fast_sum += fast_mode[step];
+    }
+    SYNTH_TEST_CHECK(fast_sum == 400);
+
+    // 16 is one of the two num_step values for which shifted_timesteps'
+    // `float(index / num_step)` shortcut is exact (1/16 and 1/32 are both
+    // exact in binary floating point). The endpoint therefore lands the same
+    // few ulps short of 1.0 that the 32-step schedule's does, and for the same
+    // reason -- t_shift 0.1 is not exact, not the linspace.
+    const std::vector<double> timesteps = synth::omnivoice::shifted_timesteps(16, 0.1);
+    SYNTH_TEST_CHECK(timesteps.size() == 17);
+    SYNTH_TEST_CHECK(timesteps.front() == 0.0);
+    SYNTH_TEST_CHECK(timesteps.back() == 0.9999997615814209);
+    return 0;
+}
+
+// The 16-step twin of check_schedule_upstream_regression, and it exists for
+// the same reason: the sum invariant cannot see a float32/float64 swap, only
+// the exact per-step values can, and the 32-step anchor at total_mask 1640
+// does NOT diverge at 16 steps -- so without this fixture the 16-step
+// schedule has no guard against that specific defect at all.
+//
+// Independently recomputed by sweeping total_mask over [1, 6000]: the
+// float32 and double schedules disagree at 85 canvas lengths (1.42%) at 16
+// steps, of which 7 are whole 8-codebook canvases. 1,208 (151 frames) is the
+// smallest of those seven. float32 gives {8, ..., 477}; a double-precision
+// version of the same formula gives {9, ..., 476}. Both sum to 1,208.
+//
+// Note which lengths are NOT in that set: neither 5,752 nor 400 diverges, so
+// every 16-step number measured elsewhere in this project is safe -- and that
+// is exactly why the guard has to be a length nobody would otherwise run.
+int check_schedule_sixteen_step_upstream_regression() {
+    const std::vector<uint64_t> schedule = synth::omnivoice::commit_schedule(1208, 16, 0.1);
+    SYNTH_TEST_CHECK(schedule.size() == 16);
+    SYNTH_TEST_CHECK(schedule[0] == 8);
+    SYNTH_TEST_CHECK(schedule[15] == 477);
+    uint64_t sum = 0;
+    for (uint64_t count : schedule) {
+        sum += count;
+    }
+    SYNTH_TEST_CHECK(sum == 1208);
+    return 0;
+}
+
 // --------------------------------------------------------------------------
 // choose_token
 // --------------------------------------------------------------------------
@@ -475,6 +586,8 @@ int main() {
     SYNTH_TEST_CHECK(check_schedule_clamps() == 0);
     SYNTH_TEST_CHECK(check_schedule_real_parameters() == 0);
     SYNTH_TEST_CHECK(check_schedule_upstream_regression() == 0);
+    SYNTH_TEST_CHECK(check_schedule_sixteen_step_real_parameters() == 0);
+    SYNTH_TEST_CHECK(check_schedule_sixteen_step_upstream_regression() == 0);
     SYNTH_TEST_CHECK(check_choose_token_guided() == 0);
     SYNTH_TEST_CHECK(check_choose_token_bans_mask() == 0);
     SYNTH_TEST_CHECK(check_choose_token_unguided() == 0);

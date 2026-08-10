@@ -2,6 +2,7 @@
 
 #include "synthesize.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -106,6 +107,21 @@ void choose_token(const float * cond,
 // transcription.
 float gumbel_perturb(float logit, float temperature, float uniform);
 
+// How many classes upstream's `_filter_top_k` keeps for a vocabulary of
+// `vocab_size` -- and therefore EXACTLY how many uniforms `choose_token_sampled`
+// consumes for one position when `class_temperature > 0`, since its draw loop
+// runs once per survivor with no early exit. Integer ceiling division by 10
+// rather than `0.1 * vocab_size`, so the answer is exact for every vocab_size
+// instead of depending on how 0.1's binary rounding falls near a .5 boundary.
+//
+// Exposed (rather than left inline in the sampler) so a caller that pre-draws a
+// whole batch of positions' randomness up front can size that buffer from the
+// same formula the consumer uses, instead of restating it and risking a stride
+// that silently disagrees with the number of draws actually made.
+inline uint32_t topk_keep(uint32_t vocab_size) {
+    return std::min((vocab_size + 9) / 10, vocab_size);
+}
+
 // The class-branch companion to `choose_token`, transcribing upstream's
 // `if class_temperature > 0.0: ... _gumbel_sample(filtered, class_temperature
 // ).argmax(-1)` split (omnivoice.py:1443-1448). `class_temperature == 0.0`
@@ -137,6 +153,31 @@ float gumbel_perturb(float logit, float temperature, float uniform);
 // Preconditions identical to `choose_token`, including the
 // `guidance_scale != 0.0f && uncond == nullptr` assert (carryover item 1,
 // now enforced for both paths through the shared `build_guided`).
+//
+// Two overloads, and the pre-drawn one is the primitive: the stream overload
+// draws `topk_keep(vocab_size)` uniforms into a buffer and delegates, so the
+// two cannot describe different draw counts or a different consumption order.
+// A caller that scores many positions CONCURRENTLY must use the pre-drawn
+// overload -- a shared stream is a sequential accumulator, and consuming it
+// from several threads makes which uniform a position receives depend on
+// thread scheduling. Drawing the whole batch serially up front and handing
+// each position its own slice reproduces the single-threaded stream exactly,
+// which is only possible because the count per position is fixed by
+// `topk_keep` and does not depend on the logits.
+//
+// `uniforms` must point at `topk_keep(vocab_size)` values when
+// `class_temperature > 0`, and is ignored (may be null) when it is 0.0 -- the
+// short-circuit branch draws nothing.
+synth_status_t choose_token_sampled(const float * cond,
+                                    const float * uncond,
+                                    uint32_t      vocab_size,
+                                    uint32_t      mask_id,
+                                    float         guidance_scale,
+                                    float         class_temperature,
+                                    const float * uniforms,
+                                    int32_t &     token,
+                                    float &       log_prob);
+
 synth_status_t choose_token_sampled(const float *        cond,
                                     const float *        uncond,
                                     uint32_t             vocab_size,
@@ -160,6 +201,38 @@ struct MaskedCandidate {
     // ranked on `score` alone, exactly as upstream's topk ranks them.
     float    argmax_gap = 0.0f;
 };
+
+// The canonical scan over still-masked canvas positions: codebook-major,
+// frame-minor. This walk fixes two things at once -- the candidate order that
+// `select_commits` later ranks, and the indexing of the block of uniforms the
+// step pre-draws -- so moving a position in it moves which random draw that
+// position receives.
+//
+// It lives here, rather than inline in the decode loop, so that the
+// differential test of the parallelised scan exercises THIS walk instead of a
+// retyped copy of it. A test carrying its own enumeration keeps agreeing with
+// itself after production's order changes, which is the one regression such a
+// test exists to catch. `candidate_uniform_offset` is exposed beside it for
+// the same reason.
+void enumerate_masked_candidates(const int32_t *                canvas,
+                                 uint32_t                       codebooks,
+                                 uint64_t                       frames,
+                                 int32_t                        mask_id,
+                                 std::vector<MaskedCandidate> & out);
+
+// How many uniforms one candidate consumes: its class draws, then its single
+// position draw when position_temperature is on.
+inline size_t uniform_draws_per_slot(uint32_t class_draws, bool position_draw) {
+    return size_t(class_draws) + (position_draw ? size_t(1) : size_t(0));
+}
+
+// Candidate `index` owns [offset, offset + draws_per_slot): class draws first,
+// then the position draw. Drawing the whole block in one sequential pass and
+// consuming it by this offset reproduces the order an inline per-candidate
+// draw used to produce, which is what makes the parallel scan bit-identical.
+inline size_t candidate_uniform_offset(size_t index, size_t draws_per_slot) {
+    return index * draws_per_slot;
+}
 
 // The order select_commits keeps: higher score first, ties broken on lower
 // codebook then lower frame, NaN scores after everything real. Exposed because

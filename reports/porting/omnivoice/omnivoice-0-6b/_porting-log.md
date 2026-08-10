@@ -60,7 +60,10 @@ bundles a 9,171-byte `LICENSE` (sha256 `ac933dc0…`) opening:
 It incorporates the Meta Llama 3 terms by reference, requires the agreement text
 to travel with any redistribution, imposes attribution and naming obligations,
 caps commercial use at 100k monthly active users, and forbids using the outputs
-to train other models.
+to train other models. [Corrected 2026-08-08: both clauses are misstated here --
+the agreement says *annual* active users, not monthly, and section 2 withdraws
+authorisation rather than capping use; the training clause is limited to other
+large language models. See the erratum at the end of this log.]
 
 The card-level restriction scan is the part worth recording as method. Searching
 the downloaded card for *non-commercial*, *cc-by*, *restrict* or *licen[cs]e*
@@ -2194,3 +2197,3813 @@ synthesis: every number here is either identical to or within the same
 committed tolerance as the pre-fix package produced, because the only bytes
 that moved are three bytes of one metadata field the golden replay path never
 reads.
+
+## Plan 4 Task 3: the Q8_MIXED codec profile — produced, and BLOCKED
+
+Produced `omnivoice-0-6b-Q8_MIXED.gguf` from the committed F32 package with
+`build/bin/synthesize-quantize models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf
+models/omnivoice-0-6b/omnivoice-0-6b-Q8_MIXED.gguf --quant Q8_MIXED`. Named
+`Q8_MIXED` rather than a family-specific name: `tools/synthesize-quantize/
+policy.cpp:14-24`'s profile table is shared across every family (VITS,
+Kokoro, Qwen3-TTS, OmniVoice), and each family's own
+`resolve_<family>_target_spec` is what gives "Q8_MIXED" its family-specific
+meaning — there is no per-family name in that table to begin with, so
+inventing one (`Q8_CODEC`) would be inconsistent with how the tool and the
+other three families already work, not more precise.
+
+| | |
+| --- | --- |
+| source sha256 | `f6d504ffaddcbf32f80f1f6c847f075bbd5d2c7b50fe95a194ceb635772f9fa3` |
+| output sha256 | `b020933facda39c875f276934d3a5611c7a8836d4f243efc3fb1403d109b671e` |
+| source size | 3,189,953,504 bytes (3042.2 MiB) |
+| output size | 2,703,016,576 bytes (2577.8 MiB), −15.3% |
+| tensors quantized | 158 of 798 (the rest are Sensitive/TransposeWeight, unconditionally F32) |
+
+Per-group tensor-data bytes (excludes GGUF header/alignment padding, which is
+why these do not sum to the whole-file sizes above):
+
+| group | F32 bytes | Q8_MIXED bytes | tensors |
+| --- | ---: | ---: | ---: |
+| generator (`llm.*` + audio tables) | 2,450,309,120 | 2,450,309,120 | 312 |
+| `codec.quantizer`/`fc`/`fc2` | 11,574,272 | 11,574,272 | 44 |
+| `codec.acoustic_decoder` | 80,952,452 | 50,943,986 | 110 |
+| `codec.acoustic_encoder` | 205,257,984 | 54,617,344 | 110 |
+| `codec.semantic_model` | 377,483,264 | 114,511,872 | 209 |
+| `codec.encoder_semantic` | 58,988,544 | 15,673,344 | 13 |
+| **total** | 3,184,565,636 | 2,697,629,938 | 798 |
+
+### The load path: one bug found and fixed
+
+`catalog.cpp`'s per-tensor `expected_type()` asserted F32 for every tensor
+under every profile (Plan 1's placeholder, never widened). Fixed to dispatch
+on `QuantizationProfile` and, for `Q8Mixed`, on `classify_tensor`'s own
+`QuantRole` — the same classifier `tools/synthesize-quantize/policy.cpp`
+already dispatches from, so the offline packing decision and this load-time
+expectation read one source of truth rather than two hand-maintained lists.
+`find()` gained the same packed-shape acceptance `kokoro`'s catalog already
+carries: a `MatrixWeight` conv kernel's logical 3-axis shape
+`[kernel, in, out]` is checked against the flattened `[kernel * in, out]` row
+once quantized. `weights.h`/`weights.cpp`/`model.cpp` gained the
+`Q8Mixed`/`"Q8_MIXED"` enumerator and string round-trip alongside `F32`.
+
+A second, independent bug surfaced only once a REAL package was replayed
+end to end: `reference-encoder.cpp`'s `build_semantic_branch` cross-checks
+each `feat_conv[index]` tensor's `ne[0]` against the package's declared
+`conv_kernel[index]`, to catch a converter that wrote the wrong kernel width.
+That check compared the raw `ne[0]` against the bare kernel width
+unconditionally — correct only when the tensor is unpacked. Once Q8_MIXED
+packs `feat_conv[1..6]` (every feat_conv but index 0, which reads the raw
+single-channel waveform and stays Sensitive), `ne[0]` becomes
+`kernel * in_channels` (1536 for `feat_conv[1]` on this checkpoint: kernel 3
+× HuBERT's 512-wide `conv_dim[0]`), so the unfixed check refused every
+legitimately packed package: `Model::encode_reference` returned
+`SYNTH_ERR_INTERNAL` (20) for both clone cases, silently, with the CLI
+runner still exiting 0. **This was found, not assumed**: the first replay
+run reused the F32 run's `--work` directory (the runner's own convention,
+documented in `validate-omnivoice-replay.py`'s `run_case`) and reported
+`ref.semantic_mean`/`ref.fused_latent`/`ref.tokens` as bit-identical to the
+F32 run's own committed figures — implausible once codec weights genuinely
+differ between the two packages, which is what prompted checking the
+runner's own stderr (`encode_reference -> 20`) rather than trusting a report
+built from stale files the encode step never overwrote. Fixed the same way
+as `catalog.cpp`'s own shape check: derive the expected `ne[0]` from whether
+`ggml_is_quantized(hubert.feat_conv[index].weight->type)`.
+`omnivoice_reference_encoder_test.cpp`'s new `check_packed_feat_conv1`
+regresses it directly — building `feat_conv[1]` both F32 and packed Q8_0
+from identical raw weights (mirroring `check_packed_encoder_semantic_conv`'s
+existing pattern for `encoder_semantic.conv`, the tensor that pattern
+already covered and exactly why this one did not get the same coverage) and
+separately asserting a wrong-shaped packed tensor is refused. **This fix
+ships regardless of the profile decision below**: without it, no profile
+that packs `feat_conv[1..6]` could run the reference-encode path at all.
+
+### THE GATE: 17/17 greedy exact, 0/2 clone exact — FAILED
+
+Re-run with the fix in place, fresh `--work` directory (eliminating any
+possibility of the staleness above recurring):
+
+```
+scripts/envs/omnivoice/.venv/bin/python3 scripts/validate-omnivoice-replay.py \
+  --require all --margin-report --profile Q8_MIXED --backend CPU --stage replay \
+  --model models/omnivoice-0-6b/omnivoice-0-6b-Q8_MIXED.gguf \
+  --work /tmp/q8_fresh_work --report /tmp/q8_fresh_report.json
+```
+
+```
+token grids exact: 17/17
+ref.tokens exact: 0/2
+narrowest RVQ encode gap: 0.0102997
+```
+
+17/17 greedy grids exact is structural, not lucky: the whole generator and
+the RVQ are Sensitive/F32 under this profile, so the decode loop's logits are
+bit-for-bit identical to the F32 package's own, and every one of this run's
+own margins reproduces the F32 baseline to the measured digit (table below).
+**Both clone cases' RVQ encode grids are NOT exact** — `omni-clone-en` and
+`omni-clone-zh` (one reference clip, identical figures on both) each
+mismatch at **1023 of 2808 positions (36.4%)**. First 20 of 1023 (both cases
+identical):
+
+| codebook | frame | got | want | gap |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 3 | 554 | 26 | 1.5105 |
+| 0 | 7 | 841 | 554 | 2.8479 |
+| 0 | 9 | 423 | 26 | 0.7493 |
+| 0 | 23 | 719 | 364 | 1.7428 |
+| 0 | 38 | 532 | 708 | 4.1221 |
+| 0 | 54 | 554 | 835 | 3.6883 |
+| 0 | 55 | 207 | 26 | 1.1656 |
+| 0 | 57 | 555 | 846 | 17.7489 |
+| 0 | 58 | 653 | 515 | 2.4443 |
+| 0 | 59 | 87 | 619 | 0.6864 |
+| 0 | 60 | 730 | 923 | 27.2859 |
+| 0 | 62 | 923 | 555 | 11.7191 |
+| 0 | 67 | 923 | 423 | 10.9085 |
+| 0 | 70 | 569 | 459 | 7.2939 |
+| 0 | 83 | 950 | 675 | 0.5335 |
+| 0 | 87 | 389 | 644 | 19.3942 |
+| 0 | 91 | 97 | 243 | 0.6600 |
+| 0 | 102 | 389 | 872 | 4.1656 |
+| 0 | 117 | 11 | 916 | 5.2944 |
+| 0 | 125 | 423 | 26 | 0.9558 |
+
+These are not knife-edge gaps: they run 0.53 to 27.29 (RVQ nearest-neighbor
+distance units) against an F32 baseline whose narrowest best-vs-second-best
+gap over the whole clip was 0.00239563. The codec probes that traverse the
+quantized `semantic_model`/`acoustic_encoder` move by orders of magnitude in
+the same direction: `ref.semantic_mean` max_abs 6.09e-05 → 0.342867,
+`ref.fused_latent` max_abs 9.32e-05 → 3.73227, `audio.pcm` min_cosine
+0.99999986 → 0.99775438. Every probe touching the quantized encoder path
+degrades together, by a similar order of magnitude — the signature of
+accumulated quantization noise through roughly 150 quantized HuBERT/DAC-
+encoder weights, not a second isolated bug (a due-diligence sweep of every
+other `->ne[0]` shape comparison in `reference-encoder.cpp`/`codec.cpp`/
+`generator.cpp` found no second instance of the packed-row class of bug the
+fix above closes).
+
+### Margin protocol (carry-over item 8): every greedy margin unchanged
+
+| case | F32 margin (baseline) | Q8_MIXED margin | kind |
+| --- | ---: | ---: | --- |
+| `omni-rate-slow` | 9.53674e-06 | 9.53674e-06 | selection |
+| `omni-fast-mode` | 6.86646e-05 | 6.86646e-05 | argmax |
+| `omni-short-en` | 1.15871e-04 | 1.15871e-04 | selection |
+| `omni-long-boundary` | 2.04682e-04 | 2.04682e-04 | selection |
+| `omni-rate-fast` | 2.44433e-04 | 2.44433e-04 | selection |
+| `omni-lang-none` | 6.03199e-04 | 6.03199e-04 | selection |
+| `omni-design-zh` | 6.40869e-04 | 6.40869e-04 | argmax |
+| `omni-medium-en` | 7.17163e-04 | 7.17163e-04 | argmax |
+| `omni-punctuation` | 8.39233e-04 | 8.39233e-04 | argmax |
+| `omni-upstream-readme` | 1.14441e-03 | 1.14441e-03 | argmax |
+| `omni-clone-en` | 1.19019e-03 | 1.19019e-03 | selection |
+| `omni-clone-zh` | 1.28174e-03 | 1.28174e-03 | selection |
+| `omni-digits` | 1.39546e-03 | 1.39546e-03 | argmax |
+| `omni-design-en` | 1.41111e-03 | 1.41111e-03 | selection |
+| `omni-nonverbal` | 1.89209e-03 | 1.89209e-03 | argmax |
+| `omni-short-zh` | 2.46429e-03 | 2.46429e-03 | selection |
+| `omni-short-ja` | 2.66457e-03 | 2.66457e-03 | selection |
+
+Identical to the measured digit, not merely close, because the margin is a
+property of the generator's own logits alone and the generator never
+changes under this profile. None of the four in-band cases predicted as
+likely first flips (`omni-short-en`, `omni-long-boundary`, `omni-rate-fast`,
+`omni-lang-none`) or `omni-rate-slow` actually flipped — the prediction
+assumed a generator-side logit perturbation, which this codec-only profile
+cannot produce by construction. The real failure is in a subsystem the
+greedy margin screen was never built to probe.
+
+### Gates
+
+| gate | result |
+| --- | --- |
+| `cmake --build build --target synthesize-check-unit` | 88/88 passed |
+| `cmake --build build-sanitize --target synthesize-check-unit` (ASan/UBSan) | 87/87 passed |
+| `ctest --test-dir build -R omnivoice` (full family set: unit + integration) | 23/24 passed — the one failure is `synthesize-omnivoice-replay-golden-q8-mixed`, correctly reporting the gate result above; every other omnivoice test, including the F32 `synthesize-omnivoice-replay-golden` (439.26 s, 17/17 exact), passed |
+| `scripts/ci/clang-format.sh --check-diff` | exit 0 |
+
+### Status: BLOCKED, not shipped
+
+Per this family's own Quantization Profile rule (`docs/porting/families/
+omnivoice.md`'s "Quantization Profile Shape"): a profile that fails the
+exact-token gate is not shipped, and no perceptual claim substitutes for it.
+No tolerance cell is committed for Q8_MIXED in `tests/tolerances/
+omnivoice.json` — the exact-token check is unconditional and independent of
+`--check`, so a tolerance cell cannot make the grid pass and would
+misrepresent a blocked profile as measured-and-ready. The per-profile golden
+gate (`synthesize-omnivoice-replay-golden-q8-mixed` in `tests/CMakeLists.txt`,
+guarded on `SYNTH_OMNIVOICE_Q8_MIXED_TEST_MODEL`'s existence the way the F32
+gate is guarded on its own) is registered and left in the tree specifically
+because it correctly fails today: it is the mechanism that would confirm any
+future narrower profile. The choice between narrowing the profile's scope
+(e.g. excluding `codec.semantic_model`/`codec.acoustic_encoder`, which feed
+only the clone-only encode path, while still quantizing
+`codec.acoustic_decoder`, which the greedy/public synthesis path alone
+exercises) and dropping the profile entirely is jiangzhuo's and the
+controller's to make, not this task's.
+
+**Superseded by the continuation below**: jiangzhuo ruled to measure F16
+before deciding anything further, F16 was measured and also failed, and the
+per-profile golden gate this paragraph describes has since been removed
+(de-registered, not left red) — see "Plan 4 Task 3 continuation" for the
+final disposition. Left as the historical record of the state at the time,
+per this log's own append-only convention.
+
+## Plan 4 Task 3 continuation: F16 measured, also BLOCKED — F32-only ships
+
+jiangzhuo's ruling: measure F16 codec-only before concluding anything about
+quantization for this family — a genuinely different measurement, not a
+retry. The tool's profile table gives F16 `TensorLayout::Native`
+(`tools/synthesize-quantize/policy.cpp:14-24`): it does not pack, and
+`ggml_compute_forward_im2col` accepts an F16 destination natively, so F16
+needs none of Task 2's packed-branch machinery — every MatrixWeight tensor
+keeps its native shape and only halves its type, through the unmodified
+existing builders. F16's per-weight relative error (≈2⁻¹⁰) is roughly an
+order of magnitude below Q8_0's (≈1/127), which is the whole question for a
+nearest-neighbour decision Q8_MIXED missed by a distance gap of 1.51.
+**Q8_MIXED itself was not revisited and stays blocked and unshipped.**
+
+### Package
+
+```
+build/bin/synthesize-quantize models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
+  models/omnivoice-0-6b/omnivoice-0-6b-F16.gguf --quant F16
+```
+
+| | |
+| --- | --- |
+| source sha256 | `f6d504ffaddcbf32f80f1f6c847f075bbd5d2c7b50fe95a194ceb635772f9fa3` |
+| output sha256 | `530b2b85d7d1950f52b6b4374c5fa820740214358443003bb4c2cd2770b955fa` |
+| source size | 3,189,953,504 bytes |
+| output size | 2,858,422,240 bytes (2726.0 MiB), −10.4% |
+| tensors halved | 158 of 798 — dumped and confirmed identical to the 158 Q8_MIXED quantizes, since both share `classify_tensor` |
+
+Tensor-data bytes (excludes GGUF header/padding): 3,184,565,636 →
+2,853,034,948, a reduction of 331,530,688 bytes (316.2 MiB) — matching the
+≈316 MiB naive estimate (158 tensors' F32 bytes halved) almost exactly at
+the tensor-data level; the file-size delta (331,531,264 bytes) differs
+fractionally because GGUF per-tensor alignment padding scales with tensor
+count and boundary position, not with bytes saved per tensor.
+
+Per-group tensor-data bytes:
+
+| group | F32 bytes | F16 bytes | tensors |
+| --- | ---: | ---: | ---: |
+| generator (`llm.*` + audio tables) | 2,450,309,120 | 2,450,309,120 | 312 |
+| `codec.quantizer`/`fc`/`fc2` | 11,574,272 | 11,574,272 | 44 |
+| `codec.acoustic_decoder` | 80,952,452 | 60,521,156 | 110 |
+| `codec.acoustic_encoder` | 205,257,984 | 102,694,144 | 110 |
+| `codec.semantic_model` | 377,483,264 | 198,438,912 | 209 |
+| `codec.encoder_semantic` | 58,988,544 | 29,497,344 | 13 |
+
+### Load path: no third gap
+
+`QuantizationProfile` gained `F16` alongside `F32`/`Q8Mixed`
+(`weights.h`/`weights.cpp`/`model.cpp`); `catalog.cpp`'s `expected_type()`
+gained the matching `classify_tensor`-dispatched case (MatrixWeight →
+`GGML_TYPE_F16`, else F32). F16 never reaches the packed-shape branch in
+`catalog.cpp`'s `find()` (gated on `Q8Mixed` specifically) or the packed arm
+of `reference-encoder.cpp`'s `feat_conv` check (gated on
+`ggml_is_quantized`, which F16 is not): a direct single-case run of
+`Model::encode_reference` against the F16 package succeeded on the first
+try, no repeat of Q8_MIXED's silent-failure history. New regression
+coverage: `omnivoice_catalog_test.cpp`'s `check_f16_resolution`/
+`check_f16_rejections`, `omnivoice_metadata_test.cpp`'s
+`run_quantization_profile_acceptance` extended to cover `"F16"`.
+
+### THE GATE: 17/17 greedy exact, 0/2 clone exact — FAILED, more narrowly
+
+Same command as the Q8_MIXED measurement, `--profile F16`, fresh `--work`
+directory:
+
+```
+token grids exact: 17/17
+ref.tokens exact: 0/2
+narrowest RVQ encode gap: 0.00306702
+```
+
+17/17 greedy exact for the identical structural reason (generator/RVQ stay
+F32 under every profile). **Both clone cases mismatch at 103 of 2808
+positions (3.7%)** — about a tenth of Q8_MIXED's 1023, consistent with F16's
+roughly-10x-smaller per-weight error. First 20 of 103 (both cases
+identical):
+
+| codebook | frame | got | want | gap |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 57 | 555 | 846 | 0.2024 |
+| 1 | 25 | 442 | 278 | 0.4197 |
+| 1 | 128 | 77 | 503 | 0.2124 |
+| 1 | 155 | 658 | 991 | 0.1527 |
+| 2 | 4 | 518 | 597 | 0.6510 |
+| 2 | 57 | 613 | 597 | 4.8593 |
+| 2 | 128 | 11 | 52 | 1.0621 |
+| 2 | 155 | 39 | 130 | 27.4781 |
+| 2 | 264 | 618 | 109 | 0.9983 |
+| 2 | 348 | 228 | 508 | 0.6170 |
+| 3 | 6 | 485 | 626 | 1.7481 |
+| 3 | 7 | 202 | 975 | 0.0298 |
+| 3 | 25 | 821 | 670 | 24.8352 |
+| 3 | 27 | 706 | 395 | 0.3370 |
+| 3 | 49 | 414 | 165 | 0.2210 |
+| 3 | 54 | 101 | 596 | 0.0313 |
+| 3 | 57 | 113 | 884 | 14.2502 |
+| 3 | 102 | 559 | 685 | 0.1507 |
+| 3 | 105 | 305 | 930 | 0.1803 |
+| 3 | 128 | 926 | 91 | 2.4834 |
+
+A genuine mix: several gaps (0.0298–0.2210) sit in narrow-margin range,
+consistent with ordinary F16 rounding tipping a close call; others
+(27.4781, 24.8352, 14.2502, 4.8593) are not narrow by any reading — the same
+signature of real accumulated error Q8_MIXED showed, smaller in magnitude
+but not a single mechanism.
+
+### `audio.pcm` cosine (the second measurement this task was for)
+
+| profile | `audio.pcm` min_cosine | `ref.semantic_mean` max_abs | `ref.fused_latent` max_abs |
+| --- | ---: | ---: | ---: |
+| F32 (baseline) | 0.99999986 | 6.09e-05 | 9.32e-05 |
+| F16 | 0.99999743 | 0.00795197 | 0.129286 |
+| Q8_MIXED | 0.99775438 | 0.342867 | 3.73227 |
+
+F16's decode side sits close to two more nines than Q8_MIXED's, and every
+channel places F16 consistently between F32 and Q8_MIXED, roughly an order
+of magnitude closer to F32 than Q8_MIXED — the predicted relationship,
+confirmed, and still not close enough to pass the clone encode grid.
+
+### Margins: unchanged from the Q8_MIXED table
+
+Every greedy-case margin reproduces the F32 baseline exactly under F16 too,
+for the identical reason (the generator never changes under a codec-only
+profile) — the table already recorded above applies unchanged.
+
+### Gates
+
+| gate | result |
+| --- | --- |
+| `cmake --build build --target synthesize-check-unit` | 88/88 passed |
+| `cmake --build build-sanitize --target synthesize-check-unit` (ASan/UBSan) | 87/87 passed |
+| `ctest --test-dir build -R omnivoice` (full family set) | all passed — no per-profile golden gate is registered for either measured profile (see disposition below), so there is no expected-red test in this run |
+| `scripts/ci/clang-format.sh --check-diff` | exit 0 |
+
+### Final disposition: F32-only
+
+Two codec-only Quantization Profiles were measured against the exact-token
+gate; both failed the cloning path's RVQ encode grid, by different
+mechanisms and magnitudes, neither a knife-edge margin call eligible for
+dual admissibility. **This family ships F32-only.** No tolerance cell is
+committed for either profile in `tests/tolerances/omnivoice.json`. The
+`synthesize-omnivoice-replay-golden-q8-mixed` gate registered during the
+first half of this task is **removed** (`tests/CMakeLists.txt`,
+`CMakeLists.txt`'s `SYNTH_OMNIVOICE_Q8_MIXED_TEST_MODEL` cache variable) —
+a permanently-red registered test is not an acceptable branch state, and no
+equivalent gate was registered for F16 either. The measured evidence for
+both profiles is preserved here and in `docs/porting/families/
+omnivoice.md`'s "Quantization Profile Shape" section, not as a failing
+gate. The two load-path bugs this task found and fixed (`catalog.cpp` never
+widened past F32-only checking; `reference-encoder.cpp`'s `feat_conv`
+kernel-width cross-check not accounting for a packed tensor) ship regardless
+of the profile outcome, with their own regression tests. If quantization is
+revisited for this family, narrowing scope to exclude
+`codec.semantic_model`/`codec.acoustic_encoder` (feeding only the
+clone-only encode path) while still quantizing `codec.acoustic_decoder`
+(which the greedy/public synthesis path alone exercises) is the untried
+option both measurements point toward — untried here because re-scoping the
+profile to force a grid to pass is exactly what this task's gate discipline
+prohibits doing unilaterally.
+
+## 2026-08-07 — Plan 4 Task 11: the CUDA sweep, and claiming the backend
+
+Measured on the DGX Spark/GB10 development host: driver 580.159.03, CUDA
+13.3.73, native `sm_121a`, the standard `dev-dgx-spark` preset (GGML CUDA
+unified-memory fallback off — see the UVM note below).
+
+```
+export SYNTH_CUDA_ROOT=/usr/local/cuda-13.3
+export PATH="$SYNTH_CUDA_ROOT/bin:$PATH"
+export LD_LIBRARY_PATH="$SYNTH_CUDA_ROOT/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+CUDAToolkit_ROOT="$SYNTH_CUDA_ROOT" CUDACXX="$SYNTH_CUDA_ROOT/bin/nvcc" \
+  cmake --preset dev-dgx-spark -DSYNTH_BUILD_INTEGRATION_TESTS=ON
+cmake --build --preset dev-dgx-spark -j 20
+```
+
+### The gate: byte-exact tokens, complete placement
+
+```
+uv run --project scripts/envs/omnivoice --locked python \
+  scripts/validate-omnivoice-replay.py \
+  --manifest tests/golden/omnivoice/omnivoice-0-6b.manifest.json \
+  --model models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
+  --runner build/dev-dgx-spark/bin/synthesize-omnivoice-replay-real \
+  --accelerate --check --profile F32 --backend CUDA --stage replay
+```
+
+```
+token grids exact: 17/17
+ref.tokens exact: 2/2
+```
+
+Aggregated placement across all twenty cases (summed from each case's own
+`"placement": {"generator": [nodes, off_cpu], "codec": [nodes, off_cpu]}`):
+
+```
+generator: 0 of 880,032 nodes off the CPU
+codec:     8,440 of 8,440 nodes off the CPU
+```
+
+Both halves hold on every one of the twenty cases individually, not only in
+aggregate. No greedy grid and no cloning-path `ref.tokens` grid flipped.
+Re-run later as the registered gate
+(`synthesize-omnivoice-replay-golden-cuda`, `tests/CMakeLists.txt`): **passed,
+869.83s.**
+
+A reviewer of this task independently re-derived the same aggregate from the
+raw report JSON, re-ran six of the twenty cases live and confirmed each one's
+own placement (`codec: [422, 422]`, `generator: [N, 0]`), and mutated the
+backend-claim flip back to `false` to confirm the positive assertion below
+actually fails without it — the check is not a tautology.
+
+### Waveform drift, and the tolerance cell
+
+Only the waveform channel shows the codec's CUDA (TF32) arithmetic:
+`audio.pcm`/`audio.pcm_freerun` worst cosine 0.9999963545175866 (deviation
+≈3.65e-6, against the CPU-only file's ≈1.7e-7) and worst max_abs
+0.007008261978626251 on a 0.5-peak signal. Every deep generator probe and
+every reference-encode probe (`ref.pcm_16k`/`ref.semantic_mean`/
+`ref.fused_latent`) landed within the same ~1e-7 noise floor the CPU-only
+file already documents — several probes came back bit-identical to the CPU
+file's own committed `observed_*` values, because that half of the graph
+never left the CPU. Committed to `tests/tolerances/omnivoice.json`'s new
+`profiles.F32.backends.CUDA.stages.replay` cell using this family's own
+established rule (5× the measured deviation, floored/ceiled the same way the
+CPU cell's own note derives its numbers): min_cosine 0.999981, max_abs 0.04
+for the two waveform probes; every other probe's committed min_cosine is
+copied unchanged from the CPU cell.
+
+### Codec timing: two independent measurements agree
+
+On `omni-long-boundary` (719 frames, the suite's longest case), same binary,
+`--backend CUDA` vs. the CPU-only run:
+
+| run | codec_seconds (CPU) | codec_seconds (CUDA) | speedup | wall (CPU → CUDA) |
+| --- | ---: | ---: | ---: | --- |
+| mine | 4.3069 | 0.4451 | 9.68× | 267.30 s → 258.48 s (−3.4%, RTF 9.294 → 8.987) |
+| reviewer's independent re-run | 4.2063 | 0.4382 | 9.6× | (not separately reported) |
+
+Two separately-run measurements landing within 2% of each other on the
+codec's own timing is itself evidence the CUDA path is doing real work: a
+mislabelled or silently-CPU-fallback run could not reproduce a ~9.6× gap
+twice from two different invocations. The held generator is 98.9% of wall
+time on this case, so despite the codec's own large speedup the end-to-end
+effect is a small, bounded saving rather than a dramatic one — the inverse
+of Kokoro/VITS's own CUDA rows in `docs/backends.md`'s per-family cost table
+(there, holding a minority stage off an otherwise-GPU-primary graph is a
+tax; here, moving a free minority stage off an otherwise-CPU-primary graph
+is a saving). Added OmniVoice's row there with that explanation.
+
+### Operational evidence: latency, RTF, and why peak memory has no second budget here
+
+Through the public seam (`tests/omnivoice_public_real.c`, now carrying the
+`[cpu|cuda]` backend positional qwen3-tts's driver already had — see below),
+one seed-0 request of "Sampling follows the seed." (45,120 PCM frames) loads
+in 2.0015 s / 2.0356 s and synthesizes in 15.2393 s / 15.3927 s, CPU vs.
+CUDA — too small a request to separate the codec's share from run-to-run
+noise, consistent with its 1.6% share on the longer case above.
+
+**Peak memory is not a second, GPU-exclusive budget on this hardware, and
+this is measured rather than assumed.** `synth_model_get_device()` — this
+family's own public Interface, sourced from the CUDA runtime rather than
+`nvidia-smi` per `docs/backends.md`'s CUDA Unified Memory Policy — reports
+the CUDA device with `SYNTH_DEVICE_MEMORY_SHARED` set and `memory_total` =
+130,594,721,792 bytes, bit-identical to what the CPU device entry reports as
+system memory total. `nvidia-smi -q -d MEMORY` independently corroborates:
+its `FB Memory Usage` block reports `Total`/`Reserved`/`Used`/`Free` all as
+literally `N/A` for this device (the plain `nvidia-smi` summary table
+separately shows `Not Supported` in its Memory-Usage column — a different
+field of the same underlying absence, not a second string for the same
+one). The research-only `dev-dgx-spark-uvm` preset was read and deliberately
+**not** used for this measurement or the claim below — `docs/backends.md`'s
+own UVM policy says its results do not qualify a model-family/backend
+combination as Supported, and the `SYNTH_DEVICE_MEMORY_SHARED` flag above is
+a hardware-topology fact independent of whether that preset's UVM fallback
+is enabled (it is not, under the standard preset this sweep used).
+
+So there is no second budget to report a peak against. What is real and
+measured instead: `/usr/bin/time -v` on `omni-medium-en` (307 frames, same
+binary) reports Maximum resident set size 4,071,432 kB on CPU and
+4,071,436 kB with `--accelerate` — a 4 kB difference, i.e. no measurable host
+RSS growth from moving the codec to CUDA, because RSS accounting does not
+see the device-mapped allocation at all. That allocation is real and
+bounded, just invisible to RSS: `nvidia-smi --query-compute-apps` (which
+returns real per-process numbers here even though the aggregate query does
+not) showed this process holding 254 MiB right after load — the CUDA
+context plus the 84.24 MiB mirrored decode-path weights — rising to a
+**transient** 1,167 MiB while the codec's own compute buffers were live on
+the 719-frame case, then falling back once that decode finished. That figure
+is not a dedicated-VRAM requirement: it is a momentary share of the same
+128 GB pool host RSS already draws from, not a second, GPU-exclusive
+allocation the way a discrete card's VRAM reading would be — see
+`docs/porting/families/omnivoice.md`'s Execution Backends section for the
+fuller argument against reading it that way.
+
+### Repeated-run cleanup
+
+`tests/public_cleanup_test.cpp`'s CUDA arm is generic across families
+(Task 8's fix round 1 made it assert the family's actual claim either way),
+so it went live for OmniVoice the moment the claim flipped — no test code
+changed for this family.
+
+```
+build/dev-dgx-spark/bin/synthesize-public-cleanup-test \
+  models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf 12 720000 "text:Hi." "" "en"
+```
+
+```
+cpu: post-free resident floor 367268 -> 367268 KB over 12 cycles (+0 KB)
+cuda: post-free resident floor 563632 -> 563632 KB over 12 cycles (+0 KB)
+```
+
+No leak on either backend.
+
+### Making `--backend cuda` real, and the positive assertion
+
+`scripts/validate-omnivoice-public.py --backend cuda` used to be metadata
+only (Task 10): the flag landed in the report dict and never reached the
+runner. Fixed by giving `tests/omnivoice_public_real.c` the `[cpu|cuda]`
+positional `tests/qwen3_tts_public_real.c` already has, and having
+`validate-omnivoice-public.py`'s `synthesize()` forward `arguments.backend`.
+Verified the pre-flip refusal was live before touching anything else: with
+`family_supports_explicit_backend` still `false`, a `--backend cuda` run
+failed every case with `load -> 17` (`SYNTH_ERR_BACKEND`).
+
+The repeated-run cleanup test tolerates a forgotten claim flip by
+construction — a correct refusal and a silently-wrong claim are
+observationally identical to it. Two independent checks close that gap,
+both querying `synth_model_get_device()` directly rather than trusting
+`SYNTH_OK`: `tests/omnivoice_backend_test.cpp`'s `check_explicit_cuda`
+(synthetic package, unit-level, asserts `device.kind == "cuda"`) and
+`scripts/validate-omnivoice-public.py`'s new check 14 (real package,
+integration-level, same assertion after a real `synth_synthesize_to_buffer`
+call). Both passed; a reviewer of this task ran the full public validator
+independently (`--backend cuda`, 388s, all 14 checks including check 14)
+and separately proved check 14 is load-bearing by reverting the claim flip
+and confirming it fails without it.
+
+Only after all of the above did `family_supports_explicit_backend
+(ModelFamily::Omnivoice, SYNTH_BACKEND_CUDA)` flip to `true`
+(`src/model-info.h`) — the replay runner calls `Model::load` directly and
+bypasses the public seam this refusal lives behind, so the sweep measured
+real placement on real hardware while the seam still said no throughout.
+
+### Gates
+
+| gate | result |
+| --- | --- |
+| `cmake --build build --target synthesize-check-unit` (CPU-only, no CUDA compiled in) | 90/90 passed |
+| `cmake --build build-sanitize --target synthesize-check-unit` (ASan/UBSan) | 89/89 passed |
+| `ctest --test-dir build-integration -L integration -R omnivoice` | 7/7 passed (`synthesize-omnivoice-cli`, `-public-cleanup`, `-load-real`, `-profile-test`, `-resampler-golden`, `-replay-golden`, `-public-request`) |
+| `ctest --test-dir build/dev-dgx-spark -R '^synthesize-omnivoice-(replay-golden-cuda|public-request-cuda)$'` | 2/2 passed (869.83s, 389.57s) |
+| `python3 -m unittest tests.python.test_tolerance_coverage` | 3/3 passed |
+| `scripts/ci/clang-format.sh --check-diff` | exit 0 |
+
+Neither VITS/Kokoro nor Qwen3-TTS had a permanently-registered CUDA gate for
+their golden/public validators before this task (their own CUDA evidence
+lived in prose and manual runs); `synthesize-omnivoice-replay-golden-cuda`
+and `synthesize-omnivoice-public-request-cuda` are new for the whole
+project, not only for this family.
+
+### The claim
+
+Every `docs/backends.md` Validation Gate this family/backend combination
+owes is now satisfied: same cases as the CPU baseline (1), tensor agreement
+within committed tolerances (2), finite correctly-shaped PCM (3), twenty
+cases (4), proven placement with latency/RTF/memory (5), and clean
+repeated-run cycles (6). `docs/porting/families/omnivoice.md`'s "Generator
+on CUDA" Open Question is resolved: the generator does not move, by the
+discrete-outputs rule, and was never a live candidate — only the codec's 152
+decode-path tensors do. Publication and the support matrix are separate,
+later questions.
+
+## 2026-08-07 — Plan 4 Task 12: generator-on-CUDA, measured as an experiment — flips, does not ship
+
+Task 11 closed the "Generator on CUDA" Open Question by *policy*: the
+discrete-outputs rule holds the generator on the CPU regardless of backend,
+so it was never a live candidate for a claim. This task runs the *empirical*
+test the Open Question originally asked for anyway — what actually happens
+to the committed token grids if the rule is deliberately broken and the
+generator is forced onto the primary backend — because a policy argument and
+a measurement are different kinds of evidence, and the family doc's own
+standing rule ("claimed only if placement evidence proves the committed
+token grids bit-identical to CPU") is about the latter.
+
+### Method: one line, reverted, never shipped
+
+`src/arch/omnivoice/model.cpp`'s `generator_branch_forward` calls
+`GraphRun::run(logits_tensor, "omnivoice.generator", threads)` at its
+`on_primary=false` default — the one call site every generator forward (step
+0, and both CFG branches of every denoising step) goes through. The
+experiment is flipping that one argument to `true`:
+
+```diff
+-    const synth_status_t status  = run.run(logits_tensor, "omnivoice.generator", threads);
++    const synth_status_t status = run.run(logits_tensor, "omnivoice.generator", threads, true);
+```
+
+`on_primary=true` routes the graph through `BackendPlan::create_scheduler()`
+(primary CUDA + CPU fallback, `op_offload=true`) instead of
+`create_cpu_scheduler()`. No weight-mirroring twin was built for this
+experiment — the generator's weights stay exactly where `Model::load`
+already puts them, in the one CPU-resident `weights_context`/`weights_buffer`
+Task 9's comment names as never retargetable. `ggml_backend_sched`'s
+`op_offload` path is what makes this work at all: it offloads a
+CPU-resident-weight op onto the primary backend anyway, copying whatever
+operand it needs at each split boundary. That is the same mechanism
+`docs/backends.md`'s discrete-outputs section measured at "2,372 scheduler
+splits... five times slower" for Kokoro's duration stage and rejected for
+the *shipped* path on performance grounds — irrelevant here, because this
+run is not shipping.
+
+Built once, into the existing `dev-dgx-spark` CUDA tree, on top of it:
+
+```
+export SYNTH_CUDA_ROOT=/usr/local/cuda-13.3
+export PATH="$SYNTH_CUDA_ROOT/bin:$PATH"
+export LD_LIBRARY_PATH="$SYNTH_CUDA_ROOT/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+cmake --build build/dev-dgx-spark --target synthesize-omnivoice-replay-real -j 20
+```
+
+Kept off the shipped path in the plainest way available: the patch lives
+only in one hand-edited working-tree line, is never registered behind a
+build flag or CLI option, and is reverted with `git checkout --
+src/arch/omnivoice/model.cpp` (confirmed via `git diff`/`git status` — clean)
+before any of the verification gates below ran or this commit was made. No
+committed source carries a reachable path to `on_primary=true` for the
+generator.
+
+### Baseline: reproduce the family doc's own margin table first
+
+Before touching the source, a plain CPU `--margin-report` run (unmodified
+binary, no rebuild) reproduces the family doc's margin table exactly and
+gives the exact position each case's narrowest decision sits at — useful
+below when checking whether a flip lands where the margin table would
+predict:
+
+```
+uv run --project scripts/envs/omnivoice --locked python3 \
+  scripts/validate-omnivoice-replay.py \
+  --model models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
+  --require grid --margin-report \
+  --work build/goldens/omnivoice-replay-task12-cpu-baseline
+```
+
+```
+omni-short-en:      min selection margin 0.000115871 at step 7,  codebook 0, frame 19
+omni-lang-none:     min selection margin 0.000603199 at step 11, codebook 0, frame 13
+omni-long-boundary: min selection margin 0.000204682 at step 11, codebook 0, frame 237
+omni-rate-slow:     min selection margin 9.53674e-06 at step 28, codebook 4, frame 80
+omni-rate-fast:     min selection margin 0.000244433 at step 10, codebook 0, frame 9
+token grids exact: 17/17
+```
+
+Matches the family doc's `1.16e-04` / `6.03e-04` / `2.05e-04` / `9.5e-06` /
+`2.44e-04` to the measured digit. ~8 minutes wall for all 20 cases
+(`--require grid`, no waveform decode).
+
+### The gate: 3/17 byte-exact, not 17/17 — STOP
+
+```
+uv run --project scripts/envs/omnivoice --locked python3 \
+  scripts/validate-omnivoice-replay.py \
+  --model models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
+  --runner build/dev-dgx-spark/bin/synthesize-omnivoice-replay-real \
+  --accelerate --profile F32 --backend CUDA --stage replay \
+  --require grid --margin-report \
+  --work build/goldens/omnivoice-replay-task12-generator-cuda
+```
+
+2:12.77 wall for all 20 cases — *faster* than the CPU baseline despite
+`op_offload`'s per-forward weight copies, confirming the generator's own
+compute genuinely moved rather than merely being nominally rescheduled.
+Placement, aggregated over all 20 cases: **849,315 of 880,032 generator
+nodes (96.51%) left the CPU** — the same 880,032-node total Task 11's own
+sweep reported (confirming this is the identical graph, only the scheduler
+changed) — so the experiment is not a token gesture at the flag level: the
+generator's compute substantially and verifiably ran on the primary device.
+
+```
+token grids exact: 3/17
+```
+
+| case | elements | mismatches | % flipped | GPU margin (kind@step,cb,frame=value) | CPU margin |
+| --- | ---: | ---: | ---: | --- | --- |
+| omni-upstream-readme | 536 | 23 | 4.29% | selection@19,1,5=6.47e-04 | argmax@31,6,54=1.14e-03 |
+| omni-short-en | 400 | 376 | 94.00% | selection@7,0,47=2.23e-04 | selection@7,0,19=1.16e-04 |
+| omni-short-zh | 432 | 208 | 48.15% | selection@25,2,47=1.69e-03 | selection@29,5,36=2.46e-03 |
+| omni-short-ja | 376 | 142 | 37.77% | selection@26,3,24=3.32e-04 | selection@25,2,33=2.66e-03 |
+| omni-lang-none | 392 | **0** | 0.00% | selection@11,0,13=8.88e-04 | selection@11,0,13=6.03e-04 |
+| omni-punctuation | 536 | 4 | 0.75% | selection@1,0,19=4.26e-03 | argmax@31,7,32=8.39e-04 |
+| omni-digits | 1056 | 1038 | 98.30% | argmax@31,6,64=5.26e-04 | argmax@31,7,102=1.40e-03 |
+| omni-nonverbal | 488 | 10 | 2.05% | argmax@31,6,57=2.85e-03 | argmax@31,7,28=1.89e-03 |
+| omni-medium-en | 2456 | 1651 | 67.22% | selection@27,3,115=1.77e-04 | argmax@31,7,297=7.17e-04 |
+| omni-long-boundary | 5752 | 4190 | 72.84% | selection@27,3,664=3.32e-04 | selection@11,0,237=2.05e-04 |
+| omni-rate-slow | 800 | 410 | 51.25% | selection@28,4,79=5.15e-05 | selection@28,4,80=9.54e-06 |
+| omni-rate-fast | 200 | 1 | 0.50% | selection@10,0,9=2.43e-04 | selection@10,0,9=2.44e-04 |
+| omni-design-en | 400 | **0** | 0.00% | selection@3,0,47=2.19e-03 | selection@3,0,47=1.41e-03 |
+| omni-design-zh | 392 | 301 | 76.79% | argmax@31,7,16=2.59e-04 | argmax@31,7,46=6.41e-04 |
+| omni-clone-en | 560 | 115 | 20.54% | selection@14,0,46=8.69e-04 | selection@29,5,13=1.19e-03 |
+| omni-clone-zh | 784 | 254 | 32.40% | argmax@31,6,29=9.99e-04 | selection@25,2,53=1.28e-03 |
+| omni-fast-mode | 400 | **0*** | 0.00% | selection@9,1,6=1.25e-03 | argmax@15,7,8=6.87e-05 |
+
+\* `omni-fast-mode` matched its committed alternate grid
+(`omni-fast-mode.alternate-grid-1.i32`), the same dual-admissible witness
+Task 2/the 2026-07-31 ruling already covers — not a coincidental agreement
+with the primary.
+
+**Aggregate: 8,723 of 15,960 committed tokens (54.66%) differ from the CPU
+baseline; 45.34% agree.** Per-case: **3/17 exact** (`omni-lang-none`,
+`omni-design-en`, `omni-fast-mode`), 14/17 flip, several catastrophically
+(`omni-digits` 98.30%, `omni-short-en` 94.00%). `ref.tokens` (the two
+cloning cases' RVQ encode, unaffected by this patch since it never touches
+`generator_branch_forward`) stayed 2/2 exact, as expected.
+
+### Per-position detail for the four smallest flips
+
+The full per-position `(codebook, frame, got, want)` quintuple for every
+case with a tractable number of mismatches (the four largest flips run into
+the thousands and are not reproduced element-by-element here; the counts
+above and the raw `grid.i32` files under `build/goldens/omnivoice-replay-
+task12-generator-cuda/` are the record):
+
+```
+omni-rate-fast (1 of 200):
+  codebook 7 frame 13: want(cpu)=554  got(gpu)=984
+
+omni-punctuation (4 of 536):
+  codebook 7 frame 2:  want=658   got=597
+  codebook 7 frame 7:  want=1018  got=761
+  codebook 7 frame 23: want=14    got=481
+  codebook 7 frame 32: want=217   got=1007
+
+omni-nonverbal (10 of 488):
+  codebook 6 frame 45: want=315  got=173
+  codebook 6 frame 57: want=614  got=770   <- coincides with this run's
+                                              own reported narrowest margin
+                                              (argmax@31,6,57 = 2.85e-03)
+  codebook 7 frame 3:  want=528  got=440
+  codebook 7 frame 6:  want=863  got=865
+  codebook 7 frame 7:  want=830  got=78
+  codebook 7 frame 10: want=753  got=137
+  codebook 7 frame 13: want=863  got=818
+  codebook 7 frame 28: want=734  got=465
+  codebook 7 frame 45: want=369  got=612
+  codebook 7 frame 51: want=761  got=210
+
+omni-upstream-readme (23 of 536): codebooks 4-7, various frames; none
+  coincide with this run's own reported margin position (selection@19,1,5).
+```
+
+Only `omni-nonverbal`'s flip happens to land where the run's own margin
+report points — and that position's margin (2.85e-03) is not itself
+narrow; it is *not* in the sub-1e-4 screen band, nearly 3x the screen
+threshold. The other three small-flip cases' actual flip positions are
+elsewhere entirely. This is a limit of the instrumentation, not a surprise:
+`MarginReport` (`generator-host.h`) keeps only the single narrowest
+decision over the *whole run*, not a per-position ledger, so most flip
+positions here have no recorded margin to quote — a run with 8 codebooks x
+tens of frames x 32 steps makes far more decisions than the one the
+instrument was built to surface.
+
+### Interpretation: this does not match the margin-table prediction
+
+The four in-band cases the family doc names as likeliest to flip first —
+`omni-short-en` (1.16e-04), `omni-long-boundary` (2.05e-04), `omni-rate-fast`
+(2.44e-04), `omni-lang-none` (6.03e-04) — plus `omni-rate-slow` (9.5e-06,
+already below the screen) were the predicted leading indicators. Against
+that prediction:
+
+- Three of the five predicted cases flip (`omni-short-en`, `omni-long-
+  boundary`, `omni-rate-slow`), one flips by a single token
+  (`omni-rate-fast`), and one does **not** flip at all (`omni-lang-none`).
+- Ten cases with comfortably "safe" CPU-vs-oracle margins — none within 6x
+  of the screen — flip too, several worse than any of the predicted five:
+  `omni-digits` (1.40e-03 margin, 98.30% flipped), `omni-short-zh` (2.46e-03
+  margin, 48.15% flipped), `omni-short-ja` (2.66e-03 margin, 37.77%
+  flipped).
+- Only `omni-design-en` (1.41e-03) stays exact among the "safe" cases,
+  alongside `omni-lang-none` and the dual-admissible `omni-fast-mode`.
+
+So the answer is **no, the flip pattern does not match the margin table**,
+and the reason is visible in the probe table the same run produced:
+
+```
+                        max_abs (GPU vs. CPU baseline)
+generator.logits_step0  0.100906
+generator.hidden_l0     0.00626373
+generator.hidden_l7     0.0691681
+generator.hidden_l14    0.0986023
+generator.hidden_l21    0.726776
+generator.hidden_l27    14.8662
+```
+
+Step 0's logit divergence alone (0.10 max_abs) is already ~90x the 6.1e-04
+max_abs the margin screen was calibrated against (the CPU-port-vs-oracle
+divergence the family doc's knife-edge ruling derives 1e-4 from), and by
+the last of 28 layers it has compounded to 14.9 — five orders of magnitude
+past the 1e-4 screen and roughly 4 orders past the widest of the 17 cases'
+own recorded margins (2.66e-03). The margin table predicts which decisions
+are *narrow relative to this port's own ~6e-4 CPU arithmetic difference
+from the oracle*; TF32 compounding through a 28-layer transformer run 32
+times, each forward doing both CFG branches, produces a perturbation two to
+three orders of magnitude larger than that calibration basis. At that
+scale nearly every decision in the suite is exposed, not only the
+already-narrow ones — which is exactly what 14 of 17 cases flipping, with
+several near-total, shows. `omni-lang-none` and `omni-design-en` surviving
+are best read as luck at that scale, the same word the family doc already
+uses for `omni-rate-slow`'s CPU-side margin — not as a demonstration that
+either case's decisions are actually robust to it.
+
+### Decision: the generator stays on CPU; no claim is made
+
+Per the plan's own Step 2 rule ("Any flip → the generator stays on CPU, the
+claim is not made, and the measurement is recorded so the next cycle does
+not repeat it"): 14 of 17 greedy cases flip, most by a wide margin, so this
+is not the ambiguous case the plan reserves for jiangzhuo — it is a clean
+STOP. No change to `family_supports_explicit_backend` or any shipped
+placement; `docs/backends.md`'s discrete-outputs rule already held this
+stage on the CPU by construction (Task 11), and this measurement is
+confirming evidence for keeping it there, not new grounds to reconsider it.
+The Open Question in `docs/porting/families/omnivoice.md` gets this
+measurement recorded alongside Task 11's policy answer, so a future cycle
+does not re-run the same experiment expecting a different, more favorable
+number.
+
+### Revert, and re-verification that the shipped claim is unaffected
+
+```
+git checkout -- src/arch/omnivoice/model.cpp   # confirmed clean via git diff/status
+cmake --build build/dev-dgx-spark --target synthesize-omnivoice-replay-real -j 20
+uv run --project scripts/envs/omnivoice --locked python3 \
+  scripts/validate-omnivoice-replay.py \
+  --model models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
+  --runner build/dev-dgx-spark/bin/synthesize-omnivoice-replay-real \
+  --accelerate --profile F32 --backend CUDA --stage replay --require grid \
+  --work build/goldens/omnivoice-replay-task12-revert-check
+```
+
+```
+token grids exact: 17/17
+ref.tokens exact: 2/2
+```
+
+Bit-for-bit the same result Task 11 committed — the shipped CUDA claim
+(codec moves, generator does not) is unaffected by this task.
+
+### Gates
+
+| gate | result |
+| --- | --- |
+| `cmake --build build --target synthesize-check-unit` (CPU-only) | 90/90 passed |
+| `cmake --build build-sanitize --target synthesize-check-unit` | 89/89 passed |
+| `ctest --test-dir build-integration -L integration -R omnivoice` | 7/7 passed (902.49s: `cli` 34.28s, `public-cleanup` 96.01s, `load-real` 4.40s, `profile-test` 129.84s, `resampler-golden` 0.01s, `replay-golden` 441.74s, `public-request` 196.21s) |
+| `scripts/ci/clang-format.sh --check-diff` | exit 0 (no C/C++ file carries a diff — the experimental patch was reverted before this ran) |
+
+No source file differs from `HEAD` at the point this task committed; the
+only committed changes are this entry, the family doc's Open Question
+update, and the task report.
+
+### Status
+
+**DONE — STOP condition, as a complete and legitimate outcome.** The
+generator is not claimed on CUDA. Commit follows this entry.
+
+## 2026-08-07 — Plan 4 Task 16: The Listening Audit — `no_obvious_regression`, all six pairs
+
+**Reordered to the front of Slice D at jiangzhuo's request** (ahead of Tasks
+13–15): a `regression` verdict is a ship-blocker, and every audio-producing
+slice (A/B/C) was already complete, so there was no reason to write the card
+with `not_run` first and amend it. Preparation is `task-16-report.md`
+(`.superpowers/sdd/2026-08-06-omnivoice-plan-4-quants-backends-ship/`); this
+entry is the verdict record `docs/model-porting.md`'s Step 4 requires.
+
+### Method: six pairs, `docs/model-porting.md:244-271`'s rule, with substitutions recorded
+
+The doc's rule names five selection criteria — worst intelligibility, worst
+UTMOSv2, worst voice-similarity, longest-duration, two deterministic random
+cases — capped at six pairs. None of the three named quality scores exist for
+this family: **ADR 0017 defers the whole intelligibility/UTMOSv2/
+voice-similarity grid** (`quality_evaluated` is not a near-term goal), so
+there is nothing to rank worst-of by those names. Substituted with what this
+family *does* measure — the per-case `audio.pcm` cosine/max_abs
+`scripts/validate-omnivoice-replay.py` already reports against the oracle for
+all 20 golden cases (`build/goldens/omnivoice-replay/full-report.json`):
+
+| Doc's slot | Substituted with | Slots |
+| --- | --- | --- |
+| worst intelligibility | worst cosine (no ASR evaluator exists) | 1 |
+| worst UTMOSv2 | second-worst cosine (no naturalness evaluator exists) | 1 |
+| worst voice-similarity | one clone case (`voice.kind=reference_audio`) **+** one Description Text case (`voice.kind=description_text`) — this family's two headline conditioning paths, rather than picking one arbitrarily | 2 |
+| longest-duration | unchanged, but the comparison kind on this slot was spent on backend coverage (below) | 1 |
+| two random | reduced to **one**, to hold the total at six after voice-similarity grew from 1 slot to 2 | 1 |
+
+Total 1+1+2+1+1 = 6, at the doc's cap, nothing dropped.
+
+**Backend coverage was folded into the longest-duration slot rather than
+added as a seventh pair.** F32 is the only shipped profile (Q8_MIXED and F16
+both failed the clone exact-token gate, Plan 4 Task 3/3-continuation), so
+every pair trivially covers it. CPU and CUDA are both shipped backends (Task
+11/12), but six pairs leaves no independent slot for that axis. Rather than
+exceeding the cap or dropping a required criterion, the longest-duration
+case's comparison kind was changed from port-vs-oracle to **CUDA-vs-CPU codec
+decode of the same committed token grid** — deliberately `omni-long-boundary`,
+because Task 11's own report already identified it as the case with the
+codec's largest measured CUDA effect (9.68x speedup at 719 frames), the
+single most informative case to spend that slot on.
+
+Both clone/design picks went to the `-en` variant over `-zh`:
+`docs/model-porting.md:265`'s "for a language the maintainer understands" —
+English is that language here.
+
+### The six pairs and the identity key
+
+Two comparison kinds. **Port vs oracle** (5 pairs): the port's own codec
+decoding the ORACLE's committed token grid
+(`build/goldens/omnivoice-replay/<case>/pcm.f32`, isolating the codec from the
+decode loop) against the oracle's own waveform
+(`build/goldens/omnivoice/<case>/audio/pcm.f32`). **CUDA vs CPU** (pair 3):
+the same case's codec decode of the *same* committed token grid, once per
+backend — `grid.i32` verified byte-identical between the CPU and CUDA replay
+directories before use, so the two waveforms differ only by codec backend.
+
+| Pair | Case | Comparison | A | B | Duration | Cosine |
+| --- | --- | --- | --- | --- | ---: | ---: |
+| 1 | `omni-medium-en` | port vs oracle | oracle | port | 12.28s | 0.9999998558 |
+| 2 | `omni-nonverbal` | port vs oracle | port | oracle | 2.44s | 0.9999998990 |
+| 3 | `omni-long-boundary` | **CUDA vs CPU** | cuda | cpu | 28.76s | 0.9999983311 |
+| 4 | `omni-clone-en` | port vs oracle | oracle | port | 2.80s | 0.9999999031 |
+| 5 | `omni-design-en` | port vs oracle | oracle | port | 2.00s | 0.9999999511 |
+| 6 | `omni-punctuation` | port vs oracle | oracle | port | 2.68s | 1.0000002084 |
+
+Cosine values fractionally above 1.0 (pairs 1, 5, 6 read below 1.0, pair 6
+above) are `compare()`'s own float32 rounding in the dot-product/norm
+computation, not a bound violation — the same artifact the deep generator
+probes already show elsewhere in this log.
+
+Pair 3's figures are not in `full-report.json` (that report only ever ran the
+CPU backend); computed once, directly, against the two already-produced
+replay directories, with the project's own locked numpy env before the
+manifest was written: max_abs 0.0030613476410508156, cosine
+0.9999983310699463 — roughly three orders of magnitude larger than any
+port-vs-oracle max_abs above (1e-5 to 1e-6 range), consistent with CUDA's
+TF32 cuBLAS path (`docs/backends.md`) rather than a placement defect, since
+the feeding token grid is byte-identical and the divergence is purely the
+codec backend's arithmetic.
+
+### Seeds and the A/B swap pattern
+
+Two independent seeds, so re-deriving one never perturbs the other:
+
+- **`case_selection_seed = 16`** (the task number) drives exactly one draw,
+  `random.Random(16).choice(sorted(remainder))`, over the 15 cases left after
+  the five fixed-criteria picks — landed on `omni-punctuation`.
+- **`order_seed = 20260807`** (the audit date) drives one
+  `random.Random(20260807).random() < 0.5` draw per pair, consumed in pair
+  order 1→6, deciding whether that pair's first-defined identity (`port` /
+  `cuda_codec`) is presented as A or as B.
+
+**5 of the 6 pairs were A/B-swapped** from their first-defined identity (only
+pair 2 was not), so the port (or the CUDA side) was not positionally
+guessable across the set. The mapping lived only in `audit-manifest.json`
+(sha256-pinned source paths for both sides of all six pairs), a sibling file
+never embedded in the page; the page itself was grepped for `oracle`,
+`port_vs_oracle`, `cuda_codec`, `cpu_codec`, every `omni-*` case id, and the
+`build/goldens` path prefix, with zero matches outside the identity key.
+
+### Verdict
+
+**jiangzhuo, 2026-08-07: all six pairs "no obvious difference" ⇒
+`listening_audit: no_obvious_regression`.**
+
+### Pair 3 corroborates the backend claim, not merely accompanies it
+
+Pair 3 is the one pair this audit spent on Execution Backends rather than
+port-vs-oracle fidelity. Among the six audited pairs its max_abs (3.06e-03,
+~450x pair 1's) is the largest, but that is an artifact of comparison kind,
+not evidence about the case: five pairs compare a port against an oracle
+(1e-5 to 1e-6 range) and only this one compares two backends, so it was never
+going to land in the same range. `omni-long-boundary` was the case at hand
+because it holds the audit's longest-duration slot, the same case Task 11
+already named as the codec's largest measured CUDA *speedup* (9.68x at 719
+frames) — a different claim from the largest measured CUDA numeric
+divergence across the family, a distinction an earlier draft of this entry
+blurred. **Fix (final branch review, 2026-08-07): recomputing
+CPU-vs-CUDA `audio.pcm` cosine directly from `build/goldens/omnivoice-replay`
+and `build/goldens/omnivoice-replay-cuda` for all twenty cases ranks
+`omni-long-boundary` 5th of 20 by that measure** — behind `omni-upstream-
+readme`, `omni-medium-en`, `omni-nonverbal` and `omni-short-en`, in that
+order — so it is not, and was never claimed by Task 11 to be, the family's
+largest CUDA divergence; the selection reason stands on the longest-duration
+slot and the speedup finding alone. Task 11 already established the
+*structural* half of the CUDA claim: byte-exact token grids on all 17 greedy
+cases plus both clone cases, so nothing upstream of the codec's decode moved.
+What a tolerance grid cannot show is whether the codec's own float32
+arithmetic difference between backends is large enough to hear. Pair 3
+answers exactly that question, on the case the longest-duration slot already
+pointed to — and the answer is no. This is corroborating evidence for the
+backend claim already made on structural grounds, not a second, independent
+claim standing beside it: the byte-exact grids proved the CUDA path decodes
+the same discrete decisions, and pair 3 shows that the floating-point
+divergence the codec's CUDA path produces on a representative case is
+inaudible to the one listener who checked. Had pair 3 come back "audible
+difference," it would not have falsified Task 11's structural evidence, but
+it would have been a reason to look harder at the codec's CUDA kernels before
+shipping the backend regardless of what the token grids said — a tolerance
+number is not a substitute for that check, which is the whole reason this
+task exists.
+
+### What this does, and does not, establish
+
+Per `CONTEXT.md`'s definition, a Listening Audit "records obvious regressions
+without claiming population-level subjective quality," and per
+`docs/model-porting.md` it "is never reported as MOS, CMOS, a listening
+panel, or population-level evidence." This was **one listener, six pairs,
+informally, no rated comparison, no panel, no score.** It says: on the six
+automatically selected pairs above, at that hearing, no obvious problem was
+noticed. It does not say the port sounds identical to the oracle in general,
+does not say the CUDA and CPU codecs are perceptually equivalent in general,
+and does not move `quality_evaluation` off `not_run` — ADR 0017's automated
+grid has not run and is not scheduled. `docs/porting/families/omnivoice.md`
+records the outcome in the family record.
+
+### Values for Task 14's card
+
+Not written to any YAML here — Task 14 owns the card. For that task's
+`listening_audit` / `listening_audit_detail` fields, following the shape
+`kokoro-v1-0.yaml` and `qwen3-tts-12hz-0-6b-customvoice.yaml` already use:
+
+```yaml
+listening_audit: no_obvious_regression
+listening_audit_detail:
+  listeners: 1
+  cases: 6 (5 port_vs_oracle, 1 cuda_vs_cpu)
+  profiles: [F32]
+  backends: [CPU, CUDA]
+  date: 2026-08-07
+  method: >-
+    Blind A/B web page, five pairs replaying the port's codec against the
+    pinned PyTorch oracle on the oracle's own committed token grid, one pair
+    (omni-long-boundary, this family's largest measured CUDA effect)
+    comparing the codec's CUDA decode against its CPU decode of the same
+    byte-identical committed grid; A/B order independently randomized per
+    pair (order_seed 20260807, 5 of 6 swapped) and case selection randomized
+    for the one non-criteria slot (case_selection_seed 16); verified in a
+    real headless browser for no trimming, offset-preserving side switch, and
+    zero drift on a rapid double-switch.
+```
+
+### Status
+
+Complete. Nothing under `build/`, `tests/golden/`, `ggml/`, or `third_party/`
+was modified; the audit's page, manifest and scripts are working artifacts
+under `$CLAUDE_JOB_DIR`, never the repo. Docs-only commit follows this entry.
+
+## 2026-08-07 — Plan 4 closeout: the four slices tied together
+
+Plan 4 took OmniVoice from "port-validated on CPU at F32" (Plan 3's close) to
+a publication-ready Restricted Model Package, in four slices, each closed on
+a measurement rather than an assumption. This section ties them together;
+none of the individual entries above are restated, only cross-referenced.
+
+**Slice A — Quantization (Tasks 1–4), negative and explained.** Task 1's
+classifier and Task 2's packed-convolution branch are real, tested, shipped
+infrastructure regardless of the outcome. Task 3 measured both codec-only
+candidate profiles against the exact-token gate:
+
+| profile | size | sha256 | greedy grids | clone RVQ grids | mismatch | narrowest gap |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| F32 (reference) | 3,189,953,504 B | `f6d504ff…f9fa3` | 17/17 | 2/2 | — | 0.00239563 |
+| Q8_MIXED | 2,703,016,576 B (−15.3%) | `b020933f…4b671e` | 17/17 | 0/2 | 1023/2808 (36.4%) | 0.0102997 (wider than F32, mismatch anyway) |
+| F16 | 2,858,422,240 B (−10.4%) | `530b2b85…0b955fa` | 17/17 | 0/2 | 103/2808 (3.7%) | 0.00306702 |
+
+Both fail; both are BLOCKED, not shipped; no tolerance cell exists for
+either. The greedy margin table is bit-identical across all three profiles
+(the generator is Sensitive/F32 under every profile), which is why none of
+the margin-table's four predicted-first-flip cases (`omni-short-en`,
+`omni-long-boundary`, `omni-rate-fast`, `omni-lang-none`) or `omni-rate-slow`
+actually flipped — the real failure lives entirely in the clone-encode RVQ
+lookup, a subsystem the greedy margin screen was never built to probe. The
+structural reason, computed once and not revisited: **93.8% of the
+quantizable weight (593.3 of 632.3 MiB) is the clone-encode path**
+(`semantic_model` + `acoustic_encoder` + `encoder_semantic`) feeding a
+discrete RVQ nearest-neighbour decision, and the only 6.2% that is safe to
+quantize (`acoustic_decoder`, 39.0 MiB) buys 0.64–0.94% of package size for a
+measurable waveform change. The tensors worth quantizing are exactly the
+ones that cannot be. **This family ships F32-only.**
+
+**Slice B — Validation-suite debt (Tasks 5–7), all three carry-over items
+closed.** Task 5 added
+`synthesize-omnivoice-serialize-writer-agreement-test` (labels
+`unit;omnivoice`), proven in both drift directions and, after fix round 1,
+per-kind exact-equality plus the two `n_kv` count constants — closing the
+dangerous direction (a key silently removed from a writer while the
+whitelist stays permissive) that no prior fast test could see. Task 6 pinned
+all 20 cases' primary-grid sha256 digests in the manifest (a new, additive
+`stochasticInput` schema def, `suite_version` unchanged), extended
+`scripts/validate-omnivoice-replay.py` to verify them before any comparison
+runs (proven pre-spawn: a corrupted digest fails in well under a second, a
+real run takes 400+), and added
+`test_omnivoice_primary_grids_are_digest_pinned` to
+`synthesize-golden-manifest-contract`. Task 7 found both of Plan 1's
+carry-over converter defects (the `verify_gguf` shape check, the
+license-copy ordering) were already fixed on `main` before Plan 4 began
+(`b08757d`, `3b1d88f`, both 2026-07-31); the debt was purely missing unit
+coverage, closed with four new tests plus a defense-in-depth reorder,
+converter emission proven unchanged.
+
+**Slice C — CUDA Execution Backend (Tasks 8–12), claimed for the codec,
+refused for the generator, both on measurement.** Task 8 closed a live
+honesty defect predating this plan (every family, OmniVoice included, could
+accept `SYNTH_BACKEND_CUDA` and silently run entirely on CPU); after fix
+round 1 the family-blind cleanup-test gap Task 8's own review found was
+closed too. Task 9 built the codec's accelerator twin with a filter
+narrower than qwen3-tts's blanket `codec.*` mirror (152 movable tensors,
+84.24 MiB; a copied blanket filter would have mirrored all 486 `codec.*`
+tensors, ≈700 MiB, of which the 334 the CPU-held clone-encode chain reads —
+616.01 MiB, measured, not the ~593 MiB the pre-Task-9 survey estimated —
+would have gone to the device for nothing), and fix round 1 caught and
+fixed a second-consumer trap the first
+draft missed (`codec.quantizer.*` is read by both the decode graph and
+host-side `rvq_encode`). Task 10 made placement checkable. Task 11 ran the
+sweep and claimed the backend:
+
+- Placement, aggregated over all 20 cases: generator 0/880,032 nodes off
+  CPU; codec 8,440/8,440 nodes off CPU — both unconditional.
+- Token grids: 17/17 greedy + 2/2 clone RVQ byte-exact against the CPU
+  baseline, no flip.
+- Waveform: `audio.pcm` worst cosine 0.9999963545 (deviation ≈3.65e-6),
+  committed at `backends.CUDA.stages.replay` (min_cosine 0.999981, max_abs
+  0.04 — 5× measured, this family's standing rule).
+- Cost is inverted from Kokoro/VITS: codec alone is 9.68× faster on the
+  longest case, but the held generator is 98.9% of wall time, so end-to-end
+  is a 3.4% saving (267.30 s → 258.48 s), not a tax.
+- UMA peak memory has no second budget to report on this hardware
+  (`SYNTH_DEVICE_MEMORY_SHARED`, `memory_total` bit-identical to the CPU
+  device's); host RSS is flat within 4 KB, and the 1,167 MiB transient
+  `nvidia-smi --query-compute-apps` figure is a momentary share of the one
+  128 GB pool, not a dedicated-VRAM requirement.
+- Two registered CUDA gates, neither VITS/Kokoro/qwen3-tts had before this:
+  `synthesize-omnivoice-replay-golden-cuda` (869.83 s) and
+  `synthesize-omnivoice-public-request-cuda` (389.57 s).
+
+Task 12 then ran the empirical experiment the family doc's own Open Question
+asked for — generator on CUDA, hand-reverted, never shipped — and it FLIPS:
+3/17 greedy grids byte-exact, 14 flip (up to 98.30%), 54.66% of all 15,960
+committed positions differ. **The valuable part is that the flip pattern
+does NOT match the margin table**: three of the five margin-predicted
+first-flip cases do flip, one flips by a single token, one does not flip at
+all, while ten comfortably-safe-margin cases flip too, several worse than
+any predicted case (`omni-digits`, margin 1.40e-03, 98.30% flipped). This is
+a magnitude problem, not a knife-edge one: step-0 logit divergence from the
+CPU baseline is already ~90× the margin screen's own calibration basis
+(0.10 vs. 6.1e-04) and compounds through 28 layers, 32 steps and 2 CFG
+branches per step to 14.9 max_abs by the final layer — several orders past
+both the screen and the widest margin any of the 17 cases carries. **The
+margin screen is calibrated for a different scale of perturbation entirely
+and says nothing useful about TF32 at this depth**; it governs which GREEDY
+cases are safe to adopt into the Golden suite on CPU-vs-oracle arithmetic,
+and does not transfer to a backend-placement question at all. The decision
+follows the plan's own rule without needing to reach jiangzhuo: the
+generator stays on CPU, no claim is made, and the discrete-outputs rule
+would have held it there regardless of this measurement's outcome.
+
+**Slice D — Ship (Tasks 13–17).** Task 13 taught the shared HF card
+generator OmniVoice's shape (Sidecar Resources, text input, `--text` usage,
+the third `seed_default_with_profiles` voice mode, conditional CUDA-placement
+prose) — 31/31 generator tests (10 pre-existing + 21 new), 267 python tests,
+and found a real latent bug in the unreleased qwen3-tts card template along
+the way. Task 14 built the clean, flat `models/publish/omnivoice-0-6b/`
+directory (F32 GGUF, the Boson sidecar, the rendered README — no upstream
+checkpoint, no non-shipping profile) and found a second false template claim
+(unconditional "also accepts exact token IDs", false for a `TEXT_UTF8`-only
+family) — 34/34 + 23/23 python tests. Task 16 (moved ahead of 13–15 at
+jiangzhuo's request once every audio-producing slice was complete) recorded
+the Listening Audit verdict: **`no_obvious_regression`, all six pairs**,
+including the CUDA-vs-CPU codec pair (pair 3, the largest numeric divergence
+in the set) corroborating Slice C's backend claim with the one kind of
+evidence a tolerance grid cannot provide. Task 15 brought ADR 0018's
+Restricted Model Package vocabulary into `docs/scope.md`,
+`docs/model-packages.md`, and `CONTEXT.md`'s Validation Level entry. Task 17
+(this entry, plus the family doc's Status line, `docs/testing.md`'s new
+gates, the design spec's license-sentence amendment, and the Plan 5
+carry-over ledger) is the close-out.
+
+**What ships.** `omnivoice-0-6b-F32.gguf` only, as a Restricted Model Package
+(ADR 0018) under `license: other` /
+`license_name: omnivoice-cc-by-nc-unspecified-version-plus-boson-higgs-audio-2-community`,
+CUDA claimed for the codec's decode path only, `listening_audit:
+no_obvious_regression`. Publication itself — `hf repos create` / `hf
+upload` — is a separate act awaiting jiangzhuo's explicit per-act
+confirmation naming the target repository; nothing in this plan performed
+it.
+
+**What Plan 4 newly owes.** Recorded in full, each naming its file, in
+`docs/superpowers/plans/2026-08-07-omnivoice-plan-5-carryover.md`: the margin
+screen does not transfer to backend-placement questions (Task 12's finding,
+above); `models/publish/` is a working, git-ignored directory the upload
+command depends on and must be rebuilt if the shipped GGUF ever changes; and
+the four project-wide questions this plan's own carry-over ledger declined
+to settle unilaterally (`SYNTH_ASSERT` under `NDEBUG`, the
+`synthesis.graph_failed` diagnostic name, the `std::optional` stream
+micro-optimization, and the two-clips validation-order test), plus the
+float64 cosine-estimator question, both still open from Plan 3's own ledger.
+
+## 2026-08-08 — Plan 5 Tasks 1–2: the generator weight twin, the placement move, and an honest RTF
+
+jiangzhuo revised the bar for this family from token identity to audible
+quality on 2026-08-08, after a six-pair blind A/B (order seed 20260808, case
+seed 12) comparing generator-on-CPU against generator-on-CUDA output heard
+no problem in any pair, including `omni-digits` at waveform cosine 0.0515
+with 98.3% of its tokens flipped between the two runs. That ruling reopens
+the placement Plan 4 Task 11/12 closed by the discrete-outputs rule: the
+generator can now move to the primary Execution Backend, which — per two
+independent RTF investigations recorded before this plan — is the only
+order-of-magnitude lever this family has (~1,722 token-forwards of a 0.44B
+model per second of synthesized audio, mask-predict's 32 steps × no KV cache
+× 2 CFG branches, against 25 for a cached autoregressive decoder).
+
+### Task 1: the generator weight twin
+
+Followed Task 9's codec-twin pattern exactly, generalized to a group with no
+NOT-MOVABLE remainder: `bind_generator_weights` (`catalog.h`/`catalog.cpp`)
+starts `generator_weights` as a whole-struct copy of `weights` and only
+re-resolves `generator_weights.generator` against a twin context when one is
+given, so `weights` itself — what any future second consumer would read — is
+never mutated. **Before writing anything, every host-side reader of
+`GeneratorWeights` was grepped across `src/` and `tests/`**: the only two
+consumers are `build_canvas_embedding` and `build_generator_forward`
+(`generator.cpp`), both reached exclusively through `model.cpp`'s file-local
+`generator_branch_forward`, itself called only from `Model::run_synthesis`'s
+three sites. Unlike `codec.quantizer.*` in Task 9's own twin, there is **no
+second consumer analogous to `rvq_encode`** — no host-side reader of the
+generator's weights outside the graph-building path — but the split is built
+the same defensive way regardless, both because a future reader that
+bypasses `generator_branch_forward` must keep seeing the CPU-resident
+package by construction, and because `tests/omnivoice_catalog_test.cpp`'s
+own unit tests call `build_model_weights` directly and must observe it
+unaffected by whatever this function does elsewhere.
+
+`Model::Impl` gained `generator_context`/`generator_buffer`/
+`generator_weights`, built and streamed in `Model::load` the same way as the
+codec's own `codec_context`/`codec_buffer`/`decode_weights`, sized for the
+whole 312-tensor, 2,450,309,120-byte (2,336.80 MiB) generator group (computed
+directly from `reports/convert/omnivoice/omnivoice-0-6b-F32.json`, summing
+every tensor whose name starts `llm.` or equals
+`audio_embeddings.weight`/`audio_heads.weight`). `generator_branch_forward`
+gained an `on_primary` parameter forwarded to `GraphRun::run`;
+`Model::run_synthesis` passes `impl.generator_weights` and
+`impl.generator_context != nullptr` at all three call sites (the step-0
+conditional forward, the per-step conditional refill, and the per-step
+unconditional branch) — **both CFG branches move together**, since both read
+the identical generator weights and there is no reason for one to run on the
+primary backend while the other stays on the CPU. The `Persistent inputs`
+buffer commits to the primary backend under the same condition, mirroring
+`decode_codes`'s own rule for its input leaf and avoiding a cross-backend
+copy the scheduler would otherwise insert.
+
+**CPU bit-identity, proven not asserted.** With no accelerator,
+`generator_context` stays null, `bind_generator_weights` returns a plain
+copy, and `on_primary` is always `false` — byte-identical to before this
+task. Verified:
+
+```
+uv run --project scripts/envs/omnivoice --locked python \
+  scripts/validate-omnivoice-replay.py \
+  --manifest tests/golden/omnivoice/omnivoice-0-6b.manifest.json \
+  --model models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf \
+  --runner build-integration/bin/synthesize-omnivoice-replay-real \
+  --check --profile F32 --backend CPU --stage replay
+```
+
+```
+token grids exact: 17/17
+ref.tokens exact: 2/2
+```
+
+Both unit gates: `cmake --build build --target synthesize-check-unit`
+(90/90 passed), `cmake --build build-sanitize --target synthesize-check-unit`
+(89/89 passed, ASan/UBSan). The full omnivoice integration set on the CPU
+tree (`ctest --test-dir build-integration -L integration -R omnivoice`):
+7/7 passed, including `synthesize-omnivoice-replay-golden`'s own 17/17 +
+2/2 exact-token confirmation above.
+
+**A cross-check the implementation did not have to produce, but did.**
+Running the new twin under `--accelerate` on `omni-long-boundary` alone
+(`--cases omni-long-boundary --accelerate --backend CUDA --require grid`)
+reports `generator nodes left the CPU: [53184, 53184]` — every one of this
+case's 53,184 generator nodes, the identical total Plan 4's own CPU sweep
+recorded for this case, confirming this is the same graph with only its
+scheduler changed — and a token grid mismatch of **4,190 of 5,752
+positions (72.84%)**, the exact count Plan 4 Task 12's hand-reverted,
+one-line `on_primary=true` experiment measured for this same case one day
+earlier. Two independently-built mechanisms (a real weight-mirroring twin
+here; an `op_offload` scheduler patch there) landing on the identical flip
+count is strong evidence both are exercising the same underlying CUDA
+arithmetic rather than either one being a measurement artifact.
+
+**This deliberately leaves one gate red.**
+`tests/CMakeLists.txt`'s `synthesize-omnivoice-replay-golden-cuda` and
+`tests/tolerances/omnivoice.json`'s `profiles.F32.backends.CUDA.stages.replay`
+cell assert byte-exact tokens under `--backend CUDA` — true before this task,
+false after it, by construction. Plan 5 Tasks 3–4 own the replacement
+validation shape; neither the tolerance file nor the CUDA gate's assertion
+was touched by this task, per the controlling instruction.
+
+### Task 2: RTF, measured honestly, through the public seam
+
+Built `synthesize-omnivoice-public-real` and `synthesize-omnivoice-replay-real`
+on the `dev-dgx-spark` CUDA tree with Task 1's changes
+(`SYNTH_CUDA_ROOT=/usr/local/cuda-13.3`, driver 580.159.03, CUDA 13.3.73,
+native `sm_121a`). Measured `omni-long-boundary` — the same case Plan 4's own
+codec-only CUDA claim measured at 267.30 s / RTF 9.294 — end to end through
+`synth_synthesize_to_buffer` (`tests/omnivoice_public_real.c`, not the
+internal replay runner, which bypasses the backend-capability gate), same
+binary, `cpu` vs `cuda` backend positional, seed 0, language `en`,
+`max-frames 0`, text from the case's own committed
+`tests/golden/omnivoice/omnivoice-0-6b.manifest.json` entry. Two runs each
+way:
+
+| backend | run 1 (s) | run 2 (s) | mean (s) | RTF (mean) |
+| --- | ---: | ---: | ---: | ---: |
+| CPU  | 272.1212 | 267.3172 | 269.7192 | 9.365 |
+| CUDA |   6.5184 |   6.3898 |   6.4541 | 0.224 |
+
+(691,200 PCM frames at 24,000 Hz = 28.8 s of audio in every run; both
+backends produced the identical sample count, confirming the canvas length
+argument this task's own comments make — TF32 changes WHICH token is
+committed, never HOW MANY frames exist.) `resolved_device` confirmed
+`"cpu"`/`"cuda"` in every run (not merely requested), and
+`device_memory_shared` flipped `false`→`true` on the CUDA runs as expected
+for this UMA host.
+
+**Speedup: 41.8× (269.7192 s / 6.4541 s), taking this case from RTF 9.365 to
+RTF 0.224 — faster than real time.** This is the number the whole plan
+exists for, and it is not a flattering rounding: even the SLOWER of the two
+CUDA runs (6.5184 s) against the FASTER of the two CPU runs (267.3172 s)
+still gives 41.0×. Plan 4's own codec-only figure recovered 3.4% of wall
+time on this case because the generator, 98.9% of it, stayed held; moving
+the generator recovers the other 96.6 percentage points. For comparison,
+ServeurpersoCom's own port reports RTF 0.194 on an RTX 4060 Ti with the
+whole generator on CUDA at Q8_0 (and states no fidelity claim beyond "smoke
+surfaces" at any dtype) — this port's F32 measurement on DGX Spark/GB10
+lands at RTF 0.224, the same order of magnitude, at full F32 precision and
+without the step-count or quantization reductions Tasks 8–9 have not yet
+revisited.
+
+**What this measurement does not establish.** One case, one host, two runs
+each way — not a claim of Support (Task 4 owns that once Task 3's
+validation shape exists to back one), not a sweep across the other 19
+golden cases (which would very likely show a smaller relative gain on
+shorter cases, where fixed per-request overhead — load, resampling, WAV
+framing — is a larger fraction of the total), and not a memory or
+concurrency measurement. It is one honest, reproducible number: this is
+what the generator's move buys on the case Plan 4 itself picked as the
+suite's longest and most demanding.
+
+**Implications for what this task deliberately left untouched (per the
+controlling instruction):**
+
+- **The model card and `docs/models/omnivoice-0-6b.md`** (Plan 4 Task 14's
+  ship artifacts) state F32-only and CPU+partial-CUDA (codec only) with the
+  267.30 s/RTF 9.294 figures. Both the backend scope and the RTF figures are
+  now stale; Plan 5 Task 7 corrects them once Task 3/4 settle what the CUDA
+  claim's own validation shape is, so the card is not corrected twice.
+- **`tests/tolerances/omnivoice.json`'s CUDA backend cell and
+  `tests/CMakeLists.txt`'s `synthesize-omnivoice-replay-golden-cuda`** now
+  assert something false (byte-exact tokens under `--backend CUDA`) and will
+  fail if run; Plan 5 Task 3 designs the replayed-grid/waveform-tolerance
+  replacement described in this plan document, and Task 4 registers it.
+  Left unregistered/unrun deliberately rather than silently loosened.
+- **`docs/backends.md`'s discrete-outputs rule and its per-family cost
+  table row** (currently: "the whole generator... held... 267.30 s → 258.48
+  s, −3.4%... 8.99× real time") describe a configuration this task
+  supersedes. Plan 5 Task 5 owns the principled-exception writeup (the
+  fixed-canvas-shape argument, Kokoro's 376→377-frame counter-example, and
+  this task's own 53,184/53,184-off-CPU + 691,200-frames-both-ways evidence)
+  and the table row's replacement with this measurement's own numbers.
+
+## 2026-08-08 — Erratum: the RTF measurement build defect, and the honest correction
+
+This entry corrects, without rewriting, three prior measurements in this
+file: the Plan 4 Task 11 codec-only pair above (267.30 s → 258.48 s, RTF
+9.294 → 8.987), the Plan 4 closeout summary that repeats it, and the Plan 5
+Task 2 entry immediately above this one (269.7192 s / RTF 9.365 CPU,
+6.4541 s / RTF 0.224 CUDA, **41.8×**). All three stand as originally written;
+this entry states what was wrong with the build each was measured on, and
+gives the honest replacement.
+
+### The defect
+
+Every one of the RTF figures above — Plan 4's and Plan 5's alike — was
+measured on `build/dev-dgx-spark`. That preset inherits `development-base`,
+which sets `CMAKE_BUILD_TYPE: RelWithDebInfo` (`CMakePresets.json:32`), so
+ggml-cpu compiled at **`-O2 -g`**. Verified directly from both trees'
+`flags.make`:
+
+| tree | ggml-cpu C_FLAGS |
+| --- | --- |
+| `build/dev-dgx-spark` | `-O2 -g -DNDEBUG` |
+| `build/` (plain, defaults to Release) | `-O3 -DNDEBUG -mcpu=native` |
+
+`-O2` costs **2.19×** on this workload. RTF 9.294 (Plan 4) and RTF 9.365
+(Plan 5 Task 2's own CPU arm) are both a property of the measurement build,
+not of the code. Shipped wheels were never affected: release presets use
+`Release` (`CMakePresets.json:45`) and a bare `cmake -S . -B build` defaults
+to `Release` (`CMakeLists.txt:39-40`) — only this project's own published
+numbers were pessimistic, by roughly that factor.
+
+### The honest pair
+
+Measured on `build/rel-dgx-spark` — the `dev-dgx-spark` CUDA settings with
+`CMAKE_BUILD_TYPE=Release`, now the committed `rel-dgx-spark` CMake preset
+(`CMakePresets.json`). Same binary for both arms, `omni-long-boundary`
+(719 frames = 28.76 s of audio), through `synth_synthesize_to_buffer`,
+round-robin interleaved, N=3 per arm, every run under 1.0 other-cores of
+contention (the host was quiet — load 1.41, versus load 50 during the
+original Plan 5 Task 2 measurement).
+
+| arm | best | mean | RTF (best) |
+| --- | ---: | ---: | ---: |
+| CPU | 122.61 s | 123.02 s | **4.263** |
+| CUDA, generator on GPU | 5.481 s | 5.518 s | **0.1906** |
+
+**Speedup 22.4×.** Not the 41.8× Plan 5 Task 2 reported. Both ends moved: the
+CPU arm was 2.2× overstated, and the CUDA arm is itself ~1.17× faster at
+`-O3` (its host-side sampling loop is CPU code too).
+
+### A second correction to the same entry: the RTX 4060 Ti comparison
+
+Plan 5 Task 2's own closing comparison ("For comparison, ServeurpersoCom's
+own port reports RTF 0.194 on an RTX 4060 Ti... at Q8_0") misattributes the
+benchmark. Verified directly against both repositories' own READMEs: the
+`[rtf] total=0.194  seconds=14.932` figure on a local RTX 4060 Ti run is
+`bluryar/omnivoice.cpp`'s own reported number (its README's Performance
+section, `omnivoice-q8_0.gguf`), not `ServeurpersoCom/omnivoice.cpp`'s —
+`ServeurpersoCom/omnivoice.cpp`'s own README carries no RTF figure at all.
+With the correction above, this port's own honest RTF 0.1906 on DGX
+Spark/GB10 (full F32 precision, no step-count or quantization reduction) is
+in the same range as `bluryar`'s reported 0.194 on an RTX 4060 Ti at Q8_0.
+
+### `-mcpu=native` is worth nothing
+
+Two fresh Release CPU trees, N=3 each, interleaved, long case:
+
+| tree | mean |
+| --- | ---: |
+| `GGML_NATIVE=ON` | 122.089 s |
+| `GGML_NATIVE=OFF` | 122.003 s |
+
+**0.07% apart — inside noise.** This settles a contradiction in the original
+investigation (one agent's GEMM microbenchmark claimed 1.45× for native; an
+end-to-end four-build A/B claimed nothing). End-to-end wins. It matters
+because `pyproject.toml:42` sets `GGML_NATIVE=OFF` for wheels and aarch64 has
+no runtime variant dispatch — so the entire `-O3` win is shippable as-is,
+with no packaging change and no new CPU-variant machinery.
+
+### Bit-identity holds
+
+`-O2` output and all three `-O3` outputs hash identically
+(`43db99bc…dca2d`). The Release CPU tree still passes the replay check at
+**17/17 exact token grids, 2/2 exact clone-token grids**, and
+`synthesize-omnivoice-replay-golden` passes (443.62 s).
+
+### Open question, recorded not investigated: one CPU run in ten hashed differently
+
+Of ten CPU runs collected during this re-measurement, **one**
+(`rel-cpu-native` run 1) hashed differently from the canonical hash — 119 of
+2,760,960 bytes, all in the last ~3% of the waveform. Runs 2 and 3 on that
+same tree matched the canonical hash. This is run-to-run nondeterminism on
+the CPU path, independent of `-O2`/`-O3` and of native/non-native (it
+occurred on a native-CPU Release tree; nothing about this build's
+optimization level or CPU-variant flag distinguishes it from the nine runs
+that matched).
+
+**This matters because this family's whole contract is exact tokens.**
+Two things are known and two are not. Known: the replay gate (which checks
+committed token grids, not the decoded waveform) passed on the tree this
+divergent run came from, and the byte difference is confined to a small tail
+of the waveform rather than spread throughout it. Not known: whether the
+divergence originates in the generator's own token draws (with the codec
+merely propagating an already-different grid) or downstream of the
+generator, in the codec/vocoder's own arithmetic on an identical grid — a
+119-byte PCM tail difference is consistent with either. The replay gate
+passing weakly suggests the latter (downstream of the generator), but **that
+is not established** — it has not been cross-checked against the actual
+token grid the divergent run produced, and it is not this entry's job to
+settle: **do not let it disappear into a footnote.** A future task needs a
+deliberate repeat-run experiment (many more than ten runs, with the token
+grid captured and diffed alongside the PCM on every run) before this can be
+called understood.
+
+### What this does and does not establish
+
+One case, one host, N=3 per arm for the honest pair (N=3 per tree for the
+`-mcpu=native` question, N=10 for the CPU determinism sweep that surfaced the
+open question above). Not a sweep across the other 19 golden cases, not a
+memory or concurrency measurement. It is what the corrected build changes,
+measured honestly, plus one open question that measurement surfaced and does
+not answer. Cross-references: `docs/backends.md`'s per-family cost table and
+"Discrete-Outputs Rule Admits One Narrow Exception" section,
+`docs/porting/families/omnivoice.md`'s Execution Backends section,
+`docs/models/omnivoice-0-6b.md`'s Backends section, and `docs/testing.md`'s
+"Performance Figures Require A Release Preset" — all four updated with these
+numbers as part of this correction. `docs/port-validation.md` and the sibling
+families' (VITS, Kokoro, qwen3-tts) own CPU figures were checked for the same
+dev-preset provenance defect as part of this correction where they cited
+OmniVoice; qwen3-tts's own unrelated oracle CPU-vs-CUDA figure
+(`docs/port-validation.md:103`, "9.4 times") was inspected and found to be
+about the PyTorch oracle's own device choice, not this project's C++ build
+type, and is left untouched — checking whether *that* figure has its own
+provenance problem is unstarted, sibling-family work this correction does
+not do.
+
+## 2026-08-08 — Plan 5: generator graph and scheduler reuse, and a redefined timing field
+
+The 64 generator forwards of a 32-step decode used to build, allocate and then
+destroy a whole graph each: a ~1 MiB `ggml_init` arena, ~830 freshly built
+nodes, a fresh `ggml_backend_sched`, one `ggml_backend_sched_alloc_graph`, and
+a `ggml_backend_sched_free` + `ggml_free` on the way out. They now build twice
+per synthesis — once per CFG branch — and recompute. Measured on
+`build/rel-dgx-spark`, `omni-long-boundary` (719 frames, 28.76 s of audio),
+CUDA: **scheduler allocations for the generator fell from 64 to 2** per
+synthesis, counted directly by `SYNTH_DEBUG_BACKEND_PLACEMENT` line count on
+the pre- and post-change binaries, not inferred.
+
+### Two shapes means two schedulers, and one graph may be allocated once
+
+The conditional branch's canvas is `total` long (820 here, 832 non-view nodes)
+and the unconditional branch's is `target_frames` (719, 830 nodes); they
+alternate. One `ggml_backend_sched` *can* legally serve both — every
+`ggml_backend_sched_alloc_graph` re-splits from scratch and the only shape
+constraint is `hash_set.size >= n_nodes + n_leafs`, which both satisfy. But a
+*cgraph* may be allocated only once: `ggml_gallocr_init_tensor`
+(`ggml/src/ggml-alloc.c`) leaves a tensor's `data` alone once it is non-null,
+so re-allocating an already-allocated graph silently keeps addresses that the
+other branch's intervening allocation has re-planned over. **No assert fires
+and the audio stays plausible.** That rules out the tempting "one shared
+scheduler, two cached graphs, reset and alternate" design, and leaves one
+scheduler+graph pair per branch. `GraphRun` now allocates only on its
+`scheduler_ == nullptr` path and never calls `ggml_backend_sched_reset`, so a
+second allocation of a live graph is unreachable by construction rather than
+by discipline.
+
+The pair is scoped to the `run_synthesis` stack frame. `prompt.total()` and
+`prompt.target_frames` are settled before the first forward and never move
+inside the loop, so within one call there is no invalidation check to write;
+across calls the geometry does change, which is exactly why the cache must not
+be hoisted to `Model::Impl` — that would need a shape key and a mutex, and
+would break the Loaded Model's immutable-and-shareable contract.
+`tests/omnivoice_decode_loop_test.cpp`'s new
+`check_canvas_length_change_between_calls` (5 frames, then 7, then 5 again on
+one Model, third run must equal the first) is the guard, on the varied-weights
+package so the grid is genuinely sensitive to what the graph read. It was
+confirmed to fail — SIGABRT inside ggml — against a deliberately hoisted
+`static` cache before being committed. Nothing else in the suite pins a canvas
+change across calls.
+
+### `generator_setup_seconds` and `generator_seconds` were redefined
+
+**Do not compare either field's value across this change.** The old
+`generator_setup_seconds` bracketed scheduler creation and allocation only. It
+excluded the arena, the ~830-node build, and the teardown — and the teardown,
+where the compute buffer's `cudaFree` happens, was the larger of the two. It
+was also counted *inside* `generator_seconds`, so the "setup" figure quoted in
+earlier entries was never part of the host-side residual at all; it sat inside
+the generator bucket. Both fields now mean something a reader can act on:
+
+- `generator_seconds` — the whole cost of the generator's graph machinery:
+  arena, node build, scheduler creation, allocation, placement inspection,
+  compute, and teardown.
+- `generator_setup_seconds` — the non-compute part of that same total, so
+  `generator_seconds - generator_setup_seconds` is time inside
+  `ggml_backend_sched_graph_compute` and nothing else.
+
+Teardown is attributed explicitly (`release_branch`) rather than left to scope
+exit, so it lands inside the measurement instead of vanishing. Both definitions
+are recorded in `src/arch/omnivoice/omnivoice.h`. Nothing gates on either field
+— `scripts/validate-omnivoice-replay.py` reads only `stats.placement` and
+`tests/tolerances/omnivoice.json` has no timing key.
+
+Same-session interleaved, N=3 per arm, replay runner:
+
+| | pre-change (old defs) | post-change (new defs) |
+|---|---|---|
+| `generator_setup_seconds` | 0.1528–0.1862 (mean 0.172) | 0.0070–0.0072 (mean 0.0071) |
+| `generator_seconds` | mean 4.318 | mean 4.265 |
+| `wall_seconds` | mean 5.212 | mean 5.084 |
+| `placement.generator` | [53184, 53184] | [53184, 53184] |
+
+The setup comparison is conservative in the right direction: the new
+definition is a strict *superset* of the old, so the old-definition quantity
+after the change is at most 0.0071 s, down from 0.172 s.
+
+### Wall clock: −2.3%, which is well under what was estimated
+
+Two interleaved A/B runs on `build/rel-dgx-spark`, N=4 per arm, contention-
+filtered, `synthesis_seconds` through `synth_synthesize_to_buffer`:
+
+- **against the frozen pre-Plan-5-optimization binary (`727daff`)**: 4.7800 /
+  4.8022 s vs 5.7754 / 5.8414 s — best −17.24%, mean −17.79%. That figure is
+  *both* optimizations together and is not this change's own.
+- **against the post-candidate-scan binary (`70b62c8`), which isolates this
+  change**: 4.7874 / 4.8140 s vs 4.8976 / 4.9268 s — **best −2.25%, mean
+  −2.29%**, ~0.113 s. All eight runs separate cleanly: every candidate run was
+  faster than every baseline run. The replay runner, an independent binary,
+  agrees at −2.5% (0.128 s).
+
+Against a ±0.5% noise floor on the mean-of-4 ratio this is resolved, but it is
+**well below the 0.26–0.45 s the pre-implementation estimate projected**, and
+that gap is not explained here. The estimate's floor leaned on an nsys
+attribution of ~0.09–0.11 s to teardown `cudaFree` calls; removing 62 of the 64
+teardowns did not return that time as wall clock. The measured
+`generator_setup_seconds` drop (~0.165 s) also over-predicts the measured wall
+drop (~0.113–0.128 s). Whatever the residual is, it is not recovered by this
+change, and the honest number to carry forward is **−2.3%, not −4.9%**.
+
+This also revises, for CUDA, the slice-4 conclusion above that "on this
+evidence a fresh `GraphRun` per step is not where the time goes". That
+measurement was CPU-era, where setup was 0.30–0.40 ms against a 2.06 s forward
+(0.31%). On CUDA the forward is ~30x faster and the same host-side setup is no
+longer negligible — though at 2.3% it is still not where the time goes either.
+
+### The CUDA-graph path never engaged — measured, not assumed
+
+A stable graph makes ggml-cuda's CUDA-graph capture eligible, and the estimate
+flagged it as possibly-large unquantified upside. It is not: the candidate run
+with `GGML_CUDA_DISABLE_GRAPHS=1` and without, alternated three times, gives
+4.8040 / 4.8010 / 4.7972 s against 4.8288 / 4.7963 / 4.8183 s — no difference,
+with the disabled arm marginally ahead. The whole −2.3% is the reuse itself.
+
+### Peak memory: +48.40 MiB, which is why option B could ship
+
+Reuse holds both branches' compute buffers live for the whole decode loop where
+a per-forward rebuild held one at a time. Measured through
+`ggml_backend_sched_get_buffer_size` and reported by the new
+`omnivoice_generator_buffers` line under `SYNTH_DEBUG_BACKEND_PLACEMENT`:
+conditional 63,185,920 B (60.26 MiB), unconditional 50,755,712 B (48.40 MiB),
+both live 113,941,632 B (108.66 MiB). The pre-change peak was the larger alone,
+60.26 MiB, so **the added peak is 48.40 MiB** — not the "several hundred MiB"
+that would have forced the memory-neutral fallback of rebuilding the graph each
+forward behind one shared scheduler. Both branches are released before
+`decode_codes` runs, so the raised generator peak never overlaps the codec's.
+
+### Bit-identity and gates
+
+The public path's PCM on `omni-long-boundary` is **byte-identical** to the
+frozen pre-change reference (`sha256
+1cf89238360c07f4c8662b329f49c09c1964eb4a261a868fba83876428171523`), reproduced
+on every one of the measured runs. Reuse means a forward now sees the previous
+forward's bytes in its compute buffer where it used to see a fresh
+`cudaMalloc`; nothing read that uninitialized padding. Unit 91/91, sanitizer
+(ASan+UBSan) 90/90, omnivoice integration 7/7, and the exact-token CPU replay
+at 17/17 token grids and 2/2 `ref.tokens`. `placement.generator` stayed
+[53184, 53184] — the placement pair is now read once per allocation and
+retained, and still accumulated once per forward, so the documented total is
+unchanged rather than 32x smaller.
+
+### What this does and does not establish
+
+One case, one host, one canvas geometry pair, N=4 per arm on the public path
+and N=3 on the replay path. Not a sweep across the other 19 golden cases, not a
+CPU-backend measurement (where the graph machinery is a far smaller share of a
+much longer forward, so the win should be proportionally smaller still), and no
+concurrency measurement. The gap between the estimated and measured saving is
+recorded above as open, not resolved.
+
+## 2026-08-08 — Plan 5 throughput closeout: three changes, verified together and apart
+
+Final verification pass over the three Plan 5 throughput slices, run as an
+independent audit rather than a re-read of the implementers' reports. Every
+number below was re-measured in this session on `build/rel-dgx-spark` (Release
++ CUDA, `CMAKE_CUDA_ARCHITECTURES=121a-real`); nothing is quoted from an
+implementer's summary except the two per-item ratios, which are their own
+interleaved A/B measurements and are labelled as such.
+
+### The three changes, and what each one is
+
+| # | commit | what it is | changes output? |
+|---|---|---|---|
+| 1 | `70b62c8` | `choose_token` candidate scan parallelised across `threads`, RNG pre-drawn | no — bit-identical |
+| 2 | `582e0f7` | generator graph + scheduler reused across the 64 forwards | no — bit-identical |
+| 3 | `a472812` | 16-step commit-schedule fixtures | **no — test-only, ships nothing** |
+
+### Combined: 5.84 s → 4.82 s, 1.21x, RTF 0.203 → 0.168
+
+Two independent interleaved A/B runs against the frozen `727daff` binary
+(`sha256 e4d5929d…`), N=6 per arm each, one discarded warm-up per arm,
+contention-filtered, via the baseline slice's `measure.sh`. Case
+`omni-long-boundary`, 719 frames = 28.76 s of audio, seed 0, CUDA, threads 10.
+Timed quantity is `synthesis_seconds` from the runner JSON.
+
+| run | HEAD best / mean | frozen baseline best / mean | ratio best | ratio mean |
+|---|---|---|---|---|
+| 1 (19:16) | 4.7648 / 4.8090 | 5.7726 / 5.8239 | 0.8254 (−17.46%) | 0.8257 (−17.43%) |
+| 2 (19:21) | 4.8177 / 4.8301 | 5.8130 / 5.8625 | 0.8288 (−17.12%) | 0.8239 (−17.61%) |
+
+Pooled over all 24 measured runs: **HEAD 4.7648 best / 4.8195 mean, baseline
+5.7726 best / 5.8432 mean — ratio 0.8248 mean (−17.52%), speedup 1.2124x,
+−1.0237 s.** Zero contention discards across both runs (per-run other-cores
+0.98–1.35 against the 1.5 ceiling and this host's ~0.69 idle floor).
+
+**RTF against 28.76 s of audio: 0.2007 best / 0.2032 mean before → 0.1657 best
+/ 0.1676 mean after.**
+
+Drift control: the frozen binary read best 5.7726 s today against the 5.7606 s
+pinned when it was frozen, +0.21%. The pin reproduces; the ratio is the claim.
+
+### Stage breakdown at HEAD, and the harness cross-check
+
+Measured separately with the replay runner (`measure_steps.sh`, ARM_A=ARM_B=32
+so both arms are the shipped default — an N=8 breakdown plus a within-binary
+null control), same protocol, zero discards:
+
+| metric | best | mean | sd |
+|---|---|---|---|
+| wall | 4.7645 | 4.8059 | 0.022 |
+| generator | 4.2388 | 4.2680 | 0.016 |
+| codec | 0.2715 | 0.2801 | 0.007 |
+| host residual | 0.2463 | 0.2579 | 0.006 |
+
+The null control returned a mean wall ratio of **1.0002** — the harness reads
+zero on a zero difference. Grid digest `7b3481fb5e88…`, 1 distinct over 8 runs.
+
+Two independent runners agree on the same quantity to 0.01%: the replay
+runner's wall best 4.7645 s against the public runner's `synthesis_seconds`
+best 4.7648 s.
+
+Against the pre-Plan-5 breakdown recorded at `727daff` (wall 5.88 = generator
+4.39 + codec 0.28 + residual 1.22), the host-side residual has gone from
+**1.22 s to 0.26 s** and from 20.7% of the wall to 5.4%. Note the caveat the
+reuse slice already recorded: `generator_seconds` was **redefined** at
+`582e0f7` into a strict superset of its old meaning, so the generator and
+residual columns are not a like-for-like comparison across that boundary — the
+post-change residual is if anything understated. The wall and codec columns
+are directly comparable.
+
+### Per-item attribution, and whether it adds up
+
+Each item's ratio is its own interleaved A/B against its immediate parent, so
+the chain is `727daff → 70b62c8 → 582e0f7 → a472812`.
+
+| # | change | ratio | delta | vs noise floor | resolved? |
+|---|---|---|---|---|---|
+| 1 | candidate scan | 0.8346 | **−16.54%**, ≈0.97 s | ±0.5% (mean-of-4) | yes, ~33σ |
+| 2 | graph/sched reuse | 0.9771 | **−2.29%**, ≈0.11 s | ±0.5% (mean-of-4) | yes, ~4.6σ |
+| 3 | 16-step fixtures | 1.0000 | **0.00 s** | n/a | n/a — test-only |
+| | **product of 1–3** | **0.8155** | **−18.45%** | | |
+| | **combined, measured** | **0.8248** | **−17.52%** | ±0.5% (mean-of-6) | yes |
+
+**They add up, within the noise floor.** The product of the parts predicts
+−18.45%; the combined measures −17.52%. The gap is **+1.14 percentage points of
+ratio**, or +0.054 s on a 5.84 s baseline. Three chained ratio measurements at
+±0.5% each compound to ~0.87% at 1σ, so the gap is ~1.3σ — not resolved, and
+consistent with measurement noise rather than with a real interaction.
+
+Two things worth stating plainly about that gap. It runs in the **conservative**
+direction: the combined is slightly *worse* than the sum of the parts, so
+neither item is double-counting the other's saving — which was the specific
+failure mode to look for, since both #1 and #2 remove host-side per-step work.
+And it cannot be attributed further at this precision: 0.054 s is below what
+this host's drift and this protocol can resolve in a single comparison.
+
+Item 3's entry is not a rounding-down. `a472812` adds two fixtures and no
+runtime code; `num_step` still resolves to the package's embedded 32 (verified
+directly out of the GGUF this session:
+`synthesize.omnivoice.generation.num_step = 32`). The 44.6% that slice measured
+belongs to a step count that is **not** the default and that Plan 5 deliberately
+did not enable, and it re-draws 95.61% of committed token positions. It must
+never be added to this ledger's total.
+
+### Bit-identity at the shipped default — verified three ways
+
+1. All 24 measured runs plus 4 warm-ups in the two combined A/B runs reproduced
+   the pinned reference digest
+   `1cf89238360c07f4c8662b329f49c09c1964eb4a261a868fba83876428171523`.
+2. A standalone HEAD run `cmp`s **byte-identical** against the frozen
+   reference PCM kept beside the baseline binary.
+3. The exact-token CPU replay golden reports **17/17 token grids exact and 2/2
+   `ref.tokens` exact**, unchanged.
+
+The RNG is genuinely live on this path, so those digests are load-bearing
+rather than a greedy tautology: the package ships
+`position_temperature = 5.0` (`class_temperature = 0.0`), and three seeds give
+three distinct PCM digests (`1cf89238…`, `c825618c…`, `c9dbbd6b…`).
+
+### Determinism probed beyond the gates
+
+The gates cannot see thread-count sensitivity, so it was measured directly on
+the real model at HEAD. Seed 0, `omni-long-boundary`, CUDA, threads **1, 2, 3,
+10, 20** — all five produce the identical PCM digest `1cf89238…`, equal to the
+frozen pre-change reference. Threads 1 also confirms the mechanism: it runs the
+serial path and reads 5.7179 s, back at baseline speed.
+
+### Gates, all re-run in this session
+
+| gate | result |
+|---|---|
+| `build` — `synthesize-check-unit` | **91/91** |
+| `build-sanitize` — `synthesize-check-unit` (ASan+UBSan) | **90/90** |
+| `build/rel-dgx-spark` — whole omnivoice set (`-R omnivoice`) | **28/28** |
+| `synthesize-omnivoice-replay-golden` (CPU, exact) | pass — 17/17 grids, 2/2 `ref.tokens` |
+| `synthesize-omnivoice-replay-golden-cuda` (tolerance) | pass — 3/17 exact, 2/2 `ref.tokens`, all size invariants hold |
+
+### Adversarial read of the two bit-identical changes
+
+Both were read specifically hunting for a shared accumulator, an
+order-dependent tie-break, a scheduler reused across a shape change, a reused
+buffer not reset, and thread-count sensitivity. Nothing was found that
+warrants a code change. What was checked, and why each is closed:
+
+- **Shared accumulator in the parallel scan** — none. Each worker writes only
+  `candidates[index]`, a distinct 32-byte element with default member
+  initialisers (`argmax_gap = 0.0f`, so the `track_margin` path reads no
+  uninitialised value even when the sampled branch never writes it). Every
+  reduction is confined to one row inside `choose_token_sampled`. The only
+  cross-thread write is `scoring_status`, an atomic CAS on an unreachable
+  error path.
+- **RNG order** — the draw is hoisted out of the parallel region entirely and
+  the stride is `topk_keep(vocab)` + (pos_t > 0), fixed by the request, never
+  by the logits. `topk_keep` is now a single shared definition, so producer and
+  consumer cannot disagree about the count.
+- **`choose_token_sampled`'s stream overload** — retains a `thread_local`
+  scratch buffer, and has **no production caller left** (grep: only
+  `tests/omnivoice_sampler_test.cpp` and the scan test). The only production
+  call site is the pre-drawn overload at `model.cpp:956`.
+- **Scheduler reused across a shape change** — impossible within a call: the
+  input tensors are created once in `Persistent inputs` with fixed extents,
+  so no geometry in the loop can move. Across calls, the branches are stack
+  local. The `5 → 7 → 5` guard added with the change is the right shape of
+  test and asserts the third run equals the first.
+- **Destruction order** — verified in source: `Persistent inputs` is declared
+  at `model.cpp:720` and `cond_branch`/`uncond_branch` at ~788, so the
+  branches destruct first and the graphs never outlive the tensors they point
+  into. The comment claiming this is accurate.
+- **ggml reuse contract** — verified against the pinned submodule, not
+  assumed. `ggml_backend_sched_graph_compute_async` skips both reset and
+  allocation while `is_alloc` is set, and `is_alloc` is cleared only by
+  `ggml_backend_sched_reset`, which this code never calls. Split inputs are
+  re-copied on **every** compute (`ggml-backend.cpp:1554`), so updated leaf
+  data propagates.
+- **The `n_copies` hazard, ruled out** — a scheduler created with
+  `parallel = true` rotates `cur_copy` per compute while a non-re-split graph
+  keeps pointing at copy 0, which would silently read stale inputs under
+  exactly this reuse pattern. `BackendPlan::create_scheduler` passes
+  `parallel = false` (`backend-plan.cpp:126`, `:172`) and
+  `sched->n_copies = parallel ? GGML_SCHED_MAX_COPIES : 1`
+  (`ggml-backend.cpp:1751`), so `cur_copy` is pinned at 0. **This is a
+  constraint the reuse now depends on and that nothing in this repository
+  pins.** If `create_scheduler` ever gains `parallel = true`, graph reuse
+  breaks silently. Worth a comment at the `create_scheduler` call site; not a
+  defect today.
+
+Two observations that are not defects but that the individual slices did not
+record:
+
+- **The class-draw stride is never exercised end to end.** The package ships
+  `class_temperature = 0.0`, so `draws_per_slot` is 1 on every real-model path
+  and the `topk_keep(1025) = 103`-wide slice arithmetic — the part most likely
+  to be got wrong — is covered *only* by
+  `tests/omnivoice_candidate_scan_test.cpp`. That test is the guard, and it is
+  the only guard. It should not be weakened or deleted on the grounds that the
+  golden suite covers the sampler.
+- **The peak-memory gate was measured very near the family's maximum, which
+  strengthens its conclusion.** The +48.40 MiB was measured at 719 frames;
+  the package cap is `max_output_frames / hop_length = 720000 / 960 = 750`
+  frames, so `omni-long-boundary` is 95.9% of the largest canvas this family
+  will accept. The reuse design therefore cannot cost meaningfully more than
+  the measured 108.66 MiB both-live peak on any admissible request — the
+  ship decision was, unintentionally, taken at close to the worst case.
+
+### What this closeout does and does not establish
+
+One case, one host, one canvas geometry, CUDA only. The 1.21x is
+`omni-long-boundary`'s; item 1's saving is an absolute ~0.97 s of host work, so
+it is a *smaller* fraction of a shorter case, and the combined speedup on the
+short cases will be correspondingly lower. No CPU-backend re-measurement, no
+concurrency measurement, and no listening pass — none of these three changes
+alters a sample, so there is nothing new to listen to.
+
+## 2026-08-08 — The decode step-count Listening Audit: **16 steps REJECTED**, and the three findings the audit surfaced
+
+**Verdict, jiangzhuo, 2026-08-08: `regression` on one of six pairs ⇒ the
+16-step decode is rejected. The shipped default stays at the package's
+embedded `num_step = 32`. No code changed in this slice.**
+
+This entry records the audit, its full identity key, the rejection and its
+reasoning, and the three separate observations jiangzhuo returned alongside
+the verdict — two of which implicate the **shipped 32-step default**, not the
+rejected 16-step path, and were triaged against the PyTorch oracle before
+anything was written here.
+
+### The question, and what was deliberately not being asked
+
+`a472812` measured what halving the step count buys: **44.6% of the wall
+clock** on `omni-long-boundary` (4.7563 s → 2.6348 s, CUDA, Release), against
+**95.61% of the greedy suite's committed token positions re-drawn** (15,260 of
+15,960 across 17 cases). That is the largest single lever this family has left
+and the one with the largest output change attached to it, so it is exactly
+the shape of change jiangzhuo's standing practice requires audible evidence
+for. The throughput closeout above already refused to add that 44.6% to its
+ledger for precisely this reason.
+
+The audit was **not** a proposal to change the default. Both arms ran the same
+binary, the same package, the same backend and the same request; only
+`num_step` differed. `num_step` is not reachable through
+`include/synthesize.h` at all — it is a family-internal Synthesis Request
+field that falls back to the package's embedded default — so no caller can
+select 16 today, and the rejection changes nothing a caller can see. What the
+rejection does is close the option: a future package cut with an embedded
+`num_step = 16`, or a "fast profile" that exposes it, does not have acceptance
+evidence and must not claim it.
+
+### Method: six inherited cases, balanced assignment, and one recorded departure from precedent
+
+Six pairs, the cap in `docs/model-porting.md:244-271`. **The case set was not
+re-drawn**: these are the exact six cases, in the exact order, that the
+2026-08-08 generator-placement audit used (inherited `case_selection_seed 12`),
+so that jiangzhuo's 16-vs-32 verdict lands on the same six utterances as his
+CUDA-vs-CPU verdict and the two can be read side by side. Coverage against the
+criteria a fresh draw would have used: longest case (`omni-long-boundary`),
+fastest speaking rate (`omni-rate-fast`), intelligibility (`omni-digits`), one
+Reference Audio clone (`omni-clone-en`), one Description Text case
+(`omni-design-zh`). The one criterion the inherited set misses is a
+punctuation case; `omni-punctuation` was rendered under `all-cases/` and could
+have been added as a seventh pair without re-running anything.
+
+**The A/B assignment departed from the two precedent audits, and the departure
+is recorded rather than silently taken.** Both prior audits drew
+`random.Random(seed).random() < 0.5` independently per pair. On this audit's
+`order_seed 2026080816` (today's date with the step count appended, chosen
+distinct from the placement audit's `20260808` so the two orderings cannot be
+confused) that draw returns `[True, True, True, False, True, True]` — five of
+six pairs presenting the 16-step arm as A. Over six trials that confounds "the
+16-step arm sounds worse" with "slot A sounds worse". The assignment used
+instead is **balanced**: `swap_flags = [True]*3 + [False]*3`, then
+`random.Random(2026080816).shuffle(swap_flags)`, so exactly three pairs present
+the 16-step arm as A and three present the 32-step arm as A. Balance is a
+property of the design, fixed before any listening and independent of every
+measured outcome — it is not a re-roll for a nicer split, and the draw it
+replaces is pinned in the manifest so the substitution is auditable.
+
+Both arms: `build/rel-dgx-spark/bin/synthesize-omnivoice-replay-real` (commit
+`582e0f7`), `models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf`, CUDA
+(`--accelerate`), greedy free-run (`position_temperature = 0`,
+`class_temperature = 0`), and `pcm_freerun.f32` — what `run_synthesis` itself
+produced, its own volume branch already applied inside it. **The generator's
+CUDA-vs-CPU token drift is present in both arms and therefore cancels**: every
+figure below is attributable to the step count alone.
+
+### The six pairs, identities revealed
+
+| Pair | Case | Slot | A | B | Dur | Token flip | Waveform cosine |
+| --- | --- | --- | --- | --- | ---: | ---: | ---: |
+| 1 | `omni-clone-en` | clone headline | **32** | 16 | 2.80s | 514/560 = 91.79% | 0.0882 |
+| 2 | `omni-design-zh` | design headline | **16** | 32 | 1.96s | 383/392 = 97.70% | 0.0981 |
+| 3 | `omni-long-boundary` | longest | **32** | 16 | 28.76s | 5,647/5,752 = 98.17% | 0.0043 |
+| 4 | `omni-digits` | intelligibility | **32** | 16 | 5.28s | 1,037/1,056 = 98.20% | 0.0010 |
+| 5 | `omni-short-ja` | inherited random | **16** | 32 | 1.88s | 357/376 = 94.95% | −0.0009 |
+| 6 | `omni-rate-fast` | fastest rate | **16** | 32 | 1.00s | 182/200 = 91.00% | 0.7592 |
+
+The answer key, with sha256 for both WAVs and both source `pcm_freerun.f32`
+files of all six pairs, is `audit-manifest.json` under `$CLAUDE_JOB_DIR`
+(`9167a7b0/tmp/step16/audit/`), a sibling file never embedded in the page. All
+17 greedy cases were rendered at both step counts under `all-cases/`, so any
+follow-up pair can be built without re-running the model.
+
+### jiangzhuo's returns, verbatim
+
+| Pair | Case | Returned |
+| --- | --- | --- |
+| 1 | `omni-clone-en` (A=32, B=16) | no difference |
+| 2 | `omni-design-zh` (A=16, B=32) | no difference |
+| 3 | `omni-long-boundary` (A=32, B=16) | no difference |
+| 4 | `omni-digits` (A=32, B=16) | no quality difference, **but "A is a female voice, B is a male voice"** |
+| 5 | `omni-short-ja` (A=16, B=32) | **"B is better, A's audio is incomplete at the end"** |
+| 6 | `omni-rate-fast` (A=16, B=32) | **"both are noise"** |
+
+### Verdict: rejected on one loss, and why one loss is enough
+
+Four of six pairs came back indistinguishable. Pair 5 did not: jiangzhuo
+preferred the 32-step arm and named the reason — the 16-step audio is
+incomplete at the end. **That is a preference for the shipped default over the
+candidate, on a case selected before any listening, with a stated defect.**
+
+The bar this is measured against is the precedent immediately above it in this
+log. The 2026-08-08 generator-placement audit moved the generator to CUDA on a
+**six-of-six** "no problem heard" — including a pair whose two waveforms
+measure cosine 0.0515 with 98.3% of tokens flipped. That acceptance was
+explicitly *not* "most pairs were fine"; it was that nothing was heard on any
+pair. An output-changing improvement that loses a pair has not met that bar,
+and grading it on a majority would retroactively weaken the standard the CUDA
+generator was admitted under. **Rejected.**
+
+Two things the rejection is careful not to claim. It is not a finding that 16
+steps is broken in general: the port's 16-step loop reproduces the suite's only
+16-step oracle (`omni-fast-mode`) to 399 of 400 tokens and 0.0 dB of per-frame
+RMS, so the decode loop is faithful where an oracle exists. And it is one
+listener on one day — a Listening Audit in this project's own vocabulary, never
+a MOS, a CMOS, a panel, or a population-level claim.
+
+### The three findings
+
+Each of the three observations was investigated independently against the
+pinned PyTorch oracle before being recorded. All three came back **faithful to
+the oracle** — no defect in the inference path. That answer is only worth
+anything because it is anchored; each subsection below names the anchor.
+
+#### Finding 1 — `omni-rate-fast` is noise in **both** arms, because the oracle is noise
+
+Pair 6 is the one pair where jiangzhuo's comment applies to the **shipped
+default** as much as to the candidate. He is right, and so is the oracle.
+
+**The anchor: the oracle's own reference audio for this case is degenerate.**
+`build/goldens/omnivoice/omni-rate-fast/audio/pcm.f32` — 24,000 f32 = 1.00 s,
+"the waveform as returned to the caller" per its own `metadata.json` — is a
+DC step plus a subsonic rumble, not speech: DC offset **−0.0756** (15% of the
+0.5 peak), 94.1% of energy below 300 Hz, 56.5% of DC-removed energy below
+50 Hz with dominant components at 24–51 Hz, energy-weighted spectral centroid
+122.8 Hz, ZCR 157 Hz, **zero silence frames**, frame-RMS CV 0.197 (no
+amplitude envelope at all), spectral flux 3.31e-3, spectral flatness 0.05 (so
+not white noise either). Controls on the same measures, same oracle
+directory: `omni-short-en` — **the same 32-character text at rate 1.0** —
+centroid 2450 Hz, 2.2% of DC-removed power below 300 Hz, silence 0.212, CV
+0.727; `omni-long-boundary` centroid 2290 Hz; `omni-clone-en` 1630 Hz;
+`omni-rate-slow` 856 Hz.
+
+*Independently re-measured for this entry* with a deliberately cruder
+statistic (whole-signal unwindowed rFFT over the same seven oracle PCM files,
+`uv run --project scripts/envs/omnivoice --locked`), which reproduces the two
+load-bearing numbers exactly and confirms the separation: `omni-rate-fast` DC
+**−0.0756**, 43.6% of DC-removed power below 50 Hz, against ≤0.0046 for every
+other case in the suite — **95x the next highest**, and the only case whose
+|DC| exceeds 0.006. The centroid column differs between the two methods
+(whole-signal 577 Hz here vs 122.8 Hz energy-gated framewise) because an
+ungated whole-signal centroid is dragged upward by the near-silent samples;
+the framewise figure is the better statistic and the one to quote. The
+conclusion does not depend on which is used.
+
+**Our port is faithful, and this is the tightest case in the suite.** Oracle
+PCM vs the audit's own 32-step render: Pearson **r = 0.999670**, scale 0.9973,
+max abs residual 0.0068 — tighter than any other case compared
+(`omni-long-boundary` 0.198, `omni-digits` 0.052, `omni-rate-slow` 0.427,
+`omni-clone-en` 0.939, `omni-short-ja` 0.927, all lower purely from free-run
+token drift). Every metric matches to ~3 decimals (rms 0.08767 vs 0.08790; DC
+−0.0756 vs −0.0758; band fractions identical to 4 dp). This log's own Task 12
+entry already records why: `omni-rate-fast` is the case where **1 of 200** grid
+positions flips, so the two waveforms essentially coincide.
+
+**The oracle sweep: the failure is canvas length, not speaking rate.** Pinned
+PyTorch, CPU F32, deterministic, same generation parameters as the golden
+suite:
+
+| text | rate | frames | centroid | pow<300Hz | DC | |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 32-char (the suite's own) | 1.00 | 50 | 2450 | 0.15 | +0.006 | SPEECH |
+| 32-char | 1.25 | 40 | 2060 | 0.21 | +0.002 | SPEECH |
+| 32-char | 1.35 | 37 | 805 | 0.54 | −0.025 | speech (marginal) |
+| 32-char | 1.50 | 33 | 29 | 0.99 | −0.122 | **DEGENERATE** |
+| 32-char | 1.60 | 31 | 65 | 0.97 | −0.063 | **DEGENERATE** |
+| 32-char | 1.65 | 30 | 230 | 0.92 | −0.073 | **DEGENERATE** |
+| 32-char | 1.70 | 29 | 330 | 0.91 | −0.053 | **DEGENERATE** |
+| 32-char | 2.00 | 25 | 123 | 0.94 | −0.076 | **DEGENERATE** ← the golden case |
+| `"Hi."` | 1.00 | 22 | 42 | 0.99 | −0.145 | **DEGENERATE** |
+| `"Good morning."` | 1.00 | 37 | 346 | 0.61 | +0.0001 | SPEECH |
+| 212-char | 2.00 | 162 | 913 | 0.24 | +0.0001 | SPEECH |
+
+The oracle's failure onset for the suite's own text sits **between rate 1.35
+and 1.50** — far below the declared maximum of 2.0 — and **rate 2.0 on a long
+text is fine**. Identical rates that resolve to identical frame counts give
+byte-identical metrics (1.65 ≡ 1.67 at 30 frames; 1.70 ≡ 1.72 at 29), which is
+the direct demonstration that canvas length is the only variable.
+
+**Our port reproduces the regime on both backends, through the public CLI with
+no unusual flags.** `--rate 2.0` → 25 frames, DC −0.155, pow<300 Hz 0.999,
+centroid 31.5 (CUDA) / DC −0.072, centroid 47.4 (CPU). `--text "Hi."` at the
+**default** rate → 22 frames, DC −0.251, pow<300 Hz 0.999, centroid 17.7 (CPU
+and CUDA alike). In the marginal 29–33 frame band our free-run sometimes
+survives where the oracle does not — known free-run token drift — **so the
+onset must always be quoted from the oracle, never from us.**
+
+**Mechanism, and why it is upstream's ordering.**
+`DurationEstimator::estimate_target_frames` (`src/arch/omnivoice/
+frontend-host.cpp:634-663`) reproduces upstream's `_estimate_target_tokens`
+verbatim: estimate by phonetic-weight proportion against the anchor pair
+("Nice to meet you.", 25 frames), apply the cube-root pull-up when the estimate
+is below `low_threshold = 50`, **then** divide by speed, then
+`max(1, trunc())`. For "OmniVoice speaks with one voice." the unscaled estimate
+is 50.18 frames; ÷2.0 = 25 frames = 1.00 s at 25 Hz. Upstream's own threshold
+of 50 frames is a statement that anything under ~2 s already needs pulling up
+— but the speed division is applied **after** that pull-up and has no floor of
+its own, so `speed > 1` walks the canvas straight through it. The port matches
+exactly (`tests/omnivoice_frontend_test.cpp:597-599` pins rate 0.5/1.0/2.0 →
+100/50/25 frames). Given a canvas that short, the flow-matching rollout has too
+few frames to place the text and collapses to near-DC. That is a property of
+the model weights, not of the GGML graph.
+
+**Why every gate passes, and why that is by design.** `omni-rate-fast`'s
+manifest checks are `tensor_parity`, `structural_exactness`,
+`waveform_regression`, `finite_pcm`, `request_repeatability`,
+`result_metadata`, `backend_placement`, `resource_cleanup`;
+`scripts/validate-omnivoice-replay.py` compares PCM to the oracle by
+cosine/max-abs and asserts finiteness. **An oracle-parity gate cannot detect a
+faithfully reproduced degenerate oracle**, and ADR 0017 /
+`docs/quantization.md:150` already say port validation makes no intelligibility
+claim. The gates are not the defect.
+
+**What IS a project defect is the claim layered on top.**
+`docs/porting/families/omnivoice.md` said the `[0.5, 2.0]`
+`speaking_rate_range` "is a validation claim backed by golden cases at both
+ends, not a clamp inherited from upstream" — but the golden case at the top end
+is unintelligible **in the oracle**, so the cited evidence does not support the
+claim. Upstream's own Gradio demo caps Speed at 1.5
+(`omnivoice/cli/demo.py:250-258`), i.e. 2.0 exceeds anything upstream exposes.
+The range flows `tests/golden/omnivoice/omnivoice-0-6b.manifest.json`
+`package_contract.speaking_rate_range` → `scripts/convert-omnivoice.py:837-839`
+→ GGUF → `synth_model_capabilities_t.max_speaking_rate`, and
+`src/synthesis-request.cpp:230-234` validates only against it: inside the range
+everything is accepted with no clamp, warning, or diagnostic.
+`synthesize-cli --rate 2.0` is silently accepted, **no minimum input length is
+enforced anywhere**, and nothing in the manifest, this log, the family doc, or
+`docs/models/omnivoice-0-6b.md` recorded that any of it can be unintelligible.
+That last part is fixed in this commit; the rest is recommended work, below.
+
+#### Finding 2 — `omni-digits` speaker gender, and the uncomfortable by-product
+
+**On `omni-digits` the speaker is not conditioned by anything.** The case
+declares `voice.kind = package_default`;
+`src/arch/omnivoice/omnivoice.h:33-35` documents auto-voice as the unnamed
+package default with a deliberately empty Preset Voice Catalog;
+`src/arch/omnivoice/model.cpp:620-622` hard-codes `has_package_default = true`
+because there is no per-package value to carry. In `Model::synthesize`
+(`model.cpp:1059-1110`) `params.clone == nullptr`, so `ref_frames = 0`,
+`denoise = false`, and `reference_tokens` stays empty; `assemble_prompt_ids`
+(`frontend-host.cpp:672-706`) emits only
+`<|lang_start|>…<|lang_end|> <|instruct_start|>…<|instruct_end|>
+<|text_start|>text<|text_end|>`. **The family has no speaker embedding table
+anywhere.** The speaker cannot be a property of the conditioning; it is
+entirely a property of which 8×T token grid the mask-predict loop lands on.
+
+**The measurement.** Two independent energy-gated pitch trackers over 24 kHz
+mono: a self-contained YIN (CMND, threshold 0.15, 1024-sample frames / 10 ms
+hop, 60–400 Hz, parabolic interpolation, voicing = dip below threshold AND
+frame RMS > 10% of the 95th-percentile RMS) and
+`torchaudio.functional.detect_pitch_frequency` (NCC, 30 ms frames) run in this
+project's locked oracle env.
+
+| arm | grid sha | YIN median | NCC median | YIN %voiced<165Hz |
+| --- | --- | ---: | ---: | ---: |
+| oracle (PyTorch F32 CPU, 32 step) | `18e38c6f` | 177.8 Hz | 176.5 Hz | 11.4% |
+| port CPU generator (32 step) | `18e38c6f` | 177.8 Hz | 176.5 Hz | 11.4% |
+| port CUDA generator (32 step) | `d03240ee` | 183.1 Hz | 175.2 Hz | 12.5% |
+| **audit A arm (32 step, shipped)** | `d03240ee` | **183.1 Hz** | 175.2 Hz | 12.5% |
+| **audit B arm (16 step, rejected)** | `ecd54907` | **123.5 Hz** | 120.6 Hz | **93.4%** |
+
+The 32→16 ratio is 0.674 (YIN) / 0.688 (NCC) — **not** 0.5, so not an octave
+tracking error; the whole distribution moves (p25/p75 173/228 Hz → 115/133 Hz)
+and both trackers agree. This is a real speaker change and matches jiangzhuo's
+ear exactly. The CPU-baseline grid is byte-identical to the oracle's and its
+decoded PCM is byte-identical to
+`build/goldens/omnivoice-replay/omni-digits/pcm.f32`, so "port CPU generator"
+is the shipped CPU path.
+
+**The oracle anchor, measured for this investigation.** The pinned oracle was
+run on `omni-digits` at `num_step = 16`, with `num_step = 32` as a control, via
+`scripts/dump_reference_omnivoice_pytorch.py` against a scratch manifest
+(111 s wall, CPU F32). **The 32-step control reproduced the committed golden
+byte-for-byte** (grid `18e38c6f…`, pcm `820d1810…`), so the environment is
+faithful. Results: the oracle's own 16-step grid differs from its own 32-step
+grid at **1,042 of 1,056 positions (98.67%)**, waveform cosine 0.0051; its
+16-step median F0 is **123.78 Hz (YIN) / 121.21 Hz (NCC)** with 93.5% / 100% of
+voiced frames below 165 Hz — a male voice, from upstream, unmodified, on CPU.
+Our 16-step arm differs from the oracle's 16-step arm at **4 of 1,056
+positions (0.38%)**, cosine 0.9963, median F0 123.45 vs 123.78 Hz.
+**Upstream itself changes speaker on this text when the step count halves, and
+our 16-step path reproduces upstream's 16-step output essentially
+token-for-token.**
+
+A second, independent anchor already sat in the committed suite:
+`omni-short-en` (`num_step` 32) and `omni-fast-mode` (`num_step` 16) are the
+**same text, voice, rate and target frame count (50)**, differing only in step
+count — verified directly from the manifest and both `metadata.json` files for
+this entry. Their oracle grids differ (`60473d82` vs `70ebe309`), confirming
+upstream re-draws at 16 steps for every case; on that particular text the
+speaker happened to survive (140.9 → 134.1 Hz YIN).
+
+Suite-wide over 17 cases at both step counts, the 16/32 median-F0 ratio ranges
+0.567 (`omni-punctuation`) to 1.784 (`omni-short-ja`) and moves in **both**
+directions. That is a re-draw signature, not the systematic pitch bias a
+16-step implementation bug would produce.
+
+**Mechanism.** The canvas SHAPE is fixed before the loop by
+`RuleDurationEstimator` (deterministic host arithmetic), so timbre lives purely
+in grid CONTENT. Halving the step count changes the commit schedule itself —
+how many canvas positions each step commits and in what order — so the
+denoising path lands in a different mode of the model's distribution. A
+different mode is a different voice. That is discrete masked diffusion working
+as designed, and the oracle demonstrates it under PyTorch with no port
+involved.
+
+**THE BY-PRODUCT, and it is not comfortable.** The cross-check swept all 14
+CPU-vs-CUDA generator pairs from the 2026-08-08 placement audit's scratch tree.
+Thirteen sit within ±3% median F0 (0.975–1.030): backend drift flips tokens
+without changing the speaker. **One does not.** `omni-short-en` (94.00% token
+flip, this log's Task 12 second-worst) goes **140.9 → 199.0 Hz (YIN)** and
+**118.2 → 189.0 Hz (NCC)**, with the fraction of voiced frames below 165 Hz
+going 1.00 → 0.00 (YIN) and 0.98 → 0.00 (NCC) — **complete separation on both
+trackers.** The shipped CPU path speaks that sentence in a male voice and the
+shipped CUDA path speaks it in a female voice. Its CPU arm is byte-identical to
+the oracle's (grid `60473d82…`, pcm `c33bf5bd…`), so this is a change the
+generator-placement move introduced **against the reference, on a shipped
+backend**.
+
+`omni-short-en` was **not** one of the six audited pairs (they were
+`omni-clone-en`, `omni-design-zh`, `omni-long-boundary`, `omni-digits`,
+`omni-short-ja`, `omni-rate-fast`), so nobody heard it. The placement audit
+therefore stands on the pairs it examined — pair 4's own CPU→CUDA move is
+177.8 → 183.1 Hz, both female, no flip, so jiangzhuo's "no obvious difference"
+there is objectively corroborated — but the sample missed the one case where
+the speaker moved. **This is recorded as a known, un-listened consequence of
+the placement move, and that single pair is offered to jiangzhuo.** It is one
+A/B, it is cheap, and it is the one the earlier six missed. Nothing here
+proposes reopening the placement decision on a measurement alone.
+
+The seed does not protect against any of this. Greedy cases construct no RNG
+stream at all (this family's recorded zero-RNG property), and on the public
+sampled path (`position_temperature = 5.0`,
+`src/arch/omnivoice/weights.cpp:138-141`) the draws come from a host-side,
+device-independent `NormalRandomStream` that perturbs device-dependent logits
+— same seed, different device, different committed tokens. **Three shipped
+documents promised seed-keyed speaker stability with no backend qualifier;
+all three are corrected in this commit.**
+
+#### Finding 3 — `omni-short-ja` tail damage, located in codebook 0's last commits
+
+**Structural invariance holds, measured across all 17 greedy cases rather than
+assumed:** `grid.i32` byte size identical between arms, `pcm_freerun.f32`
+sample count identical between arms AND equal to the oracle's AND equal to
+frames × 960, **17/17**. `omni-short-ja` is an 8×47 grid, 45,120 samples in
+both arms. **The 16-step audio is not shorter** — nothing contradicts
+`docs/backends.md`'s discrete-outputs exception; if anything this is a second,
+much larger-perturbation instance of its clause (2).
+
+**The audible defect, located.** Window frames 38–45 (t = 1.52–1.84 s, 17% of
+the clip): 16-step peak 1.60e-3 / RMS 3.33e-4; 32-step peak 0.4329 / RMS
+8.452e-2; oracle peak 0.4348 / RMS 8.793e-2 — **a 48.1 dB drop against both**,
+with no exact zeros. Envelope: −25.0 (f36) → −35.9 (f37) → −61.4 (f38), floors
+at −72…−109 dBFS through f45, then a 40 ms burst at f46 (−23.6 dB). Abrupt
+dropout, sustained near-silence, terminal click — not a natural decay and not a
+mid-phone cut. Last-20% RMS against whole-clip: 16-step **−13.30 dB**, 32-step
+−1.07 dB, oracle −0.90 dB. That is exactly "the audio is incomplete at the
+end".
+
+**The flip map cannot see it; the oracle can.** 32-vs-16 flip by decile on
+`omni-short-ja` is 0.80 0.88 0.95 0.98 0.98 0.97 0.98 1.00 0.97 1.00 — flips
+saturate everywhere. Per-codebook flip **vs the oracle**, 32-step arm:
+c0 = 0.000, c1 = 0.021, rising to c6 = 0.745; 16-step arm: c0 = **0.809**,
+c1 = 0.872. **The shipped 32-step arm's codebook 0 is oracle-exact at all 47
+frames** and its per-frame RMS tracks the oracle within 0.3–1.5 dB in every
+decile. The 16-step arm's |ΔRMS| vs oracle by decile: 1.7 1.8 15.3 5.1 12.2 8.2
+7.6 5.8 **48.6 44.3**.
+
+**The commit schedule was measured, not inferred.** A temporary env-gated
+per-position commit-step dump was added to `src/arch/omnivoice/model.cpp`, run,
+and then reverted; the instrumented binary reproduced the audit's `grid.i32`
+and `pcm_freerun.f32` sha256 bit-identically in all four runs, and observed
+per-step commit counts equalled `commit_schedule()` exactly. `omni-short-ja`:
+16 steps → final budget 144/376 = 38.30% (c5 = 47, c6 = 47, c7 = 47, c4 = 3);
+32 steps → 76/376 = 20.21% (c6 = 29, c7 = 47). `omni-long-boundary` reproduces
+the fixture comment's headline figures exactly: 2,294/5,752 = 39.88% at 16
+(c4 = 137, c5/c6/c7 = 719 each) and 1,388/5,752 = 24.13% at 32 (c6 = 669,
+c7 = 719). **Codebook 0 is in no final step**: mean commit step c0 = 4.9 of 16
+and 9.3 of 32; c0's max commit step is 8 of 16 and 16 of 32.
+
+**So the stated hypothesis is falsified in its mechanism while its conclusion
+survives.** The damage is *not* in the positions the final forward commits —
+those are codebooks 4–7 — it is in **codebook 0's last commits**, which are
+disproportionately tail frames. c0 flip-vs-oracle by commit step in the 16-step
+arm: 0.33 / 0.00 / 0.25 for steps 0–2, then 1.00, 0.80, 1.00, 1.00, 1.00, 1.00
+for steps 3–8; c0's final step (8) committed frames
+[14, 32, 33, 36, 37, 43, 44, 45, 46], five of them the canvas's last five; mean
+c0 commit step is 6.60 for the last 20% of frames against 4.49 for the first
+80%.
+
+**Why codebook 0, and why a lower step count hurts it.** The per-position
+commit score is `log_prob − codebook × layer_penalty_factor` with
+`layer_penalty_factor = 5.0` (`model.cpp:973`), a penalty far larger than the
+spread of guided log-probabilities, so the flat top-k commit is ordered by
+codebook and drains c0 first. The schedule
+(`src/arch/omnivoice/generator-host.cpp:84`) is a fixed fraction of the whole
+8×T canvas, so halving `num_step` halves the conditioning refreshes c0 receives
+— it finishes at step 8 of 16 instead of 16 of 32, 9 forwards instead of 17 —
+and raises c0's per-step block from at most 4 frames to as many as 9. Frames
+committed in one step come from one forward over the same still-mostly-masked
+canvas, and nothing in the decision rule decorrelates them, so adjacent frames
+can land on the same argmax. **Directly observed**: the 16-step arm committed
+c0 frames {40,41,42} in a single step (step 4) and assigned all three token
+198, committed {38,39} in step 7 and assigned both 459, and added 198 at frame
+43 in step 8 — a 4-long constant run. The 32-step arm committed those same
+frames at steps 12, 6, 15, 9, 11, 16 — six different steps, each re-conditioned
+— and reproduced the oracle's 813, 198, 62, 453, 813, 405 exactly. c0 runs of
+length ≥2: oracle 2 (longest 3), 32-step arm 2 (longest 3, identical), 16-step
+arm 7 (longest 4). Codebook 0 carries the energy envelope, so a constant run
+there renders as a near-DC, 48 dB-down segment.
+
+**Honest caveat on causality.** Same-step adjacency correlating with same-token
+is partly reverse-causal: a genuinely repeating silent region is confident and
+gets committed together. In `omni-long-boundary` the oracle itself has a
+20-frame c0 run, and same-step adjacent c0 pairs share a token 71.7% of the
+time even in the 32-step arm. The run statistic alone proves nothing. What
+proves it for `omni-short-ja` is **the oracle**, which has no run at frames
+38–45 and full-level audio there.
+
+**16-step oracle anchor, and the limit of the claim.** `omni-fast-mode` is the
+one Golden case whose oracle is a 16-step dump (`metadata.json`
+`num_step: 16`, 50 frames — verified for this entry). The port's 16-step arm
+reproduces it at **399/400 tokens** (one c7 token, 0.25%), c0 flip 0.000, and
+per-frame RMS matching to 0.0 dB (last-20% RMS 0.02568 vs 0.02568). So the
+16-step decode loop is faithful **where an oracle exists**. There is no 16-step
+oracle for `omni-short-ja` itself, so this anchors the loop's fidelity, not a
+demonstration that upstream collapses identically on that exact utterance.
+
+**Where the shipped 32-step path is weakest — and it is not length.** c0 flip
+vs oracle at 32 steps, over the 16 cases with 32-step oracles: 0.000 in eleven;
+`omni-digits` **0.924**, `omni-short-en` 0.620, `omni-long-boundary` 0.274,
+`omni-rate-slow` 0.130, `omni-medium-en` 0.068, `omni-design-zh` 0.041. Tail
+|ΔRMS| vs oracle at 32 steps: `omni-digits` **12.8 dB** (largest of any 32-step
+case), `omni-long-boundary` 2.2 dB, `omni-short-ja` 1.2 dB. **That hands
+Finding 2 a better candidate explanation than anything in the 16-step arm**:
+the shipped default has already lost codebook 0 on `omni-digits`, the same case
+whose speaker jiangzhuo heard move.
+
+### The three findings and jiangzhuo's words agree pair-for-pair
+
+Worth stating because it is a real cross-check and it was not arranged. The
+identity key says pair 4 is A = 32-step; Finding 2 measures the 32-step arm at
+183.1 Hz (female) and the 16-step arm at 123.5 Hz (male) — jiangzhuo reported
+"A is a female voice, B is a male voice". The key says pair 5 is A = 16-step;
+Finding 3 measures a 48.1 dB tail collapse in the 16-step arm — he reported "A's
+audio is incomplete at the end". The key says pair 6 is A = 16-step, B = 32-step;
+Finding 1 measures both arms as degenerate — he reported "both are noise". **A
+blind listener's three unprompted comments each land on the arm the
+measurements independently identify.** For a one-listener, non-statistical
+practice, that is the strongest internal validation this audit could have
+produced, and it raises confidence in the four "no difference" returns too.
+
+### What changed in the tree, and what deliberately did not
+
+Docs and one test comment. **No source file under `src/` was touched and no
+behavior changed.**
+
+| File | Change | Finding |
+| --- | --- | --- |
+| `docs/porting/families/omnivoice.md` | seed→speaker claim qualified; `speaking_rate_range` overclaim corrected with the measured oracle onset; `omni-rate-fast`'s degenerate reference recorded in the Reference Contract (where its `origin.locator` points); Listening Audit section extended with this audit and the un-listened `omni-short-en` pair | 1, 2 |
+| `docs/models/omnivoice-0-6b.md` | seed→speaker claim qualified; new short-canvas hazard paragraph; Listening Audit section extended | 1, 2 |
+| `docs/backends.md` | discrete-outputs exception now records that content drift can change **who is speaking** (`omni-short-en`, 118 → 189 Hz), that the audit's sample missed it, and the `num_step` 17/17 shape-invariance measurement as a second instance of clause (2) | 2, 3 |
+| `scripts/hf_cards/template.md.j2`, `scripts/hf_cards/omnivoice-0-6b.yaml` | the model card's own seed→speaker promise qualified, in both the "Voices and input" section and the quality-evaluation paragraph's request-path phrase (`the seed-selected Voice request path` → `the unconditioned default-Voice request path`) | 2 |
+| `tests/python/test_hf_card_generator.py` | **the gate that pinned the false claim.** `test_seed_default_with_profiles_renders_both_sources` asserted `"follows the synthesis seed"` appears in the rendered card; it now asserts the corrected wording and asserts the old sentence is **absent**, with a comment recording why | 2 |
+| `tests/omnivoice_generator_host_test.cpp` | **comment only** — the 16-step risk framing pointed at the final forward's codebooks 4–7; the measured failure was codebook 0's last commits | 3 |
+
+**A unit test was enforcing the false claim, which is worth stating plainly.**
+Editing the card template turned `synthesize-vits-python-unit` red on
+`self.assertIn("follows the synthesis seed", card)` — the promise was not
+merely written down in three places, it was *pinned by a gate*. That is the
+right behavior from the test (a card's user-facing claims should not drift
+silently) and it is also how a wrong claim gets preserved. The assertion was
+inverted rather than deleted: the test now requires the corrected wording and
+requires the old sentence to be **absent**, so a future edit cannot quietly
+reintroduce it.
+
+Deliberately **not** done, and why:
+
+- **`speaking_rate_range` was not lowered.** The oracle is comfortably
+  speech-like at 1.25 and already broken at 1.50 on the suite's own text, so
+  `[0.5, 1.25]` is the defensible bound and `[0.5, 1.5]` would merely match
+  upstream's UI while still shipping a value the oracle fails on. Either choice
+  moves the manifest `package_contract`, `scripts/convert-omnivoice.py`, the
+  GGUF itself, `omni-rate-fast`'s own rate, and
+  `tests/omnivoice_frontend_test.cpp:597-599` **together**, and requires the
+  golden case to be re-cut and re-dumped. That is a package re-cut and a
+  jiangzhuo decision, not a recording task. **Recommended, not taken.**
+- **No short-canvas diagnostic was added.** Emitting a non-fatal diagnostic
+  through the request's existing `synth_diagnostic_sink_t` when the resolved
+  canvas falls below a frame threshold is cheap, family-local, and needs no ABI
+  change — and it is a code change. **Recommended, not taken.**
+- **The manifest carries no prose note for `omni-rate-fast`.** The golden
+  manifest schema (`docs/schemas/synthesize-golden-manifest-v1.schema.json`)
+  declares `additionalProperties: false` on the case object with no free-text
+  field, and `coverage` is a tag array whose semantics are "what this case
+  covers", not "what to be careful of". Adding a note would mean a schema
+  change plus a `suite_version` bump — larger than this task, and a golden
+  contract change on top. Instead the plain statement went into the family
+  doc's Reference Contract, which is exactly where the case's own
+  `origin.locator` already points
+  (`docs/porting/families/omnivoice.md#reference-contract`). **A schema field
+  for case caveats is recommended, not taken.**
+- **No F0 pre-screen tooling was committed.** Median-F0-over-voiced-frames
+  costs seconds per case, needs no model, runs over the whole suite rather
+  than a six-pair sample, and found in one pass a speaker change a randomised
+  six-pair draw missed. Adopting it as a standing pre-screen for this family's
+  future listening audits is **recommended, not taken** — the scripts are
+  working artifacts under `$CLAUDE_JOB_DIR`, and promoting them into `scripts/`
+  is new tooling with its own testing gate.
+- **The generator-placement decision was not reopened.** `omni-short-en` is
+  recorded and offered as a single follow-up pair. A measurement is not a
+  listening verdict.
+
+### Gates
+
+| gate | result |
+| --- | --- |
+| `build` — `synthesize-check-unit` | **91/91** |
+| `build-sanitize` — `synthesize-check-unit` (ASan+UBSan) | **90/90** |
+| `scripts/ci/clang-format.sh --check-diff` | pass, exit 0 (the tree was formatted with `--fix` first; the only C/C++ change is a comment) |
+
+### What this does and does not establish
+
+One listener, six pairs, one day — a Listening Audit in `CONTEXT.md`'s sense,
+never reported as MOS, CMOS, a panel, or population-level evidence. It
+establishes that **16 steps lost a pair and is therefore not accepted**, and
+that three specific observations were run to ground against the pinned oracle.
+It does **not** establish that 16 steps is broken in general (the only 16-step
+oracle in the suite is reproduced to 399/400 tokens), that `omni-rate-fast` is
+a port defect (r = 0.999670 against a degenerate oracle), or that the
+`omni-short-en` backend speaker change is audible — nobody has heard it. It
+does not move `quality_evaluation` off `not_run`; ADR 0017's grid has not run
+and is not scheduled. The 2026-08-07 `no_obvious_regression` Listening Audit
+verdict for this family is **unchanged**: this audit's subject is a rejected
+candidate configuration, not the shipped one, and the two 32-step findings it
+surfaced are documentation corrections rather than a regression in what ships.
+
+## 2026-08-08 — Backend speaker audit: 1 of 17, confirmed by ear
+
+Follow-up to the step-count audit's Finding 2, which established that auto-voice
+has no speaker conditioning and that the generator's move to CUDA can therefore
+change who is speaking. That finding rested on one case. This entry establishes
+the scope and settles it with a listening pass.
+
+### The sweep
+
+Both arms rendered fresh at HEAD (`9d89524`) for all 17 greedy Golden cases on
+`build/rel-dgx-spark`, shipped 32-step default, greedy free-run, one binary,
+differing only in backend. All 34 renders structurally invariant (identical
+sample counts CPU vs CUDA in every case), all CPU grids exact against the
+oracle, placement verified explicitly on both arms.
+
+Speaker proxy: median F0 over voiced frames from two independent estimators
+(YIN and a normalised-cross-correlation tracker), plus the fraction of voiced
+frames below 165 Hz. Criterion for calling a speaker change: complete register
+separation (the below-165 Hz fraction going 1.00 to 0.00 on both trackers) plus
+a >40% median-F0 shift on both.
+
+**Result: 1 of 17 changes speaker — `omni-short-en`.** YIN 140.9 to 199.0 Hz,
+NCC 118.2 to 189.0 Hz, below-165 fraction 1.00 to 0.00 on both. Its CPU grid is
+byte-identical to the oracle, so CUDA is the arm that moved. Token flip 94.0%.
+
+Every other measurable case stayed in the same register on both trackers, with
+median-F0 ratios in roughly 0.92-1.03.
+
+**`omni-rate-fast` is excluded from the count, not ignored.** Its own oracle
+reference is degenerate (see Finding 1 of the step-count audit). YIN finds zero
+voiced frames on its CPU arm; the NCC tracker's "120 Hz on both arms" is
+tracking noise, not a voice. Neither arm carries a speaker to compare.
+
+### Token drift does not predict speaker change
+
+This is the part that matters for anyone reasoning about backend risk from the
+tolerance grid alone:
+
+| case | token flip | median F0 CPU -> CUDA | speaker |
+| --- | ---: | --- | --- |
+| `omni-short-en` | 94.0% | 140.9 -> 199.0 | **changed** |
+| `omni-digits` | 98.3% | 177.8 -> 183.1 | unchanged |
+| `omni-long-boundary` | 72.8% | 99.5 -> 100.8 | unchanged |
+| `omni-medium-en` | 67.2% | 169.9 -> 170.1 | unchanged |
+
+The case with the highest token disagreement in the whole suite keeps its
+speaker. No tolerance number this project records would have surfaced the one
+case that does change.
+
+### The listening pass
+
+Two blind pairs, identities withheld, balanced assignment (one pair CPU as slot
+A, one CUDA as slot A) under order seed 2026080817, deliberately distinct from
+the two earlier audits' seeds. Pair 1 `omni-short-en`, the measured change.
+Pair 2 `omni-design-zh`, the sweep's one borderline case, where the two
+trackers disagreed (NCC 160.0 to 147.2, YIN unchanged at 148.8) with no clean
+register separation and the sweep declined to count it.
+
+jiangzhuo returned:
+
+- Pair 1 (A=CPU, B=CUDA): quality indistinguishable, **different people**.
+- Pair 2 (A=CUDA, B=CPU): quality indistinguishable, **same person**.
+
+One listener, two pairs, one day — a Listening Audit in this project's
+vocabulary, explicitly not a statistical claim.
+
+**Methodological result worth carrying forward:** the proxy was confirmed
+against a human ear on a positive case *and* on a negative one. The borderline
+case the instrument declined to count was the case the listener also called
+unchanged. That is why the median-F0-plus-register-separation measure can be
+cited in future audits of this family rather than re-argued each time.
+
+### Consequences
+
+The effect is identity, not degradation: quality was judged indistinguishable
+in both pairs, and the 22.4x throughput result the placement move bought is
+unaffected. What changed is what the documentation may claim. The scope figure
+and the ear confirmation are now stated in `docs/models/omnivoice-0-6b.md` and,
+through a new optional `speaker_backend_variation` field, in the shipped model
+card. The template field is family-agnostic; the number lives in this family's
+YAML, not in the shared template.
+
+Cloning and Description Text paths are unaffected and the sweep confirms it:
+`omni-clone-en`, `omni-clone-zh`, `omni-design-en`, `omni-design-zh` all sit in
+the unchanged set. The mechanism explains why — those paths carry real
+conditioning into the prompt, so the speaker is not left to emerge from the
+token grid.
+
+### Recommended, not done
+
+`omni-short-en` should join the standing case set for this family's listening
+audits. The 2026-08-08 six-pair audit that accepted the CUDA placement move did
+not sample it, so the one case in the suite most sensitive to that very change
+was the one nobody heard. Selecting audit cases by coverage criteria and random
+draw is what let it through; a sensitive-case pin is the fix.
+
+## 2026-08-08 — Erratum: we misstated the Boson license, in the reader's favour
+
+A three-axis pre-flight audit of the Restricted Model Package, run immediately
+before publication to `jiangzhuo9357/omnivoice-0-6b-gguf`, returned **blocked**
+on the license axis. Publication did not happen. Three findings, all in the
+Boson/Higgs half; the CC-BY-NC half was clean.
+
+### 1. "monthly" where the agreement says "annual" — and "cap" where it says no such thing
+
+The card read:
+
+> It additionally caps commercial use at 100,000 monthly active users
+
+Section 2 of the Boson Higgs Audio 2 Community License reads, with the word
+*annual* appearing twice:
+
+> If the annual active users of the products or services made available by or
+> for Licensee, or Licensee's affiliates, is greater than 100,000 annual active
+> users in the preceding calendar year, you must request an expanded license
+> from Boson AI, which Boson AI may grant to you in its sole discretion, and
+> you are not authorized to exercise any of the rights under this Agreement
+> unless or until Boson AI otherwise expressly grants you such rights.
+
+Two errors, and both matter in the same direction. The period was wrong —
+100k/month reads as a far larger allowance than 100k/year, so a reader at
+300,000 annual users would have concluded from our card that they were
+comfortably clear when the agreement says their authorisation has lapsed. And
+"caps" is the wrong kind of term: section 2 does not impose a ceiling on use,
+it **withdraws authorisation** above the threshold until Boson grants an
+expanded license at its sole discretion.
+
+Misstating a third party's terms is bad; misstating them more permissively
+than they were written, under a real person's identity, on a platform that
+caches and indexes, is the version of it that could cost a downstream user
+something.
+
+**The error was systematic, not a slip in one rendered file.** Six committed
+files carried it — `scripts/hf_cards/omnivoice-0-6b.yaml`,
+`scripts/convert-omnivoice.py` (in the license manifest the converter writes
+into its report), `docs/porting/families/omnivoice.md`, the 2026-07-30 design
+spec, `intake.json`, and this log at the 2026-07-30 entry. It also appeared in
+the brief written for the auditor, so it had propagated into the project's own
+working understanding, not merely its output. All six are corrected; the
+original wording is preserved at each site with a dated correction marker
+rather than erased.
+
+### 2. The documented download left the user holding the weights without the licence
+
+486 of the GGUF's 798 tensors are codec weights, so the Higgs Materials are
+inside the single 3.19 GB file. The card's only usage command fetched that file
+alone, not `LICENSE-higgs-audio-2.txt` — while the card's own text sixty lines
+above claimed the licence "travels with this package as a declared Sidecar
+Resource".
+
+That claim was false in this project's own terms. `grep -rn -i sidecar
+src/ include/` returns nothing: **the runtime has no sidecar support at all**,
+and the GGUF declares no sidecar descriptor among its 101 metadata keys, so
+nothing enforces or even records the pairing. The card now says plainly that
+the pairing is not enforced, and the usage command fetches both files. The
+command as first written was itself broken — a stray backslash before the
+filename, which is not a shell line continuation — and was fixed after checking
+that the rendered command actually parses.
+
+### 3. The notice the agreement requires verbatim was absent
+
+Section 1.b.i(B) requires a redistributor to prominently display a specific
+notice on "a related website, user interface, blogpost, about page, or product
+documentation". A Hugging Face model card is that documentation. The notice
+appeared nowhere in the repository. It is now carried verbatim in the card.
+
+### What this says about the process
+
+The three-axis pre-flight existed because publication is irreversible and
+outward-facing. It earned its cost on the first run: none of these would have
+been caught by any gate in this repository, because no gate reads a licence.
+The card-accuracy and package-integrity axes came back clean, which is worth
+recording too — the failure was concentrated entirely in the axis where a
+human's identity is attached to a claim about someone else's legal terms.
+
+Publication remains unperformed and still requires jiangzhuo's explicit
+per-act confirmation, which the corrections do not carry forward.
+
+## 2026-08-09 — The conv-exempt codec policy: 36.4% → 3.49%, and where the rest of it lives
+
+jiangzhuo's third quantization decision of 2026-08-09: adopt the reference
+port's conv-exempt codec policy. This implements it, cuts the package under it,
+and tests the hypothesis it was adopted on — that never quantizing a
+convolution is what separates the reference port's 0.7% RVQ-code drift from our
+36.4%.
+
+### What was built
+
+A fifth `QuantRole`, `ConvKernel`, in `src/arch/omnivoice/quantization.h`. It is
+held at the profile's halved fallback column (`Profile::transpose_weight_type`
+— the same column Kokoro's quantizer already falls back to for a matrix it will
+not block-quantize) at the tensor's native three-axis shape. The offline
+quantizer's resolver and `catalog.cpp`'s load-time `expected_type` both read
+it, so an offline packing decision and a load-time expectation still cannot
+drift.
+
+The split inside `classify_codec_matrix_region` is a **positive whitelist of
+the seven Linear module names our own converter emits** under
+`codec.semantic_model` — `q_proj`, `k_proj`, `v_proj`, `out_proj`,
+`inter_dense`, `output_dense`, `projection` — with everything else in the four
+codec matrix regions falling through to `ConvKernel`. Whitelisting our own
+format rather than blacklisting theirs means a catalog tensor nobody
+anticipated lands unquantized, which is the safe direction under a policy whose
+whole content is "do not quantize this class of thing".
+
+**The rule reads the name, never the rank, and that is not a style choice.**
+`codec.acoustic_decoder.conv2.weight` is `[7, 32, 1]`; `ggml_n_dims` collapses
+the trailing unit axis and reports it as two-dimensional, so its `ne` is
+indistinguishable from a Linear's. A rule spelled "`ggml_n_dims >= 3`" would
+quantize the one convolution the policy most obviously means to exempt. The
+offline resolver could not have used a rank rule anyway — it passes a
+placeholder `ne` of `{1,1,1,1}`, having no shape at that call site.
+
+Counts, asserted in `omnivoice_quantization_test.cpp` against the real
+798-tensor topology: the old 158 codec MatrixWeight tensors split **73 Linears
+/ 85 convolution kernels**, and the per-module breakdown is now
+`acoustic_decoder` 0 quantized / 32 ConvKernel, `acoustic_encoder` 0 / 36,
+`encoder_semantic` 0 / 11, `semantic_model` 73 / 6.
+
+The three named-Sensitive convolutions (`acoustic_encoder.conv1`,
+`feat_conv.0`, `pos_conv_embed`) stay Sensitive rather than folding into
+`ConvKernel`. They are redundant as *decisions* now — the fall-through would
+also have kept them out of a block-quantized type — but Sensitive is F32 where
+ConvKernel is F16, and demoting them would change the bytes of the already-cut
+F16 package for no measured reason. Their comments say so.
+
+`Q8_MIXED` is redefined for this family rather than given a new name, per the
+plan's recommendation: it was BLOCKED, unpublished and carried no tolerance
+cell. **The old meaning is no longer reproducible from the same command line.**
+It was 2,703,016,576 bytes, sha256
+`b020933facda39c875f276934d3a5611c7a8836d4f243efc3fb1403d109b671e`, and every
+figure in this log's "Plan 4 Task 3" section belongs to it. The old artifact is
+kept locally as `omnivoice-0-6b-Q8_MIXED-pre-conv-exempt.gguf`; `models/` is
+not committed, so this entry is the durable record.
+
+The `F16` profile is **byte-identical across the policy change** — its matrix
+weight type and its halved fallback column are both F16, so a Linear and a
+convolution land on the same type either way. The F16 package's committed
+sha256 and its 103/2808 measurement stand unchanged.
+
+### The package
+
+| | |
+| --- | --- |
+| command | `build/bin/synthesize-quantize models/omnivoice-0-6b/omnivoice-0-6b-F32.gguf models/omnivoice-0-6b/omnivoice-0-6b-Q8_MIXED.gguf --quant Q8_MIXED` |
+| source sha256 | `f6d504ffaddcbf32f80f1f6c847f075bbd5d2c7b50fe95a194ceb635772f9fa3` |
+| output sha256 | `3de73b73f3846faf084866bd244d7d37030a51a214b7883487de8773b610ddac` |
+| size | **2,778,427,360 bytes**, predicted exactly before cutting |
+| against F32 | −411,526,144 B (−12.9%) |
+| against the old `Q8_MIXED` | **+75,410,784 B — bigger** |
+| census | 640 F32, 85 F16, 73 Q8_0 |
+
+Reproducibility was checked the direct way: the diagnostic patch described
+below was reverted and the package re-cut, giving the same sha256 byte for
+byte.
+
+**Against the briefed prediction.** The brief predicted **979,174,688 bytes**
+for a *combined* "Q8_0-generator / conv-exempt-Q8-codec" profile. Re-deriving
+from `reports/convert/omnivoice/omnivoice-0-6b-F32.json` — with the arithmetic
+model first validated by reproducing the measured F16 (2,858,422,240) and
+`Q8_GEN` (1,390,699,680) packages exactly — that composition comes to
+**979,174,112 bytes**, 576 short of the briefed figure. That 576 is the same
+constant the plan's own model was out by on `Q8_GEN`: 73 tensors declared
+three-dimensional with a trailing unit axis lose one 8-byte extent each when
+`ggml_n_dims` collapses them, against a few bytes of longer profile string,
+re-rounded to the 32-byte alignment; the briefed 979,174,688 is this model's
+own pre-collapse figure to the byte. **So the briefed number was right, and it
+was right specifically for convolutions at F16** — the same arithmetic with
+convolutions at F32 gives 1,134,661,792 of tensor data, 1,140,049,056 as a
+file and 1,140,049,632 pre-collapse, which is the figure the plan's own table
+quoted for that composition. That the two predictions differ by exactly the
+conv F32→F16 saving is the strongest independent confirmation available that
+"conv weights land at F16" was the intended reading of the policy.
+
+No such combined profile exists. This family's profiles quantize exactly one
+half each, by construction (`classify_tensor_for_half`), and nothing in this
+task's brief asked for that invariant to be broken. The number is recorded
+because it was asked for, not because a package carries it.
+
+### THE HYPOTHESIS TEST
+
+Full 20-case CPU replay on `build/rel-dgx-spark`'s runner, fresh `--work`:
+
+```
+scripts/envs/omnivoice/.venv/bin/python3 scripts/validate-omnivoice-replay.py \
+  --require all --margin-report --profile Q8_MIXED --backend CPU --stage replay \
+  --model models/omnivoice-0-6b/omnivoice-0-6b-Q8_MIXED.gguf \
+  --runner build/rel-dgx-spark/bin/synthesize-omnivoice-replay-real \
+  --work /tmp/ce_full_work
+```
+
+```
+token grids exact: 17/17
+ref.tokens exact: 0/2
+narrowest RVQ encode gap: 0.00143433
+free-run waveforms: 16 against the oracle, 1 exempt (decode determinism), 0 not compared
+narrowest margin: 9.53674e-06 (selection) in omni-rate-slow; 2 of 17 case(s) under the 0.0001 screen
+```
+
+Both clone cases mismatch at **98 of 2808 positions (3.49%)**, against 1023
+(36.4%) under the old meaning. **Confirmed: convolution packing was the
+dominant cause, worth a factor of 10.4.** 17/17 greedy grids exact and every
+margin reproducing the F32 baseline to the measured digit, for the same
+structural reason every codec-only profile has: the generator never changes.
+
+Probes, against the two profiles already measured on this clip:
+
+| probe | F32 | old `Q8_MIXED` | `F16` | conv-exempt `Q8_MIXED` |
+| --- | ---: | ---: | ---: | ---: |
+| `audio.pcm` min_cosine | 0.99999986 | 0.99775438 | 0.99999743 | **0.99999743** |
+| `ref.semantic_mean` max_abs | 6.09e-05 | 0.342867 | 0.00795197 | 0.22166 |
+| `ref.fused_latent` max_abs | 9.32e-05 | 3.73227 | 0.129286 | 0.123921 |
+| narrowest RVQ encode gap | 0.00239563 | 0.0102997 | 0.00306702 | 0.00143433 |
+
+`audio.pcm` matching the F16 package to all eight digits is not a coincidence:
+`codec.acoustic_decoder` contains no Linears, so its weights are the same bytes
+under both profiles. The decode path this policy leaves alone is exactly the
+F16 profile's decode path.
+
+### What the 3.49% is made of — the diagnostic cut
+
+3.49% is not ~1%, and it is within noise of simply halving the entire codec
+(the `F16` profile's 3.67%). So the honest question is no longer "did
+conv-exemption help" — it plainly did — but "what is left". One throwaway
+package answers it: the `ConvKernel` arm patched to F32 in both the resolver
+and the catalog (two lines, not committed), cut, run on `omni-clone-en`, then
+both files restored and the shipped package re-cut byte-identically.
+
+One clip (`seedtts_ref_en_1.wav`), one gate, `ref.tokens` mismatches of 2808:
+
+| conv kernels | HuBERT Linears | mismatches | share | package bytes |
+| --- | --- | ---: | ---: | ---: |
+| Q8_0, packed | Q8_0 | 1023 | 36.4% | 2,703,016,576 |
+| **F16** | **Q8_0** (this policy) | **98** | **3.49%** | **2,778,427,360** |
+| F16 | F16 (`F16` profile) | 103 | 3.67% | 2,858,422,240 |
+| F32 | Q8_0 (diagnostic) | **19** | **0.68%** | 2,939,302,304 |
+| F32 | F32 (`F32` package) | 0 | 0% | 3,189,953,504 |
+
+Two things fall out that neither the brief nor the plan predicted:
+
+1. **Quantizing the 73 Linears to Q8_0 costs nothing measurable on this gate.**
+   98 against F16's 103 is a five-position difference in the noise, and it buys
+   80 MB. The Linears are not where the drift is — even though
+   `ref.semantic_mean` is 28× worse under Q8_0 Linears than under F16 ones
+   (0.22166 against 0.00795197). The fused latent that actually feeds the RVQ
+   is dominated by the acoustic-encoder branch, and the two profiles' fused
+   latents are nearly the same (0.1239 against 0.1293).
+2. **All of the remaining drift is the precision of the convolutions.** F32
+   convolutions take it to 0.68% for 161 MB more file.
+
+**Do not read 0.68% ≈ 0.7% as a reproduction of the reference port's result.**
+Their 0.7% was measured on their own reference clip and ours on
+`seedtts_ref_en_1.wav`; the two numbers were never directly comparable, and
+this project has been burned before by carrying a prior finding across without
+re-deriving it. The five rows above are the comparable evidence, because they
+share a clip, a gate and a codebase. If the reference port really does fall
+back to F16 on convolutions as the brief describes, then the row corresponding
+to *their* policy is ours at 3.49%, and the distance to their published 0.7% is
+a property of the clip or of their measurement, not of ours.
+
+### Status: BLOCKED, and what is still owed
+
+`ref.tokens` is 0/2 exact. That is the one gate with no "different valid
+realization" defence — fixed clip in, discrete codes out — so no tolerance cell
+is committed and no per-profile golden gate is registered, exactly as for the
+two profiles measured before it. The plan predicted this outcome before the cut
+and the prediction holds; the value of the task is the attribution, not a
+shippable profile.
+
+**The open decision for jiangzhuo, stated with the arithmetic.** The policy as
+adopted and implemented puts convolutions at F16, which is what the reference
+port's own fallback does and what the briefed size prediction assumed. The
+diagnostic says F32 convolutions are five times better on the clone gate for
+161 MB. Neither passes `ref.tokens`, so this is a decision about what the
+family's policy *is*, not a ship decision.
+
+**What this family gives up.** The packed-convolution branch this project built
+and ported for it is now unexercised by any omnivoice package: `codec_conv1d`
+and `reference-encoder.cpp`'s `conv1d` (Plan 4 Task 2), the packed-shape
+acceptance in `catalog.cpp`'s `find()`, the `omnivoice_collapsed_conv_kernel`
+carve-out in `quantize.cpp`, and the `feat_conv[1..6]` load-path fix that cost
+a whole debugging session. All of it stays — the builders are shared with three
+other families, and `check_packed_feat_conv1` /
+`check_packed_encoder_semantic_conv` keep the omnivoice half covered by
+building packed kernels directly rather than through a profile — but the family
+doc now says plainly that this family does not pack convolutions, so nobody
+reads the code's presence as evidence that it does. A new catalog test asserts
+the other side of that: a pre-policy package, with a Q8_0 convolution at its
+packed shape, is now REFUSED at load under the profile name it still carries.
+
+**On the Tier 2 instrument.** The brief flagged the replayed-grid codec
+tolerance as possibly unbuilt. Checked: it is built and it gates. `audio.pcm`
+replays the oracle's own committed grid through the candidate's codec and is an
+ordinary tolerance-gated measurement — it is what produced both the 0.99775438
+and the 0.99999743 above. What is genuinely missing is a comparison for the
+free-run waveform once the greedy grid drifts (`mode: "not-compared"` is
+printed and counted in the summary but adds to no failure count). That does not
+bind here: a codec-half profile leaves the generator untouched, so all 17
+greedy grids are exact and this run compared 16 free-run waveforms against the
+oracle plus one against the port's own decode of the alternate grid it matched,
+with **zero not-compared**. The debt is real for generator-half profiles and
+stays open.
+
+### Gates
+
+| gate | result |
+| --- | --- |
+| `cmake --build build --target synthesize-check-unit` | 91/91 passed, exit 0 |
+| `cmake --build build-sanitize --target synthesize-check-unit` (ASan/UBSan) | 90/90 passed, exit 0 |
+| `ctest --test-dir build/rel-dgx-spark -L integration -R omnivoice -E replay-golden` | 7/7 passed, exit 0 (535.69 s) |
+| `ctest --test-dir build/rel-dgx-spark -R '^synthesize-omnivoice-replay-golden$'` | passed, 461.39 s |
+| `ctest --test-dir build/rel-dgx-spark -R replay-golden-cuda` | passed, 99.33 s |
+| `scripts/ci/clang-format.sh --check-diff` | exit 0 |
+
+Non-vacuity of the new tests was checked directly rather than assumed:
+collapsing `is_semantic_model_linear` to `true` (so every codec matrix weight
+would be quantized again) makes all four of
+`synthesize-omnivoice-quantization-test`,
+`synthesize-omnivoice-catalog-test`, `synthesize-quantize-policy-test` and
+`synthesize-quantize-test` fail. The probe was reverted.
+
+No timing was measured in this task, so the load average during the correctness
+runs (2.8 one-minute) does not affect any number recorded here.
+
+## 2026-08-09 — The three profiles compared, independently re-verified, and put up as one decision
+
+Three agents built and measured `Q8_GEN`, `Q4_K_GEN` and the conv-exempt
+redefinition of `Q8_MIXED` in sequence. This entry is the cross-check and the
+comparison: every gate re-run on the committed tree at `b5668de`, the single
+most consequential measurement of each report reproduced with a *different*
+instrument, and the whole ladder in one table. Nothing here was published
+anywhere and no package was cut.
+
+### What was re-run, not inherited
+
+| gate | result at `b5668de` |
+| --- | --- |
+| `ctest -L unit` on `build/rel-dgx-spark` | **90/90 passed**, exit 0 (51.0 s) |
+| `ctest -L omnivoice -L integration` | **9/9 passed**, exit 0 (1088.4 s) |
+| — incl. `synthesize-omnivoice-replay-golden` (CPU) | passed, 456.7 s |
+| — incl. `synthesize-omnivoice-replay-golden-cuda` | passed, 96.6 s |
+| — incl. `synthesize-omnivoice-load-real` | passed, 4.8 s |
+| — incl. `synthesize-omnivoice-profile-test` | passed, 108.0 s |
+| package sizes + sha256, all five, re-hashed | all reproduce exactly |
+
+**A trap in the golden fixtures, found while verifying and worth fixing.**
+`synthesize-omnivoice-replay-golden` and `synthesize-omnivoice-replay-golden-cuda`
+pass no `--work`, so both write to the validator's default
+`build/goldens/omnivoice-replay`. The CUDA test runs second and **overwrites the
+CPU test's renders**, while `full-report.json` in that directory is a stale
+artifact from 2026-07-31 that still says `backend: CPU`. Anyone who inspects
+that directory after a full `ctest` run is reading CUDA audio under a CPU
+label. This nearly produced a false alarm here: the "F32/CPU" renders the Q8
+measurement used disagreed with that directory and looked mislabelled. They are
+not — resolved by comparing against the oracle itself, and
+`/tmp/q8gen/scratch/f32-cpu` is **grid-exact against
+`build/goldens/omnivoice/<case>/codes/grid.i32`** on every case checked, while
+the directory written by the test run is not. The fixtures should take distinct
+`--work` paths.
+
+### The comparison
+
+Sizes and hashes re-verified by direct `stat`/`sha256sum`. Predicted-vs-actual
+uses each profile's own pre-cut prediction.
+
+| profile | predicted bytes | actual bytes | Δ | off F32 | sha256 (16) |
+| --- | ---: | ---: | ---: | ---: | --- |
+| F32 (reference) | — | 3,189,953,504 | — | — | `f6d504ffaddcbf32` |
+| F16 | — | 2,858,422,240 | — | 10.4% | `530b2b85d7d1950f` |
+| `Q8_MIXED` conv-exempt | 2,778,427,360 | 2,778,427,360 | **0** | 12.9% | `3de73b73f3846faf` |
+| `Q8_GEN` | 1,390,700,256 | 1,390,699,680 | **−576** | **56.4%** | `27c3a5dcd769a491` |
+| `Q4_K_GEN` | 1,166,300,320 | 1,166,300,320 | **0** | 63.4% | `bd59811918d2b05f` |
+
+The −576 on `Q8_GEN` is the only miss and it is fully explained: the brief's
+model assumed the metadata block would be byte-identical to F32's, but
+`ggml_n_dims` collapses a trailing unit axis on 73 tensors (72 Snake alpha
+curves at `[1, C, 1]` plus the mono exit convolution at `[7, 32, 1]`), costing
+8 bytes of tensor-info each, against a +3-byte profile string, re-rounded to
+32-byte alignment. Both later profiles anchored on the shipped header instead
+and predicted exactly. **The correct rule for any package this tool cuts** is
+`raw tensor bytes + 5,387,840 − 584 − (8 × packed kernels) + (profile string
+delta)`, re-rounded to 32.
+
+| measure | F32 | `Q8_MIXED` (codec) | **`Q8_GEN`** | `Q4_K_GEN` |
+| --- | ---: | ---: | ---: | ---: |
+| quantized tensors | 0 | 73 Q8_0 + 85 F16 | 199 Q8_0 (generator) | 197 Q4_K + 2 Q8_0 |
+| CUDA RTF (re-measured here) | 0.15448 | not measured | **0.15267** (1.2% faster) | 0.15314 (0.9%) |
+| CPU RTF (two agents) | 4.04 / 4.30 | not measured | 4.02 / 4.35 | 4.37 |
+| load time, CUDA | 2.58 s | — | **1.16 s** | 1.05 s |
+| accelerator twin (generator) | 2,336.80 MiB | unchanged | **620.90 MiB** | 406.89 MiB |
+| peak RSS, CUDA | 4,019 MiB | — | **1,915 MiB** | 1,702 MiB |
+| clone RVQ drift / 2,808 | 0 | 98 (3.49%) | **0** (codec bit-identical) | **0** |
+| F0 sweep, committed proxy | 1/16 (baseline) | n/a (generator untouched) | **6/16** | 6/16 CPU, 8/16 CUDA |
+| F0 sweep, independent cepstral | 1/17 (baseline) | n/a | **6/17** | not swept |
+| degeneracy: renders with \|DC\|>0.03 | 1 of 17 | n/a | **1 of 17** | **10 of 17** |
+| Tier 1 hard gates | pass | pass | **pass** | pass |
+| exact-token gate | pass | **0/2 `ref.tokens` — BLOCKED** | n/a (generator-half) | n/a |
+
+CPU RTF is quoted as both agents' medians because they measured on differently
+loaded hosts; the arms are indistinguishable inside each agent's own noise
+floor and no speed claim is made from either.
+
+### The two measurements re-derived with a different instrument
+
+**F0 sweep.** The committed proxy (`scripts/omnivoice-speaker-proxy.py`) uses
+YIN and a normalised cross-correlation tracker. This check used **cepstral
+pitch detection** — a third method, so agreement is evidence rather than a
+re-run. Absolute values differ, as two pitch estimators on the same audio
+will; the structure does not. On the accepted `F32/CPU → F32/CUDA` baseline the
+independent instrument puts **every case at or below 0.088 except
+`omni-short-en` at 0.136** — the one case a human listened to on 2026-08-08 and
+called *different people*. Taking that ear-confirmed value as the line, the
+same instrument scores `F32/CPU → Q8_GEN/CPU` at **6 of 17**, against **1 of
+17** for the baseline. The committed proxy's 6-of-16 reproduces.
+
+The two instruments disagree about *which* six — the cepstral method puts
+`omni-medium-en` at 0.053 (the committed proxy says 0.33) and `omni-nonverbal`
+at 0.167 (the committed proxy says unmoved) — so the count is solid and the
+per-case attribution is not. Both disagreements are pinned into the listening
+material below rather than argued.
+
+| case | committed proxy shift | independent cepstral shift |
+| --- | ---: | ---: |
+| `omni-short-ja` | 0.70 | **0.83** |
+| `omni-short-en` | 0.58 | 0.20 |
+| `omni-fast-mode` (16-step, rejected config) | 0.36 | 0.37 |
+| `omni-digits` | 0.34 | 0.29 |
+| `omni-medium-en` | 0.33 | **0.05** ← disagree |
+| `omni-clone-zh` | 0.29 | 0.23 |
+| `omni-nonverbal` | unmoved | **0.17** ← disagree |
+| `omni-upstream-readme` (control) | unmoved | 0.04 |
+
+**Degeneracy.** An independently written screen (DC offset, zero-crossing rate,
+95th/5th-percentile 20 ms envelope ratio) confirms the `Q4_K_GEN` verdict
+without qualification. Counting renders with `|DC| > 0.03`: F32/CPU **1**
+(the pre-existing `omni-rate-fast`), `Q8_GEN`/CPU **1** (the same one),
+`Q4_K_GEN`/CPU **10**, reaching **−0.0924** on `omni-lang-none` — the figure the
+Q4 agent reported, reproduced. Envelope ratios collapse from F32's hundreds-to-
+thousands to **1.8–6.2** on ten `Q4_K_GEN` renders.
+
+The qualitative separation is the part worth keeping: **`Q8_GEN` moves envelope
+in both directions** (`omni-short-en` 11 → 310, `omni-short-zh` 1,037 → 11,289,
+against `omni-design-zh` 965 → 76 and `omni-nonverbal` 3,272 → 132) — the
+signature of a different valid realization. **`Q4_K_GEN` moves it one way only,
+collapse, on nearly everything, with a DC pedestal underneath.** That is the
+signature of a broken decode, and it is why the two profiles get different
+verdicts despite similar F0 counts.
+
+One `Q8_GEN` observation the earlier screen did not surface, recorded because
+it is a real loss: `omni-design-zh` loses 12.7× of its dynamic range
+(envelope 965 → 76) and `omni-nonverbal` 24.8×. Neither is degenerate by the
+DC/ZCR test, and `omni-nonverbal` is one of the two cases the instruments
+disagree about, so it is in the listening set.
+
+### The listening material — built, not just recommended
+
+Six blind pairs plus two clone triples, ready for jiangzhuo. **Both arms are
+CPU**, deliberately: the generator's CPU-vs-CUDA token drift is then present in
+both arms and cancels, so every audible difference is attributable to the
+profile alone — the same construction the 2026-08-08 step-count audit used.
+
+Cases are **pinned by measurement, not sampled.** The 2026-08-08 audit's own
+closing recommendation was that coverage-plus-random-draw let the most
+sensitive case go unheard; this set spends all six slots on information.
+`omni-fast-mode` is deliberately excluded despite moving on both instruments —
+it runs at 16 steps, a configuration this project already rejected, and hearing
+it would confound the profile question with a decision already made.
+
+| pair | case | why this case | slot A |
+| --- | --- | --- | --- |
+| 1 | `omni-short-ja` | largest move on both instruments (0.70 / 0.83) | `Q8_GEN` |
+| 2 | `omni-short-en` | the case the 2026-08-08 ear called *different people* | `Q8_GEN` |
+| 3 | `omni-digits` | both move (0.34 / 0.29); intelligibility | F32 |
+| 4 | `omni-medium-en` | **instruments disagree** (0.33 vs 0.05) | F32 |
+| 5 | `omni-nonverbal` | **disagree the other way** (unmoved vs 0.17); envelope 3,272 → 132 | F32 |
+| 6 | `omni-upstream-readme` | **control**, both agree unmoved | `Q8_GEN` |
+| clone 1 | `omni-clone-en` | target-relative; F32 already within 13% of the clip | `Q8_GEN` |
+| clone 2 | `omni-clone-zh` | F32 sits 37% *above* the target, `Q8_GEN` lands nearer | F32 |
+
+Assignment is **balanced** by construction — `swap_flags = [True]*3 + [False]*3`
+then `random.Random(2026080901).shuffle` — so exactly three pairs present
+`Q8_GEN` as A. `order_seed 2026080901` is distinct from `20260808`,
+`2026080816` and `2026080817` so the four orderings cannot be confused; the
+naive per-pair draw it replaces is recorded in the manifest, per precedent.
+Clone triples present the reference clip **not blind** and labelled as the
+target, because clone identity is judged against the clip rather than against
+F32.
+
+Audio: `$CLAUDE_JOB_DIR/q8gen-audit/audio/` (`pair_N_{A,B}.wav`,
+`clone_N_{reference,A,B}.wav`, 24 kHz mono). The answer key, with sha256 for
+every WAV and every source `pcm_freerun.f32`, is
+`$CLAUDE_JOB_DIR/q8gen-audit/audit-manifest.json` — a **sibling of** the audio
+directory, never inside it. Checked for identity leaks before release: no
+arm-identifying filename, no string metadata in any WAV, and every pair
+byte-length identical (structural invariance makes this free). No HTML page was
+built.
+
+### Recommendation, and what is jiangzhuo's to decide
+
+**Recommended: ship `Q8_GEN` only after the listening pass above returns; do
+not ship `Q4_K_GEN` at all; keep the conv-exempt policy as policy.**
+
+`Q4_K_GEN` is settled on evidence rather than taste. Over `Q8_GEN` it buys 224
+MB of package, 213 MiB of RSS and 0.11 s of load, and **zero throughput** —
+re-measured here at 0.3% *slower* than `Q8_GEN` on CUDA. Against that: ten of
+seventeen renders carry a DC pedestal, envelopes collapse by two to three
+orders of magnitude, and the committed proxy **fails in the dangerous
+direction** — a render degraded until YIN finds no voiced frame is scored "not
+comparable" rather than counted, so the instrument's own headline reads clean
+on a profile the degeneracy screen says is broken. The code is correct and
+tested and the Q8_0 embedding pin is demonstrated necessary; nothing about that
+argues for cutting a release package from it.
+
+`Q8_GEN` is the honest candidate and its case is strong everywhere except the
+one place that decides it. Confirmed here: 56.4% off the file, the accelerator
+twin at 620.90 MiB, peak CUDA RSS under 2 GiB, the codec half **bit-identical**
+to F32 (486 tensors, 734,256,516 bytes, zero differing), RVQ codes byte-exact,
+clone fidelity unharmed against the target, every hard gate green. Against it:
+six of sixteen cases move register where the accepted baseline moves one, and
+that baseline of one is not a tolerance — it is a case a human called *different
+people*. Two independent instruments agree on the count. That is 4–6× the
+accepted rate and it has never been adjudicated by ear.
+
+**The claim this profile may honestly make is size, memory and load time. Not
+speed** — 1.2% on CUDA, nothing on CPU, both inside run-to-run spread. The
+plan's Task 7 anchor (RTF 0.1906) is stale and comparing against it would
+re-publish the Plan 5 closeout's already-banked win as if it were new.
+
+Open items this entry does not close: `tests/omnivoice_load_real.cpp:267`
+hard-codes `info.quantization_profile == "F32"` and must widen before any
+per-profile load gate can register; the free-run waveform is still compared
+against nothing once the grid drifts, which is why the `Q4_K_GEN` degeneracy
+had to be found by hand; and neither generator profile has a tolerance cell or
+a registered CTest target.
+
+## 2026-08-09 — Q8_GEN rejected by ear, and the F0 proxy is the wrong instrument
+
+The Q8_GEN listening audit returned 8 of 8 "different people" — including the
+pair placed in the set as a **control**, where both pitch trackers reported the
+arms unmoved (0.00 / 0.04). A control failing is a statement about the
+instrument before it is a statement about the profile, so the material was
+checked first: all eight pairs are genuinely distinct files with correct arm
+assignment. The material is sound. The instrument is not.
+
+### What the ear was hearing, and why the proxy could not see it
+
+**Median F0 is pitch. Speaker identity is mostly timbre.** The committed proxy
+(`scripts/omnivoice-speaker-proxy.py`) measures median F0 over voiced frames
+plus the fraction below 165 Hz. It was validated on 2026-08-08 against one
+positive case and one negative — and the positive case, `omni-short-en`, was a
+male↔female flip, the one situation where pitch and timbre move together. We
+generalised a pitch instrument from a single case where pitch happened to be
+the signal.
+
+Long-term average spectrum distance — pitch-agnostic, a timbre descriptor —
+separates this audit's answers cleanly where F0 does not:
+
+| pair | case | LTAS RMS (dB) | spectral centroid | verdict |
+| --- | --- | ---: | --- | --- |
+| clone 1 | `omni-clone-en` | **2.00** | 1250 → 1408 | 差不多 |
+| clone 2 | `omni-clone-zh` | **2.70** | 564 → 504 | 差不多 |
+| 4 | `omni-medium-en` | 4.59 | 2993 → 2102 | different people |
+| 3 | `omni-digits` | 5.00 | 806 → 653 | different people |
+| 1 | `omni-short-ja` | 6.14 | 678 → 456 | different people |
+| 6 | `omni-upstream-readme` (**control**) | 7.10 | **3200 → 6682** | different people |
+| 2 | `omni-short-en` | 7.41 | 2412 → 2592 | different people |
+| 5 | `omni-nonverbal` | 12.22 | 2105 → 2504 | different people |
+
+The two "same" answers are the two lowest distances; all six "different"
+answers are above 4.5 dB. **Perfect separation at roughly 3–4 dB**, and the
+so-called control turns out to be the second-largest timbre change in the set —
+its centroid moves 52%, while its F0 does not move at all.
+
+### The same measure vindicates the change we already shipped
+
+Re-measured over the 2026-08-08 CPU-vs-CUDA renders, all 17 greedy cases:
+
+- median **1.54 dB**, max **6.00 dB**
+- exactly one case above ~3 dB: `omni-short-en` at 6.00 — **the one case the ear
+  called "different people"** in that audit
+- `omni-upstream-readme` is 0.64 dB there, which is why it was a legitimate
+  control for the backend question and not for this one
+
+So the generator-on-CUDA move stands: "1 of 17" survives the better instrument,
+and the better instrument reproduces that audit's verdict as well as this one.
+Fourteen listener answers across two audits, one threshold, no exceptions.
+
+### Consequences
+
+1. **Q8_GEN is rejected.** Six of six non-clone cases change the voice. The
+   profile's other properties are excellent — 56.4% off the file, codec half
+   bit-identical, RVQ codes exact, every hard gate green, accelerator twin
+   2,336.80 → 620.90 MiB — and none of it survives the ear. It buys no speed
+   either (1.6%), so there is not even a throughput argument to weigh against
+   the loss. Keep the code and the profile row; do not cut a shipping package.
+2. **Cloning is robust to generator quantization.** The two clone triples are
+   the two smallest distances in the set and the listener judged both "about
+   the same" against the reference. The conditioned path anchors the timbre
+   that auto-voice leaves to emerge. This is the most useful positive result
+   here and it was not predicted.
+3. **The F0 proxy must not be cited alone again.** It is not wrong — it detects
+   register flips, and it did detect the CUDA case — but it is blind to the
+   dimension that decided this audit. LTAS distance should be measured beside
+   it, and the ~3–4 dB threshold recorded above is the first calibration
+   either measure has had against more than one perturbation type.
+4. **Q8_MIXED's 36.4% and Q4's rejection are unaffected** — both were decided
+   on other evidence.
+
+### Status of the LTAS measure
+
+Reported honestly: this is a single-configuration measurement (1024-point FFT,
+Hann, half-overlap, frames below 1e-4 RMS skipped), computed post hoc, not yet
+committed as a script or pinned by a test. What it has that the F0 proxy never
+had is **cross-validation against two independent listening audits and fourteen
+human answers with no exceptions**. Committing and pinning it is recommended
+work, not done here.
+
+### Erratum, same day: pair 6 was not a Q8_GEN failure, and it was never a control
+
+jiangzhuo revised his pair-6 answer immediately after the reveal: the two arms
+are the same speaker, the "different people" answer was driven by one arm
+sounding *bad*, and the arm he marked better — A — is Q8_GEN.
+
+Measured, and it is not close. `omni-upstream-readme`, long-term average
+spectrum:
+
+| source | centroid | share of energy above 4 kHz | rms |
+| --- | ---: | ---: | ---: |
+| **PyTorch oracle** | **6682 Hz** | **0.873** | 0.0763 |
+| our F32 / CPU | 6682 Hz | 0.873 | 0.0763 |
+| our F32 / CUDA | 6631 Hz | 0.865 | 0.0772 |
+| Q8_GEN | 3200 Hz | 0.369 | 0.0522 |
+
+Typical speech in this suite sits at 400–3000 Hz. **The oracle puts 87% of its
+energy above 4 kHz on this case** — that is hiss, not voice — and our F32
+reproduces it to three decimals. Q8_GEN lands in the speech range and the
+listener preferred it.
+
+Three corrections follow, and the first is mine:
+
+1. **The tally is 5 of 6, not 6 of 6.** Q8_GEN is still rejected — five of six
+   non-clone cases change the speaker against a 1-of-17 baseline — but pair 6
+   is not one of them and the entry above overstated the case.
+2. **`omni-upstream-readme` is a second degenerate golden case**, after
+   `omni-rate-fast`. Same shape as that finding: the upstream model produces
+   unintelligible output, we reproduce it faithfully, and no gate can see it
+   because every gate compares against the oracle. The case's text is "This is
+   a sentence without any voice prompt." — the upstream README's own example.
+3. **It was never a valid control.** It was chosen because CPU-vs-CUDA left its
+   F0 unmoved (0.64 dB LTAS, genuinely unmoved for *that* question), but a case
+   whose reference render is broken cannot be a control for anything. Picking
+   controls by "the instrument says nothing moved" selects for cases the
+   instrument cannot see, which is exactly backwards.
+
+**What this does to the LTAS threshold.** Pair 6's 7.10 dB was one arm being
+broken, not two speakers differing, so the measure separates *audible
+difference* rather than *identity change* specifically. The threshold still
+holds for what it is — every answer of "same" is below it and every "different"
+above — but it does not distinguish why, and this entry should not be read as
+claiming it does.
+
+### Q8_GEN kept, with the scope the evidence actually supports
+
+jiangzhuo's decision, 2026-08-09: cloning survives the quantized generator, so
+Q8_GEN is worth keeping. Before that becomes a claim, the gap in the audit was
+closed — **no Description Text case was in the listening set.** Six pairs were
+auto-voice and both triples were Reference Audio cloning, so "conditioned paths
+are robust" rested entirely on cloning evidence.
+
+LTAS distance, F32/CPU vs Q8_GEN/CPU, all 17 greedy cases:
+
+| case | voice path | LTAS (dB) |
+| --- | --- | ---: |
+| `omni-clone-en` | Reference Audio | **2.02** |
+| `omni-clone-zh` | Reference Audio | **2.70** |
+| `omni-rate-slow` | auto | 2.87 |
+| `omni-rate-fast` | auto (degenerate, excluded) | 2.90 |
+| `omni-punctuation` | auto | 4.12 |
+| `omni-short-zh` / `omni-long-boundary` | auto | 4.54 |
+| `omni-medium-en` | auto | 4.59 |
+| **`omni-design-zh`** | **Description Text** | **4.88** |
+| `omni-digits` | auto | 5.01 |
+| `omni-short-ja` | auto | 6.14 |
+| `omni-lang-none` | auto | 6.84 |
+| `omni-upstream-readme` | auto (degenerate) | 7.10 |
+| `omni-short-en` | auto | 7.46 |
+| **`omni-design-en`** | **Description Text** | **8.61** |
+| `omni-fast-mode` | auto | 8.71 |
+| `omni-nonverbal` | auto | 12.22 |
+
+**The two cloning cases are the two smallest distances in the suite.**
+Description Text is not with them — `omni-design-en` at 8.61 dB is the third
+largest distance measured.
+
+So the earlier entry's phrase "the conditioned path anchors the timbre" is
+wrong and is corrected here: **Reference Audio anchors it; Description Text
+does not.** The mechanism agrees. Cloning injects real acoustic tokens from the
+reference clip into the prompt, so the timbre has a physical anchor that
+survives a re-drawn generator. Description Text is words steering generation
+with no acoustic anchor at all, which puts it in the same position as
+auto-voice.
+
+**The scope Q8_GEN can honestly claim: it preserves Reference Audio cloning,
+and it changes the voice for auto-voice and for Description Text.** Anything
+broader than that is unsupported by what was measured.
+
+Not sampled by ear: `omni-design-en` at 8.61 dB sits well inside the range the
+listener has consistently called "different people", so no listening pair was
+spent on it. That is a prediction from an instrument with fourteen confirming
+answers and no exceptions, not a measurement of a human — recorded as such.
+
+### Correction: Q8 honors Description Text; "clone-only" was wrong
+
+jiangzhuo challenged the framing — does a Q8 package only support cloning? It
+does not, and the framing was wrong twice.
+
+**Nothing is disabled.** All three voice modes work, the API is identical, and
+this is not a feature-restricted build. What LTAS distance measures is fidelity
+*to F32's particular rendering*, not whether a mode functions.
+
+**And "Description Text is broken" does not follow from its 8.61 dB either.**
+That number says the voice differs from the one F32 produced; it says nothing
+about whether the description was honored. The two design cases specify pitch
+explicitly, so this is directly checkable:
+
+| case | description | F32 median F0 | Q8 median F0 |
+| --- | --- | ---: | ---: |
+| `omni-design-en` | "female, young adult, high pitch" | 333.3 Hz | **343.5 Hz** |
+| `omni-design-zh` | "男，老年，低音调" (male, elderly, low pitch) | 152.9 Hz | **158.4 Hz** |
+
+Ordinary voices in this suite sit at 118–130 Hz. The high-pitch request stays
+high under Q8 and the low-pitch request stays low. **Q8 honors both
+descriptions** and returns a different voice within them.
+
+So the accurate statement, and the one the card should carry:
+
+> Q8 reproduces F32's voice for Reference Audio cloning. For auto-voice and
+> Description Text it returns a different voice — the description is still
+> honored, and the listener judged quality indistinguishable on every sampled
+> pair — but not the same speaker F32 would have produced.
+
+For auto-voice that is barely news: this family's documentation already states
+the speaker is unstable across backends, seeds and step counts, because
+auto-voice carries no speaker conditioning at all. "And across quantization
+profiles" is the same fact continuing.
+
+Two honesty notes. Quality was judged indistinguishable on the six sampled
+auto-voice pairs; **no Description Text case was listened to**, and the pitch
+check above is an instrument reading, not an ear. And F16 remains the better
+default regardless — it is under the "same person" line on all 17 cases, so it
+needs none of this explanation.
+
+---
+
+## 2026-08-09 — Quantization Profiles renamed: the half decides the name
+
+jiangzhuo ruled on the profile names. **The half a profile quantizes determines
+its name.** The generator half takes the plain name; the codec half takes a
+`_CODEC` qualifier.
+
+| measured and recorded above as | renamed to |
+| --- | --- |
+| `F16_GEN` | `F16` |
+| `Q8_GEN` | `Q8` |
+| `Q4_K_GEN` | `Q4_K` |
+| `BF16_GEN` | `BF16` |
+| `F16` (codec-only, BLOCKED) | `F16_CODEC` |
+| `Q8_MIXED` (codec-only, BLOCKED) | `Q8_CODEC_MIXED` |
+
+Two reasons, both jiangzhuo's. It lands the shipping profiles on the names users
+expect and that the three sibling families already publish. And it is a rule
+about the artifact rather than about its ship status, so a codec profile
+becoming shippable later would not force a second rename.
+
+**Every entry above this one is left as it was written.** They record specific
+artifacts by name *and* sha256, and rewriting the names in place would falsify
+the record rather than clarify it. Read them with the mapping table above.
+
+### What the rename touched
+
+The `_GEN`-suffixed names are gone from the profile table, the runtime enum, the
+metadata reader, `get_info`, the CLI usage line and every test, and none of them
+resolves any more — `find_profile("Q8_GEN")` returns null and a package whose
+`synthesize.quantization.profile` says `Q8_GEN` is refused at load with its
+profile string named. Both are asserted by tests rather than left to inspection.
+
+One structural consequence is worth stating, because it is not obvious from the
+mapping table. `tools/synthesize-quantize/policy.cpp`'s profile table is
+**shared across all four families**, and its `F16`, `Q8_MIXED` and `Q5_K_MIXED`
+rows name packages VITS, Kokoro and Qwen3-TTS have already published. Those
+names cannot move. So:
+
+- OmniVoice's generator-half F16 **reuses the shared `F16` row**; the former
+  `F16_GEN` row is deleted. `omnivoice_quantized_half` now reads `F16` as the
+  generator half, which is safe because that function is only ever consulted on
+  the omnivoice dispatch path (`quantize.cpp` keys on `general.architecture`).
+  The one column where the shared row disagrees with the deleted one is
+  `transpose_weight_type` (F16 against F32), and that column is never read on a
+  generator-half omnivoice cut: `TransposeWeight` hardcodes F32, and the
+  `ConvKernel` arm that does read it is unreachable because
+  `classify_tensor_for_half` holds the whole codec half — where every
+  convolution in this family lives — at `Sensitive`. Verified by re-cutting, not
+  by reading: see the byte-for-byte comparison below.
+- OmniVoice's two codec-half profiles get **new rows** `F16_CODEC` and
+  `Q8_CODEC_MIXED`, field-for-field duplicates of the shared `F16` and
+  `Q8_MIXED` rows. Only the name differs, and the name is the point: it is what
+  selects the half and what the package's profile string then carries.
+- `Q8_MIXED` and `Q5_K_MIXED` therefore fall through to the codec half for
+  omnivoice but are **not** omnivoice profile names. Cutting an omnivoice
+  package under either still produces a file; the omnivoice runtime then refuses
+  its profile string by name. That is the same loud refusal `Q5_K_MIXED` has
+  always got from this family, and it is asserted.
+
+### The four generator packages, re-cut under the new names
+
+Re-cut from the committed `omnivoice-0-6b-F32.gguf` (sha256 `f6d504ff…f9fa3`)
+with the rebuilt tool.
+
+| profile | old name | bytes (old) | bytes (new) | delta | new sha256 |
+| --- | --- | ---: | ---: | ---: | --- |
+| `F16` | `F16_GEN` | 1,964,929,440 | 1,964,929,440 | 0 | `65c8cca59b350ccfdc6ad96c5a683b276f8c0fd5c8e96675d6dc110da3f52f70` |
+| `Q8` | `Q8_GEN` | 1,390,699,680 | 1,390,699,680 | 0 | `61aec0de7cfa9246487e309c43508de9c95cf52fd225ce3fada3b4bb4982374e` |
+| `Q4_K` | `Q4_K_GEN` | 1,166,300,320 | 1,166,300,320 | 0 | `e8233dcec9064f9c378a8cbd485b4a9cc26e0d25d4958c9f8f9701837f447113` |
+| `BF16` | `BF16_GEN` | 1,964,929,440 | 1,964,929,440 | 0 | `163c8b0d65592ad379dc58d61d14cfdb6ad6954c0026a6360205c0d90a885554` |
+
+The digests all move and **not one byte count does.** That is not the naive
+prediction — each new name is 4 characters shorter, so the KV block should
+shrink by 4 — and the reason it is nonetheless correct was measured rather than
+assumed. Parsing both files' headers:
+
+| profile | KV-block end (old → new) | tensor-data start (old → new) |
+| --- | --- | --- |
+| `F16` | 5,387,255 → 5,387,251 (−4) | 5,387,264 → 5,387,264 (0) |
+| `Q8` | 5,387,254 → 5,387,250 (−4) | 5,387,264 → 5,387,264 (0) |
+| `Q4_K` | 5,387,256 → 5,387,252 (−4) | 5,387,264 → 5,387,264 (0) |
+| `BF16` | 5,387,256 → 5,387,252 (−4) | 5,387,264 → 5,387,264 (0) |
+
+The KV block does shrink by exactly 4 bytes in every case. GGUF then pads to the
+32-byte alignment boundary before tensor data, and the 4-byte shift is absorbed
+by that padding — the tensor-data offset lands on 5,387,264 either way. So the
+file is the same size, the tensor payload sits at the same offset, and the
+digest changes only because ~66 KB of metadata after the profile string is
+displaced by 4 bytes.
+
+Verified three further ways, because "same size" is exactly the result that
+would also appear if the tool had silently written the old bytes:
+
+1. **The only differing KV key is `synthesize.quantization.profile`.** All 101
+   keys were compared pairwise; every other value is equal, and the tensor info
+   table (798 entries: name, shape, type, offset) is identical.
+2. **`cmp -l` finds no differing byte at or after the tensor-data offset** — the
+   whole payload is byte-identical to the package cut under the old name.
+3. **All four load and synthesize** through `synthesize-cli` on CUDA.
+
+Result (1) also settles the one substantive question the rename raised: the
+generator-half `F16` cut with the *shared* `F16` row is byte-identical to the
+one the deleted `F16_GEN` row produced. `transpose_weight_type` is genuinely
+inert on this path, as argued above, and now demonstrated.
+
+### The stale-named packages were set aside, not deleted
+
+`models/` is gitignored, so the old cuts are local artifacts only. They matter
+anyway, for one specific reason: the old codec-half package is named
+`omnivoice-0-6b-F16.gguf`, and under the new naming that filename belongs to the
+generator-half package. Re-cutting `F16` into the same directory would have
+overwritten it. The stale-named files were moved to
+`models/omnivoice-0-6b/retired-profile-names/` before anything was re-cut, so
+nobody can publish one by accident and nothing was lost.
+
+---
+
+## 2026-08-09 — Closeout: independent verification of the rename and the publication set
+
+A third pass over the rename and the card, run by an agent that wrote neither,
+re-deriving every claim rather than reading the two preceding reports. Two
+defects were found; both are fixed below. Everything else the two reports
+claimed was confirmed.
+
+### The publication set, as it stands
+
+`models/publish/omnivoice-0-6b/`, digests recomputed from the files on disk and
+compared against the card's own tables:
+
+| file | bytes | sha256 | card agrees |
+| --- | ---: | --- | --- |
+| `omnivoice-0-6b-F32.gguf` | 3,189,953,504 | `f6d504ffaddcbf32f80f1f6c847f075bbd5d2c7b50fe95a194ceb635772f9fa3` | yes |
+| `omnivoice-0-6b-F16.gguf` | 1,964,929,440 | `65c8cca59b350ccfdc6ad96c5a683b276f8c0fd5c8e96675d6dc110da3f52f70` | yes |
+| `omnivoice-0-6b-Q8.gguf` | 1,390,699,680 | `61aec0de7cfa9246487e309c43508de9c95cf52fd225ce3fada3b4bb4982374e` | yes |
+| `LICENSE-higgs-audio-2.txt` | 9,171 | `ac933dc084d119bd20401956b90d11ae87c248b2da62622cd580d82cdf2fa049` | yes |
+| `README.md` | 25,154 | — | generated |
+
+Five entries, not four: the four payload files above plus the generated model
+card. The card is written there by `generate.py`'s own hard link (same inode as
+`models/omnivoice-0-6b/README.md`, link count 2) and
+`test_omnivoice_publish_directory_is_flat_and_current` computes its expected
+set as `{README.md} ∪ quants ∪ sidecars`, so its presence is the tested state,
+not an oversight. Nothing was published; no Hugging Face repository was
+created, touched or contacted.
+
+### The rename resolves at load time, which is the failure this scheme risked
+
+A rename can compile, pass every string-comparison test, and still leave a
+package that will not open. Checked directly against the artifacts:
+
+- Every package's `synthesize.quantization.profile` KV was parsed out of the
+  GGUF header — `F32`, `F16`, `Q8`, `Q4_K`, `BF16`, each the new name, each on a
+  file whose `general.architecture` is `omnivoice`.
+- All five load and synthesize through `synthesize-cli` on CUDA (rebuilt in
+  `build/rel-dgx-spark` first), 164,160 frames each at 24 kHz, five distinct
+  waveforms.
+- The four retired-name packages preserved in
+  `models/omnivoice-0-6b/retired-profile-names/` are **refused at load**, exit 1,
+  all four. That is the negative control the positive test cannot supply.
+- All five renders pass the project's own degeneracy screen
+  (`scripts/omnivoice-speaker-proxy.py`), median F0 100–119 Hz, none excluded.
+
+### Defect 1 — the card claimed a speed benefit twice, in a synonym
+
+`scripts/hf_cards/omnivoice-0-6b.yaml` read, three lines under the sentence
+**"No profile here is faster than F32, and none claims to be"**:
+
+> Q8 is 0.4% quicker, F16 is 2.7% *slower*; on CPU, Q8 is 1.5% slower and F16
+> 1.2% quicker.
+
+"Quicker" is the claim the preceding sentence denies, and the Q8 download row's
+own "Not faster than F32" contradicted it inside the same table. The underlying
+measurements are right; the wording was not. Rewritten to signed deltas — CUDA
+Q8 −0.4%, F16 +2.7%; CPU Q8 +1.5%, F16 −1.2%, positive being slower — with a
+sentence saying plainly that the two sub-1% figures are not a reason to pick a
+profile.
+
+**The test that exists to catch exactly this did not.** `test_hf_card_generator
+.py` enumerates every occurrence of the string `faster` and requires each to sit
+inside a denial, and its own comment claims this beats a blacklist because "a
+newly invented speed claim cannot slip past a phrase this test did not think to
+forbid." It only ever searched for one spelling. `quicker` walked straight
+through, and the test's own docstring recorded the offending phrasing as if it
+were acceptable. The enumeration now also forbids `quicker`, `speedup`,
+`speed-up`, `speeds up`, `speed boost`, `x faster` and `% faster` outright.
+Verified as a real gate by re-injecting the old sentence: the test fails with
+`AssertionError: 'quicker' unexpectedly found`, then passes again once reverted.
+
+### Defect 2 — "F16 sounds the same" was an unscoped perceptual claim
+
+The F32 download row said to take F16 instead because it "sounds the same". The
+card's own Validation Status section says, four screens below, that these
+results "do not claim perceptual equivalence, naturalness, intelligibility, or
+speaker similarity" — and F16's evidence is an LTAS proxy over seventeen golden
+cases, not an ear. Narrowed to "matches it on every measured case", which is
+what was measured and what the F16 row already said.
+
+### Checked and correct as written
+
+- Q8's caveat is in the Q8 download row, worded as *different voice, cloning
+  unaffected, Description Text still honored, quality indistinguishable*. Not
+  clone-only, not "breaks voice design".
+- Every byte count and sha256 on the card matches the file on disk (table above).
+- The download command fetches `LICENSE-higgs-audio-2.txt` alongside the GGUF.
+- Boson terms: **annual** active users, and section 2 **withdraws authorisation**
+  rather than capping. The verbatim "Built with Higgs Materials…" notice and the
+  dual Meta/Boson attribution are intact.
+- The one remaining "40x faster than real-time" is inside the reproduced
+  upstream project card, under its own heading and attribution blockquote. It is
+  upstream's claim about their PyTorch implementation; reproducing it verbatim is
+  correct and editing a quoted third-party document would not be.
+- Tree-wide grep for `F16_GEN`, `Q8_GEN`, `Q4_K_GEN`, `BF16_GEN`: 15 live hits,
+  every one deliberate — the policy comment explaining the deleted row, two test
+  loops asserting the retired names do **not** resolve, and the mapping tables
+  and dated historical bodies that must keep their original wording. No live
+  doc, filename, or card points at a name that no longer exists. Omnivoice's
+  remaining `Q8_MIXED` mentions are all under this document's and the family
+  doc's dated pre-ruling sections, covered by their header notes; the three
+  sibling families' `Q8_MIXED`/`F16` references are untouched.
+
+### Gates, all run on the committed-plus-these-two-fixes state
+
+| gate | result |
+| --- | --- |
+| `build` unit gate | **91/91 passed, 0 failed** |
+| `build-sanitize` unit gate (`SYNTH_SANITIZE=ON`, RelWithDebInfo) | **90/90 passed, 0 failed** |
+| whole omnivoice set, `build/rel-dgx-spark` (Release + CUDA) | **28/28 passed** |
+| `synthesize-omnivoice-replay-golden` (CPU) | Passed, 439.40 s |
+| `synthesize-omnivoice-replay-golden-cuda` | Passed, 97.97 s |
+| `synthesize-omnivoice-public-request` / `-cuda` | Passed, 200.81 s / 62.11 s |
+| `generate.py --check`, omnivoice + three siblings | verified, all four |
+| `scripts/ci/clang-format.sh --check-diff` | exit 0 |
+
+### One incidental finding, not fixed
+
+`scripts/omnivoice-speaker-proxy.py`'s `read_render` documents itself as reading
+"a 16-bit/**float** WAV" and has a `width == 4` branch for float32 — but
+`wave.open` rejects WAV format tag 3 before that branch can run, and tag 3 is
+exactly what `synthesize-cli` writes. The float-WAV support is unreachable. It
+did not affect any published measurement (the replay runner writes raw `.f32`,
+which the same function reads correctly, and that is the path every recorded
+sweep used), so it is recorded here rather than changed during a verification
+pass.
+
+## 2026-08-09 — Published
+
+On jiangzhuo's explicit per-act confirmation, the Restricted Model Package was
+uploaded to **`jiangzhuo9357/omnivoice-0-6b-gguf`** (created public, matching
+the four sibling `-gguf` repositories). Commit
+`09e77552c76375df2360f1f563d7ce58262becd4`.
+
+| file | bytes | sha256 |
+| --- | ---: | --- |
+| `omnivoice-0-6b-F32.gguf` | 3,189,953,504 | `f6d504ff…772f9fa3` |
+| `omnivoice-0-6b-F16.gguf` | 1,964,929,440 | `65c8cca5…a3f52f70` |
+| `omnivoice-0-6b-Q8.gguf` | 1,390,699,680 | `61aec0de…4982374e` |
+| `LICENSE-higgs-audio-2.txt` | 9,171 | `ac933dc0…df2fa049` |
+| `README.md` | 25,154 | `4151c3e2…` |
+
+Hugging Face added its own `.gitattributes` (1,698 B) for the LFS patterns, so
+the repository holds six entries against the five uploaded.
+
+**Verified after upload rather than trusting the client**, which reported
+"0.00B transferred" — Xet content-addressed deduplication, not a failed
+transfer. Every LFS object's oid, which is its SHA-256, was compared against
+the local file: all three GGUFs match exactly. The two non-LFS text files were
+re-downloaded and hashed: both match. The published card was fetched and
+confirmed to carry the Boson "annual active users" wording, the required
+"Built with Higgs Materials…" notice, and Q8's "renders a different voice than
+F32 does" caveat in its own download-table row.
+
+`Q4_K` and `BF16` were deliberately not published: Q4_K degenerates on 10 of 17
+renders for no throughput gain, and BF16 is 10.5x slower on CPU and over the
+quality line on 11 of 17. Both remain as profile rows and code.
+
+The branch carrying all of this is `omnivoice-plan-5` at `dabb50d`, pushed to
+`kizuna-ai-lab/synthesize.cpp`; PR #8 (draft) tracks it.
+
+## 2026-08-10 — Branch review, and a licence gap corrected in the live artifact
+
+An 11-agent adversarial review of the whole branch: five dimensions in
+parallel, every finding put to a refuter told to default to refuted. **21
+findings, 10 refuted, 10 survived.** Nothing survived in the inference code,
+the CUDA placement, or the quantization profiles — every confirmed defect was
+in the description layer.
+
+The review's own summary is the part worth keeping: *this branch corrects
+errors well, but its correction sweeps stop short.* The RTF caveat landed in 1
+of 4 files. The publication record landed in 1 file. The "F32-only" amendment
+fixed the twin and missed the original. That is the failure mode, not any
+single line — and it recurred while fixing this very entry: correcting "it has
+not been published" surfaced four more "prepared for publication" phrasings
+that the first pass had not looked for.
+
+### Critical, and it was wrong in public
+
+**The published package omitted the Meta Llama 3 licence, while the card
+claimed compliance with the agreement that requires it.** The Boson agreement
+defines its own name to include Meta's — *"Agreement" means the terms and
+conditions … set forth herein **and the Meta License Agreement*" — and section
+1.b.i(A) then names it again, requiring "a copy of this Agreement and the …
+Meta License's Llama 3 agreement" to accompany the Higgs Materials. We shipped
+only the Boson text, and the card said we did so "per that agreement's own
+redistribution terms".
+
+**This was raised at pre-flight and I under-weighted it.** The audit listed it
+as non-blocking on the reasoning that upstream ships the same single file, so
+we mirror upstream rather than degrade it. That reasoning fails twice:
+mirroring someone else's non-compliance is not compliance, and upstream does
+not also assert that it complies.
+
+Fixed and re-uploaded (HF commit `062efd67`): `LICENSE-meta-llama-3.txt`, 7,801
+bytes, sha256 `475211637354ce4c…`. Provenance, because it is a legal text going
+out under a real identity: the Boson agreement names
+`https://llama.meta.com/llama3/license/`, which now redirects to a JavaScript
+page nothing can extract; the file is instead the April 18 2024 text that
+agreement cites, taken from two independent mirrors that agree **byte for
+byte**, with a third agreeing on wording after whitespace normalisation.
+
+### Also corrected in the live card
+
+- **RTF.** The card quoted 5.481 s / 0.1906x, measured at `727daff` — before
+  both host-side optimizations. Re-measured on the published F32 GGUF, five
+  runs: 4.844–4.866 s, **4.84 s / 0.168x**. The "do not use as a baseline"
+  caveat existed in exactly one file.
+- **Q8's floor.** "4.12 to 12.22 dB" for auto-voice omitted `omni-rate-slow` at
+  **2.87 dB** — below the ~3 dB line the same table uses to call F16 unchanged.
+  Now 2.87–12.22 with the exception stated.
+
+### Repo-only
+
+- **The golden gate armed itself at 1 of 20.** `if not compared` caught only
+  the zero case, so a partial oracle dump — the ordinary failure, since the
+  payload is uncommitted and regenerated per case — produced "token grids
+  exact: 1/1", "all probes within the tolerances", exit 0. This is the same
+  error class as the P1 fixed in `8f8d20c` a day earlier, in a different
+  instrument. Now refuses and names the missing cases; verified by pointing a
+  manifest at a one-case root (**exit 1**, was 0), and the real 20-case suite
+  still passes (430 s).
+- The model page said three times that the package was unpublished, on a
+  `Status: Confirmed` contract doc, about an artifact live since 2026-08-09.
+  Four more "prepared for publication" phrasings went with it.
+- `CMakeLists.txt` still said "ships F32-only"; its twin in `tests/` had been
+  amended and the original missed.
+- The speaker proxy's docstring presented `ZCR_BAND`/`ENVELOPE_BAND` as where
+  "speech-shaped output from this family sits". Measured over the 17 greedy
+  goldens: 3 of 17 inside the ZCR band, 6 of 17 inside the envelope band, **1
+  of 17 inside both**. The bands decide nothing — `DEGENERATE_*` does, and it
+  fires on exactly `omni-rate-fast`, correctly. Docstring corrected and the two
+  `*_in_published_band` report fields renamed to `*_in_context_band`.
+
+### Not done
+
+The review's remaining minor items: the candidate-scan test re-implements the
+production enumeration rather than calling it (real gap, nothing currently
+wrong); `public_cleanup_test`'s CUDA arm tolerates any `SYNTH_ERR_BACKEND`
+without checking the diagnostic code; a warm work directory can mask an
+`encode_reference` non-OK status. All recorded, none fixed here.
+
+## 2026-08-10 — The Meta licence gets a pipeline owner
+
+The bot review of PR #8 found the other half of the licence gap above. The
+package was corrected; the *pipeline* was not. `LICENSE-meta-llama-3.txt` was
+placed into `models/publish/omnivoice-0-6b/` by hand, and `carry_licenses` in
+`scripts/convert-omnivoice.py` still had exactly one source and one
+destination: `<weights>/audio_tokenizer/LICENSE` →
+`<output>/LICENSE-higgs-audio-2.txt`. A fresh clone plus a conversion therefore
+produced a package this project's own documentation described but the tree
+could not reproduce — a reproducibility hole in an artifact that is already
+published, and one that would have re-opened the compliance gap at the next
+re-cut.
+
+The text is now committed at `scripts/licenses/LICENSE-meta-llama-3.txt` (7,801
+bytes, sha256 `475211637354ce4c…`) and `carry_licenses` copies it beside the
+artifact like its sibling. Committing a third-party licence for redistribution
+has precedent here: `bindings/python-native-cu13/LICENSE-ggml`.
+
+**The two grants cannot be pinned the same way, and the code says so.** The
+codec grant ships inside the weights, so `omnivoice_pinned_inputs` lists it and
+the copy is checked against the manifest's digest — an outside witness. Nothing
+upstream carries the Meta text at all, so no pinned input can witness it; what
+pins it is the committed copy's own sha256, asserted on every conversion. The
+converter states that distinction rather than implying the two checks are
+equivalent.
+
+`LicenseCarriageTests` in `tests/python/test_convert_omnivoice.py` grew four
+cases: the file is carried and byte-identical, the committed copy still hashes
+to the pin and still names the April 18 2024 release date, a missing source
+stops the conversion, and a substituted one stops it too. Verified
+non-vacuous by short-circuiting the copy — 4 of 7 cases fail.
+
+## 2026-08-10 — Four description defects from the PR #8 bot review
+
+The bot's review of PR #8 produced twelve findings; nine verified, three
+refuted. Four are settled here, and the shape they share is worth naming: each
+is a sentence that was true when it was written and became false when the thing
+it described moved, in a document nobody re-read afterwards. This is the same
+"correction sweeps stop short" failure the 2026-08-10 branch review named, seen
+from the other side — not a fix that missed a twin, but a claim that outlived
+its measurement.
+
+### The one that was wrong in the published artifact
+
+`docs/models/omnivoice-0-6b.md` asserted that "a flip in either grid, on any
+profile or backend, is a shipping blocker by this project's own exact-token
+discipline, and none has occurred," and the shipped model card carried its
+twin: "a profile or a backend that flips even one of those tokens is not
+shipped."
+
+**Both halves are false, and each document refutes itself twice.** The same
+model page lists `Q8` at a **95.83% greedy token flip** with status *ships*.
+The same page describes a CUDA backend whose worst case flips **98.3%** of
+committed positions, admitted on purpose under `docs/backends.md`'s narrow
+exception to the discrete-outputs rule. A reader who took the blanket sentence
+at face value would conclude that two shipped configurations cannot exist.
+
+What went wrong is a conflation, not a measurement error: this family has **two
+token grids**, they have different scopes, and the sentence collapsed them.
+
+| grid | what is actually claimed | scope |
+| --- | --- | --- |
+| greedy decode, 8 x T | byte-for-byte against the oracle, 17/17 | **F32 on CPU only** — the reference configuration |
+| cloning RVQ encode | byte-for-byte against the oracle, 2,808/2,808, 2/2 cases | **every shipped profile**, because every shipped profile's codec half is bit-identical |
+
+Verified against the record rather than restated from the page it was wrong
+on: the clone grid's exactness under a generator-half profile is this log's own
+2026-08-09 three-profile comparison (`clone RVQ drift / 2,808` = 0, "codec
+bit-identical", 486 tensors and 734,256,516 bytes with zero differing), and the
+Q8_GEN rejection-and-reinstatement entries repeat it independently.
+
+So the greedy grid is *certified* in one configuration and *re-drawn by design*
+in the two others, for two different reasons — different generator weights, and
+TF32 moving the per-step argmax — and both re-draws were accepted **by
+listening, not by a token gate**. The gate that is unconditional is the cloning
+grid, and it is exactly what blocks every codec-half profile. Both documents
+and the card's YAML now say that, in those words.
+
+The card was regenerated and re-verified (`--check`, exit 0). **No upload was
+performed.** The live repository `jiangzhuo9357/omnivoice-0-6b-gguf` therefore
+still carries the wrong sentence, and correcting it is a third upload needing
+its own per-act confirmation.
+
+`tests/python/test_hf_card_generator.py` grew
+`test_omnivoice_scopes_its_exact_token_claim_to_the_grid_that_gates_it`, which
+enumerates every "byte-for-byte" on the rendered card and requires each to name
+either its configuration or the clone path — the same enumerate-don't-blacklist
+shape the "no profile is faster" test already uses, and for the same reason: an
+unscoped claim has more spellings than a blacklist can hold. Verified
+non-vacuous by rendering the old sentence through it — **4 of 4 assertions
+fire**.
+
+### The finding that pointed at the wrong file
+
+The bot flagged a contradiction about whether `omni-short-en` — the one case of
+seventeen where the CPU and CUDA arms speak in different voices — had ever been
+heard. The contradiction is real. The file it named, the model page, is the
+**correct** side: jiangzhuo heard that pair on 2026-08-08 in the two-pair blind
+audit recorded above (order seed 2026080817, `omni-short-en` as pair 1, CPU in
+slot A) and called the two arms different people with quality
+indistinguishable.
+
+The stale documents were the two nobody thought to sweep: `docs/backends.md`
+still read "nobody has heard it; the pair has been offered to jiangzhuo as a
+single follow-up," and `docs/porting/families/omnivoice.md` still headed the
+paragraph "Un-listened consequence of the placement move." Both now carry the
+outcome, the seed, and the negative control (`omni-design-zh`, which the
+trackers declined to count and the listener also called the same person).
+
+Worth recording about the review itself: a finding can be correct about the
+existence of a contradiction and wrong about which side to fix. Taking the
+file-level verdict on trust would have deleted a confirmed listening result.
+
+### Two Open Questions answered, then contradicted, and never marked
+
+`docs/porting/families/omnivoice.md`'s Open Questions carried two answers,
+un-struck and bolded, that the same file's own status block contradicts:
+
+- *"the generator does not move, and is not claimed to"* — superseded
+  2026-08-08 by Plan 5 Task 1, which gave the generator its own
+  accelerator-resident twin.
+- *"this family ships F32-only"* — superseded by the 2026-08-09 publication of
+  `F16` and `Q8`.
+
+Neither is a dated measurement whose wording has to be preserved; both are
+questions presented as open that have since been answered the other way. Both
+now carry a `**Superseded …**` lead-in in the style this file already uses at
+its Execution Backends heading, placed *before* the stale answer rather than
+after it, so the bolded claim cannot be read on its own. The old answers stay
+underneath, because the reasoning that produced them is still the record of why
+the position moved. The F32-only supersede says explicitly which half of the
+old answer survives: every codec-half profile still fails the clone gate (98 of
+2,808 under the conv-exempt policy), and a generator-half profile is not held
+to the greedy grid at all.
+
+### The publication directory, re-verified end to end
+
+`docs/models/omnivoice-0-6b.md`'s tree and count were already corrected in the
+previous commit; what was still stale was the verification behind them, which
+read "five entries" as of 2026-08-09 with the sixth bolted on as a sentence.
+Re-listed and re-digested here: **six entries**, every one at link count 2 with
+its partner in `models/omnivoice-0-6b/`, all five artifact digests matching the
+page. The nearby "every entry is a hard link" assertion was checked rather than
+assumed, including after this task regenerated the card — `generate.py` writes
+through `Path.write_text`, which truncates in place, so the README's link to
+`models/omnivoice-0-6b/README.md` survives regeneration (inode 18648884 on both
+names, before and after). That property is what stops the publication directory
+drifting from the copy `--check` verifies, so it is now stated as tested rather
+than as design intent.
+
+### Gates
+
+`build` and `build-sanitize` `synthesize-check-unit`: 91/91 and 90/90, 100%.
+`scripts/hf_cards/generate.py … --check`: exit 0. Formatting clean.

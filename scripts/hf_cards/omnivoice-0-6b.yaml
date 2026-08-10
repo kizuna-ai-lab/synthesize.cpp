@@ -1,0 +1,483 @@
+# Hugging Face card specification for jiangzhuo9357/omnivoice-0-6b-gguf.
+#
+# PUBLISHED 2026-08-09 to jiangzhuo9357/omnivoice-0-6b-gguf, on jiangzhuo's
+# per-act confirmation (ADR 0018's last consequence). Every later edit to this
+# file changes a live artifact and needs its own confirmation to re-upload.
+# This is a
+# Restricted Model Package, never a Published Model Package: the generator
+# weights are CC-BY-NC (no version stated by upstream) and the codec weights
+# carry the Boson Higgs Audio 2 Community License. Neither license permits
+# describing this artifact as apache-2.0 or as unrestricted.
+
+model_slug: omnivoice-0-6b
+display_name: OmniVoice 0.6B
+model_family: omnivoice
+target_repo: jiangzhuo9357/omnivoice-0-6b-gguf
+
+source:
+  repository_label: k2-fsa/OmniVoice
+  repository: https://github.com/k2-fsa/OmniVoice
+  revision: 468e927ba3716cd8dd86421148dfb3046e9f9d7b
+  card_url: https://huggingface.co/k2-fsa/OmniVoice/blob/c5fdb5ccb189668d56333f77ba2629f4cd7535f4/README.md
+  card_path: models/upstream/omnivoice-0-6b/README.md
+  checkpoint_name: OmniVoice
+  checkpoint_url: https://huggingface.co/k2-fsa/OmniVoice/tree/c5fdb5ccb189668d56333f77ba2629f4cd7535f4
+
+architecture_label: OmniVoice
+
+license_note: |
+  This package carries three separate upstream grants, and only two of them
+  touch anything shipped here. **The generator (LM) weights are CC-BY-NC,
+  with no version stated by upstream** -- the upstream model card carries no
+  `license:` frontmatter key at all; the only statement is this prose,
+  quoted verbatim from [the pinned upstream model page]({{ license_link }}):
+
+  > Our code is released under the Apache 2.0 License. The pre-trained model
+  > is licensed under the CC-BY-NC due to constraints from its training data
+  > (e.g., Emilia).
+
+  Upstream names no CC-BY-NC version anywhere in that statement or elsewhere
+  on the card, so this card says exactly that rather than inventing one
+  (never `cc-by-nc-4.0`: no version is asserted upstream and none is
+  asserted here). **These weights are not licensed for commercial use.** The
+  restriction traces to the training data the statement itself names --
+  Emilia, a large-scale multilingual speech corpus distributed under its own
+  non-commercial terms -- so it is a property of what the generator was
+  trained on, not a choice this project made.
+
+  **The codec (Higgs Audio V2) weights carry a second, separate license: the
+  Boson Higgs Audio 2 Community License.** The weights repository bundles it
+  as `audio_tokenizer/LICENSE`, and this package republishes it beside the
+  weights as `LICENSE-higgs-audio-2.txt` (listed below).
+
+  **Two licence files travel with these weights, not one.** The Boson
+  agreement defines its own name to include Meta's -- *"Agreement" means the
+  terms and conditions ... set forth herein and the Meta License Agreement* --
+  and section 1.b.i(A) then requires "a copy of this Agreement
+  and the ... Meta License's Llama 3 agreement" to accompany any
+  redistribution of the Higgs Materials. So `LICENSE-meta-llama-3.txt` ships
+  here too. Corrected 2026-08-10: this package originally shipped only the
+  Boson text while this card said it did so "per that agreement's own
+  redistribution terms", which was a claim of compliance it did not meet.
+
+  **You must download both together with the GGUF** -- the usage command
+  below does; the runtime does not enforce the pairing, and nothing in the
+  GGUF's metadata declares either file, so a download of the weights alone
+  leaves you holding the Higgs Materials with none of the agreement that
+  governs them. The Boson agreement is itself
+  derived from the Meta Llama 3 Community License and requires dual
+  attribution in any redistribution, which this card carries forward
+  verbatim from the sidecar text:
+
+  > "Meta Llama 3 is licensed under the Meta Llama 3 Community License,
+  > Copyright © Meta Platforms, Inc. All Rights Reserved."
+  > "Boson Higgs Audio 2 is licensed under the Boson Community License,
+  > Copyright © Boson AI USA, Inc. All Rights Reserved."
+
+  That agreement also requires a redistributor to display the following
+  notice, which it specifies verbatim and which this card carries for that
+  purpose:
+
+  > "Built with Higgs Materials licensed from Boson AI USA, Inc., Copyright
+  > Boson AI USA, Inc., All Rights Reserved and Meta Llama 3 licensed under
+  > the Meta Llama 3 Community License, Copyright Meta Platforms, Inc., All
+  > Right Reserved"
+
+  Two further obligations, stated in the agreement's own terms rather than
+  paraphrased. Corrected 2026-08-08: this card previously said "caps
+  commercial use at 100,000 monthly active users", which was wrong twice
+  over and wrong in the reader's favour -- the agreement says *annual*, and
+  it does not cap anything.
+
+  Above **100,000 annual active users in the preceding calendar year**,
+  section 2 does not impose a ceiling: it withdraws authorisation. You
+  "must request an expanded license from Boson AI, which Boson AI may grant
+  to you in its sole discretion, and you are not authorized to exercise any
+  of the rights under this Agreement unless or until Boson AI otherwise
+  expressly grants you such rights."
+
+  Section 1.b.i(v) forbids using the Higgs Materials "or any output or
+  results of the Higgs Materials to improve any other large language model
+  (excluding Boson Higgs Audio 2 or derivative works thereof)". Note the
+  scope: other *large language models*, with Boson's own carved out -- not,
+  as this card previously said, all models.
+
+  Both are independent of, and in addition to, the generator's own CC-BY-NC
+  restriction above.
+
+  **Apache-2.0 covers only the upstream GitHub source code**
+  (`k2-fsa/OmniVoice`) and nothing produced by this project: no weight file,
+  converted artifact, or GGUF in this package may be described as
+  apache-2.0.
+
+  Finally, the upstream card carries a use disclaimer this package repeats
+  verbatim rather than paraphrases:
+
+  > Users are strictly prohibited from using this model for unauthorized
+  > voice cloning, voice impersonation, fraud, scams, or any other illegal
+  > or unethical activities. All users shall ensure full compliance with
+  > applicable local laws, regulations, and ethical standards. The
+  > developers assume no liability for any misuse of this model and
+  > advocate for responsible AI development and use, encouraging the
+  > community to uphold safety and ethical principles in AI research and
+  > applications.
+
+license: other
+license_name: omnivoice-cc-by-nc-unspecified-version-plus-boson-higgs-audio-2-community
+license_link: https://huggingface.co/k2-fsa/OmniVoice/blob/c5fdb5ccb189668d56333f77ba2629f4cd7535f4/README.md
+library_name: synthesize.cpp
+pipeline_tag: text-to-speech
+languages:
+  - en
+  - zh
+  - ja
+tags:
+  - gguf
+  - synthesize.cpp
+  - text-to-speech
+  - tts
+  - omnivoice
+  - diffusion-language-model
+  - voice-cloning
+  - voice-design
+  - non-commercial
+  - cpu
+  - cuda
+
+# Rendered directly under the download table, where a reader choosing a file is
+# still looking. Kept short on purpose; the per-row notes carry the detail.
+downloads_note: |-
+  **A profile name here says which half of the model it quantizes.** This family
+  has two: a Qwen3-based generator that paints the token canvas, and the Higgs
+  Audio V2 codec that turns the canvas into audio. F16 and Q8 quantize the
+  generator half and leave all 486 codec tensors bit-identical to F32, which is
+  why all three reproduce the Reference Audio cloning path's token grid exactly
+  — and why a quantized generator re-draws the *other* grid, the greedy decode
+  canvas, on purpose. A profile that quantized the codec half instead would
+  carry a `_CODEC` qualifier in its name; none is published, because every one
+  produced so far breaks the cloning grid and fails that exact-token gate.
+
+  **No profile here is faster than F32, and none claims to be.** Measured
+  against F32 on this project's CUDA reference host: Q8 -0.4%, F16 +2.7%; on
+  CPU, Q8 +1.5% and F16 -1.2%, where a positive number is the slower one. The
+  generator is compute-bound at roughly 205 multiply-accumulates per weight
+  byte, so a narrower weight does not relieve the bottleneck. Two of those four
+  figures land marginally under F32, by about one part in a hundred; neither is
+  a reason to pick a profile. What a smaller profile buys is disk, accelerator
+  memory and load time.
+
+summary: |
+  A self-contained OmniVoice inference package converted from the flagship
+  `k2-fsa/OmniVoice` checkpoint. It is a non-autoregressive mask-predict
+  diffusion language model: a bidirectional Qwen3-0.6B backbone refines a
+  fixed-length canvas of 8 acoustic codebooks x 1025-entry vocabulary over 32
+  parallel denoising steps with classifier-free guidance, and the Higgs
+  Audio V2 codec's DAC-style decoder turns the finished token grid into
+  24 kHz audio. Voice arrives through Reference Audio cloning, Description
+  Text voice design, or an unnamed auto-voice default with no speaker
+  conditioning, whose speaker is emergent rather than pinned by the seed
+  alone. The package carries its own byte-level BPE text frontend, so raw
+  UTF-8 text goes in and audio comes out.
+
+  **One hazard to know before your first request, and nothing in the runtime
+  warns about it.** The canvas length is estimated from the text and then
+  divided by the speaking rate. Below roughly 37-40 frames (about 1.5 seconds)
+  there are too few positions to place the text, and the output degenerates
+  into a near-DC sub-50 Hz rumble instead of speech. Two ordinary requests
+  reach that: a very short text (`--text "Hi."` resolves to a 22-frame canvas),
+  and a high `--rate` on a short one -- the declared `speaking_rate_range` goes
+  to 2.0 and is accepted silently, but upstream's own demo UI caps speed at
+  1.5, and the pinned upstream model is already degenerate at rate 1.50 on a
+  32-character sentence. **This is upstream's behavior, faithfully reproduced,
+  not a defect in this port**: on the affected validation case this package
+  matches the reference implementation's waveform at Pearson r = 0.999670, the
+  tightest agreement of any case measured, and the reference's own audio for it
+  is equally unintelligible. Rate 2.0 on a long text is fine; the variable is
+  the resolved canvas length, not the rate.
+
+capabilities:
+  sample_rate_hz: 24000
+  voice_count: 0
+  # Corrected 2026-08-08: this previously read "follows the synthesis seed".
+  # Auto-voice has no speaker conditioning at all, and the seed is necessary
+  # but not sufficient -- the same request on the CPU and CUDA backends can
+  # produce different speakers (omni-short-en, 118 Hz vs 189 Hz median F0).
+  voice_ids: "none (unnamed default; unconditioned, not pinned by seed alone)"
+  voice_mode: seed_default_with_profiles
+  # Scope, measured 2026-08-08: both backends rendered for every Golden case and
+  # compared on median F0 from two independent pitch trackers. One of the
+  # seventeen greedy cases changes speaker; omni-rate-fast is excluded because
+  # its own reference is degenerate and neither arm carries a voice to compare.
+  # A blind listener confirmed the changed pair as different people and judged
+  # the two arms equal in quality, so this is identity, not degradation.
+  speaker_backend_variation: >-
+    one case in seventeen changes speaker between the CPU and CUDA backends,
+    and a listener judged that pair to be two different speakers of equal
+    audio quality
+  voice_profile_sources:
+    - reference_audio
+    - description_text
+  input_kinds:
+    - text_utf8
+  frontend_provider: synthesize.qwen_bpe
+
+validation:
+  level: port_validated
+  # Two different claims, deliberately kept separate. `quality_evaluation` is
+  # the automated grid ADR 0017 defers -- no WER, no speaker similarity, no
+  # corpus -- and it has not run. `listening_audit` is one maintainer
+  # checking a small set for obvious regressions, which happened on
+  # 2026-08-07. Neither moves the Validation Level.
+  quality_evaluation: not_run
+  listening_audit: no_obvious_regression
+  listening_audit_detail:
+    listeners: 1
+    cases: 6 (5 port_vs_oracle, 1 cuda_vs_cpu)
+    profiles: [F32]
+    backends: [CPU, CUDA]
+    date: 2026-08-07
+    method: >-
+      Blind A/B web page, five pairs replaying the port's codec against the
+      pinned PyTorch oracle on the oracle's own committed token grid, one
+      pair (omni-long-boundary, this family's largest measured CUDA effect)
+      comparing the codec's CUDA decode against its CPU decode of the same
+      byte-identical committed grid; A/B order independently randomized per
+      pair (order_seed 20260807, 5 of 6 swapped) and case selection
+      randomized for the one non-criteria slot (case_selection_seed 16);
+      verified in a real headless browser for no trimming, offset-preserving
+      side switch, and zero drift on a rapid double-switch.
+  date: 2026-08-07
+  reference: the pinned upstream PyTorch implementation
+  implementation_revision: workspace-snapshot-2026-08-07
+  cases_per_stage: 20
+  stages: 8
+  columns:
+    - key: cpu_pcm_cosine
+      title: CPU waveform cosine
+    - key: cuda_pcm_cosine
+      title: DGX Spark CUDA waveform cosine
+    # Added 2026-08-09 with the two generator profiles. The waveform-cosine
+    # columns are a comparison against the PyTorch oracle and only F32 can be
+    # held to them: a quantized generator re-draws the token grid, so it emits a
+    # different valid realization rather than a drifted copy of the same one,
+    # and a waveform metric against the oracle would be measuring the wrong
+    # thing. What separates the generator profiles is the long-term average
+    # spectrum distance from F32's own render, which is a speaker-identity
+    # proxy, so it gets its own column instead of being buried in prose.
+    - key: ltas_max_db
+      title: Worst LTAS distance from F32/CPU (17 greedy cases)
+  metric_note: >-
+    Waveform cosine is measured for completeness; it is not this family's
+    real guarantee and is not enforced as a tolerance the way it is for
+    Kokoro or VITS. What the Port Validation Suite reports instead is exact
+    token identity, and it is two claims with two different scopes. First:
+    the greedy decode loop's full 8 x T unmasking grid matches the oracle's
+    byte-for-byte on 17 of 17 golden cases for F32 on CPU -- the reference
+    configuration, and the only one that certifies it. A quantized generator
+    re-draws that grid by design (Q8 commits a different token at 95.83% of
+    positions), and so does the CUDA backend, whose TF32 arithmetic moves the
+    per-step argmax; both change what the canvas contains and never how large
+    it is, both were accepted by listening rather than by a token gate, and
+    their flip counts are recorded as data, not gated. Second, and this is the
+    claim that is gated unconditionally: the Reference Audio cloning path's own
+    RVQ encode grid matches the oracle on both clone cases -- 8 codebooks x 351
+    frames, 2,808 of 2,808 tokens exact -- and it holds on every profile listed
+    above, because F16 and Q8 quantize the generator half only and leave every
+    one of the 486 `codec.*` tensors bit-identical to the F32 package. A
+    profile that flips even one of those 2,808 tokens is not shipped, and that
+    rule is what decides which profiles are listed above. Every codec-half
+    profile produced so far fails it and none is listed: F16_CODEC
+    mismatched 103 of 2,808
+    tokens (3.7%), and Q8_CODEC_MIXED mismatched 1,023 (36.4%) while it still
+    block-quantized convolution kernels, 98 (3.49%) since the conv-exempt
+    codec policy of 2026-08-09 stopped it doing so. None is a knife-edge margin
+    call, so none ships and no perceptual claim substitutes for the gate.
+    The two waveform-cosine columns are measured against the PyTorch oracle and
+    are reported for F32 alone. They are not withheld for the quantized
+    profiles; they do not apply to them. Because a quantized generator re-draws
+    the token grid rather than perturbing F32's, its output is a different valid
+    realization of the same request, and a waveform distance to the oracle would
+    score that difference as error. The last column is the measurement that
+    does separate
+    them: long-term average spectrum distance from F32's own CPU render, the
+    speaker-identity proxy this family uses, worst case over the seventeen
+    greedy validation cases. Roughly 3 dB is the line a listener has
+    consistently called "same person", calibrated on fourteen answers across
+    two audits with no exceptions.
+    Every deep
+    generator probe gates on cosine rather than a sample-wise bound because
+    pre-norm outlier channels reach a max-abs of 0.08 while cosine still
+    holds at eight nines; a sample-wise threshold there would reject a
+    provably correct port.
+  platforms:
+    - DGX Spark CPU
+    - NVIDIA GB10 CUDA 13.3
+  cuda_placement: partial
+  # Corrected 2026-08-09. This note still described the Plan 4 configuration --
+  # "the generator stayed on the CPU unconditionally" -- which Plan 5 Task 1
+  # superseded on 2026-08-08 (`docs/backends.md`, "The Discrete-Outputs Rule
+  # Admits One Narrow Exception", and its family table row, which now reads
+  # "none" for held stages). The card was asserting a placement the shipped
+  # runtime no longer has; a 4.16 s render on the Release CUDA tree takes 3.1 s,
+  # which a CPU-held generator could not do.
+  cuda_placement_note: >-
+    Both halves now run on CUDA, and only one of them did through Plan 4.
+    The codec's decode graph (the RVQ dequantizer, the acoustic decoder, and
+    the final projection -- 152 tensors) moved first: swept over all twenty
+    golden cases, every one of its 8,440 nodes left the CPU while every one
+    of the generator's 880,032 nodes stayed on it, held there by
+    `docs/backends.md`'s discrete-outputs rule. On 2026-08-08 the generator
+    earned that rule's one narrow exception -- its per-step token choice picks
+    the *content* of a canvas whose *shape* deterministic host arithmetic fixed
+    before the first forward runs, and grid size was then measured to match the
+    CPU oracle on all seventeen greedy cases -- so it received its own
+    accelerator-resident weight twin and now moves too. 2,421.04 of the model's
+    3,042.2 MiB are mirrored, and the suite's longest case falls from 122.61 s
+    to 4.84 s, 0.168x real time. (Corrected 2026-08-10: this read 5.481 s /
+    0.1906x, which was measured before the two host-side optimizations that
+    followed it and so understated the shipped package. Re-measured on the
+    published F32 GGUF, five runs, 4.844-4.866 s.) Committed token *content*
+    consequently
+    diverges from the CPU baseline on most cases: a different valid realization
+    inside an unchanged canvas, audited by ear before the move was accepted,
+    not a regression. The cloning path's own RVQ token grids stay byte-exact
+    across the move.
+
+publication_note: |
+  This is a **Restricted Model Package** (ADR 0018), not a Published Model
+  Package, and must never be described as one: it carries the full upstream
+  terms above rather than an unrestricted embeddable-in-other-programs
+  grant. Both upstream licenses permit non-commercial redistribution with
+  attribution, and upstream itself distributes the weights openly on
+  Hugging Face -- the basis for republishing this converted GGUF under
+  exactly those terms, not a broadening of them. Publication itself remains
+  a separate act requiring its own per-act confirmation.
+
+  Only `en`, `zh`, and `ja` are declared as this family's Language
+  Capability Catalog. The checkpoint claims 600+ languages through its
+  training data and prompt format, and an untested language tag may well
+  produce recognizable speech, but no language beyond these three has its
+  own validation case, so none beyond these three is advertised.
+
+usage:
+  # F16, not F32, from 2026-08-09: the usage example is what a first-time reader
+  # copies, and it should hand them the profile the card recommends. F16 is the
+  # same voice as F32 on every measured case at 38.4% less on disk. F32 remains
+  # listed and remains the reference a measurement is reproduced against.
+  #
+  # The text changed on the same date and for a sharper reason. It used to be
+  # "This is a sentence without any voice prompt." -- upstream's own README
+  # example, and also the golden case `omni-upstream-readme`, which the
+  # 2026-08-09 listening audit identified as this suite's *second degenerate
+  # case*: the upstream model itself renders it as unintelligible output and
+  # this port reproduces that faithfully. The card was handing a first-time
+  # reader a command whose output is not speech.
+  #
+  # Note for whoever checks this: the automated degeneracy screen does NOT flag
+  # that case (measured 2026-08-09 on the F16 package -- degenerate: false,
+  # envelope ratio 2134). That is the porting log's own point about it, not a
+  # contradiction: "no gate can see it because every gate compares against the
+  # oracle", and the oracle is unintelligible here too. The finding is a
+  # listener's, and it stands.
+  #
+  # The replacement is `omni-medium-en`, a validated golden case, long enough to
+  # sit well clear of the short-canvas hazard, and measured on the F16 package
+  # on 2026-08-09: 12.28 s of output, not degenerate, envelope ratio 850 inside
+  # the published band.
+  profile: F16
+  text: "The engine reads a whole paragraph without pausing for breath. It holds one voice from the first word to the last. Nothing in the timing depends on the machine that runs it. It sounds the same everywhere."
+
+sidecars:
+  - filename: LICENSE-higgs-audio-2.txt
+    role: Boson Higgs Audio 2 Community License (codec weights; dual attribution required on redistribution)
+    size: "9.0 KB"
+    size_bytes: 9171
+    sha256: ac933dc084d119bd20401956b90d11ae87c248b2da62622cd580d82cdf2fa049
+  # Added 2026-08-10, after a review found the package incomplete against the
+  # agreement it ships. The Boson licence DEFINES its own name to include this
+  # text -- '"Agreement" means the terms and conditions ... set forth herein
+  # and the Meta License Agreement' -- and then section 1.b.i(A) names it a
+  # second time, requiring "a copy of this Agreement and the ... Meta
+  # License's Llama 3 agreement" to travel with the Higgs Materials. Shipping
+  # only the Boson text met neither reading. The file is the April 18 2024
+  # text the Boson agreement cites, taken from two independent mirrors that
+  # agree byte for byte (sha256 47521163...) and matching a third on wording.
+  # Unlike its sibling it is not extracted from the weights -- upstream bundles
+  # no copy -- so it is committed at scripts/licenses/LICENSE-meta-llama-3.txt
+  # and copied beside the artifact by scripts/convert-omnivoice.py, which
+  # digest-checks it against that committed copy's own hash. It was placed by
+  # hand for the 2026-08-10 upload, before it had that owner.
+  - filename: LICENSE-meta-llama-3.txt
+    role: Meta Llama 3 Community License (required by the Boson agreement above, which is derived from it and defines itself to include it)
+    size: "7.8 KB"
+    size_bytes: 7801
+    sha256: 475211637354ce4c14b9c3dacccbefbaba735fe1b0db97d6c4fd11cd1356819f
+
+# Three profiles ship. All three carry a bit-identical codec half, so all three
+# inherit the one exact-token claim that actually gates this family -- the
+# cloning path's RVQ-encode grid. They do NOT inherit the greedy decode grid's
+# oracle parity, which only F32 on CPU carries and which a quantized generator
+# re-draws by design; what separates them is exactly how far that re-drawn
+# rendering moves away from F32's. The `note` field
+# is deliberately per-row rather than a paragraph under the table: a reader
+# picking a file out of the download table has to see the caveat in the row they
+# are picking, not two screens below it.
+#
+# No profile is faster. Measured against F32 on CUDA: Q8 -0.4%, F16 +2.7%
+# *slower*; on CPU Q8 +1.5% slower, F16 -1.2%. The generator is compute-bound at
+# roughly 205 MAC per weight byte, so a narrower weight does not relieve the
+# bottleneck. Nothing on this card may say "faster" -- nor any synonym for it.
+# The rule is about the claim, not the word: this prose once read "Q8 is 0.4%
+# quicker" three lines under a sentence denying any speed benefit, which is the
+# claim the rule forbids wearing a spelling the test did not enumerate. Report
+# the four figures as signed deltas and leave it there.
+quants:
+  - name: F32
+    filename: omnivoice-0-6b-F32.gguf
+    size: "3190.0 MB"
+    size_bytes: 3189953504
+    sha256: f6d504ffaddcbf32f80f1f6c847f075bbd5d2c7b50fe95a194ceb635772f9fa3
+    tensor_types: 798 F32
+    note: >-
+      The reference conversion, bit-for-bit from the upstream checkpoint. Take
+      it to reproduce a measurement; otherwise F16 matches it on every measured
+      case and is 1.2 GB smaller. 3506 MiB accelerator resident, 2.6 s to load.
+    validation:
+      cpu_pcm_cosine: 0.99999986
+      cuda_pcm_cosine: 0.99999635
+      ltas_max_db: "— (reference)"
+  - name: F16
+    filename: omnivoice-0-6b-F16.gguf
+    size: "1964.9 MB"
+    size_bytes: 1964929440
+    sha256: 65c8cca59b350ccfdc6ad96c5a683b276f8c0fd5c8e96675d6dc110da3f52f70
+    tensor_types: 599 F32 + 199 F16
+    note: >-
+      **Recommended default.** Same voice as F32 on every measured case, all
+      three voice modes, 38.4% smaller. 2353 MiB accelerator resident, 1.6 s to
+      load. Not faster than F32.
+    validation:
+      ltas_max_db: 2.87 dB
+  - name: Q8
+    filename: omnivoice-0-6b-Q8.gguf
+    size: "1390.7 MB"
+    size_bytes: 1390699680
+    sha256: 61aec0de7cfa9246487e309c43508de9c95cf52fd225ce3fada3b4bb4982374e
+    tensor_types: 599 F32 + 199 Q8_0
+    note: >-
+      **Smaller, and it renders a different voice than F32 does** for most
+      auto-voice cases and for Description Text -- 2.87 to 12.22 dB of
+      long-term average spectrum distance, and a listener heard five of six
+      sampled auto-voice pairs as different people while judging the quality of
+      both indistinguishable. Not every case moves: the slowest-rate case
+      measures 2.87 dB, below the same ~3 dB line this table uses to call F16
+      unchanged, so "different voice" is the common outcome rather than a
+      universal one.
+      Reference Audio cloning is not affected (2.02 / 2.70 dB): it reproduces
+      F32's voice. Nothing is disabled, the API is identical, and a Description
+      Text prompt is still honored -- "female, young adult, high pitch" gives
+      343.5 Hz against F32's 333.3 Hz, so you get a different voice *within* the
+      description, not an ignored one. 56.4% smaller, 1811 MiB accelerator
+      resident, 1.1-1.4 s to load. Not faster than F32.
+    validation:
+      ltas_max_db: 12.22 dB

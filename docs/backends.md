@@ -1,6 +1,6 @@
 # Execution Backend Policy
 
-Status: Confirmed, last updated on 2026-07-29.
+Status: Confirmed, last updated on 2026-08-10.
 
 ## Shared Inference Graph
 
@@ -105,18 +105,166 @@ so its cost is per family and has to be measured rather than assumed:
 | --- | --- | --- | --- | --- |
 | Kokoro | PL-BERT, duration predictor | 89.2 of 352.8 MB | 1.5 s → 2.9 s, +95 % | 3.2× real time |
 | VITS | text encoder, duration predictor | 27.5 of 113.2 MB | 1.09 s → 1.39 s, +29 % | 7.6× real time |
+| OmniVoice | none, as of Plan 5 Task 1 (see the exception below); previously the whole generator | 2,421.04 of 3042.2 MiB (84.24 codec + 2,336.80 generator) | 122.61 s → 5.481 s, −95.5 % (719-frame case) | 0.1906× real time (faster than real time) |
 
 Kokoro is the more expensive of the two because its LSTMs are unrolled in the
 graph, so the duration stage is 26,916 nodes and all of it moves. VITS is cheaper
 because its discrete path is one graph and the HiFi-GAN decoder, which dominates,
 never leaves the primary backend.
 
-The mechanism generalizes and the second family needed no rework: identify the
+The mechanism generalizes, and the second family needed no rework: identify the
 weight groups the discrete path reads, mirror them, give any group a second view
 when a continuous stage reads the same tensors from the primary buffer, and switch
-that stage's scheduler. For an autoregressive codec language model, where every
-sampled token feeds the next step, the held portion would be most of the model,
-and that trade has to be measured before such a family is accepted.
+that stage's scheduler. OmniVoice (Plan 4 Task 11) is the case this section used to
+describe only as a prediction -- "an autoregressive [decision loop] where every
+sampled token feeds the next step, the held portion would be most of the model" --
+and the table row above, as it stood through Plan 4, is what that measured to. That
+row also ran the mechanism **inverted** from Kokoro and VITS, which is worth stating
+plainly rather than letting the shared column headers imply a shared direction: for
+Kokoro and VITS, primary is the accelerator and the discrete stage's weights get a
+second, CPU-resident copy so the hold is enforceable without a five-times-slower
+mixed scheduler. For OmniVoice, primary is CPU -- Plan 4 Task 11 gave only the
+codec (152 tensors, 84.24 of the model's 3042.2 MiB) a second, accelerator-resident
+copy, so the codec's own decode could leave the CPU while the generator's own RVQ
+token selection, drawn once per step and fed back into the next one, stayed held:
+twenty golden cases at `--accelerate` moved every one of 8,440 codec nodes off the
+CPU and left every one of 880,032 generator nodes on it, with all seventeen greedy
+cases' token grids byte-exact against the CPU baseline. "Cost" read as a saving in
+that configuration, not a tax: moving the free 1.6 percent of wall time (the codec,
+on the suite's longest case) off the CPU was a small net win precisely because the
+held majority dominated -- the reverse of Kokoro and VITS's shape, where holding a
+minority off the accelerator was the expensive part.
+
+**This is now superseded.** Plan 5 Task 1 (2026-08-08) gave the generator its own
+accelerator-resident twin (312 tensors, 2,336.80 of the model's 3042.2 MiB) under
+the exception below, so `--accelerate` now moves the generator too: the table row
+above reflects both twins and the honest end-to-end RTF this unlocks, and the
+inverted-direction framing two paragraphs up no longer describes a held stage for
+this family at all -- see the exception for what replaced it. Full per-case
+figures, both the Plan 4 codec-only measurement and the Plan 5 whole-generator one:
+`docs/porting/families/omnivoice.md`'s Execution Backends section.
+
+## The Discrete-Outputs Rule Admits One Narrow Exception
+
+Added 2026-08-08 (OmniVoice, Plan 5 Task 1), after jiangzhuo revised this
+family's own bar from token identity to audible quality. The rule above is
+**not repealed** and remains the default for every family, including future
+ones: a discrete output is held on CPU, along with everything feeding it,
+unless a family earns this specific, measured exception.
+
+**The exception's condition:** a family's discrete decision may run on the
+primary Execution Backend, instead of being held on CPU by the rule above,
+only when both (1) the discrete output determines CONTENT within a canvas
+whose SHAPE was fixed by an earlier, non-discrete stage before the first
+forward that produces the discrete output ever runs, and (2) that shape
+invariance has actually been measured, matching, across the family's whole
+Golden suite -- not inferred from the architecture alone. A discrete output
+that can itself change the shape of anything downstream fails clause (1)
+regardless of how small or well-argued the rest of the case looks, and
+stays held under the rule above.
+
+**Kokoro is the counter-example this condition is written to exclude, and
+still would be if measured today.** Its discrete output is a rounded frame
+count: TF32's roughly 1e-3 relative error moved one token's duration from 1
+to 2 on the family's own 146-token case, taking the total frame count from
+376 to 377 and giving every downstream tensor a shape no threshold can
+compare against the reference's. That is clause (1) failing outright -- the
+discrete output IS the shape decision -- and no amount of measurement adds
+a size invariance that does not exist. Eighteen of Kokoro's twenty-one CUDA
+validation runs failed exactly this way. VITS's duration predictor is the
+same shape, at smaller scale, for the same reason.
+
+**OmniVoice's generator earns the exception because its discrete output
+never touches downstream shape.** The canvas length is fixed by
+`RuleDurationEstimator` -- ported as deterministic host arithmetic, not a
+GGML forward at all -- before the generator's first step ever runs. Every
+one of the generator's 32 mask-predict steps then commits a token INDEX
+into an already-fixed-size canvas; TF32 can change which codebook entry
+wins the per-step argmax, never how many frames the canvas holds. Clause
+(2)'s measurement: Plan 5 Task 1/2 ran the full twenty-case Golden suite
+with the generator's own accelerator twin bound, and grid SIZE matched the
+CPU oracle's in all seventeen greedy cases, 17 of 17 -- the codec's own
+cloning-path token grids (unaffected by this exception; see below) stayed
+byte-exact too, 2 of 2. Content is a different story: only 3 of those 17
+cases matched the oracle's grid byte-for-byte, and the rest ranged from
+0.5% of positions flipped (`omni-rate-fast`, 1 of 200) to 98.3%
+(`omni-digits`, 1038 of 1056) --
+this family's generator does not survive the rule's own knife-edge
+argument any better than Kokoro's duration predictor did. What is different
+is that OmniVoice's content drift is not a structural failure: it is a
+different, still-valid answer within a canvas whose size never moved.
+
+**Clause (2)'s size invariance was re-measured under a much larger
+perturbation, and held.** Added 2026-08-08. Halving the generator's denoising
+step count from 32 to 16 -- an intervention far coarser than TF32, changing the
+commit schedule itself and re-drawing 95.61% of the suite's committed token
+positions -- left `grid.i32`'s byte size identical between arms, and left
+`pcm_freerun.f32`'s sample count identical between arms, equal to the oracle's,
+and equal to frames x 960, in **17 of 17 greedy cases**. Clause (1) is what
+makes that possible: the canvas length is host arithmetic that takes no step
+count and runs before the first forward. That step count was itself rejected on
+listening grounds and is not shipped, but as evidence about clause (2) it is
+the strongest data point this family has -- the size invariance is a property
+of where the shape decision lives, not of how small the numeric perturbation
+happens to be.
+
+**"A different, still-valid answer" undersells the cost: the drift can change
+WHO IS SPEAKING.** Added 2026-08-08, and this section should not be read
+without it. OmniVoice's auto-voice mode supplies no speaker conditioning at all
+-- no speaker embedding table exists in the family -- so the speaker is
+emergent from which token grid the decode lands on, and a large enough content
+drift can land on a different one. Sweeping median F0 over voiced frames for
+all fourteen CPU-vs-CUDA generator pairs, thirteen sit within +/-3% and the
+speaker survives. **`omni-short-en` does not: 118.2 Hz on the shipped CPU path
+against 189.0 Hz on the shipped CUDA path** (normalised cross-correlation;
+140.9 -> 199.0 Hz on an independent YIN tracker), with the fraction of voiced
+frames below 165 Hz going 0.98 -> 0.00 -- complete separation on both trackers,
+a male voice and a female voice for the same request. Its CPU arm is
+byte-identical to the oracle, so this is a change the placement move introduced
+against the reference, on a shipped backend. `omni-short-en` was not one of the
+six pairs the audit below sampled, so it was **heard separately, and the
+measurement was confirmed**: a two-pair blind audit on 2026-08-08 (order seed
+2026080817, `omni-short-en` as pair 1 with CPU in slot A) returned **"different
+people," with the two arms' audio quality judged indistinguishable**. Pair 2
+was `omni-design-zh`, the sweep's one borderline case, which the trackers
+declined to count and the listener also called the same person -- so the proxy
+was confirmed against a human ear on a positive case and a negative one. The
+effect is therefore identity, not degradation. It is recorded here at its true
+cost rather than folded into "still-valid answer", and it is the reason this
+family's model documentation no longer promises that the auto-voice speaker
+follows the synthesis seed.
+
+**Why content drift this large is an acceptable answer, and why that is
+weaker evidence than the size measurement above.** jiangzhuo's own listening
+verdict settled this, not a tolerance number: a blind A/B of six pairs
+(generator-on-CPU vs. generator-on-CUDA, decoded through the identical
+codec) reported no problem heard in any pair, including the pair built from
+the 98.3%-flipped case above, whose two waveforms measure cosine 0.0515 --
+essentially unrelated audio, both judged acceptable speech. This is one
+listener, six pairs, on one day -- a Listening Audit in this project's own
+vocabulary, explicitly not a statistical claim, and it is cited as exactly
+that: the reason a human accepted this family's specific content drift, not
+proof that content drift is inaudible in general or that a future family's
+drift would pass the same way. **The sample had a known gap, since closed**:
+the six pairs did not include `omni-short-en`, the one case where the same
+drift moves the speaker, so this verdict covers the pairs heard and not that
+case -- the two-pair audit above heard it separately and returned "different
+people, quality indistinguishable," which is why the speaker change is stated
+as an identity effect rather than left as an unheard measurement.
+There is precedent for shipping a family
+whose discrete decisions are not reproduced exactly: qwen3-tts ships
+Q8_MIXED while stating plainly that "in normal operation it will select
+different codes sometimes."
+
+**This is a per-family judgment call, not a blanket loosening of the rule
+above.** A future family whose discrete output gates downstream shape --
+another duration predictor, another rounded frame count -- is still held on
+CPU by the original rule, full stop, no matter how it is argued. A future
+family whose discrete output is shape-safe by clause (1) still owes clause
+(2)'s measurement across its own Golden suite before it can move, and even
+then the acceptability of its own content drift is a separate question this
+project answers by listening, case by case, not by inheriting OmniVoice's
+verdict. What generalizes is the two-clause test above, not its outcome.
 
 ## Operator Choice Is Part Of The Backend Contract
 

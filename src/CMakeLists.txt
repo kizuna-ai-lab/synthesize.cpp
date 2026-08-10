@@ -31,6 +31,7 @@ add_library(synthesize
     arch/omnivoice/generator-host.cpp
     arch/omnivoice/model.cpp
     arch/omnivoice/profile.cpp
+    arch/omnivoice/quantization.cpp
     arch/omnivoice/reference-encoder.cpp
     arch/omnivoice/reference-encoder-host.cpp
     arch/omnivoice/weights.cpp

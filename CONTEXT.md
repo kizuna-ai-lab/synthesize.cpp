@@ -89,7 +89,7 @@ The committed, versioned contract that pins one Model Variant's source provenanc
 _Avoid_: Golden payload, Model Package, benchmark report
 
 **Validation Level**:
-The strongest evidence completed for a Published Model Package: `port_validated` after the Port Validation Suite, or `quality_evaluated` after a later versioned Quality Evaluation Suite.
+The strongest evidence completed for a Published or Restricted Model Package: `port_validated` after the Port Validation Suite, or `quality_evaluated` after a later versioned Quality Evaluation Suite.
 _Avoid_: Quality score, model ranking
 
 **Quality Evaluation Suite**:

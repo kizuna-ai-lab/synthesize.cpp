@@ -44,6 +44,9 @@
 #include "arch/omnivoice/codec-host.h"
 #include "arch/omnivoice/generator-host.h"
 #include "arch/omnivoice/omnivoice.h"
+#include "backend-device.h"
+#include "ggml-backend.h"
+#include "synthesize.h"
 
 #include <chrono>
 #include <cstdint>
@@ -130,6 +133,23 @@ std::string margin_json(const synth::omnivoice::MarginReport & margin) {
     return buffer;
 }
 
+// Resolve CUDA by name, not by "whatever non-CPU device enumerates first".
+// This runner feeds a CUDA-specific golden gate and a CUDA tolerance cell, so
+// on a build that registers a second accelerator -- the CMake options permit
+// one -- picking by position could silently measure Vulkan and report it as
+// CUDA. `resolve_requested_device` is how the sibling real-runners do it
+// (tests/kokoro_stages_real.cpp), and it fails cleanly when CUDA is absent
+// instead of falling through to a device this gate cannot interpret.
+ggml_backend_dev_t cuda_device() {
+    ggml_backend_dev_t   device = nullptr;
+    const synth_status_t status = synth::resolve_requested_device(SYNTH_BACKEND_CUDA, -1, &device);
+    if (status != SYNTH_OK) {
+        std::fprintf(stderr, "--accelerate: CUDA is not available on this build (%d)\n", int(status));
+        return nullptr;
+    }
+    return device;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
@@ -140,10 +160,21 @@ int main(int argc, char ** argv) {
     bool                     margin_report = false;
     std::string              alt_grid_path;
     std::string              encode_reference_path;
+    // Selects SYNTH_BACKEND_CUDA for the codec (Task 8's per-family gate holds
+    // the generator on the CPU regardless; Task 11 is what makes the codec's
+    // move real). A flag rather than qwen3-tts's SYNTH_QWEN3_TTS_ACCELERATE
+    // env var: this runner already parses its optional modes as flags
+    // (--margin-report, --alt-grid, --encode-reference), so an env var here
+    // would be the one mode a reader could not find by reading this loop.
+    bool                     accelerate = false;
     for (int index = 1; index < argc; ++index) {
         const std::string argument(argv[index]);
         if (argument == "--margin-report") {
             margin_report = true;
+            continue;
+        }
+        if (argument == "--accelerate") {
+            accelerate = true;
             continue;
         }
         // Takes a value, so a missing one is refused rather than swallowing the
@@ -179,7 +210,7 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr,
                      "usage: %s <model.gguf> <case-dir> <out-dir> <num-step> <run-greedy 0|1> "
                      "<decode-replay 0|1> <volume peak|none> [probe-layers...] [--margin-report] "
-                     "[--alt-grid <grid.i32>] [--encode-reference <pcm_24k.f32>]\n",
+                     "[--alt-grid <grid.i32>] [--encode-reference <pcm_24k.f32>] [--accelerate]\n",
                      argv[0]);
         return 2;
     }
@@ -238,7 +269,19 @@ int main(int argc, char ** argv) {
     }
 
     std::unique_ptr<synth::omnivoice::Model> model;
-    synth_status_t                           status = synth::omnivoice::Model::load_cpu(model_path, model);
+    // Plan 4's Task 8 gate lives in the PUBLIC seam (src/synthesize.cpp's
+    // synth_model_load), not here -- this call goes straight to the family's
+    // own Model::load, the same seam qwen3-tts's replay runner uses. On a
+    // build without CUDA, cuda_device() reports why and returns nullptr, and
+    // BackendPlan::create (backend-plan.cpp) refuses a null primary device
+    // with SYNTH_ERR_INVALID_ARG -- reported below like any other load
+    // failure ("load -> 1"), not a crash. Plan 4 Task 11 ran this same call against a real
+    // GB10 device on the dev-dgx-spark preset: twenty golden cases, every
+    // codec node off the CPU, every generator node on it, seventeen greedy
+    // grids byte-exact (docs/porting/families/omnivoice.md's Execution
+    // Backends section).
+    synth_status_t status = accelerate ? synth::omnivoice::Model::load(model_path, cuda_device(), true, model) :
+                                         synth::omnivoice::Model::load_cpu(model_path, model);
     if (status != SYNTH_OK) {
         std::fprintf(stderr, "load -> %d\n", int(status));
         return 1;

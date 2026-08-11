@@ -1878,14 +1878,17 @@ What the card declares and why:
    Chunked Audio Delivery. See "Stage 1 claims Chunked Audio Delivery". The
    stronger claim stays reachable at a later stage with its own evidence, and
    its cost is named under the qwentts findings.
-6. Establish upstream provenance and redistribution permission for publishing
-   converted Model Packages, as was done for Kokoro. **Basis settled
-   2026-07-27**, decision deliberately not taken. Both the source at `022e286b`
-   and the checkpoint at `85e237c1` carry an explicit Apache-2.0 grant, audited
-   at the pinned revision rather than at `main`, with no restriction prose in
-   either card. Alibaba does not disclose training corpora, so Apache-2.0 is the
-   basis relied on, the same basis on which Kokoro was accepted. Publishing
-   anything remains a separate act requiring its own confirmation.
+6. ~~Establish upstream provenance and redistribution permission for publishing
+   converted Model Packages, as was done for Kokoro.~~ **Basis settled
+   2026-07-27; published 2026-07-28.** Both the source at `022e286b` and the
+   checkpoint at `85e237c1` carry an explicit Apache-2.0 grant, audited at the
+   pinned revision rather than at `main`, with no restriction prose in either
+   card. Alibaba does not disclose training corpora, so Apache-2.0 is the basis
+   relied on, the same basis on which Kokoro was accepted. On that basis the
+   package went live at `jiangzhuo9357/qwen3-tts-12hz-0-6b-customvoice-gguf`
+   (created 2026-07-28, last updated 2026-07-29) carrying BF16, F16, and
+   Q8_MIXED. Every later edit to that repository is a fresh outward act needing
+   its own confirmation.
 
 ## Accepted Risks
 

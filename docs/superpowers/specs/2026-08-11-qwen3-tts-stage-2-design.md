@@ -7,13 +7,18 @@ family record itself is extended at intake, per `docs/model-porting.md`.
 
 ## 1. Context
 
-Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) delivered Preset Voices through the
-existing `voice_id` path, F16 and Q8_MIXED Quantization Profiles, and a
-listening audit recorded as `no_obvious_regression`. Its artifacts are prepared
-but not published: `scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml`
-states "Prepared, not published." Stage 2 therefore ends in the state Stage 1
-is already in, leaving two variants' artifacts prepared and awaiting
-confirmation instead of one.
+Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is delivered and published: Preset
+Voices through the existing `voice_id` path, F16 and Q8_MIXED Quantization
+Profiles, a listening audit recorded as `no_obvious_regression`, and a live
+package at `jiangzhuo9357/qwen3-tts-12hz-0-6b-customvoice-gguf` (created
+2026-07-28, last updated 2026-07-29, carrying BF16, F16, and Q8_MIXED).
+
+That status was itself established from the Hugging Face API rather than from
+the repository, because the card specification's header claimed "Prepared, not
+published" two weeks after the upload; both it and the family record's open
+question 6 are corrected in the same commit as this spec. Stage 2 delivers its
+artifacts to the same prepared-and-awaiting-confirmation point, and the upload
+is a separate act as always.
 
 Stages 2 and 3 were never started, which was confirmed by inspection rather
 than by reading a status line:

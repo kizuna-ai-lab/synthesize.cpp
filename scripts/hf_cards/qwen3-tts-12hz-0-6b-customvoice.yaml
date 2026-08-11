@@ -1,7 +1,14 @@
 # Hugging Face card specification for jiangzhuo9357/qwen3-tts-12hz-0-6b-customvoice-gguf.
 #
-# Prepared, not published. Publishing is a separate act requiring its own
-# confirmation.
+# PUBLISHED 2026-07-28 to jiangzhuo9357/qwen3-tts-12hz-0-6b-customvoice-gguf,
+# on jiangzhuo's per-act confirmation; last updated there 2026-07-29 carrying
+# BF16, F16, and Q8_MIXED. Every later edit to this file changes a live
+# artifact and needs its own confirmation to re-upload.
+#
+# This header said "Prepared, not published" until 2026-08-11, two weeks after
+# the upload -- it was written before the act and never revisited. A stale status
+# line on a live artifact is worse than none: it was read as fact during
+# Stage 2 design and had to be corrected from the Hugging Face API.
 
 model_slug: qwen3-tts-12hz-0-6b-customvoice
 display_name: Qwen3-TTS 12Hz 0.6B CustomVoice

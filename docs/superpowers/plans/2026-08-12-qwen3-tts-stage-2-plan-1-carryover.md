@@ -123,7 +123,19 @@ advertising a capability are different statements; only the second was false.
 - Publish `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO` on the day
   `synth_voice_profile_create_from_reference` can actually prepare a Profile
   for this family, from `hparams.profile`'s already-validated limits, gated on
-  `has_preset_voice_catalog(hparams)`.
+  `hparams.voice_mode == VoiceMode::ProfileSources`.
+
+  **Corrected 2026-08-12, before Plan 2 was written.** This line first said
+  "gated on `has_preset_voice_catalog(hparams)`", which is inverted: that
+  predicate returns true only for `VoiceMode::PresetCatalog`
+  (`src/arch/qwen3-tts/weights.h:243-245`), i.e. for CustomVoice — the variant
+  that has no speaker encoder and cannot prepare anything. Implemented
+  literally, Plan 2 would have advertised Reference Audio on the wrong variant
+  and left Base advertising nothing.
+  `tests/qwen3_tts_voice_required_test.cpp:155` already asserts the predicate is
+  **false** for Base, so the trap was sitting in front of a test that names it.
+  The mistake came from reusing the nearest existing predicate rather than
+  naming the condition; the condition is the voice mode.
 - Publish `SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` **with it**, not as a
   separate decision: `docs/c-interface.md` requires that any Model which can
   create a v1 Profile also sets that bit, because every successfully prepared

@@ -161,6 +161,22 @@ plan predicted before the checkpoint was read — and its presence selects the
 mode per D4. `reference_language` is optional. The declared Voice encoder
 target is 24 kHz mono.
 
+**Refined 2026-08-12, when Plan 2 was scoped.** `OPTIONAL` is the Stage 2 end
+state, reached when both modes exist. It is not what Plan 2 reports. Plan 2
+implements the x-vector path only, so a transcript names a mode that has no
+implementation behind it, and reporting it optional would invite a caller to
+pass one and quietly receive the weaker clone it did not ask for — the same
+capability lie the erratum below removes from the source flags.
+
+So: **Plan 2 reports `reference_transcript` as `SYNTH_REQUIREMENT_UNSUPPORTED`
+and rejects a request that carries one.** Plan 3 flips it to `OPTIONAL` in the
+same change that lands ICL, and the rejection becomes the mode selector D4
+describes. `reference_language` follows the transcript: it qualifies a
+transcript this rung cannot use.
+
+This is a statement about the runtime, not the package: the Base package's
+declared contract is unchanged, and its `reference_*` limits stay as validated.
+
 **Erratum, 2026-08-12 — the runtime advertises no Voice Profile source at all
 until preparation exists. The two paragraphs above describe what the package
 declares, not what the capability snapshot may report.** They were implemented
@@ -191,10 +207,12 @@ default for every variant of the family, and
 `synth_voice_profile_create_from_reference` can actually prepare a Profile for
 this family, and `SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` with it under
 exactly the pairing rule stated above rather than as a separate decision. The
-pairing rule, the optional `reference_transcript`, the optional
-`reference_language` and the 24 kHz mono encoder target are all correct and
-survive unchanged; they apply then rather than now, and the two tests named
-above are rewritten, not deleted.
+pairing rule and the 24 kHz mono encoder target are correct and survive
+unchanged; they apply then rather than now, and the two tests named above are
+rewritten, not deleted. `reference_transcript` and `reference_language` reach
+`OPTIONAL` only at Plan 3, per the refinement recorded above section 3's
+requirement paragraph — Plan 2 reports them `UNSUPPORTED` because it implements
+no mode that can use them.
 
 What did **not** change is the package: the Base variant still declares its
 full Voice Profile contract, and `read_profile_contract` / `read_speaker_encoder`

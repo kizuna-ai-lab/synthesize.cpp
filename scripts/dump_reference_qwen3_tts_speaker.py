@@ -166,10 +166,15 @@ def capture_mel(sink: dict):
 
     def wrapper(*args, **kwargs):
         mel = original(*args, **kwargs)
-        if "mel" not in sink:
-            sink["mel"] = to_numpy(mel, torch.float32)
-            y = args[0] if args else kwargs["y"]
-            sink["mel_input_samples"] = int(y.shape[-1])
+        # Last-wins, matching install_taps's forward hooks (captured.__setitem__
+        # unconditionally overwrites). Only one call happens per case today, so
+        # this can't yet be observed to matter -- but if a case ever cloned more
+        # than one reference in a single create_voice_clone_prompt call, a
+        # first-wins guard here would silently pair this case's mel with a
+        # different item's ECAPA taps than the last-wins hooks captured.
+        sink["mel"] = to_numpy(mel, torch.float32)
+        y = args[0] if args else kwargs["y"]
+        sink["mel_input_samples"] = int(y.shape[-1])
         return mel
 
     qwen3_tts_modeling.mel_spectrogram = wrapper
@@ -250,6 +255,112 @@ def build_conventions(frames_observed: int, frames_observed_pcm_samples: Optiona
         "frames_for_one_second_at_hop_512": 46,
         "frames_observed": frames_observed,
         "frames_observed_pcm_samples": frames_observed_pcm_samples,
+        # On-disk layout: every artifact here is written by write_f32, which
+        # np.ascontiguousarray()s the array (row-major / C order) and then calls
+        # .tobytes() once -- no header, native little-endian float32.
+        "mel_layout": {
+            "shape": ["mel_bins", "frames"],
+            "order": "row_major_c",
+            "note": (
+                "frames is the fast-varying (contiguous) axis: the element at "
+                "(bin, frame) is float32 #(bin * frames + frame), i.e. all frames "
+                "of bin 0 precede all frames of bin 1. This is only in result.json "
+                "as a shape list today ([128, 757]); recorded here too because "
+                "conventions.json, not result.json, is the file Task 2 implements "
+                "against."
+            ),
+        },
+        "min_pcm_samples": {
+            "formula": "(n_fft - hop_length) // 2 + 1",
+            "value_at_production_hop": 385,
+            "note": (
+                "Below this, upstream's own manual reflect pad -- "
+                "F.pad(y, (pad, pad), mode='reflect') with pad = (n_fft-hop_length)//2 "
+                "-- fails outright: torch requires the padded dimension's length to "
+                "exceed the pad width on each side, not merely reach it. Verified "
+                "directly: torch.nn.functional.pad on a synthetic input raises at "
+                "pcm_samples in {383, 384} ('Padding size should be less than the "
+                "corresponding input dimension') and succeeds at 385, for the "
+                "production hop_length=256 (pad=384). A C++ mel front end must "
+                "reject an input at or below this length itself -- with a domain "
+                "error, not by letting the reflect-pad step fail however it fails -- "
+                "before it ever reaches a frame-count check."
+            ),
+        },
+        "measurement_coverage": {
+            "note": (
+                "base-xvector-en and base-xvector-zh -- the only two Plan-2-runnable "
+                "cases in this manifest -- both reference the same clip "
+                "(models/qwen3-tts-reference-audio/clone.wav) with no --trim-seconds; "
+                "only the synthesis text and language differ, and the speaker path "
+                "this script dumps never reads either. Every file under speaker/ is "
+                "therefore byte-identical between the two cases (confirmed by sha256 "
+                "across all eight files). A second case run does not give Task 6 a "
+                "second independent point on the speaker path: it is one measurement, "
+                "taken twice. What the repeat does prove, and is worth having, is that "
+                "the whole pipeline (load -> resample -> encode -> mel -> ECAPA -> "
+                "x-vector) is deterministic case to case given the same input -- "
+                "there is no hidden per-case state leaking in. A genuine second "
+                "measurement would need a different reference clip, or this same clip "
+                "trimmed to a different length via --trim-seconds (the encoder sees a "
+                "different mel length either way); neither current case varies that. "
+                "Not fixed here: the Golden Manifest is Plan 1's artifact, and adding "
+                "a differently-scoped case is a later slice's decision, not this dump "
+                "script's."
+            ),
+            "case_ids_observed_byte_identical": ["base-xvector-en", "base-xvector-zh"],
+        },
+        "artifact_dtypes": {
+            "note": (
+                "write_f32 always emits float32 on disk, but that on-disk dtype "
+                "hides two different histories. mel.f32 never touched bfloat16 at "
+                "all; every ECAPA/x-vector artifact is a bfloat16 value widened "
+                "losslessly to float32. Tasks 4/5/6 must not budget the same "
+                "tolerance for both -- a tolerance against the ECAPA/x-vector files "
+                "that is tighter than bfloat16's own ~2^-8 relative precision is "
+                "chasing the oracle's rounding, not the port's."
+            ),
+            "mel": {
+                "runtime_dtype": "float32",
+                "device": "cpu",
+                "ever_bfloat16": False,
+                "comparison_implication": (
+                    "Bit-exact target. mel_spectrogram runs entirely on the CPU in "
+                    "float32 (device = y.device at :433, and "
+                    "torch.from_numpy(audio).unsqueeze(0) at :1944 is a CPU tensor "
+                    "with no dtype cast). The .to(self.device).to(self.dtype) bf16 "
+                    "cast at :1953 is applied to mel_spectrogram's RETURN VALUE, "
+                    "after this script's capture_mel wrapper already recorded it. A "
+                    "C++ mel front end may be compared against mel.f32 exactly "
+                    "(modulo ordinary cross-implementation floating-point rounding "
+                    "from a different FFT/DFT), not to a tolerance budgeted for "
+                    "bf16 quantization -- there is none here to budget for."
+                ),
+            },
+            "blocks0": {"runtime_dtype": "bfloat16", "ever_bfloat16": True},
+            "block1": {"runtime_dtype": "bfloat16", "ever_bfloat16": True},
+            "block2": {"runtime_dtype": "bfloat16", "ever_bfloat16": True},
+            "block3": {"runtime_dtype": "bfloat16", "ever_bfloat16": True},
+            "mfa": {"runtime_dtype": "bfloat16", "ever_bfloat16": True},
+            "asp": {"runtime_dtype": "bfloat16", "ever_bfloat16": True},
+            "x_vector": {"runtime_dtype": "bfloat16", "ever_bfloat16": True},
+            "ecapa_and_x_vector_comparison_implication": (
+                "Captured via forward hooks on speaker_encoder.<module>, which runs "
+                "in the model's runtime dtype (torch.bfloat16 -- "
+                "Qwen3TTSModel.from_pretrained(..., dtype=torch.bfloat16, ...)). "
+                "to_numpy() upcasts to float32 for storage -- a lossless widening, "
+                "not a new rounding -- but the value itself already carries "
+                "bfloat16's ~2^-8 relative precision (7 explicit mantissa bits). "
+                "Verified directly: casting each of blocks0/block1/block2/block3/"
+                "mfa/asp/x_vector.f32 to bfloat16 and back to float32 round-trips "
+                "exactly (max abs diff 0.0) for all seven; the same round-trip on "
+                "mel.f32 does not (max abs diff ~0.031). A tolerance compared "
+                "against these seven files should budget for bfloat16 quantization "
+                "-- roughly 2^-8 relative error is the oracle's own, not the port's, "
+                "and tightening a tolerance below that chases noise that isn't "
+                "there to find."
+            ),
+        },
         # Extra: the ECAPA-TDNN topology behind the six taps this script installs,
         # for Task 4. Not part of the mel front end Task 2 implements against.
         "ecapa_topology": {
@@ -315,10 +426,14 @@ def build_conventions(frames_observed: int, frames_observed_pcm_samples: Optiona
             ),
             "padding_and_centering": (
                 f"{UPSTREAM_FILE}:442-445 (manual reflect pad of (n_fft-hop_length)//2 "
-                "samples each side) and :453 (torch.stft(..., center=False, "
-                "pad_mode='reflect', ...) on the already-padded signal). See "
-                "padding_note above -- confirmed by directly running upstream's own "
-                "mel_spectrogram on synthetic inputs, not by formula alone."
+                "samples each side); :408 (`center: bool = False` -- the signature "
+                "default that actually supplies the False, since "
+                "extract_speaker_embedding's call at :1943-1952 never passes a "
+                "center= argument); :453 (`center=center` -- merely forwards that "
+                "already-resolved value into torch.stft, it is not itself where the "
+                "False comes from). See padding_note above -- confirmed by directly "
+                "running upstream's own mel_spectrogram on synthetic inputs, not by "
+                "formula alone."
             ),
             "mel_computed_by": (
                 f"Inline function call at {UPSTREAM_FILE}:1943-1952 "
@@ -351,6 +466,40 @@ def build_conventions(frames_observed: int, frames_observed_pcm_samples: Optiona
                 "enc_attention_channels=128); "
                 "models/qwen3-tts-12hz-0-6b-base/config.json's speaker_encoder_config "
                 "overrides only enc_dim=1024 and sample_rate=24000."
+            ),
+            "mel_layout": (
+                "Read from this script's own write path: dump_front_end_artifacts "
+                "passes sink['mel'][0] (shape [mel_bins, frames]) to write_f32, "
+                "which np.ascontiguousarray()s (row-major/C order) then calls "
+                ".tobytes() once -- frames is therefore the contiguous axis."
+            ),
+            "min_pcm_samples": (
+                "Observed, not derived from the frames_formula alone: called "
+                "torch.nn.functional.pad(torch.zeros(1, 1, N), (384, 384), "
+                "mode='reflect') directly for N in {383, 384, 385, 386, 400} at the "
+                "production hop_length=256 (pad=(1024-256)//2=384) -- N in {383, 384} "
+                "raised, N>=385 succeeded. The general formula (pad + 1) is read off "
+                "that boundary, not assumed from reflect-padding rules in the "
+                "abstract."
+            ),
+            "measurement_coverage": (
+                "Observed: sha256 of every speaker/*.f32 file matched pairwise "
+                "between build/goldens/.../base-xvector-en/speaker/ and "
+                "base-xvector-zh/speaker/ after running this script on both cases "
+                "from the same manifest; cross-checked against both cases' "
+                "input.reference in the manifest naming the identical clip and "
+                "carrying no trim_seconds parameter."
+            ),
+            "artifact_dtypes": (
+                "Observed, not inferred from the model's stated dtype alone: cast "
+                "each dumped speaker/*.f32 file to bfloat16 and back to float32 "
+                "and compared to the original with torch.equal. mel.f32 differed "
+                "(max abs diff ~0.031); blocks0/block1/block2/block3/mfa/asp/"
+                "x_vector.f32 were all bit-identical to their round-tripped copies "
+                "(max abs diff 0.0). Combined with the source reading in "
+                "padding_and_centering and mel_computed_by above (the bf16 cast in "
+                "extract_speaker_embedding applies to mel_spectrogram's return "
+                "value, not to anything inside it) to explain why."
             ),
         },
     }
@@ -489,6 +638,23 @@ def dump_front_end_artifacts(case_dir: pathlib.Path, sink: dict) -> dict:
     return artifacts
 
 
+def write_conventions_if_possible(case_dir: pathlib.Path, sink: dict) -> Optional[dict]:
+    """Write conventions.json beside whatever front-end artifacts exist.
+
+    Depends only on the mel capture (frames_observed derives from its
+    shape) -- so it is safe to call from a partial-failure path where later
+    stages (blocks/mfa/asp/fc) never ran. Without this, a pooling failure
+    would leave mel.f32 and some tap files on disk with no contract file
+    beside them, undoing the point of dumping the front end first.
+    """
+    if "mel" not in sink:
+        return None
+    frames_observed = int(sink["mel"].shape[-1])
+    conventions = build_conventions(frames_observed, sink.get("mel_input_samples"))
+    write_json(case_dir / "speaker" / "conventions.json", conventions)
+    return {"path": "conventions.json"}
+
+
 def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: pathlib.Path) -> dict:
     local_ref_audio = resolve_reference_locator(case.ref_audio, case.ref_sha256, reference_audio_dir)
     ref_wav, ref_sr, ref_info = load_reference_audio(local_ref_audio, case.trim_seconds)
@@ -505,10 +671,12 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
         )
     except Exception:
         # Even a failure past the pooling stage leaves whatever the hooks
-        # already saw as the front end's reference -- write it before
-        # re-raising, so this case's mel/ECAPA artifacts are not lost to an
-        # unrelated failure later in the same call.
+        # already saw as the front end's reference -- write it, and the
+        # contract file beside it, before re-raising. Without the second
+        # call, a pooling failure would leave mel.f32/tap files on disk with
+        # no conventions.json next to them.
         dump_front_end_artifacts(case_dir, sink)
+        write_conventions_if_possible(case_dir, sink)
         raise
     finally:
         restore_mel()
@@ -533,9 +701,9 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
 
     mel_bins = sink["mel"].shape[1]
     frames_observed = int(sink["mel"].shape[-1])
-    conventions = build_conventions(frames_observed, sink.get("mel_input_samples"))
-    write_json(case_dir / "speaker" / "conventions.json", conventions)
-    artifacts["conventions"] = {"path": "conventions.json"}
+    conventions_artifact = write_conventions_if_possible(case_dir, sink)
+    if conventions_artifact:
+        artifacts["conventions"] = conventions_artifact
 
     result = {
         "case": case.id,

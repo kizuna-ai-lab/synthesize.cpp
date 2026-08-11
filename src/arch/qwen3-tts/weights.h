@@ -17,6 +17,39 @@ enum class QuantizationProfile : uint32_t {
     Q5KMixed,
 };
 
+enum class VoiceMode : uint32_t {
+    PresetCatalog,   // speakers are codec-vocabulary token ids
+    ProfileSources,  // no selectable Voice; every request carries a Voice Profile
+};
+
+// The ECAPA-TDNN speaker encoder Base variants carry. Its output width equals
+// the talker's hidden size because the x-vector substitutes directly for the
+// prompt's speaker embedding -- there is no projection between them.
+struct SpeakerEncoderParams {
+    uint32_t enc_dim     = 0;
+    uint32_t sample_rate = 0;
+    uint32_t mel_bins    = 0;
+    uint32_t n_fft       = 0;
+    uint32_t hop_length  = 0;
+    uint32_t win_length  = 0;
+    float    fmin        = 0.0f;
+    float    fmax        = 0.0f;
+};
+
+// Read and validated here so the package is whole from its first cut; the Voice
+// Profile module enforces these from Plan 2 on.
+struct ProfileContract {
+    std::string schema;
+    uint32_t    schema_version = 0;
+    std::string compatibility_id_hex;  // 64 hex chars = 32 bytes
+    uint32_t    reference_sample_rate = 0;
+    uint32_t    reference_channels    = 0;
+    uint64_t    min_frames_per_clip   = 0;
+    uint64_t    max_frames_per_clip   = 0;
+    uint64_t    max_total_frames      = 0;
+    uint64_t    max_reference_count   = 0;
+};
+
 // The autoregressive language model that emits one semantic code per frame.
 struct TalkerParams {
     uint32_t    layer_count          = 0;
@@ -155,8 +188,14 @@ struct HParams {
     CodecParams         codec;
     SpecialTokens       tokens;
 
+    VoiceMode                voice_mode          = VoiceMode::PresetCatalog;
     bool                     has_package_default = false;
     std::vector<PresetVoice> preset_voices;
+
+    // Only present for a variant with a speaker encoder (currently just Base).
+    bool                 has_speaker_encoder = false;
+    SpeakerEncoderParams speaker_encoder;
+    ProfileContract      profile;
 
     std::vector<std::string> language_names;
     std::vector<uint32_t>    language_token_ids;

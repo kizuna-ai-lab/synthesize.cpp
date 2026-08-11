@@ -51,9 +51,20 @@ the model by tokenization, not by G2P. See [docs/text-frontends.md](docs/text-fr
 | Qwen3-TTS | `qwen3-tts-12hz-0.6b-base` | 24 kHz | none | text | source dtype only | converted and loads; not validated, not published |
 | OmniVoice | `omnivoice-0-6b` | 24 kHz | no named Voices; an unnamed auto-voice default, plus Reference Audio and Description Text Voice Profiles | text | F32, F16, Q8 | `port_validated` |
 
-Declared Language Capability is `en` for VITS, Kokoro and Qwen3-TTS, and `en`,
-`zh`, `ja` for OmniVoice. Several checkpoints carry more languages that load and
-run; none is advertised without its own validation cases.
+Declared Language Capability differs by family and is read out of the package,
+not inferred from the architecture. VITS and Kokoro declare `en`. OmniVoice
+declares `en`, `zh`, `ja`. Both Qwen3-TTS packages declare ten languages —
+`en`, `de`, `es`, `zh`, `ja`, `fr`, `ko`, `ru`, `it`, `pt` — published as BCP 47
+tags by the runtime, which is a claim about the upstream model rather than a
+statement that each has its own validation cases.
+
+The two families' catalogs differ in one instructive way. The CustomVoice
+package's family-level language table carries twelve entries: the ten above plus
+`sichuan_dialect` and `beijing_dialect`. Those two are dropped before the public
+Language Capability Catalog is built, because a dialect here is reachable only by
+selecting the Preset Voice that pins it, never by asking for it as a language.
+The Base package's table carries ten and no dialects at all — it ships no Preset
+Voices, so nothing can pin one.
 
 Per-variant records are in [docs/models/](docs/models/) and the porting contracts
 in [docs/porting/families/](docs/porting/families/). Golden Manifests — the

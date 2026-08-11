@@ -50,11 +50,13 @@ guaranteed to work until Task 3 lands the Golden Manifest):
     uv run ... --x-vector-only --ref-audio ... --text ... --language English \\
       --out-dir build/goldens/qwen3-tts/base-xvector-en
 
-Manifest form (forward-compatible with Task 3's Golden Manifest; a missing
-``--manifest`` file is never required -- it is only opened when ``--manifest``
-is actually passed). The Base variant's manifest schema does not exist yet, so
-the field mapping below is a documented best effort over the same shape the
-CustomVoice manifest uses and may need revisiting once Task 3 lands:
+Manifest form (the primary interface now that Task 3's Golden Manifest exists;
+a missing ``--manifest`` file is never required -- it is only opened when
+``--manifest`` is actually passed). Field mapping: ``input.reference.artifact``
+/ ``.transcript`` name the reference clip and its transcript, the same shape
+OmniVoice's manifest uses for ``voice.kind: reference_audio``; ``oracle.parameters``
+carries the mode switch (``x_vector_only``), the target ``language``, and
+``trim_seconds`` for the two reference-duration-edge cases:
 
     uv run ... --manifest tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json \\
       --weights-dir models/qwen3-tts-12hz-0-6b-base --case base-xvector-en
@@ -64,9 +66,11 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import pathlib
 import time
+import urllib.request
 from typing import Any, Optional
 
 import librosa
@@ -175,6 +179,11 @@ class RunCase:
     trim_seconds: Optional[float] = None
     seed: int = 0
     max_new_tokens: int = 2048
+    # Set only by the manifest form, from the matching `source.artifacts`
+    # entry (role reference-audio). The explicit-argument form has no
+    # manifest to pin a digest against, so this stays None there -- same as
+    # before this field existed.
+    ref_sha256: Optional[str] = None
 
 
 def build_case_from_args(args: argparse.Namespace) -> tuple[RunCase, pathlib.Path]:
@@ -227,21 +236,27 @@ def load_cases_from_manifest(args: argparse.Namespace) -> list[tuple[RunCase, pa
 
     specs: list[tuple[RunCase, pathlib.Path]] = []
     for case in cases:
-        # Task 3 (not yet written) owns the Base variant's manifest schema. This
-        # mapping is a documented best effort over the same top-level shape the
-        # CustomVoice manifest uses (`input.text`, `oracle.parameters.*`) with
-        # Base-specific parameter names, and is expected to need adjusting once
-        # the real schema lands.
+        # Task 3 landed the real Base manifest schema. Every reference-audio
+        # case names its clip and transcript under `input.reference` -- the
+        # same shape OmniVoice's manifest uses for `voice.kind: reference_audio`
+        # -- not under `voice` or `oracle.parameters`; this mapping was
+        # corrected against that real shape instead of the blind guess the
+        # comment here used to describe. `oracle.parameters.ref_audio` remains
+        # as a fallback for a manifest that has no `input.reference` at all.
         params = case.get("oracle", {}).get("parameters", {})
-        voice = case.get("voice", {})
-        ref_audio = voice.get("ref_audio") or params.get("ref_audio")
+        reference = case.get("input", {}).get("reference", {})
+        ref_audio = reference.get("artifact") or params.get("ref_audio")
         if ref_audio is None:
             raise SystemExit(
-                f"{case['id']}: manifest case has no voice.ref_audio / "
-                "oracle.parameters.ref_audio; the Base manifest schema is still "
-                "provisional (Task 3) -- update this mapping once it lands"
+                f"{case['id']}: manifest case has no input.reference.artifact / "
+                "oracle.parameters.ref_audio"
             )
         x_vector_only = bool(params.get("x_vector_only", False))
+        ref_sha256 = None
+        for artifact in manifest.get("source", {}).get("artifacts", []):
+            if artifact.get("role") == "reference-audio" and artifact.get("locator") == ref_audio:
+                ref_sha256 = artifact.get("sha256")
+                break
         run_case = RunCase(
             id=case["id"],
             ref_audio=ref_audio,
@@ -249,12 +264,52 @@ def load_cases_from_manifest(args: argparse.Namespace) -> list[tuple[RunCase, pa
             language=params.get("language", "Auto"),
             x_vector_only=x_vector_only,
             ref_text=None if x_vector_only else params.get("ref_text"),
-            trim_seconds=None,
+            trim_seconds=params.get("trim_seconds"),
             seed=int(case.get("request", {}).get("seed_u64", 0)),
             max_new_tokens=params.get("max_new_tokens", 2048),
+            ref_sha256=ref_sha256,
         )
         specs.append((run_case, output_root / case["id"]))
     return specs
+
+
+def resolve_reference_locator(
+    locator: str, expected_sha256: Optional[str], cache_dir: pathlib.Path
+) -> str:
+    """Fetch an http(s) reference-audio locator to a local cache, verified by digest.
+
+    ``librosa.load`` cannot open a bare URL -- it hands unrecognised paths to
+    ``soundfile``/``audioread``, both of which expect a local file and raise
+    ``FileNotFoundError``. The Golden Manifest's ``input.reference.artifact``
+    is the canonical upstream URL (``test_reference_audio_cases_name_a_pinned_source_artifact``
+    requires it to match a pinned ``source.artifacts`` locator exactly), so
+    that URL has to become a local path before ``load_reference_audio`` sees
+    it. This mirrors ``materialise_reference`` in
+    ``scripts/dump_reference_omnivoice_pytorch.py``, the established pattern
+    in this repo for the identical problem: cache under a fixed local
+    directory, skip re-fetching what is already there, and verify content by
+    digest rather than trusting the URL to keep serving the same bytes.
+    A local path (the explicit-argument form's normal case) passes straight
+    through unchanged.
+    """
+    if not (locator.startswith("http://") or locator.startswith("https://")):
+        return locator
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    destination = cache_dir / locator.rsplit("/", 1)[-1]
+    if not destination.exists():
+        print(f"fetching {locator}", flush=True)
+        with urllib.request.urlopen(locator, timeout=60) as response:  # noqa: S310 - pinned https locator
+            destination.write_bytes(response.read())
+    if expected_sha256 is not None:
+        actual = hashlib.sha256(destination.read_bytes()).hexdigest()
+        if actual != expected_sha256:
+            raise SystemExit(
+                f"{destination}: sha256 {actual} does not match the manifest's "
+                f"{expected_sha256}. Refusing to dump a clone case against an "
+                "unpinned reference. If a stale cached file is the cause, delete "
+                "it and re-run to re-fetch."
+            )
+    return str(destination)
 
 
 def load_reference_audio(source: str, trim_seconds: Optional[float]) -> tuple[np.ndarray, int, dict]:
@@ -331,7 +386,12 @@ def capture_generated_codes(model, sink: dict):
 
 
 def run_case(model, case: RunCase, case_dir: pathlib.Path) -> dict:
-    ref_wav, ref_sr, ref_info = load_reference_audio(case.ref_audio, case.trim_seconds)
+    local_ref_audio = resolve_reference_locator(
+        case.ref_audio,
+        case.ref_sha256,
+        pathlib.Path("models/qwen3-tts-reference-audio"),
+    )
+    ref_wav, ref_sr, ref_info = load_reference_audio(local_ref_audio, case.trim_seconds)
 
     prompt_items = model.create_voice_clone_prompt(
         ref_audio=(ref_wav, ref_sr),

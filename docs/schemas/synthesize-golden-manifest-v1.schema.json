@@ -238,6 +238,68 @@
         }
       }
     },
+    "profileContract": {
+      "description": "Declares that this package's Voices are constructed from a Voice Profile (reference audio and/or a serialized profile blob) rather than only a preset catalog. Additive, optional widening: present only on a packageContract whose voices.mode is profile-sources; every previously-committed manifest omits it and stays valid.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "schema_version", "sources", "reference"],
+      "properties": {
+        "schema": {
+          "$ref": "#/$defs/key"
+        },
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "reference": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "target_sample_rate",
+            "target_channels",
+            "min_frames_per_clip",
+            "max_frames_per_clip",
+            "max_total_frames",
+            "max_reference_count"
+          ],
+          "properties": {
+            "target_sample_rate": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "target_channels": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "min_frames_per_clip": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_frames_per_clip": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_total_frames": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_reference_count": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
     "packageContract": {
       "type": "object",
       "additionalProperties": false,
@@ -286,6 +348,9 @@
         },
         "voices": {
           "$ref": "#/$defs/voices"
+        },
+        "profile": {
+          "$ref": "#/$defs/profileContract"
         },
         "stochastic": {
           "type": "boolean"

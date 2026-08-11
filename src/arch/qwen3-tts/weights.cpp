@@ -557,6 +557,19 @@ bool read_speaker_encoder(const GgufMetadata & meta, HParams & hparams) {
         std::fprintf(stderr, "qwen3-tts: speaker encoder n_fft %u is not a power of two\n", encoder.n_fft);
         return false;
     }
+    // The other structural constraint the radix-2 transform imposes: the
+    // zero-padded-centred window rule (mel.cpp) has no meaning for a window
+    // wider than the transform itself. compute_log_mel's own runtime guard
+    // for this is the belt to this braces -- the same relationship the
+    // power-of-two check above has with compute_log_mel's is_power_of_two
+    // check. Without this, hop_length < win_length (checked further down)
+    // does not catch it: a win_length past n_fft can still be comfortably
+    // past a small hop_length.
+    if (encoder.win_length > encoder.n_fft) {
+        std::fprintf(stderr, "qwen3-tts: speaker encoder win_length %u exceeds n_fft %u\n", encoder.win_length,
+                     encoder.n_fft);
+        return false;
+    }
     if (encoder.enc_dim != hparams.talker.hidden_size) {
         std::fprintf(stderr, "qwen3-tts: the speaker encoder emits width %u but the talker's hidden size is %u\n",
                      encoder.enc_dim, hparams.talker.hidden_size);

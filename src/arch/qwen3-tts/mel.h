@@ -9,9 +9,15 @@ namespace synth::qwen3tts {
 
 struct SpeakerEncoderParams;
 
-// A log-mel spectrogram, mel-major: `values[frame * bins + bin]`. That is the
-// layout the ECAPA graph reads directly as a ggml [bins, frames] F32 tensor,
-// so nothing transposes between here and the graph.
+// A log-mel spectrogram, stored frame-major: `values[frame * bins + bin]` --
+// for a fixed frame, consecutive bins are contiguous. This is the TRANSPOSE
+// of conventions.json's on-disk `mel_layout` (`[mel_bins, frames]`, where
+// frames is the contiguous axis for a fixed bin): the two phrases describe
+// the same values in different memory orders, not two layouts of this
+// struct, so do not read one off the other. This one is what the ECAPA graph
+// reads directly as a ggml [bins, frames] F32 tensor -- ggml's shape notation
+// lists the fastest-varying axis (here, bins) first -- so nothing transposes
+// between here and the graph.
 struct MelSpectrogram {
     std::vector<float> values;
     uint32_t           bins   = 0;
@@ -34,7 +40,12 @@ struct MelSpectrogram {
 //
 // Errors:
 //   SYNTH_ERR_UNSUPPORTED_INPUT -- n_fft is not a power of two (the transform
-//                                  is radix-2), or a parameter is zero.
+//                                  is radix-2), win_length or hop_length
+//                                  exceeds n_fft (the zero-padded-centred
+//                                  window rule has no meaning past it), or a
+//                                  parameter is zero. All three mean the same
+//                                  thing: this parameter set cannot be
+//                                  expressed by the radix-2 transform below.
 //   SYNTH_ERR_INVALID_ARG       -- a non-finite sample, or a clip too short to
 //                                  produce a single frame.
 synth_status_t compute_log_mel(const SpeakerEncoderParams & params,

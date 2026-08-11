@@ -115,20 +115,54 @@ int test_a_non_finite_sample_is_refused() {
     return 0;
 }
 
+// Pinned at the exact boundary conventions.json's `min_pcm_samples` records
+// -- (n_fft - hop_length) // 2 = 384 at the production hop -- not merely "a
+// short clip": a 16-sample input would pass just as well under a `<` vs `<=`
+// slip in the comparison, so it cannot tell the two apart. 384 must be
+// refused and 385 must be accepted, as exactly one frame.
 int test_a_clip_shorter_than_one_frame_is_refused() {
     const synth::qwen3tts::SpeakerEncoderParams p = production_params();
-    std::vector<float>                          pcm(16, 0.1f);
     synth::qwen3tts::MelSpectrogram             mel;
-    SYNTH_TEST_CHECK(synth::qwen3tts::compute_log_mel(p, pcm, mel) == SYNTH_ERR_INVALID_ARG);
+
+    std::vector<float> at_the_boundary(384, 0.1f);
+    SYNTH_TEST_CHECK(synth::qwen3tts::compute_log_mel(p, at_the_boundary, mel) == SYNTH_ERR_INVALID_ARG);
+
+    std::vector<float> one_past_the_boundary(385, 0.1f);
+    SYNTH_TEST_CHECK(synth::qwen3tts::compute_log_mel(p, one_past_the_boundary, mel) == SYNTH_OK);
+    SYNTH_TEST_CHECK(mel.frames == 1);
     return 0;
 }
 
 // The radix-2 transform is the whole reason n_fft must be a power of two.
 // The load-time rule below is what keeps this unreachable in practice; this
 // is the belt to that braces.
+//
+// win_length is pulled down to 512 here (production_params() leaves it at
+// 1024 == n_fft). At win_length 1024 and n_fft 1000, the separate
+// win_length-vs-n_fft guard (win_length 1024 > n_fft 1000) fires first and
+// returns the very same status -- which means a case that left win_length at
+// its production value would still pass with the power-of-two check deleted,
+// proving nothing. 512 stays comfortably under both 1000 and 1024, so this
+// case now isolates is_power_of_two as the one rule doing the rejecting.
 int test_a_non_power_of_two_n_fft_is_refused() {
     synth::qwen3tts::SpeakerEncoderParams p = production_params();
     p.n_fft                                 = 1000;
+    p.win_length                            = 512;
+    std::vector<float>              pcm(24000, 0.1f);
+    synth::qwen3tts::MelSpectrogram mel;
+    SYNTH_TEST_CHECK(synth::qwen3tts::compute_log_mel(p, pcm, mel) == SYNTH_ERR_UNSUPPORTED_INPUT);
+    return 0;
+}
+
+// win_length (or hop_length) past n_fft has no meaning for the
+// zero-padded-centred window rule, and is a separate SYNTH_ERR_UNSUPPORTED_INPUT
+// trigger from the power-of-two one above -- both mean "this parameter set
+// cannot be expressed by the radix-2 transform", per mel.h. n_fft here is
+// left as a valid power of two (1024) so this case isolates that guard
+// rather than tripping the power-of-two check first.
+int test_a_window_wider_than_the_transform_is_refused() {
+    synth::qwen3tts::SpeakerEncoderParams p = production_params();
+    p.win_length                            = 2048;  // > n_fft (1024)
     std::vector<float>              pcm(24000, 0.1f);
     synth::qwen3tts::MelSpectrogram mel;
     SYNTH_TEST_CHECK(synth::qwen3tts::compute_log_mel(p, pcm, mel) == SYNTH_ERR_UNSUPPORTED_INPUT);
@@ -146,5 +180,6 @@ int main() {
     SYNTH_TEST_CHECK(test_a_non_finite_sample_is_refused() == 0);
     SYNTH_TEST_CHECK(test_a_clip_shorter_than_one_frame_is_refused() == 0);
     SYNTH_TEST_CHECK(test_a_non_power_of_two_n_fft_is_refused() == 0);
+    SYNTH_TEST_CHECK(test_a_window_wider_than_the_transform_is_refused() == 0);
     return 0;
 }

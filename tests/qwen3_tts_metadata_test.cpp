@@ -559,6 +559,17 @@ int run_base_package_rejections() {
             [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.n_fft", 1000); },
             "non-power-of-two n_fft") == 0);
 
+    // The other structural constraint the radix-2 transform imposes: a
+    // window wider than the transform has no meaning for the zero-padded-
+    // centred rule. n_fft stays at the fixture's own 1024 (a valid power of
+    // two) and hop_length stays at 256 (comfortably under win_length here
+    // too), so this case isolates win_length > n_fft as the one rule doing
+    // the rejecting, rather than incidentally tripping n_fft's own checks.
+    SYNTH_TEST_CHECK(
+        expect_base_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.win_length", 2048); },
+            "win_length exceeding n_fft") == 0);
+
     SYNTH_TEST_CHECK(
         expect_base_rejected(
             [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.mel_bins", 0); },

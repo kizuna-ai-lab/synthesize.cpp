@@ -35,6 +35,12 @@ namespace synth::qwen3tts {
 
 namespace {
 
+// Not std::numbers::pi (C++20) or M_PI (a POSIX/glibc extension, not standard
+// C++, and this project builds with CMAKE_CXX_EXTENSIONS OFF): every other
+// family declares its own (src/arch/kokoro/source.cpp:13,
+// src/arch/omnivoice/reference-encoder-host.cpp:52), so this one does too.
+constexpr double kPi = 3.14159265358979323846;
+
 // Pinned by conventions.json; none of these six is a SpeakerEncoderParams
 // field, and each one silently changes the answer rather than failing.
 constexpr double kMagnitudeEpsilon  = 1e-9;  // spectrum_magnitude / magnitude_epsilon
@@ -68,7 +74,7 @@ void fft_in_place(std::vector<float> & re, std::vector<float> & im) {
         }
     }
     for (size_t len = 2; len <= n; len <<= 1) {
-        const double angle = -2.0 * M_PI / double(len);
+        const double angle = -2.0 * kPi / double(len);
         for (size_t start = 0; start < n; start += len) {
             for (size_t k = 0; k < len / 2; ++k) {
                 const double theta = angle * double(k);
@@ -177,7 +183,13 @@ synth_status_t compute_log_mel(const SpeakerEncoderParams & params,
         return SYNTH_ERR_UNSUPPORTED_INPUT;
     }
     // A window (or a hop) wider than the transform itself has no meaning for
-    // the zero-padded-centred rule below.
+    // the zero-padded-centred rule below: without this, window_pad_left
+    // underflows (n_fft - win_length, unsigned) into a wild write, and a
+    // hop_length past n_fft would size `padded` from an underflowed `pad`.
+    // read_speaker_encoder's win_length <= n_fft check is the braces to this
+    // belt -- this function is also called directly by tests and by Plan
+    // 3's Voice Profile preparation, neither of which goes through that
+    // load-time gate. Covered by test_a_window_wider_than_the_transform_is_refused.
     if (params.win_length > params.n_fft || params.hop_length > params.n_fft) {
         return SYNTH_ERR_UNSUPPORTED_INPUT;
     }
@@ -238,7 +250,7 @@ synth_status_t compute_log_mel(const SpeakerEncoderParams & params,
     std::vector<float> window(params.n_fft, 0.0f);
     const uint32_t     window_pad_left = (params.n_fft - params.win_length) / 2;
     for (uint32_t i = 0; i < params.win_length; ++i) {
-        const double phase          = 2.0 * M_PI * double(i) / double(params.win_length);
+        const double phase          = 2.0 * kPi * double(i) / double(params.win_length);
         window[window_pad_left + i] = float(0.5 - 0.5 * std::cos(phase));
     }
 

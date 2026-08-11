@@ -17,6 +17,7 @@
 #include "ggml.h"
 #include "weights.h"
 
+#include <array>
 #include <cstdarg>
 #include <cstdio>
 #include <initializer_list>
@@ -396,6 +397,152 @@ bool resolve_codec(Resolver & resolver, const HParams & hparams, CodecDecoderWei
     return resolver.ok();
 }
 
+// The encoder's RVQ codebook table sits directly under `layers.<n>`, unlike the
+// decoder's, which nests it one level deeper under `vq.layers.<n>` (see
+// resolve_quantizer above). The two were written by different converter passes
+// and the names simply were not aligned; this is not a shared helper because
+// of that one-segment difference.
+bool resolve_codec_encoder_quantizer(Resolver &                 resolver,
+                                     const std::string &        prefix,
+                                     const CodecDecoderParams & p,
+                                     uint32_t                   codebook_count) {
+    const int64_t inner = p.codebook_dim / 2;
+    resolver.find(prefix + "input_proj.weight", { 1, p.codebook_dim, inner });
+    resolver.find(prefix + "output_proj.weight", { 1, inner, p.codebook_dim });
+    for (uint32_t index = 0; index < codebook_count; ++index) {
+        resolver.find(index_of(prefix + "layers.", index, ".codebook"), { inner, p.codebook_size });
+    }
+    return resolver.ok();
+}
+
+// Base's ECAPA-TDNN speaker encoder (SpeechBrain's reference topology: a TDNN
+// stem, three SE-Res2Net blocks, multi-layer feature aggregation, and
+// attentive statistics pooling into `fc`). `enc_dim` and `mel_bins` are the
+// package's own metadata; every other width below -- the 512-channel TDNN
+// stem, the 128-channel attention and SE bottlenecks, and the res2net
+// scale-8 split -- is fixed by that architecture rather than declared
+// anywhere in the package, so it is a literal here rather than a metadata
+// lookup. See this task's report for why that is the chosen tradeoff instead
+// of adding new metadata keys.
+bool resolve_speaker_encoder(Resolver & resolver, const SpeakerEncoderParams & params) {
+    constexpr int64_t  kChannels          = 512;
+    constexpr int64_t  kAttentionChannels = 128;
+    constexpr int64_t  kSeChannels        = 128;
+    constexpr int64_t  kRes2NetScale      = 8;
+    constexpr int64_t  kRes2NetWidth      = kChannels / kRes2NetScale;
+    constexpr uint32_t kBlockCount        = 3;
+    // The multi-layer feature aggregator concatenates the three blocks'
+    // channel-`kChannels` outputs before its own 1x1 convolution.
+    const int64_t      mfa_channels       = 3 * kChannels;
+
+    Conv1dWeights scratch;
+    resolver.conv("speaker_encoder.blocks.0.conv", 5, int64_t(params.mel_bins), kChannels, scratch);
+
+    for (uint32_t block = 1; block <= kBlockCount; ++block) {
+        const std::string base = index_of("speaker_encoder.blocks.", block, ".");
+        resolver.conv(base + "tdnn1.conv", 1, kChannels, kChannels, scratch);
+        // Res2Net at scale 8 applies a 3x3 convolution to 7 of its 8 equal
+        // splits; the eighth passes through unconvolved, which is why this
+        // block carries `kRes2NetScale - 1` convolutions rather than 8.
+        for (int64_t sub = 0; sub < kRes2NetScale - 1; ++sub) {
+            resolver.conv(index_of(base + "res2net_block.blocks.", sub, ".conv"), 3, kRes2NetWidth, kRes2NetWidth,
+                          scratch);
+        }
+        resolver.conv(base + "se_block.conv1", 1, kChannels, kSeChannels, scratch);
+        resolver.conv(base + "se_block.conv2", 1, kSeChannels, kChannels, scratch);
+        resolver.conv(base + "tdnn2.conv", 1, kChannels, kChannels, scratch);
+    }
+
+    resolver.conv("speaker_encoder.mfa.conv", 1, mfa_channels, mfa_channels, scratch);
+    // Attentive statistics pooling: a bottleneck over [features, mean, std]
+    // (3x the aggregated width) produces per-frame attention logits, which
+    // then weight the mean and std (2x the aggregated width) that `fc` maps
+    // onto the speaker embedding the talker's prompt slot expects.
+    resolver.conv("speaker_encoder.asp.tdnn.conv", 1, 3 * mfa_channels, kAttentionChannels, scratch);
+    resolver.conv("speaker_encoder.asp.conv", 1, kAttentionChannels, mfa_channels, scratch);
+    resolver.conv("speaker_encoder.fc", 1, 2 * mfa_channels, int64_t(params.enc_dim), scratch);
+    return resolver.ok();
+}
+
+// The speech tokenizer's encoder half. Its RVQ shares the decoder's
+// `codebook_dim`/`codebook_size`/`semantic_quantizer_count` -- the two halves
+// quantize into the same table -- but the encoder's acoustic cascade runs
+// deeper than synthesis ever reads back (`kAcousticQuantizerCount` below,
+// against the decoder's `quantizer_count - semantic_quantizer_count`), and
+// its downsampling stem and transformer widths are independent of the
+// decoder's, so those are literals rather than derived. See this task's
+// report for the exact per-tensor shapes this was checked against.
+bool resolve_codec_encoder(Resolver & resolver, const HParams & hparams) {
+    const CodecDecoderParams & p = hparams.codec.decoder;
+
+    constexpr int64_t                kInitialChannels      = 64;
+    constexpr std::array<int64_t, 4> kStageWidths          = { 128, 256, 512, 1024 };
+    constexpr std::array<int64_t, 4> kDownsampleKernels    = { 8, 10, 12, 16 };
+    constexpr int64_t                kDownsampleConvKernel = 4;
+
+    Conv1dWeights scratch;
+    resolver.conv("codec.encoder.encoder.layers.0.conv", 7, 1, kInitialChannels, scratch);
+
+    // A flat ModuleList: one narrow-then-wide residual bottleneck followed by
+    // a strided convolution per downsampling stage, at positions 1, 3, 4, 6,
+    // 7, 9, 10, 12 (each stage's activation-only position, 2/5/8/11, carries
+    // no tensor and is skipped).
+    int64_t width = kInitialChannels;
+    for (size_t stage = 0; stage < kStageWidths.size(); ++stage) {
+        const size_t      residual_index = 3 * stage + 1;
+        const std::string base           = index_of("codec.encoder.encoder.layers.", residual_index, ".block.");
+        const int64_t     narrower       = width / 2;
+        resolver.conv(base + "1.conv", 3, width, narrower, scratch);
+        resolver.conv(base + "3.conv", 1, narrower, width, scratch);
+
+        const size_t downsample_index = 3 * stage + 3;
+        resolver.conv(index_of("codec.encoder.encoder.layers.", downsample_index, ".conv"), kDownsampleKernels[stage],
+                      width, kStageWidths[stage], scratch);
+        width = kStageWidths[stage];
+    }
+
+    // The final positional entry narrows the stem's output to `codebook_dim`:
+    // the encoder's transformer feeds the quantizer directly, with no
+    // projection between them the way the decoder's pre_transformer has one,
+    // so that width is not free to choose independently.
+    const int64_t hidden = int64_t(p.codebook_dim);
+    resolver.conv("codec.encoder.encoder.layers.14.conv", 3, width, hidden, scratch);
+    resolver.find("codec.encoder.downsample.conv.weight", { kDownsampleConvKernel, hidden, hidden }, Role::Matrix);
+
+    // Standard LayerNorm (weight and bias) and a plain two-layer MLP, unlike
+    // the decoder's RMSNorm and gated MLP -- this transformer is not a copy of
+    // codec.decoder.pre_transformer, just built from the same per-branch-scale
+    // idea. The MLP's 4x expansion mirrors the ratio ConvNeXt already uses
+    // elsewhere in this file; the attention keeps the projection width
+    // unchanged rather than narrowing through a GQA-style kv split.
+    constexpr uint32_t kTransformerLayerCount = 8;
+    const int64_t      intermediate           = 4 * hidden;
+    LayerNormWeights   norm_scratch;
+    for (uint32_t layer = 0; layer < kTransformerLayerCount; ++layer) {
+        const std::string base = index_of("codec.encoder.enc_transformer.layers.", layer, ".");
+        resolver.layer_norm(base + "input_layernorm", hidden, norm_scratch);
+        resolver.find(base + "self_attn.q_proj.weight", { hidden, hidden }, Role::Matrix);
+        resolver.find(base + "self_attn.k_proj.weight", { hidden, hidden }, Role::Matrix);
+        resolver.find(base + "self_attn.v_proj.weight", { hidden, hidden }, Role::Matrix);
+        resolver.find(base + "self_attn.o_proj.weight", { hidden, hidden }, Role::Matrix);
+        resolver.find(base + "self_attn_scale.scale", { hidden });
+        resolver.layer_norm(base + "post_attn_norm", hidden, norm_scratch);
+        resolver.find(base + "mlp.fc1.weight", { hidden, intermediate }, Role::Matrix);
+        resolver.find(base + "mlp.fc2.weight", { intermediate, hidden }, Role::Matrix);
+        resolver.find(base + "mlp_scale.scale", { hidden });
+    }
+
+    // The encoder's RVQ cascades to 32 stages (1 semantic + 31 acoustic) so it
+    // can be retrained without truncating the codebook; synthesis (and the
+    // decoder) only ever reads the semantic stage plus the first
+    // `quantizer_count - semantic_quantizer_count` acoustic ones. Nothing here
+    // is deduplicated, so every stage the checkpoint carries is catalogued.
+    constexpr uint32_t kAcousticQuantizerCount = 31;
+    resolve_codec_encoder_quantizer(resolver, "codec.encoder.quantizer.semantic_rvq.", p, p.semantic_quantizer_count);
+    resolve_codec_encoder_quantizer(resolver, "codec.encoder.quantizer.acoustic_rvq.", p, kAcousticQuantizerCount);
+    return resolver.ok();
+}
+
 }  // namespace
 
 uint64_t expected_tensor_count(const HParams & hparams) {
@@ -416,7 +563,30 @@ uint64_t expected_tensor_count(const HParams & hparams) {
     uint64_t residual    = 2;                                         // the stack's input convolution
     residual += uint64_t(codec.upsample_rates.size()) * (2 + 2 + 3 * 8);
     residual += 2 + 2;                                                // output activation and convolution
-    return talker + predictor + quantizers + 2 + transformer + upsample + residual;
+
+    uint64_t speaker_encoder = 0;
+    uint64_t codec_encoder   = 0;
+    if (hparams.has_speaker_encoder) {
+        // 3 SE-Res2Net blocks, each: tdnn1(2) + 7 res2net convs(14) +
+        // se_block(2+2) + tdnn2(2); plus the stem, mfa, asp and fc pairs.
+        constexpr uint64_t kBlockCount             = 3;
+        constexpr uint64_t kTensorsPerRes2NetBlock = 2 + 7 * 2 + 2 + 2 + 2;
+        speaker_encoder = 2 /* blocks.0 */ + kBlockCount * kTensorsPerRes2NetBlock + 2 /* mfa */ + 2 /* asp.tdnn */ +
+                          2 /* asp.conv */ + 2 /* fc */;
+
+        // See resolve_codec_encoder: the stem is layers.0 (2) plus 4 stages of
+        // a residual block (2 + 2) and a downsampling conv (2), then layers.14
+        // (2); the transformer is 8 layers of 12 tensors each; the quantizer
+        // is an input/output projection pair plus one codebook per stage.
+        constexpr uint64_t kTransformerLayerCount      = 8;
+        constexpr uint64_t kTensorsPerTransformerLayer = 12;
+        constexpr uint64_t kAcousticQuantizerCount     = 31;
+        codec_encoder = 1 /* downsample.conv, no bias */ + (2 + 4 * (2 + 2 + 2) + 2) /* encoder.layers stem */ +
+                        kTransformerLayerCount * kTensorsPerTransformerLayer +
+                        (2 + uint64_t(codec.semantic_quantizer_count)) + (2 + kAcousticQuantizerCount);
+    }
+
+    return talker + predictor + quantizers + 2 + transformer + upsample + residual + speaker_encoder + codec_encoder;
 }
 
 synth_status_t build_model_weights(ggml_context *  context,
@@ -437,6 +607,15 @@ synth_status_t build_model_weights(ggml_context *  context,
     // package so the sweep below sees its names, and once against the twins,
     // which is what the graph binds to.
     if (!resolve_codec(resolver, hparams, weights.codec)) {
+        return SYNTH_ERR_GGUF;
+    }
+    // Base carries the ECAPA-TDNN speaker encoder and the codec's encoder half
+    // alongside the decoder; neither has a graph yet (Plans 2 and 3 add them),
+    // so they are resolved here only to bring their names into the sweep
+    // below -- a package that carries them uncatalogued is refused, not
+    // silently accepted.
+    if (hparams.has_speaker_encoder &&
+        (!resolve_speaker_encoder(resolver, hparams.speaker_encoder) || !resolve_codec_encoder(resolver, hparams))) {
         return SYNTH_ERR_GGUF;
     }
     if (codec_context != nullptr) {

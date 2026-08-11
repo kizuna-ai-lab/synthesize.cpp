@@ -384,6 +384,26 @@ git commit -m "qwen3-tts: discriminate Base from CustomVoice on what the config 
 - Consumes: `variant_profile` from Task 4.
 - Produces: tensors named `speaker_encoder.*` and `codec.encoder.*` in the GGUF; `Conversion.deduplicated: list[dict[str, str]]`.
 
+**Superseded, 2026-08-11 — the dedup was removed after review.** Steps 1-4 below
+were implemented as written and then undone deliberately. Deduplicating stored
+the encoder's 16 shared codebooks once under the decoder's name, but the encoder
+names then never entered the GGUF and none of the package's 112 KV keys recorded
+where they went: a consumer would find encoder layers 15-30 present and 0-14
+simply absent, with the mapping living only in a gitignored convert report. This
+step's own text demanded "record the mapping in the tensor catalog", and that
+half was never durable — the alias nobody can look up.
+
+The ruling: **carry both halves in full and keep the measurement as a recorded
+fact.** Cost 33.5 MB, plus 2 MB of quantizer projections the review found were
+duplicated too — about 1.4% of a 2.48 GB package — in exchange for every name
+being resolvable from the package alone, with no cross-half aliasing contract for
+the catalog, the loader, and any future quantizer to honour. Expected tensor
+count is therefore **894**, not 878. `measure_shared_codebooks` reports which
+encoder tensors equal which decoder ones and mutates nothing; "we measured and
+chose to carry both" is a different statement from never having looked.
+
+Read the steps below as the history that produced that decision.
+
 - [ ] **Step 1: Write the failing test for the dedup decision**
 
 ```python

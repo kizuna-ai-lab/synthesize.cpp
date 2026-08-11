@@ -130,7 +130,11 @@ honestly.
 **D7 — Reference Audio limits.** One clip per Voice Profile
 (`max_reference_count = 1`, an upstream fact, not a conservative choice);
 1 s minimum and 30 s maximum per clip; 30 s maximum total. Expressed in the
-package as Reference Frame Equivalents at 1920 samples per frame. The two
+package as Reference Frame Equivalents, which this project already measures in
+samples at the target rate rather than in codec frames — `convert-omnivoice.py`
+writes 24000 for one second at 24 kHz, so this package writes 24000 and 720000.
+Stating it in codec frames of 1920 samples would be the same unit confusion
+that produced the three mis-stated frame limits corrected in `985941a`. The two
 duration bounds are provisional: intake measures where quality collapses below
 the short bound and whether the long bound only wastes prompt length, and the
 measured basis is recorded with the numbers. Values that survive that

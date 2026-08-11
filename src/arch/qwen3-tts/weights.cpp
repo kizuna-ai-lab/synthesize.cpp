@@ -537,9 +537,17 @@ bool read_speaker_encoder(const GgufMetadata & meta, HParams & hparams) {
         !meta.f32(prefix + "fmin", encoder.fmin) || !meta.f32(prefix + "fmax", encoder.fmax)) {
         return false;
     }
-    if (encoder.enc_dim == 0 || encoder.sample_rate == 0 || encoder.mel_bins == 0 || encoder.n_fft == 0 ||
-        encoder.hop_length == 0 || encoder.win_length == 0) {
-        std::fprintf(stderr, "qwen3-tts: speaker encoder geometry contains a zero dimension\n");
+    // Only the three widths no later rule can catch. `enc_dim`, `sample_rate`
+    // and `win_length` were checked here too until the branch's final review
+    // showed the mutation is invisible: each is caught below with the same
+    // SYNTH_ERR_GGUF and a more specific message -- enc_dim by the
+    // hidden-size equality (read_talker already refuses a zero hidden size),
+    // sample_rate by the codec-rate equality (read_codec already refuses a
+    // codec rate that cannot produce its declared frame rate), and
+    // win_length by `hop_length >= win_length`, which any hop satisfies
+    // against zero. A rule nobody can see work is not a rule.
+    if (encoder.mel_bins == 0 || encoder.n_fft == 0 || encoder.hop_length == 0) {
+        std::fprintf(stderr, "qwen3-tts: speaker encoder mel front end has a zero mel_bins/n_fft/hop_length\n");
         return false;
     }
     if (encoder.enc_dim != hparams.talker.hidden_size) {
@@ -681,38 +689,38 @@ bool resolve_language_token(const HParams &     hparams,
 }
 
 void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & info) {
+    // Every variant of this family reports zero source flags, and therefore
+    // -- per docs/c-interface.md -- zero in every field that describes a
+    // source: "A Model without runtime Voice Profile support reports zero
+    // flags", "for an unsupported source, all fields that describe that
+    // source are SYNTH_REQUIREMENT_UNSUPPORTED or zero", and, for Serialized
+    // Profile specifically, "profile_schema is null with zero size, its
+    // version is zero, and the 32 ID bytes are zero". VoiceProfileInfo's own
+    // default member initializers already ARE that shape, so this function
+    // writes nothing.
+    //
+    // That is a statement about the RUNTIME, not about the package. A Base
+    // package really does carry a ProfileContract and a speaker encoder, and
+    // read_profile_contract/read_speaker_encoder still read and validate
+    // every one of those keys at load time (see read_hparams) -- a package
+    // that declares the contract badly is still refused. What does not exist
+    // yet is any code that can act on it: src/voice-profile.cpp dispatches
+    // Profile preparation, consumption and serialization for OmniVoice only,
+    // so a caller told "Reference Audio supported" would be refused by the
+    // very next call it made. The package declaring a contract and the
+    // runtime advertising a capability are different statements; only the
+    // second would be false today, so only the second is withheld.
+    //
+    // Plan 2 is what flips this: when the ECAPA-TDNN speaker encoder, the mel
+    // front end and Profile preparation land, this function publishes
+    // SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO -- with
+    // SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE alongside it, under the
+    // c-interface rule that any Model which can create a v1 Profile can
+    // serialize it -- from hparams.profile's already-validated limits, gated
+    // on has_preset_voice_catalog(hparams). Description Text and Random Seed
+    // stay unadvertised at every stage of this family's ladder.
+    (void) hparams;
     info = VoiceProfileInfo{};
-    // Gated on the same discriminator has_preset_voice_catalog uses --
-    // voice_mode, not has_speaker_encoder -- because hparams.profile (every
-    // limit published below) is only ever populated on the profile-sources
-    // branch (read_hparams's read_profile_and_speaker_encoder). Gating on the
-    // encoder flag alone would let a hypothetical future package that set
-    // has_speaker_encoder outside that branch advertise Reference Audio
-    // backed by an unpopulated, all-zero ProfileContract -- exactly the
-    // capability lie this function exists to prevent.
-    if (has_preset_voice_catalog(hparams)) {
-        return;
-    }
-    info.source_flags                 = SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE;
-    // Neither a transcript nor an explicit reference language is needed to
-    // clone a voice from audio alone, so both are optional rather than
-    // required or unsupported.
-    info.reference_transcript         = SYNTH_REQUIREMENT_OPTIONAL;
-    info.reference_language           = SYNTH_REQUIREMENT_OPTIONAL;
-    info.reference_target_sample_rate = hparams.profile.reference_sample_rate;
-    info.reference_target_channels    = hparams.profile.reference_channels;
-    info.min_frames_per_clip          = hparams.profile.min_frames_per_clip;
-    info.max_frames_per_clip          = hparams.profile.max_frames_per_clip;
-    info.max_total_frames             = hparams.profile.max_total_frames;
-    info.max_reference_count          = static_cast<uint32_t>(hparams.profile.max_reference_count);
-    // Best-effort, mirroring OmniVoice's own shared_info: HParams::profile is
-    // already validated at load time (read_profile_contract, is_sha256_hex),
-    // so this should never fail for a package that made it this far; a defect
-    // that slipped through leaves the bytes at their all-zero default rather
-    // than propagating a load failure this deep into a capability query.
-    (void) decode_profile_compatibility_id(hparams.profile.compatibility_id_hex, info.compatibility_id);
-    info.schema         = hparams.profile.schema;
-    info.schema_version = hparams.profile.schema_version;
 }
 
 }  // namespace synth::qwen3tts

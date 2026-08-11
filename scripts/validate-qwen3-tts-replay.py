@@ -38,6 +38,42 @@ import numpy as np
 PROBE_LAYERS = (0, 7, 14, 21, 27)
 
 
+def resolve_tolerance_stage(tolerances: dict, variant: str, profile: str, backend: str, stage: str) -> dict | None:
+    """The one tolerance cell a run gates against, or None if it is not recorded.
+
+    A pure function of an already-loaded tolerance document, kept out of
+    `main` so it can be tested without a model, a runner or an oracle payload.
+    It is the fix for a real regression and its own regression test: on
+    2026-08-11 `tests/tolerances/qwen3-tts.json` moved from one flat
+    `profiles` grid to a `variants.<name>.profiles` grid, because one flat
+    grid could not describe two Reference Model Variants with different
+    subsystems and case counts. This lookup read the flat shape, so after that
+    move it resolved no cell at all -- including for the PUBLISHED CustomVoice
+    variant, whose gate silently stopped having a threshold to gate against.
+
+    `variant` is exactly the coordinate that was missing, and the caller
+    already has it: this validator runs against one manifest at a time via
+    `--manifest`, and the manifest names its variant. A file still using the
+    flat shape (a future `--tolerances` pointed at a single-variant family)
+    falls through unchanged, which is why both shapes are handled here rather
+    than the old one being deleted.
+
+    `provisional_variants` is deliberately NOT consulted: it is the sibling
+    key that holds stages with no validator and no measurement behind them.
+    """
+    if "variants" in tolerances:
+        profiles = tolerances["variants"].get(variant, {}).get("profiles", {})
+    else:
+        profiles = tolerances.get("profiles", {})
+    cell = profiles.get(profile, {})
+    # CPU is the profile's own entry; anything else hangs off `backends`, which
+    # is the shape the coverage test walks.
+    if backend.upper() != "CPU":
+        cell = cell.get("backends", {}).get(backend.upper(), {})
+    stage_cell = cell.get("stages", {}).get(stage)
+    return stage_cell or None
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=pathlib.Path,
@@ -311,25 +347,10 @@ def main() -> int:
     # rather than inventing one is the point: a threshold the suite writes for
     # itself proves nothing.
     tolerances = json.loads(arguments.tolerances.read_text(encoding="utf-8"))
-    # tests/tolerances/qwen3-tts.json moved from one flat `profiles` grid to a
-    # `variants.<name>.profiles` grid on 2026-08-11, when the Base variant's
-    # manifest started sharing this file -- one flat grid could not describe
-    # two Reference Model Variants with different subsystems and case counts.
-    # `manifest["variant"]` (loaded above) is exactly the coordinate that was
-    # missing: this validator already runs against one manifest at a time via
-    # `--manifest`, so it already knows which variant's grid to read. A file
-    # that still uses the old flat shape (e.g. a future `--tolerances`
-    # pointed at a single-variant family) falls through unchanged.
-    if "variants" in tolerances:
-        profiles = tolerances["variants"].get(manifest["variant"], {}).get("profiles", {})
-    else:
-        profiles = tolerances.get("profiles", {})
-    cell = profiles.get(arguments.profile, {})
-    # CPU is the profile's own entry; anything else hangs off `backends`, which
-    # is the shape the coverage test walks.
-    if arguments.backend.upper() != "CPU":
-        cell = cell.get("backends", {}).get(arguments.backend.upper(), {})
-    stage = cell.get("stages", {}).get(arguments.stage)
+    # See resolve_tolerance_stage for why the variant is one of the
+    # coordinates; tests/python/test_validate_qwen3_tts_replay.py covers it.
+    stage = resolve_tolerance_stage(tolerances, manifest["variant"], arguments.profile,
+                                    arguments.backend, arguments.stage)
     if not stage:
         print(f"\ntolerance cell {arguments.profile}/{arguments.backend}/{arguments.stage} "
               f"is not recorded in {arguments.tolerances}")

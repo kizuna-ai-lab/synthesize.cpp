@@ -142,6 +142,15 @@ class GoldenManifestSchemaTest(unittest.TestCase):
         `"case_count" not in tolerance` guard skipped every VITS manifest
         every time, and nothing failed when this test's own module was
         exercised by making a `variants.*.case_count` wrong on purpose.
+
+        A manifest whose variant is absent from a per-variant file, or present
+        without a `case_count`, is a FAILURE rather than a skip. That was the
+        same skip-shaped hole one level down: the branch that introduced this
+        form fixed "the flat key is missing" and left "this variant is
+        missing" silently passing, which is exactly how a third variant added
+        to a shared file would arrive unchecked. All four committed
+        per-variant entries carry the key today, so nothing legitimately
+        needs the escape.
         """
         for path, manifest in self.manifests:
             with self.subTest(manifest=path.name):
@@ -150,13 +159,23 @@ class GoldenManifestSchemaTest(unittest.TestCase):
                 if "variants" in tolerance:
                     variant = manifest["variant"]
                     entry = tolerance["variants"].get(variant)
-                    if entry is None or "case_count" not in entry:
-                        continue
+                    self.assertIsNotNone(
+                        entry,
+                        f"{manifest['tolerance_file']}: no variants.{variant} entry for {path.name}; "
+                        f"a per-variant tolerance file must describe every manifest that points at it")
+                    self.assertIn(
+                        "case_count", entry,
+                        f"{manifest['tolerance_file']}: variants.{variant} carries no case_count "
+                        f"for {path.name}")
                     self.assertEqual(
                         entry["case_count"], len(manifest["cases"]),
                         f"{manifest['tolerance_file']}: variants.{variant}.case_count "
                         f"disagrees with {path.name}")
                     continue
+                # A flat file describes exactly one variant, so its
+                # `case_count` is that manifest's. Kept optional only because
+                # a flat file that never carried the key is a different,
+                # older shape than a per-variant file missing an entry.
                 if "case_count" not in tolerance:
                     continue
                 self.assertEqual(

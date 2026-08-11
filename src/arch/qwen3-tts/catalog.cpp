@@ -440,8 +440,20 @@ constexpr uint32_t               kCodecEncoderAcousticQuantizerCount = 31;
 // stem, the 128-channel attention and SE bottlenecks, and the res2net
 // scale-8 split -- is fixed by that architecture rather than declared
 // anywhere in the package, so it is a literal here rather than a metadata
-// lookup. See this task's report for why that is the chosen tradeoff instead
-// of adding new metadata keys.
+// lookup.
+//
+// The tradeoff, recorded here rather than in a report: publishing these as
+// new `synthesize.qwen3-tts.speaker_encoder.*` keys would put six numbers
+// into every future package that no upstream config supplies -- the
+// converter would have to invent them from the same fixed topology this
+// file already encodes -- and a package could then declare a topology the
+// graphs cannot build. A width that IS declared upstream is read from
+// metadata (`enc_dim`, `mel_bins`); a width that is a property of
+// ECAPA-TDNN itself is a literal, and the resolver fails loudly at the
+// first tensor if a package ever disagrees (see the catalog test's
+// 768-wide forward case). If a variant with a genuinely different encoder
+// topology arrives, the migration is to add the keys then, with a real
+// source for their values.
 bool resolve_speaker_encoder(Resolver & resolver, const SpeakerEncoderParams & params) {
     constexpr int64_t kRes2NetWidth = kSpeakerEncoderChannels / kSpeakerEncoderRes2NetScale;
     // The multi-layer feature aggregator concatenates the three blocks'

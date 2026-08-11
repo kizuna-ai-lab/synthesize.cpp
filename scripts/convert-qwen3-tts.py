@@ -22,14 +22,18 @@ instead. Dropping it removes 161 tensors and 225 MB that no graph reads.
 
 For Base, the encoder half is carried in full: it is what turns a reference
 clip into codes for voice cloning. 16 of its 32 codebooks -- exactly the ones
-with a same-index decoder counterpart -- and all four of the input/output
-projections on those same two quantizer stages are measured bit-identical to
-the decoder's at this revision. They are carried anyway, in full, rather than
-stored once and aliased under the decoder's name: an alias with no in-package
-record of where it points is a name a consumer cannot resolve, and this
-project chose the ~35 MB of duplicate bytes (~1.4% of the 2.52 GB package)
-over that. `measure_shared_codebooks` keeps the measurement on the record
-without acting on it.
+with a same-index decoder counterpart -- are measured bit-identical to the
+decoder's at this revision by `measure_shared_codebooks` below, which compares
+every `.codebook` tensor on both sides at every conversion. The four
+input/output projections on those same two quantizer stages were found
+identical too, by hand at Stage 1 and again during Stage 2's review; nothing
+in this file re-measures them, and that is deliberate, because nothing acts on
+either measurement.
+
+They are all carried, in full, rather than stored once and aliased under the
+decoder's name: an alias with no in-package record of where it points is a
+name a consumer cannot resolve, and this project chose the ~35 MB of duplicate
+bytes (~1.4% of the 2.52 GB package) over that.
 
 Two conversion rules here fail silently rather than loudly if they are dropped.
 Each is asserted, not assumed:

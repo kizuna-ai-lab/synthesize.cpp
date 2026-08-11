@@ -541,12 +541,12 @@ int run_base_package_rejections() {
                          [](gguf_context * g) { gguf_set_val_u64(g, "synthesize.reference.max_reference_count", 0); },
                          "a zero reference count admits no clip") == 0);
 
-    // --- Speaker encoder: geometry must be non-zero ---
-    SYNTH_TEST_CHECK(
-        expect_base_rejected(
-            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.enc_dim", 0); },
-            "a zero speaker-encoder enc_dim is refused before the hidden-size check") == 0);
-
+    // --- Speaker encoder: the three widths only the zero-check catches ---
+    // read_speaker_encoder's zero-check covers mel_bins, n_fft and hop_length
+    // and nothing else: for each of these, deleting its term from that
+    // condition makes the package load. The three that used to sit alongside
+    // them (enc_dim, sample_rate, win_length) are checked further down
+    // instead, and are exercised by their own cases below.
     SYNTH_TEST_CHECK(expect_base_rejected(
                          [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.n_fft", 0); },
                          "n_fft must be non-zero") == 0);
@@ -556,22 +556,47 @@ int run_base_package_rejections() {
             [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.mel_bins", 0); },
             "mel_bins must be non-zero") == 0);
 
+    // A zero hop advances the mel window by nothing and would frame forever.
+    // Distinct from the hop_length >= win_length case below: at hop 0 that
+    // rule is satisfied (0 < 1024), so only the zero-check refuses this.
     SYNTH_TEST_CHECK(
         expect_base_rejected(
-            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.win_length", 0); },
-            "win_length must be non-zero") == 0);
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.hop_length", 0); },
+            "a zero hop_length is refused even though it is below win_length") == 0);
+
+    // --- Speaker encoder: width must equal the talker's hidden size ---
+    // Zero included: read_talker already refuses a zero hidden size, so a
+    // zero enc_dim can only ever be unequal to it.
+    SYNTH_TEST_CHECK(
+        expect_base_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.enc_dim", 0); },
+            "a zero speaker-encoder enc_dim cannot equal the talker hidden size") == 0);
 
     // --- Speaker encoder: rate must match the codec's own rate ---
+    // Zero included, for the same reason: read_codec already refuses a codec
+    // rate of zero (it could not produce the declared frame rate).
     SYNTH_TEST_CHECK(
         expect_base_rejected(
             [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.sample_rate", 16000); },
             "the speaker encoder must run at the codec's sample rate") == 0);
+
+    SYNTH_TEST_CHECK(
+        expect_base_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.sample_rate", 0); },
+            "a zero speaker-encoder sample rate cannot equal the codec's") == 0);
 
     // --- Speaker encoder: hop_length < win_length ---
     SYNTH_TEST_CHECK(
         expect_base_rejected(
             [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.hop_length", 1024); },
             "hop_length equal to win_length is refused") == 0);
+
+    // Zero win_length is this same rule, not a separate zero-check: every
+    // hop_length is >= 0.
+    SYNTH_TEST_CHECK(
+        expect_base_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.win_length", 0); },
+            "a zero win_length leaves no hop inside it") == 0);
 
     // --- Speaker encoder: fmax > fmin and fmax <= sample_rate / 2 ---
     SYNTH_TEST_CHECK(

@@ -9,13 +9,17 @@ validation is not started. Selection was accepted on 2026-07-26; the intake
 packet is `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
 Stage 2 (`qwen3-tts-12hz-0.6b-base`) Plan 1 is done: the Base package is
 pinned, converted (894 tensors), loads through `synth_model_load`, and its
-capability snapshot -- zero Preset Voices, Reference Audio plus Serialized
-Profile with the six reference limits -- is reported correctly and covered by
-an integration test against the real package (see "Stage 2: Base Package,
-Plan 1" below). Not done: any graph (ECAPA-TDNN speaker encoder, Audio
-Normalizer, mel front end) and Voice Profile preparation --
-`synth_voice_profile_create_from_reference` still refuses this family with
-`SYNTH_ERR_UNSUPPORTED_VOICE` -- both of which are Plan 2's scope. The
+capability snapshot -- zero Preset Voices and, as of the 2026-08-12
+correction, zero Voice Profile sources, because nothing in the runtime can
+prepare or consume a Profile for this family yet -- is reported correctly and
+covered by an integration test against the real package (see "Stage 2: Base
+Package, Plan 1" below). The package's own Voice Profile contract is carried
+and validated at load time regardless. Not done: any graph (ECAPA-TDNN
+speaker encoder, Audio Normalizer, mel front end) and Voice Profile
+preparation -- `synth_voice_profile_create_from_reference` still refuses this
+family with `SYNTH_ERR_UNSUPPORTED_VOICE` -- both of which are Plan 2's
+scope, and both of which are what will make the snapshot advertise Reference
+Audio. The
 reference-duration bounds Task 6 shipped are safety ceilings, not
 perceptually validated ones; no listening pass has happened.
 
@@ -182,8 +186,35 @@ checkpoint upstream, so this stage necessarily moves to the 1.7B width and
 inherits a larger CPU cost. Its natural-language schema stays Model
 Variant-defined, as `docs/voice-conditioning.md` already requires.
 
-Stage 1 is a completion gate for Stage 2, and Stage 2 for Stage 3. Serialized
-Profile and Random Seed sources stay unadvertised across all three stages.
+Stage 1 is a completion gate for Stage 2, and Stage 2 for Stage 3. Random Seed
+stays unadvertised across all three stages.
+
+**What each stage advertises, stated once (corrected 2026-08-12).** An earlier
+revision of this section said Serialized Profile stays unadvertised at every
+stage, while the Stage 2 Plan 1 record below claimed the Base package
+"honestly advertises Reference Audio and Serialized Profile support". Both
+cannot be right, and neither described what shipped. The end position:
+
+- **Plan 1 of Stage 2 advertises nothing.** `synth_model_get_voice_profile_capabilities`
+  returns zero source flags for both variants of this family, and therefore
+  zero in every field describing a source. The Base *package* carries a full
+  Voice Profile contract (`synthesize.profile.*`, `synthesize.reference.*`),
+  which the loader reads and validates; the *runtime* cannot prepare, consume
+  or serialize a Profile for this family, because `src/voice-profile.cpp`
+  dispatches every source for OmniVoice alone. `docs/c-interface.md` decides
+  which of those two facts the query reports: "A Model without runtime Voice
+  Profile support reports zero flags."
+- **Plan 2 advertises `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO`** on the day it
+  can actually prepare a Profile from a reference clip — and
+  `SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` with it, not as a separate
+  decision: `docs/c-interface.md` requires that any Model which can create a
+  v1 Profile also sets the Serialized Profile bit, because every successfully
+  prepared v1 Profile can be serialized.
+- **Stage 3 adds `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT`** on the same terms.
+
+So Serialized Profile is not a source this family pursues on its own; it
+arrives as a consequence of being able to prepare one, and it is unadvertised
+until then.
 
 ## Port Validation Fit
 
@@ -1992,18 +2023,33 @@ listening pass before shipping, one on the 0.5 s/1 s/30 s renders under
   `docs/voice-conditioning.md` specifies for this stage are not implemented.
   The speaker-encoder tensors and their metadata are catalogued (Task 8) and
   loaded, but nothing yet runs a forward pass over them.
-- **No Voice Profile preparation.** `synth_voice_profile_create_from_reference`
-  still returns `SYNTH_ERR_UNSUPPORTED_VOICE` for this family --
-  `src/voice-profile.cpp` dispatches that call only for OmniVoice today. This
-  is a dispatch gap, not a capability lie: the model honestly advertises
-  Reference Audio and Serialized Profile support through
-  `synth_model_get_voice_profile_capabilities` (Task 9), and a caller that
-  acts on that advertisement by trying to prepare a Profile is refused
-  loudly rather than answered with the wrong Voice.
+- **No Voice Profile preparation, and therefore no advertised source.**
+  `synth_voice_profile_create_from_reference` returns
+  `SYNTH_ERR_UNSUPPORTED_VOICE` for this family --
+  `src/voice-profile.cpp` dispatches that call only for OmniVoice today -- so
+  `synth_model_get_voice_profile_capabilities` reports zero source flags for
+  both variants, and zero in every field describing a source.
+
+  This is a correction, made 2026-08-12 on the branch's final review. Plan 1
+  shipped the snapshot advertising `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO |
+  SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`, on the argument that the gap was
+  a dispatch gap rather than a capability lie. `docs/c-interface.md` does not
+  leave that open: "A Model without runtime Voice Profile support reports zero
+  flags", and nothing in the runtime can create or consume such a Profile. The
+  confirmed contract wins over the argument.
+
+  What did NOT change: the Base package still declares its full Voice Profile
+  contract, and `src/arch/qwen3-tts/weights.cpp` still reads and validates
+  every `synthesize.profile.*` and `synthesize.reference.*` key at load time,
+  refusing a package that declares them badly. The package declaring a
+  contract and the runtime advertising a capability are different statements;
+  only the second was false. See the ladder section above for what Plan 2
+  advertises and why Serialized Profile arrives with Reference Audio rather
+  than separately.
 - **The reference-duration bounds are unaudited at the edges**, per the
   measurement above.
 
-### What this task closed: ABI-level coverage for the capability snapshot
+### The real Base package through the public C interface
 
 Task 9's review found a real gap: deleting the one-line copy
 `shared.voice_profile = info.voice_profile;` in
@@ -2018,32 +2064,36 @@ exists on disk) that loads the real Base GGUF through
 
 - `synth_model_get_preset_voice_count` returns 0.
 - `synth_model_get_voice_profile_capabilities` reports `source_flags`
-  exactly `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO |
-  SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`; `reference_transcript` and
-  `reference_language` both `SYNTH_REQUIREMENT_OPTIONAL`;
-  `description_language` `SYNTH_REQUIREMENT_UNSUPPORTED`; and the six
-  reference values (sample rate 24000, channels 1, min/max frames per clip
-  24000/720000, max total frames 720000, max reference count 1) verbatim.
+  exactly zero, and with it zero (or `SYNTH_REQUIREMENT_UNSUPPORTED`) in
+  every field describing a source, down to a null `profile_schema` and 32
+  zero compatibility-id bytes. This assertion was inverted on 2026-08-12,
+  from the two-bit advertisement Plan 1 originally shipped; see "What Plan 1
+  did not deliver" above.
 - A `synth_synthesize_to_buffer` request naming no Voice at all, and a
   second one naming a `voice_id` that could never exist in an empty
   catalog, both fail with `SYNTH_ERR_UNSUPPORTED_VOICE` -- the one voice
   error `docs/c-interface.md` defines, reached by two different code paths
   (the generic core's preset lookup for the named case, this family's own
-  `has_preset_voice_catalog` gate for the unnamed one).
+  empty-catalog lookup in `Model::resolve_voice` for the unnamed one). The
+  unnamed case additionally asserts the diagnostic code
+  `synthesis.voice_unsupported`: the ABI has exactly one voice-error status,
+  so the diagnostic is the only thing that tells a caller a Voice refusal
+  from a codec that failed to run, and both used to arrive as
+  `synthesis.graph_failed`.
 
-**The guard was proven, not assumed.** With the seam line temporarily
-deleted, the test failed at the very first capability assertion:
+**A cost of the 2026-08-12 correction, stated rather than left implicit.**
+While the capability snapshot is all-zero, this test no longer covers the
+seam line it was written for: an all-zero copy of an all-zero struct is
+unobservable, so deleting `shared.voice_profile = info.voice_profile;` leaves
+the integration test green too. The line stays because Plan 2 makes it carry
+something, and the coverage returns with the first nonzero field. What the
+test still proves at the ABI is the empty Preset Voice Catalog and both
+refusal paths.
 
-```
-tests/qwen3_tts_base_load_real.cpp:77: check failed: capabilities.source_flags ==
-  (SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE)
-tests/qwen3_tts_base_load_real.cpp:172: check failed: check_capabilities(model) == 0
-```
-
-Restoring the line restored a clean pass. Building and running this test
-needs a build directory configured with `-DSYNTH_BUILD_INTEGRATION_TESTS=ON`
-and the real Base GGUF on disk; it does not run against the standard `build/`
-unit-gate configuration and is not part of `synthesize-check-unit`.
+Building and running this test needs a build directory configured with
+`-DSYNTH_BUILD_INTEGRATION_TESTS=ON` and the real Base GGUF on disk; it does
+not run against the standard `build/` unit-gate configuration and is not part
+of `synthesize-check-unit`.
 
 ## Open Questions for Intake
 

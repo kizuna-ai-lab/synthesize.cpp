@@ -979,8 +979,11 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     # committed tolerances rather than a measurement: without it the file is a
     # record nothing enforces. The golden sentinel is the oracle payload the
     # replay needs, which is deliberately not committed.
+    # Each Reference Model Variant owns its own artifact root, as VITS's two
+    # already do: the Base and CustomVoice case-id spaces are disjoint today,
+    # but one shared id would have overwritten published goldens in place.
     set(_synth_qwen3_tts_golden_sentinel
-        "${CMAKE_SOURCE_DIR}/build/goldens/qwen3-tts/qwen3-minimal/audio/pcm.f32")
+        "${CMAKE_SOURCE_DIR}/build/goldens/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/qwen3-minimal/audio/pcm.f32")
     if(EXISTS "${SYNTH_QWEN3_TTS_TEST_MODEL}")
         if(EXISTS "${_synth_qwen3_tts_golden_sentinel}")
             add_test(

@@ -206,9 +206,11 @@ struct ModelInfo {
     float                               min_speaking_rate    = 0.0f;
     float                               max_speaking_rate    = 0.0f;
     // Zero-valued (VoiceProfileInfo's own default) for every family that has
-    // not filled it in -- OmniVoice's `shared_info`, as of Task 14, and
-    // Qwen3-TTS's Base variant, as of Plan 1 Task 9 (see VoiceProfileInfo's
-    // own doc comment above for the two families' different fill routes).
+    // not filled it in. OmniVoice's `shared_info` fills it as of Task 14 and
+    // is the only family that does; Qwen3-TTS routes through its own family
+    // layer (fill_voice_profile_capability) but deliberately reports the
+    // all-zero shape until it can actually prepare a Profile -- see
+    // VoiceProfileInfo's own doc comment above for the two fill routes.
     VoiceProfileInfo                    voice_profile;
 };
 

@@ -44,11 +44,11 @@ guaranteed to work until Task 3 lands the Golden Manifest):
       --ref-text "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you." \\
       --text "This is a test of Qwen three T T S base voice cloning." \\
       --language English \\
-      --out-dir build/goldens/qwen3-tts/base-icl-en
+      --out-dir build/goldens/qwen3-tts/qwen3-tts-12hz-0-6b-base/base-icl-en
 
     # x-vector-only mode ignores --ref-text entirely.
     uv run ... --x-vector-only --ref-audio ... --text ... --language English \\
-      --out-dir build/goldens/qwen3-tts/base-xvector-en
+      --out-dir build/goldens/qwen3-tts/qwen3-tts-12hz-0-6b-base/base-xvector-en
 
 Manifest form (the primary interface now that Task 3's Golden Manifest exists;
 a missing ``--manifest`` file is never required -- it is only opened when

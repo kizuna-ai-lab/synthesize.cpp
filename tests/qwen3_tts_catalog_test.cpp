@@ -658,9 +658,11 @@ int check_uncatalogued_new_region_tensors_are_refused() {
     return 0;
 }
 
-// 76 speaker-encoder tensors plus the tokenizer's encoder half, less any
-// codebook the converter stored once. Task 1's census fixes the number;
-// assert it here so a silent change to either region fails a test.
+// 76 speaker-encoder tensors plus the tokenizer's encoder half, carried in
+// full: nothing is stored once and aliased (see catalog.cpp's codec-encoder
+// quantizer resolver, and the converter's `measure_shared_codebooks`, which
+// measures the overlap without acting on it). Task 1's census fixes the
+// number; assert it here so a silent change to either region fails a test.
 int check_real_base_package_count() {
     synth::qwen3tts::HParams h;
     h.talker.layer_count                     = 28;
@@ -677,7 +679,11 @@ int check_real_base_package_count() {
     const uint64_t custom_voice              = synth::qwen3tts::expected_tensor_count(h);
     SYNTH_TEST_CHECK(custom_voice == 657);
     SYNTH_TEST_CHECK(base == 894);
-    SYNTH_TEST_CHECK(base > custom_voice + 76);
+    // The difference, accounted for rather than merely bounded: 76 speaker
+    // encoder tensors and 161 codec encoder ones. A `base > custom_voice + 76`
+    // check stood here and could not fail -- both operands are pinned exactly
+    // two lines up -- so it proved nothing about how the 237 divide.
+    SYNTH_TEST_CHECK(base - custom_voice == 76 + 161);
     return 0;
 }
 

@@ -3,24 +3,24 @@
 // (Plan 2). This exercises the two family-layer rules that make that honest
 // rather than a silent guess:
 //
-//   1. weights.h's has_preset_voice_catalog, which Model::resolve_voice
-//      (model.cpp) consults BEFORE find_preset_voice ever runs -- a
-//      profile-sources package refuses with SYNTH_ERR_UNSUPPORTED_VOICE
-//      whether a request names no voice_id at all or names one that could
-//      never exist, because there is no catalog to have missed a voice in
-//      either way. Both collapse to the same public status; what would
-//      distinguish "no voice_id" from "unknown voice_id" is a diagnostic
-//      concern, not a status code (see weights.h's find_preset_voice).
+//   1. weights.h's has_preset_voice_catalog, the declared-mode discriminator,
+//      and the empty catalog it implies: read_voices refuses a
+//      profile-sources package that declares any preset at all and clears the
+//      vector, so Model::resolve_voice's find_preset_voice (model.cpp)
+//      refuses with SYNTH_ERR_UNSUPPORTED_VOICE whether a request names no
+//      voice_id or names one that could never exist. Both collapse to the
+//      same public status; what would distinguish "no voice_id" from
+//      "unknown voice_id" is a diagnostic concern, not a status code.
 //
 //   2. weights.h's fill_voice_profile_capability, which Model::get_info
 //      (model.cpp) uses to build the capability snapshot a caller reads
-//      before ever trying to synthesize: no preset voices, but Reference
-//      Audio and Serialized Profile support declared honestly through
-//      synth::VoiceProfileInfo -- gated on the same voice_mode discriminator
-//      has_preset_voice_catalog uses, not on has_speaker_encoder alone, so a
-//      package that somehow set the encoder flag without a populated
-//      ProfileContract cannot advertise support it cannot back with real
-//      limits.
+//      before ever trying to synthesize. As of Plan 1 that snapshot is
+//      all-zero for EVERY variant of this family -- no preset voices on Base,
+//      and no advertised Voice Profile source on either -- because nothing in
+//      the runtime can create or consume a Profile yet
+//      (src/voice-profile.cpp dispatches OmniVoice only). The Base package's
+//      own ProfileContract is still read and validated at load time; what is
+//      withheld is the runtime's claim, not the package's declaration.
 //
 // A `unit`-labelled test cannot depend on the real ~2.5 GB Base package
 // (docs/testing.md), so both rules are exercised here directly against
@@ -98,13 +98,14 @@ int test_profile_sources_package_has_no_catalog_even_with_entries() {
     return 0;
 }
 
-int test_customvoice_capability_reports_no_voice_profile_support() {
-    const synth::qwen3tts::HParams h = customvoice_hparams();
-    synth::VoiceProfileInfo        info;
-    synth::qwen3tts::fill_voice_profile_capability(h, info);
-
-    // The "no Voice Profile support" shape docs/c-interface.md requires:
-    // VoiceProfileInfo's own all-zero default, untouched.
+// docs/c-interface.md's "no runtime Voice Profile support" shape, in full:
+// zero source flags, and with them zero (or SYNTH_REQUIREMENT_UNSUPPORTED) in
+// every field that describes a source -- including the Serialized Profile
+// identity, which the same document requires to be an empty schema, a zero
+// version and 32 zero ID bytes when that bit is clear. It is
+// VoiceProfileInfo's own default, which is what makes this checkable field by
+// field rather than by trusting the default.
+int check_reports_no_voice_profile_support(const synth::VoiceProfileInfo & info) {
     SYNTH_TEST_CHECK(info.source_flags == 0);
     SYNTH_TEST_CHECK(info.reference_transcript == SYNTH_REQUIREMENT_UNSUPPORTED);
     SYNTH_TEST_CHECK(info.reference_language == SYNTH_REQUIREMENT_UNSUPPORTED);
@@ -117,73 +118,71 @@ int test_customvoice_capability_reports_no_voice_profile_support() {
     SYNTH_TEST_CHECK(info.max_reference_count == 0);
     SYNTH_TEST_CHECK(info.schema.empty());
     SYNTH_TEST_CHECK(info.schema_version == 0);
+    for (uint8_t byte : info.compatibility_id) {
+        SYNTH_TEST_CHECK(byte == 0);
+    }
     return 0;
+}
+
+int test_customvoice_capability_reports_no_voice_profile_support() {
+    const synth::qwen3tts::HParams h = customvoice_hparams();
+    synth::VoiceProfileInfo        info;
+    synth::qwen3tts::fill_voice_profile_capability(h, info);
+    return check_reports_no_voice_profile_support(info);
 }
 
 // A future variant could in principle set has_speaker_encoder without also
 // being profile-sources -- unreachable via read_hparams today (the profile
 // contract and speaker encoder are only ever read together, gated on
 // voice_mode == ProfileSources), but this HParams is built directly rather
-// than through read_hparams, so it can hold both at once. This is the
-// discriminator-mismatch case: fill_voice_profile_capability must gate on
-// voice_mode (has_preset_voice_catalog), not on has_speaker_encoder alone,
-// or it would advertise SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO backed by an
-// unpopulated, all-zero ProfileContract -- a capability lie.
+// than through read_hparams, so it can hold both at once. Nothing about an
+// encoder flag makes a runtime able to prepare a Profile, so this shape
+// advertises nothing either.
 int test_speaker_encoder_without_profile_sources_advertises_nothing() {
     synth::qwen3tts::HParams h = customvoice_hparams();
     h.has_speaker_encoder      = true;  // adversarial: profile contract left unset
     synth::VoiceProfileInfo info;
     synth::qwen3tts::fill_voice_profile_capability(h, info);
+    return check_reports_no_voice_profile_support(info);
+}
 
-    SYNTH_TEST_CHECK(info.source_flags == 0);
-    SYNTH_TEST_CHECK(info.reference_transcript == SYNTH_REQUIREMENT_UNSUPPORTED);
-    SYNTH_TEST_CHECK(info.reference_language == SYNTH_REQUIREMENT_UNSUPPORTED);
-    SYNTH_TEST_CHECK(info.reference_target_sample_rate == 0);
-    SYNTH_TEST_CHECK(info.reference_target_channels == 0);
-    SYNTH_TEST_CHECK(info.min_frames_per_clip == 0);
-    SYNTH_TEST_CHECK(info.max_frames_per_clip == 0);
-    SYNTH_TEST_CHECK(info.max_total_frames == 0);
-    SYNTH_TEST_CHECK(info.max_reference_count == 0);
-    SYNTH_TEST_CHECK(info.schema.empty());
-    SYNTH_TEST_CHECK(info.schema_version == 0);
+// The Base shape, through the production discriminator rather than by
+// inspecting the fixture: a profile-sources package carries no Preset Voice
+// Catalog, so a Voice id has nothing to resolve against.
+int test_base_package_carries_no_preset_voice_catalog() {
+    const synth::qwen3tts::HParams h = base_hparams();
+    SYNTH_TEST_CHECK(!synth::qwen3tts::has_preset_voice_catalog(h));
+    synth::qwen3tts::PresetVoice found;
+    SYNTH_TEST_CHECK(!synth::qwen3tts::find_preset_voice(h, "aiden", found));
     return 0;
 }
 
-int test_base_capability_reports_no_preset_voices() {
+// The Critical finding of this branch's whole-branch review, inverted into a
+// test. base_hparams() carries a fully populated, load-time-validated
+// ProfileContract -- 24 kHz mono, real per-clip and total limits, a real
+// schema and compatibility id -- and the capability snapshot still advertises
+// NOTHING, because src/voice-profile.cpp cannot prepare, consume or
+// serialize a Profile for this family: every source there is guarded on
+// `family != ModelFamily::Omnivoice`. docs/c-interface.md is the contract
+// that decides this ("A Model without runtime Voice Profile support reports
+// zero flags"), and a package that carries a contract nothing can honour is
+// not a Model with runtime support.
+//
+// Plan 2 is what flips this: when preparation exists, this same fixture must
+// report SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SERIALIZED_PROFILE and the
+// six limits below, and this test is expected to be rewritten there rather
+// than deleted.
+int test_base_capability_advertises_nothing_until_preparation_exists() {
     const synth::qwen3tts::HParams h = base_hparams();
-    SYNTH_TEST_CHECK(h.preset_voices.empty());
-    return 0;
-}
+    // The contract really is there to publish, which is what makes the
+    // all-zero answer a decision rather than an empty struct.
+    SYNTH_TEST_CHECK(h.profile.schema == "qwen3-tts-voice-clone");
+    SYNTH_TEST_CHECK(h.profile.reference_sample_rate == 24000);
+    SYNTH_TEST_CHECK(h.profile.max_reference_count == 1);
 
-int test_base_capability_reports_reference_audio_and_serialized_profile() {
-    const synth::qwen3tts::HParams h = base_hparams();
-    synth::VoiceProfileInfo        info;
+    synth::VoiceProfileInfo info;
     synth::qwen3tts::fill_voice_profile_capability(h, info);
-
-    SYNTH_TEST_CHECK((info.source_flags & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) != 0);
-    SYNTH_TEST_CHECK((info.source_flags & SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE) != 0);
-    // Nothing else: this package has no Description Text or Random Seed path.
-    SYNTH_TEST_CHECK((info.source_flags & SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT) == 0);
-    SYNTH_TEST_CHECK((info.source_flags & SYNTH_PROFILE_SOURCE_RANDOM_SEED) == 0);
-
-    SYNTH_TEST_CHECK(info.reference_transcript == SYNTH_REQUIREMENT_OPTIONAL);
-    SYNTH_TEST_CHECK(info.reference_language == SYNTH_REQUIREMENT_OPTIONAL);
-    // Never claimed: this family has no Description Text path.
-    SYNTH_TEST_CHECK(info.description_language == SYNTH_REQUIREMENT_UNSUPPORTED);
-
-    SYNTH_TEST_CHECK(info.reference_target_sample_rate == 24000);
-    SYNTH_TEST_CHECK(info.reference_target_channels == 1);
-    SYNTH_TEST_CHECK(info.min_frames_per_clip == 24000);
-    SYNTH_TEST_CHECK(info.max_frames_per_clip == 720000);
-    SYNTH_TEST_CHECK(info.max_total_frames == 720000);
-    SYNTH_TEST_CHECK(info.max_reference_count == 1);
-
-    SYNTH_TEST_CHECK(info.schema == "qwen3-tts-voice-clone");
-    SYNTH_TEST_CHECK(info.schema_version == 1);
-    for (uint8_t byte : info.compatibility_id) {
-        SYNTH_TEST_CHECK(byte == 0xaa);
-    }
-    return 0;
+    return check_reports_no_voice_profile_support(info);
 }
 
 }  // namespace
@@ -193,7 +192,7 @@ int main() {
     SYNTH_TEST_CHECK(test_profile_sources_package_has_no_catalog_even_with_entries() == 0);
     SYNTH_TEST_CHECK(test_customvoice_capability_reports_no_voice_profile_support() == 0);
     SYNTH_TEST_CHECK(test_speaker_encoder_without_profile_sources_advertises_nothing() == 0);
-    SYNTH_TEST_CHECK(test_base_capability_reports_no_preset_voices() == 0);
-    SYNTH_TEST_CHECK(test_base_capability_reports_reference_audio_and_serialized_profile() == 0);
+    SYNTH_TEST_CHECK(test_base_package_carries_no_preset_voice_catalog() == 0);
+    SYNTH_TEST_CHECK(test_base_capability_advertises_nothing_until_preparation_exists() == 0);
     return 0;
 }

@@ -328,11 +328,12 @@ synth_status_t Model::get_info(ModelInfo & output) const {
     output.frontend_provider = hparams.frontend_provider;
     // A profile-sources package (this family's Base variant) reports no
     // preset Voice at all -- `preset_voice_ids` above is already empty,
-    // because `hparams.preset_voices` is -- and instead claims Reference
-    // Audio (plus Serialized Profile) through the Voice Profile snapshot
-    // below. Preparing a Profile itself still returns
-    // SYNTH_ERR_UNSUPPORTED_VOICE until Plan 2 lands the graph that consumes
-    // one; this is a dispatch gap, not a capability lie.
+    // because `hparams.preset_voices` is -- and, as of Plan 1, no Voice
+    // Profile source either: nothing in the runtime can prepare or consume
+    // one for this family yet, and docs/c-interface.md says a Model without
+    // runtime Voice Profile support reports zero flags. See
+    // fill_voice_profile_capability itself for why the package's own
+    // ProfileContract is still read and validated regardless.
     fill_voice_profile_capability(hparams, output.voice_profile);
     return SYNTH_OK;
 }
@@ -374,14 +375,19 @@ synth_status_t Model::resolve_voice(const std::string & voice_id,
 
     // A profile-sources package carries no Preset Voice Catalog at all --
     // every request must supply a prepared Voice Profile instead (Plan 2) --
-    // so this refuses before the preset lookup ever runs: there is no catalog
-    // to have missed a voice in. Both refusals share the ABI's one
-    // voice-error status, SYNTH_ERR_UNSUPPORTED_VOICE; what distinguishes
-    // them is a diagnostic concern, not a status code.
-    if (!has_preset_voice_catalog(implementation_->hparams)) {
-        return SYNTH_ERR_UNSUPPORTED_VOICE;
-    }
-
+    // and the lookup below is what refuses it: read_voices guarantees such a
+    // package reaches here with an empty `preset_voices` (it refuses a
+    // nonzero preset_count outright and clears the vector; see
+    // qwen3_tts_metadata_test.cpp's profile-sources cases), so no id can
+    // match and every request is refused whether it names a Voice or not.
+    //
+    // An explicit `has_preset_voice_catalog` guard stood here until the
+    // branch's final review: it returned the same SYNTH_ERR_UNSUPPORTED_VOICE
+    // one line earlier, so removing it changed no observable behaviour and no
+    // test could be written that saw it work. What it was documenting -- that
+    // the refusal is "there is no catalog" rather than "that name is not in
+    // the catalog" -- is not expressible here anyway: the ABI defines exactly
+    // one voice-error status (include/synthesize.h) and both refusals take it.
     PresetVoice voice;
     if (!find_preset_voice(implementation_->hparams, voice_id, voice)) {
         return SYNTH_ERR_UNSUPPORTED_VOICE;

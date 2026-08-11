@@ -33,7 +33,7 @@
 | `tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json` | create | Golden Manifest: provenance, package contract, cases, relations |
 | `tests/tolerances/qwen3-tts.json` | modify | Add the base variant's stage keys |
 | `scripts/convert-qwen3-tts.py` | modify | Variant-aware conversion; speaker encoder; both codec halves; profile contract |
-| `tests/python/test_convert_qwen3_tts.py` | modify | Rules that fail silently: variant discrimination, codebook dedup, catalog emptiness |
+| `tests/python/test_convert_qwen3_tts.py` | modify | Rules that fail silently: variant discrimination, catalog emptiness and catalog presence, profile-block emission (the codebook dedup this row once listed was removed — see Task 5's superseded banner) |
 | `src/arch/qwen3-tts/weights.h` | modify | `SpeakerEncoderParams`, `CodecEncoderParams`, `ProfileContract`, voice mode |
 | `src/arch/qwen3-tts/weights.cpp` | modify | Read and validate the above; accept an empty Catalog |
 | `src/arch/qwen3-tts/catalog.cpp` | modify | Cover the two new tensor namespaces with shape checks |
@@ -382,7 +382,7 @@ git commit -m "qwen3-tts: discriminate Base from CustomVoice on what the config 
 
 **Interfaces:**
 - Consumes: `variant_profile` from Task 4.
-- Produces: tensors named `speaker_encoder.*` and `codec.encoder.*` in the GGUF; `Conversion.deduplicated: list[dict[str, str]]`.
+- Produces: tensors named `speaker_encoder.*` and `codec.encoder.*` in the GGUF; `Conversion.measured_shared_codebooks: list[dict[str, str]]` (the superseded form of this line named `Conversion.deduplicated`, which no longer exists — see the banner below).
 
 **Superseded, 2026-08-11 — the dedup was removed after review.** Steps 1-4 below
 were implemented as written and then undone deliberately. Deduplicating stored

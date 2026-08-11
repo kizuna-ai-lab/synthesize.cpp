@@ -362,6 +362,43 @@ class EncoderTensorNameShorteningTests(unittest.TestCase):
         self.assertLess(len(decoder_shortened), convert.GGML_MAX_NAME)
         self.assertLess(len(encoder_shortened), convert.GGML_MAX_NAME)
 
+    def test_the_two_layer_scale_rules_are_a_matched_pair(self) -> None:
+        """`.self_attn_layer_scale.` and `.mlp_layer_scale.` shorten together.
+
+        Only the first is a length fix: at 66 characters it overflows
+        `GGML_MAX_NAME`, while its sibling fits at 60 and would be emitted
+        unchanged if its rule did not exist. The `.mlp_layer_scale.` entry is
+        there for symmetry -- one long name and one short one beside it reads
+        as a mistake -- and `src/arch/qwen3-tts/catalog.cpp` resolves both
+        short forms (`self_attn_scale.scale`, `mlp_scale.scale`).
+
+        Asserted because a rule that fires on a name which fits anyway is
+        exactly the rule someone later deletes as redundant, and deleting it
+        renames a tensor the catalog then cannot find -- with no error from
+        either side, since neither length limit is involved.
+        """
+        attn = "codec.decoder.pre_transformer.layers.0.self_attn_layer_scale.scale"
+        mlp = "codec.decoder.pre_transformer.layers.0.mlp_layer_scale.scale"
+        self.assertGreaterEqual(len(attn), convert.GGML_MAX_NAME)
+        self.assertLess(len(mlp), convert.GGML_MAX_NAME)
+
+        self.assertEqual(
+            convert.shorten_name(attn, convert.Conversion()),
+            "codec.decoder.pre_transformer.layers.0.self_attn_scale.scale")
+        self.assertEqual(
+            convert.shorten_name(mlp, convert.Conversion()),
+            "codec.decoder.pre_transformer.layers.0.mlp_scale.scale")
+
+    def test_a_name_that_cannot_be_shortened_enough_is_refused(self) -> None:
+        """The rule set's floor: emitting a name GGML would truncate is refused.
+
+        A truncated name is not a load error -- the catalog simply never finds
+        the tensor -- so this raises rather than warning.
+        """
+        name = "codec.encoder." + "x" * convert.GGML_MAX_NAME + ".weight"
+        with self.assertRaises(convert.ConverterError):
+            convert.shorten_name(name, convert.Conversion())
+
 
 class BaseCatalogTests(unittest.TestCase):
     """A Base package advertises no Voice it can select and says so positively."""
@@ -575,7 +612,13 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
             "test", carries_speaker_encoder, carries_speaker_encoder, "Test Display Name", "0.0B")
         return (manifest, config, {}, codec_config, generation_config, {"a": 0, "b": 1}, [], digests, profile)
 
-    def _written_keys(self, carries_speaker_encoder: bool) -> set[str]:
+    def _written_metadata(self, carries_speaker_encoder: bool) -> dict:
+        """Every KV of a real written-and-re-read GGUF, as plain Python values.
+
+        Values, not just key names: an emission that writes the right keys
+        with the wrong contents (a catalog ordered by token id against names
+        ordered alphabetically, say) is silent everywhere else.
+        """
         args = self._minimal_add_metadata_args(carries_speaker_encoder)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "meta.gguf"
@@ -586,7 +629,12 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
             writer.write_tensors_to_file()
             writer.close()
             reader = convert.GGUFReader(str(path))
-            return set(reader.fields.keys())
+            # Materialized inside the block: the reader memory-maps the file,
+            # which the TemporaryDirectory removes on exit.
+            return {name: field.contents() for name, field in reader.fields.items()}
+
+    def _written_keys(self, carries_speaker_encoder: bool) -> set[str]:
+        return set(self._written_metadata(carries_speaker_encoder))
 
     def test_a_variant_with_a_speaker_encoder_carries_the_profile_block(self) -> None:
         keys = self._written_keys(carries_speaker_encoder=True)
@@ -620,6 +668,41 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
             or key.startswith("synthesize.qwen3-tts.speaker_encoder.")
         ]
         self.assertEqual(leaked, [])
+
+    # The Preset Voice Catalog is the other half of the same conditional, and
+    # the half nothing checked: `add_metadata` emits the three
+    # `synthesize.qwen3-tts.speakers.*` arrays under `if speaker_names:`,
+    # where the published CustomVoice path used to be straight-line code.
+    # Replacing that condition with `if False:` -- which drops the whole
+    # catalog from a CustomVoice package -- left the entire Python suite
+    # green, because every case here only asserted what a Base package does
+    # NOT carry. The published variant's own emission is what these two
+    # assert, from opposite directions.
+    def test_a_preset_catalog_variant_carries_its_speaker_catalog(self) -> None:
+        metadata = self._written_metadata(carries_speaker_encoder=False)
+        self.assertEqual(metadata["synthesize.voice.mode"], "preset-catalog")
+        self.assertEqual(metadata["synthesize.voice.preset_count"], 1)
+        # One speaker, and the three arrays are one catalog read index by
+        # index: same length, and each entry's own value.
+        self.assertEqual(metadata["synthesize.qwen3-tts.speakers.names"], ["voice1"])
+        self.assertEqual(metadata["synthesize.qwen3-tts.speakers.token_ids"], [0])
+        self.assertEqual(metadata["synthesize.qwen3-tts.speakers.dialect_override"], [""])
+
+    def test_a_profile_sources_variant_carries_no_speaker_catalog(self) -> None:
+        metadata = self._written_metadata(carries_speaker_encoder=True)
+        self.assertEqual(metadata["synthesize.voice.mode"], "profile-sources")
+        self.assertEqual(metadata["synthesize.voice.preset_count"], 0)
+        # Absent, not present-and-empty: an empty
+        # `synthesize.qwen3-tts.speakers.*` array would be a Catalog that
+        # exists and selects nothing, which is not what this variant declares
+        # (src/arch/qwen3-tts/weights.cpp's read_voices reads the mode, not
+        # the arrays' length).
+        for key in (
+            "synthesize.qwen3-tts.speakers.names",
+            "synthesize.qwen3-tts.speakers.token_ids",
+            "synthesize.qwen3-tts.speakers.dialect_override",
+        ):
+            self.assertNotIn(key, metadata, key)
 
 
 if __name__ == "__main__":

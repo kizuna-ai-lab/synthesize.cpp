@@ -1,9 +1,17 @@
 # Qwen3-TTS Stage 2 — Reference Audio Voice Cloning — Design
 
-Status: Approved in discussion with jiangzhuo on 2026-08-11. This is the design
+Status: Approved in discussion with jiangzhuo on 2026-08-11; two errata added
+2026-08-12 after Plan 1 (the Base package) was executed. This is the design
 record for the second rung of the Qwen3-TTS Reference Model Variant Ladder
 (`docs/porting/families/qwen3-tts.md`, "Reference Model Variant Ladder"). The
 family record itself is extended at intake, per `docs/model-porting.md`.
+
+Plans 2–4 are written from this document, so where execution contradicted it
+the correction lives here rather than only in the plan that found it. Both
+errata are marked in bold in the section they correct: section 4 on codec
+deduplication, section 6 on greedy oracle decoding. Nothing else in this
+document has been rewritten — the original prescription is left standing above
+each erratum so the change is legible.
 
 ## 1. Context
 
@@ -174,6 +182,34 @@ The `GGML_MAX_NAME`
 discipline established in Stage 1 — refuse to emit any name at or over the
 limit — applies to every new name.
 
+**Erratum, 2026-08-12 — the store-once path was built, then withdrawn. Both
+halves are carried in full, always.** The paragraph above prescribes two
+explicit paths and Plan 1 implemented the identical-tensors one: 16 encoder
+codebooks stored once under the decoder's name. What that produced was a
+package in which the encoder's own names never appeared at all — a consumer
+reading the GGUF found encoder quantizer stages 15–30 present and 0–14 simply
+absent, with no clue that they had been folded into the decoder's. The other
+half of the prescription, "record the mapping in the tensor catalog", was never
+made durable: the mapping existed only in a conversion report under an ignored
+build directory, so it did not survive the package. An alias no consumer can
+resolve from the package alone is worse than the duplicated bytes it saves.
+
+Two facts settled it. The measurement is smaller than it looked — the decoder
+declares 16 quantizers, so encoder stages 15–30 have no counterpart to share
+with at all; the real figure is 16 of 16 *existing* pairs, not 16 of 32. And
+the saving is small: 33.5 MB of codebooks plus 2 MB of quantizer projections
+that were duplicated too, about 1.4% of a 2.48 GB package.
+
+What governs instead: **carry both halves in full and keep the measurement as
+a recorded fact.** Every tensor name resolves from the package alone, and the
+catalog, the loader and any future quantizer have no cross-half aliasing
+contract to honour. `measure_shared_codebooks` in `scripts/convert-qwen3-tts.py`
+still runs the comparison at every conversion and records what it finds without
+acting on it. The expected Base tensor count is 894.
+
+This erratum is not limited to Stage 2's Base package: the same rule applies to
+any later variant of this family whose two codec halves overlap.
+
 The Profile Compatibility ID is computed per `docs/model-packages.md` as
 SHA-256 over the family's canonical compatibility manifest, including the
 upstream checkpoint provenance and fingerprints of the Voice-conditioning
@@ -232,6 +268,32 @@ Base end-to-end. The oracle runs at the checkpoint's dtype, and both sampling
 switches (`do_sample`, `subtalker_dosample`) are set false wherever a
 reproducible trajectory is needed — the Stage 1 trap that is silently
 non-deterministic if only one is set.
+
+**Erratum, 2026-08-12 — greedy decoding does not produce a usable oracle for
+this family, and was replaced by seeded sampling.** The paragraph above
+prescribes `do_sample=False, subtalker_dosample=False` for reproducibility,
+and Plan 1's Task 2 ran the Base oracle exactly that way. Its first case ran
+away to 8191 frames — roughly 655 seconds of audio for one short sentence
+(`semantic.i32` at 32764 bytes = 8191 int32, `acoustic.i32` at 8191 × 15) —
+and the run was killed. This is not new: `docs/porting/families/qwen3-tts.md`
+already records that greedy "degenerates on some speaker-and-input pairings"
+and that Stage 1 abandoned it for that reason, and every Stage 1 Golden case
+runs both switches true at `max_new_tokens 2048`. The prescription above was
+written without carrying that finding forward.
+
+Reproducibility here does not come from removing the draw. It comes from
+recording it: **the oracle samples with both switches true and a fixed seed at
+`max_new_tokens 2048`, and writes the sampled sequence into the case's
+artifacts** (`stochastic_inputs`, the shape Stage 1 already uses). The
+validation-only replay seam then feeds that exact sequence into both graphs,
+which is what the last paragraph of this section already describes for the
+autoregressive half — the erratum makes the oracle's own configuration agree
+with it. The degenerate run's artifacts were discarded and regenerated; the
+same case then drew 43 frames.
+
+The rule generalizes to every later stage of this family: an oracle for a
+sampled model is made reproducible by replaying its recorded draw, never by
+switching the draw off.
 
 Mel to x-vector and waveform to codes are deterministic given fixed input, so
 both compare tensor-by-tensor under committed tolerances. Reference codes are

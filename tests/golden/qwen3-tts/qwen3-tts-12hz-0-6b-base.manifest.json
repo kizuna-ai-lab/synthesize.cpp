@@ -5,8 +5,8 @@
   "family": "qwen3-tts",
   "variant": "qwen3-tts-12hz-0-6b-base",
   "source": {
-    "repository": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-    "revision": "5d83992436eae1d760afd27aff78a71d676296fc",
+    "repository": "https://github.com/QwenLM/Qwen3-TTS",
+    "revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
     "artifacts": [
       {
         "role": "checkpoint",
@@ -109,7 +109,7 @@
     "max_output_frames": 15728640
   },
   "tolerance_file": "tests/tolerances/qwen3-tts.json",
-  "case_artifact_root": "build/goldens/qwen3-tts",
+  "case_artifact_root": "build/goldens/qwen3-tts/qwen3-tts-12hz-0-6b-base",
   "cases": [
     {
       "id": "base-upstream-clone-en",

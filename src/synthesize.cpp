@@ -993,10 +993,17 @@ synth_status_t synth_synthesize(synth_context_t *          context,
     }
 
     if (context->model->info.family == synth::ModelFamily::Qwen3Tts) {
-        // This family has no Voice Profile support of its own: a profile
-        // reaching here would either be a defect in the cross-model check
-        // above (see the omnivoice branch) or a future family's own profile
-        // presented to the wrong one. Either way, silently ignoring
+        // This family cannot consume a Voice Profile yet. Its Base package
+        // does carry a Voice Profile contract -- `synthesize.profile.*`, read
+        // and validated at load time -- but nothing in the runtime can
+        // prepare or consume one: src/voice-profile.cpp dispatches every
+        // source for OmniVoice alone, and the family's own capability
+        // snapshot therefore advertises zero sources
+        // (src/arch/qwen3-tts/weights.cpp's fill_voice_profile_capability).
+        // So a profile reaching here would either be a defect in the
+        // cross-model check above (see the omnivoice branch) or a future
+        // family's own profile presented to the wrong one. Either way,
+        // silently ignoring
         // `prepared.voice_profile` and synthesizing anyway would answer with
         // the wrong Voice rather than the refusal the caller asked for.
         if (prepared.voice_profile != nullptr) {
@@ -1044,6 +1051,19 @@ synth_status_t synth_synthesize(synth_context_t *          context,
             // graph failure.
             if (status == SYNTH_ERR_OUTPUT_LIMIT) {
                 return report_output_limit(delivery_info, sink, out_result);
+            }
+            // A Voice refusal is not a graph failure. run_synthesis resolves
+            // the Voice before it builds anything (Model::resolve_voice), so
+            // SYNTH_ERR_UNSUPPORTED_VOICE here means the request named a
+            // Voice this package does not have -- or, for a profile-sources
+            // package, that it has no Preset Voice Catalog to name one from
+            // at all. Both are the caller's request, not the port's
+            // arithmetic, and a caller reading only the diagnostic sink could
+            // not tell them from a codec that failed to run.
+            if (status == SYNTH_ERR_UNSUPPORTED_VOICE) {
+                emit_diagnostic(prepared.diagnostics, status, "synthesis.voice_unsupported",
+                                synth_status_string(status));
+                return status;
             }
             if (status != SYNTH_OK) {
                 emit_diagnostic(prepared.diagnostics, status, "synthesis.graph_failed", synth_status_string(status));

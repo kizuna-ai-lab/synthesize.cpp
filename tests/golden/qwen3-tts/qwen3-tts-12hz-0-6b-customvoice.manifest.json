@@ -98,7 +98,7 @@
     "max_output_frames": 15728640
   },
   "tolerance_file": "tests/tolerances/qwen3-tts.json",
-  "case_artifact_root": "build/goldens/qwen3-tts",
+  "case_artifact_root": "build/goldens/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice",
   "cases": [
     {
       "id": "qwen3-upstream-customvoice",

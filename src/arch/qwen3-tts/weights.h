@@ -223,41 +223,52 @@ bool resolve_language_token(const HParams &     hparams,
                             std::string &       resolved_name);
 
 // Whether this package carries a Preset Voice Catalog at all. False for a
-// profile-sources package (this family's Base variant): no catalog exists to
-// resolve a Voice id against, so Model::resolve_voice refuses before
-// find_preset_voice ever runs -- there is no catalog entry to have missed a
-// voice in. Both refusals share the ABI's one voice-error status,
-// SYNTH_ERR_UNSUPPORTED_VOICE; what distinguishes them is a diagnostic
-// concern, not a status code.
+// profile-sources package (this family's Base variant): read_voices refuses
+// such a package unless its preset_count is zero and clears `preset_voices`,
+// so there is no catalog to resolve a Voice id against and
+// Model::resolve_voice's lookup refuses every request, named or not.
+//
+// Deliberately answered from `voice_mode` rather than from
+// `preset_voices.empty()`: the mode is what the package DECLARES, and a
+// truncated catalog that merely arrived empty is a different thing that must
+// not read as this one.
+//
+// It has no production caller as of Plan 1. Its two callers -- the
+// capability gate in fill_voice_profile_capability and the catalog-less
+// refusal in Model::resolve_voice -- were both removed by this branch's final
+// review, each for the same reason: neither could be observed doing anything
+// the code around it did not already do. It is kept because the unit tests
+// assert the discriminator itself (tests/qwen3_tts_voice_required_test.cpp)
+// and because Plan 2's capability gate is specified against it.
 inline bool has_preset_voice_catalog(const HParams & hparams) {
     return hparams.voice_mode == VoiceMode::PresetCatalog;
 }
 
-// Fills the Voice Profile capability fields this package supports, straight
-// from its already-validated HParams -- what Model::get_info reports through
-// synth::VoiceProfileInfo. Unlike OmniVoice, which keeps its family ModelInfo
-// to the raw ProfileContract and lets src/synthesize.cpp's shared_info
-// assemble VoiceProfileInfo inline at the seam, this family assembles the
-// whole struct here, in the family layer, and shared_info just copies the
-// result through -- see src/model-info.h's own VoiceProfileInfo doc comment
-// for why the two routes differ (unit-testability without a loaded Model).
-// The VALUE rule below does still match OmniVoice's.
+// Fills the Voice Profile capability fields this package supports -- what
+// Model::get_info reports through synth::VoiceProfileInfo. Unlike OmniVoice,
+// which keeps its family ModelInfo to the raw ProfileContract and lets
+// src/synthesize.cpp's shared_info assemble VoiceProfileInfo inline at the
+// seam, this family assembles the whole struct here, in the family layer, and
+// shared_info just copies the result through -- see src/model-info.h's own
+// VoiceProfileInfo doc comment for why the two routes differ
+// (unit-testability without a loaded Model).
 //
-// Gated on has_preset_voice_catalog -- the same discriminator that function
-// uses, deliberately: hparams.profile (every limit published below) is only
-// ever populated on the profile-sources branch (read_hparams's
-// read_profile_and_speaker_encoder), so gating on voice_mode rather than the
-// has_speaker_encoder flag keeps what is claimed and what is published in
-// agreement even for a hypothetical future package that set
-// has_speaker_encoder without also being profile-sources. REFERENCE_AUDIO is
-// claimed only on that path; SERIALIZED_PROFILE is claimed alongside it
-// because every successfully prepared v1 Profile can be serialized -- the
-// same value src/synthesize.cpp documents for OmniVoice's own shared_info. A
-// preset-catalog package leaves `info` at VoiceProfileInfo's own all-zero
-// default -- the "no Voice Profile support" shape docs/c-interface.md
-// requires. Preparing a Profile itself still returns
-// SYNTH_ERR_UNSUPPORTED_VOICE until Plan 2 lands the graph that consumes
-// one; this is a dispatch gap, not a capability lie.
+// As of Plan 1 every variant of this family reports NOTHING: zero source
+// flags and, with them, zero in every field that describes a source. That is
+// docs/c-interface.md's required shape for a Model with no runtime Voice
+// Profile support, and this family has none -- src/voice-profile.cpp
+// dispatches preparation, consumption and serialization for OmniVoice alone,
+// so nothing here could create or consume a Profile if a caller believed the
+// advertisement. A Base package's ProfileContract and speaker-encoder
+// metadata are still read and validated in full at load time (read_hparams):
+// the package declaring a contract and the runtime advertising a capability
+// are different statements, and only the second would be false.
+//
+// Plan 2 lands the speaker encoder and Profile preparation and flips this to
+// SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO, with
+// SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE alongside it (every successfully
+// prepared v1 Profile can be serialized), published from hparams.profile's
+// already-validated limits and gated on has_preset_voice_catalog.
 void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & info);
 
 }  // namespace synth::qwen3tts

@@ -11,8 +11,8 @@ interface — no synthesis capability exists only in one of them.
 - Version `0.1.0`, ABI version `1` (`SYNTH_VERSION_*` and `SYNTH_ABI_VERSION` in
   the header are the single source of truth; CMake and `pyproject.toml` both
   parse it from there).
-- Four Model Families, six Reference Model Variants, five published model
-  repositories.
+- Four Model Families, six Reference Model Variants, four Published Model
+  Packages and one Restricted Model Package.
 - Delivered Validation Level is `port_validated` throughout. This project has
   **not** run a corpus-scale Quality Evaluation and makes no quality,
   naturalness, or comparative-ranking claim ([ADR 0017](docs/adr/0017-separate-port-validation-from-quality-evaluation.md)).

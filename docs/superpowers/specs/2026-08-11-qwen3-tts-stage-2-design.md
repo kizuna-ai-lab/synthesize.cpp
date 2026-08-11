@@ -1,17 +1,18 @@
 # Qwen3-TTS Stage 2 — Reference Audio Voice Cloning — Design
 
-Status: Approved in discussion with jiangzhuo on 2026-08-11; two errata added
+Status: Approved in discussion with jiangzhuo on 2026-08-11; three errata added
 2026-08-12 after Plan 1 (the Base package) was executed. This is the design
 record for the second rung of the Qwen3-TTS Reference Model Variant Ladder
 (`docs/porting/families/qwen3-tts.md`, "Reference Model Variant Ladder"). The
 family record itself is extended at intake, per `docs/model-porting.md`.
 
 Plans 2–4 are written from this document, so where execution contradicted it
-the correction lives here rather than only in the plan that found it. Both
-errata are marked in bold in the section they correct: section 4 on codec
-deduplication, section 6 on greedy oracle decoding. Nothing else in this
-document has been rewritten — the original prescription is left standing above
-each erratum so the change is legible.
+the correction lives here rather than only in the plan that found it. All three
+errata are marked in bold in the section they correct: section 3 on the Voice
+Profile capability advertisement, section 4 on codec deduplication, section 6 on
+greedy oracle decoding. Nothing else in this document has been rewritten — the
+original prescription is left standing above each erratum so the change is
+legible.
 
 ## 1. Context
 
@@ -159,6 +160,53 @@ stays unadvertised; it belongs to Stage 3. Random Seed stays unadvertised.
 plan predicted before the checkpoint was read — and its presence selects the
 mode per D4. `reference_language` is optional. The declared Voice encoder
 target is 24 kHz mono.
+
+**Erratum, 2026-08-12 — the runtime advertises no Voice Profile source at all
+until preparation exists. The two paragraphs above describe what the package
+declares, not what the capability snapshot may report.** They were implemented
+as written: Plan 1's Task 9 published `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO |
+SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` with the optional transcript and
+language requirements and the reference limits, and the branch's final review
+reversed it. `docs/c-interface.md` does not leave the question open: *"A Model
+without runtime Voice Profile support reports zero flags"*, and for an
+unsupported source *"all fields that describe that source are
+`SYNTH_REQUIREMENT_UNSUPPORTED` or zero"* — down to a null `profile_schema`,
+zero schema version, and 32 zero compatibility-id bytes. Nothing in
+`src/voice-profile.cpp` can create or consume a Profile for this family; every
+source there is guarded on `family != ModelFamily::Omnivoice`, so a caller
+acting on the advertisement would have been refused by its very next call. "A
+dispatch gap, not a capability lie" was the argument for shipping it, and the
+confirmed contract overrides it. The ruling is
+`docs/superpowers/plans/2026-08-12-qwen3-tts-stage-2-plan-1-carryover.md` §1.4.
+
+What governs instead: **for the whole of Plan 1 this family reports zero source
+flags, and zero in every field that describes a source.**
+`fill_voice_profile_capability` leaves `VoiceProfileInfo` at its all-zero
+default for every variant of the family, and
+`tests/qwen3_tts_voice_required_test.cpp` and
+`tests/qwen3_tts_base_load_real.cpp` assert that zero shape.
+
+**Plan 2 is what makes the advertisement above true.** It publishes
+`SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO` on the day
+`synth_voice_profile_create_from_reference` can actually prepare a Profile for
+this family, and `SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` with it under
+exactly the pairing rule stated above rather than as a separate decision. The
+pairing rule, the optional `reference_transcript`, the optional
+`reference_language` and the 24 kHz mono encoder target are all correct and
+survive unchanged; they apply then rather than now, and the two tests named
+above are rewritten, not deleted.
+
+What did **not** change is the package: the Base variant still declares its
+full Voice Profile contract, and `read_profile_contract` / `read_speaker_encoder`
+still read and validate every `synthesize.profile.*`, `synthesize.reference.*`
+and `synthesize.qwen3-tts.speaker_encoder.*` key at load time, refusing a
+package that declares them badly. **A package carrying a Voice Profile contract
+and a runtime advertising a capability are different statements**; only the
+second was false, so only the second is withheld.
+
+The rule generalizes beyond this rung, as the other two errata do: no variant
+of this family advertises a Voice Profile source before the code that serves
+that source exists.
 
 The Language Capability Catalog is unchanged from Stage 1's language handling
 except that the two dialect entries, which exist only as Preset Voice overrides,

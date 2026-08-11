@@ -454,9 +454,18 @@ synth_status_t Model::load(const std::string &      path,
         if (status != SYNTH_OK) {
             return status;
         }
-        // Twins of the codec half, so it can run on the primary backend while
-        // the autoregressive half stays on the CPU. Declared before binding,
-        // because the catalog binds the codec against them.
+        // Twins of the codec decoder, so it can run on the primary backend
+        // while the autoregressive half stays on the CPU. Declared before
+        // binding, because the catalog binds the codec against them.
+        //
+        // Decoder only, and the prefix must stay in step with what
+        // build_model_weights binds against the twin context: it calls
+        // resolve_codec there, which resolves `codec.decoder.*` and nothing
+        // else. A Base package also carries 161 `codec.encoder.*` tensors,
+        // and twinning those mirrored 224,674,944 bytes onto the device that
+        // no graph ever bound -- there is no codec encoder graph until Plan 2,
+        // and when there is one it needs a twin pass of its own rather than
+        // this one widened by accident.
         const bool split = implementation->backend_plan->primary() != implementation->backend_plan->cpu_backend();
         if (split) {
             ggml_init_params twin_params{};
@@ -468,7 +477,7 @@ synth_status_t Model::load(const std::string &      path,
             }
             for (ggml_tensor * tensor = ggml_get_first_tensor(implementation->weights_context); tensor != nullptr;
                  tensor               = ggml_get_next_tensor(implementation->weights_context, tensor)) {
-                if (std::strncmp(tensor->name, "codec.", 6) != 0) {
+                if (std::strncmp(tensor->name, "codec.decoder.", 14) != 0) {
                     continue;
                 }
                 ggml_tensor * twin =

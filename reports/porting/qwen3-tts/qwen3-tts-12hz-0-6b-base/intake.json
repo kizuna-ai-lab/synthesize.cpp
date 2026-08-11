@@ -102,7 +102,7 @@
     "language": "English",
     "seed": 0,
     "baseline_full_clip": {
-      "note": "Same case, run with no --trim-seconds (the full 8.08 s clip). This is the build/goldens/qwen3-tts/base-icl-en case.",
+      "note": "Same case, run with no --trim-seconds (the full 8.08 s clip). This is the build/goldens/qwen3-tts/qwen3-tts-12hz-0-6b-base/base-icl-en case.",
       "reference_code_frames": 101,
       "generated_code_frames": 45,
       "generated_duration_seconds": 3.6

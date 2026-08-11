@@ -643,6 +643,11 @@ synth_status_t build_model_weights(ggml_context *  context,
         return SYNTH_ERR_GGUF;
     }
     if (codec_context != nullptr) {
+        // The twin context holds `codec.decoder.*` and nothing else, which is
+        // exactly the set resolve_codec looks up -- the two must stay in step,
+        // so widening either one means widening both. The encoder half above
+        // is resolved against the package only, and stays on the CPU until a
+        // graph exists that reads it.
         Resolver twins(codec_context, hparams);
         if (!resolve_codec(twins, hparams, weights.codec)) {
             return SYNTH_ERR_GGUF;

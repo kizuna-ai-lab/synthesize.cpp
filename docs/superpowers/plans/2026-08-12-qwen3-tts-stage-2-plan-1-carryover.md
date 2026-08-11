@@ -185,8 +185,10 @@ elements, unlike the `shape[1] == 16` checks on codes. (b)
 `load_cases_from_manifest`'s field mapping was unexercised until Task 3 landed
 a manifest — now exercised, effectively closed.
 
-**Task 3.** (a) `profileContract.sources` in the Golden Manifest is an
-unconstrained string array where sibling schemas use enums. (b)
+**Task 3.** (a) **Closed in `86d6ad1`, before this ledger was written** —
+`profileContract.sources` in the Golden Manifest was an unconstrained string
+array where sibling schemas use enums; it now carries
+`"enum": ["reference_audio", "serialized_profile"]`. (b)
 `resolve_reference_locator` hardcodes its cache directory where the OmniVoice
 pattern exposes a flag. (c) The Base variant's provisional tolerance stages
 copy `talker.*` probe names the Base oracle never dumps.

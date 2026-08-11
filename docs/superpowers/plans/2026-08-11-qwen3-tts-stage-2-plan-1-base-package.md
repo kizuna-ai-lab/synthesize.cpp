@@ -935,7 +935,7 @@ git commit -m "qwen3-tts: catalogue the speaker encoder and the codec encoder"
 
 **Interfaces:**
 - Consumes: `HParams::voice_mode`, `HParams::profile`.
-- Produces: a `synth::ModelInfo` whose `preset_voice_ids` is empty, whose `voice_profile.source_flags` carries `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`, and a synthesis path that fails rather than selecting a Voice.
+- Produces: a `synth::ModelInfo` whose `preset_voice_ids` is empty, whose `voice_profile.source_flags` carries `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`, and a synthesis path that fails rather than selecting a Voice. (The `source_flags` half of this line is superseded: what shipped carries **no** source flags — see the banner in Step 3 below, and the third test in Step 1, which was written the other way and now asserts the zero shape.)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -963,6 +963,12 @@ void test_capability_snapshot_reports_no_preset_voices_and_reference_audio() {
     ASSERT_TRUE((info->voice_profile.source_flags & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) != 0);
 }
 ```
+
+**Superseded, 2026-08-12 — the third test above asserts the advertisement this
+task's Step 3 banner reverses.** What shipped is
+`test_base_capability_advertises_nothing_until_preparation_exists`, which
+asserts `source_flags == 0` and zero in every field that describes a source,
+and names Plan 2 as what flips it. The first two tests stand as written.
 
 `SYNTH_ERR_UNSUPPORTED_VOICE` (status 10) is the **only** voice error the ABI
 defines — there is no `SYNTH_ERR_VOICE_NOT_FOUND`, despite the comment above
@@ -1033,6 +1039,8 @@ cmake -S . -B build-integration -DSYNTH_BUILD_TESTS=ON -DSYNTH_BUILD_INTEGRATION
 cmake --build build-integration --target synthesize-qwen3-tts-public-real
 ```
 Expected: the model loads, reports zero Preset Voices, and reports Reference Audio among its Profile sources. Synthesis is expected to fail with the Catalog-less error — Plan 2 is what makes it succeed.
+
+**Superseded, 2026-08-12 — the expectation's middle clause is inverted by Task 9's banner.** What the loaded package reports is **zero** Profile sources, and zero in every field that describes one; `tests/qwen3_tts_base_load_real.cpp`'s `check_capabilities` asserts exactly that. Loading, the empty Preset Voice list and the refused synthesis are unchanged. Plan 2 is what publishes Reference Audio, together with Serialized Profile.
 
 - [ ] **Step 2: Record the outcome in the family document**
 

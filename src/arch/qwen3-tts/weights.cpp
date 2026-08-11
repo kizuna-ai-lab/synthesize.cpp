@@ -682,7 +682,15 @@ bool resolve_language_token(const HParams &     hparams,
 
 void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & info) {
     info = VoiceProfileInfo{};
-    if (!hparams.has_speaker_encoder) {
+    // Gated on the same discriminator has_preset_voice_catalog uses --
+    // voice_mode, not has_speaker_encoder -- because hparams.profile (every
+    // limit published below) is only ever populated on the profile-sources
+    // branch (read_hparams's read_profile_and_speaker_encoder). Gating on the
+    // encoder flag alone would let a hypothetical future package that set
+    // has_speaker_encoder outside that branch advertise Reference Audio
+    // backed by an unpopulated, all-zero ProfileContract -- exactly the
+    // capability lie this function exists to prevent.
+    if (has_preset_voice_catalog(hparams)) {
         return;
     }
     info.source_flags                 = SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE;

@@ -40,10 +40,10 @@ struct ModelInfo {
     std::string frontend_provider;
 
     // The Voice Profile capability snapshot (weights.h's
-    // fill_voice_profile_capability), all-zero for a preset-catalog package
-    // that has no speaker encoder and so supports no Voice Profile source at
-    // all. src/synthesize.cpp's shared_info copies this straight into
-    // synth::ModelInfo::voice_profile.
+    // fill_voice_profile_capability, gated on voice_mode -- see that
+    // function's own doc comment for why not has_speaker_encoder), all-zero
+    // for a preset-catalog package. src/synthesize.cpp's shared_info copies
+    // this straight into synth::ModelInfo::voice_profile.
     VoiceProfileInfo voice_profile;
 };
 

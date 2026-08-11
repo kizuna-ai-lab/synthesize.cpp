@@ -16,7 +16,11 @@
 //      (model.cpp) uses to build the capability snapshot a caller reads
 //      before ever trying to synthesize: no preset voices, but Reference
 //      Audio and Serialized Profile support declared honestly through
-//      synth::VoiceProfileInfo.
+//      synth::VoiceProfileInfo -- gated on the same voice_mode discriminator
+//      has_preset_voice_catalog uses, not on has_speaker_encoder alone, so a
+//      package that somehow set the encoder flag without a populated
+//      ProfileContract cannot advertise support it cannot back with real
+//      limits.
 //
 // A `unit`-labelled test cannot depend on the real ~2.5 GB Base package
 // (docs/testing.md), so both rules are exercised here directly against
@@ -116,6 +120,35 @@ int test_customvoice_capability_reports_no_voice_profile_support() {
     return 0;
 }
 
+// A future variant could in principle set has_speaker_encoder without also
+// being profile-sources -- unreachable via read_hparams today (the profile
+// contract and speaker encoder are only ever read together, gated on
+// voice_mode == ProfileSources), but this HParams is built directly rather
+// than through read_hparams, so it can hold both at once. This is the
+// discriminator-mismatch case: fill_voice_profile_capability must gate on
+// voice_mode (has_preset_voice_catalog), not on has_speaker_encoder alone,
+// or it would advertise SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO backed by an
+// unpopulated, all-zero ProfileContract -- a capability lie.
+int test_speaker_encoder_without_profile_sources_advertises_nothing() {
+    synth::qwen3tts::HParams h = customvoice_hparams();
+    h.has_speaker_encoder      = true;  // adversarial: profile contract left unset
+    synth::VoiceProfileInfo info;
+    synth::qwen3tts::fill_voice_profile_capability(h, info);
+
+    SYNTH_TEST_CHECK(info.source_flags == 0);
+    SYNTH_TEST_CHECK(info.reference_transcript == SYNTH_REQUIREMENT_UNSUPPORTED);
+    SYNTH_TEST_CHECK(info.reference_language == SYNTH_REQUIREMENT_UNSUPPORTED);
+    SYNTH_TEST_CHECK(info.reference_target_sample_rate == 0);
+    SYNTH_TEST_CHECK(info.reference_target_channels == 0);
+    SYNTH_TEST_CHECK(info.min_frames_per_clip == 0);
+    SYNTH_TEST_CHECK(info.max_frames_per_clip == 0);
+    SYNTH_TEST_CHECK(info.max_total_frames == 0);
+    SYNTH_TEST_CHECK(info.max_reference_count == 0);
+    SYNTH_TEST_CHECK(info.schema.empty());
+    SYNTH_TEST_CHECK(info.schema_version == 0);
+    return 0;
+}
+
 int test_base_capability_reports_no_preset_voices() {
     const synth::qwen3tts::HParams h = base_hparams();
     SYNTH_TEST_CHECK(h.preset_voices.empty());
@@ -159,6 +192,7 @@ int main() {
     SYNTH_TEST_CHECK(test_customvoice_package_has_a_selectable_catalog() == 0);
     SYNTH_TEST_CHECK(test_profile_sources_package_has_no_catalog_even_with_entries() == 0);
     SYNTH_TEST_CHECK(test_customvoice_capability_reports_no_voice_profile_support() == 0);
+    SYNTH_TEST_CHECK(test_speaker_encoder_without_profile_sources_advertises_nothing() == 0);
     SYNTH_TEST_CHECK(test_base_capability_reports_no_preset_voices() == 0);
     SYNTH_TEST_CHECK(test_base_capability_reports_reference_audio_and_serialized_profile() == 0);
     return 0;

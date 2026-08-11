@@ -13,13 +13,23 @@ which is exactly what an earlier oracle run did before
 `docs/port-validation.md` grew its "Choosing the Oracle's dtype and Device"
 section.
 
-The speech tokenizer's *encoder* half is deliberately not carried. Synthesis
-runs one way -- codes to audio -- so nothing in this package can reach it, and
-this checkpoint could not use it anyway: `model.safetensors` is 402 tensors, all
-`talker.`, with no speaker encoder at all, and the reference builds voice-clone
-prompts from the Base variant instead. Sixteen of its codebooks and both of its
-quantizer projections are in any case bit-identical to the ones the decoder
-already carries. Dropping it removes 161 tensors and 225 MB that no graph reads.
+For CustomVoice, the speech tokenizer's *encoder* half is deliberately not
+carried. Synthesis runs one way -- codes to audio -- so nothing in this
+package can reach it, and this checkpoint could not use it anyway:
+`model.safetensors` is 402 tensors, all `talker.`, with no speaker encoder at
+all, and the reference builds voice-clone prompts from the Base variant
+instead. Dropping it removes 161 tensors and 225 MB that no graph reads.
+
+For Base, the encoder half is carried in full: it is what turns a reference
+clip into codes for voice cloning. 16 of its 32 codebooks -- exactly the ones
+with a same-index decoder counterpart -- and all four of the input/output
+projections on those same two quantizer stages are measured bit-identical to
+the decoder's at this revision. They are carried anyway, in full, rather than
+stored once and aliased under the decoder's name: an alias with no in-package
+record of where it points is a name a consumer cannot resolve, and this
+project chose the ~35 MB of duplicate bytes (~1.4% of the 2.52 GB package)
+over that. `measure_shared_codebooks` keeps the measurement on the record
+without acting on it.
 
 Two conversion rules here fail silently rather than loudly if they are dropped.
 Each is asserted, not assumed:
@@ -79,9 +89,15 @@ RVQ_EPS = 1e-5
 
 # GGML stores a tensor name in a fixed 64-byte field and truncates silently past
 # it. A truncated name is not findable by the name the catalog asks for, and two
-# names that differ only past the cut become the same tensor. Five of this
-# checkpoint's paths overflowed, so the components that made them long are
-# shortened -- the shortest edit that fixes it, not a renaming scheme.
+# names that differ only past the cut become the same tensor. This table has two
+# independent reasons to grow: CustomVoice's conversion (talker + codec decoder
+# only) overflowed on five paths; Base's conversion additionally carries the
+# codec's encoder half, whose own paths are longer for reasons specific to that
+# half (`encoder_transformer` is four characters longer than the decoder's
+# `pre_transformer`, and its residual-vector-quantizer names spell out
+# "residual_vector" where the decoder already abbreviates to
+# `rvq_first`/`rvq_rest`). The components that made them long are shortened --
+# the shortest edit that fixes it, not a renaming scheme.
 GGML_MAX_NAME = 64
 NAME_SHORTENINGS = (
     (".post_attention_layernorm.", ".post_attn_norm."),
@@ -92,6 +108,18 @@ NAME_SHORTENINGS = (
     # `_codebook` is the module that holds the table, and the table is the only
     # thing left in it after reconstruction.
     ("._codebook.codebook", ".codebook"),
+    # The encoder's own transformer block, distinct from the decoder's
+    # `pre_transformer` -- shortened on its own terms, not aliased to a
+    # different module's name.
+    (".encoder_transformer.", ".enc_transformer."),
+    # The decoder already spells its residual vector quantizers `rvq_first` /
+    # `rvq_rest`; the encoder's two quantizer stages get the same abbreviation
+    # rather than a second, inconsistent one.
+    (".quantizer.acoustic_residual_vector_quantizer.", ".quantizer.acoustic_rvq."),
+    (".quantizer.semantic_residual_vector_quantizer.", ".quantizer.semantic_rvq."),
+    # Mirrors `._codebook.codebook` above for the encoder's un-underscored
+    # module name: after reconstruction, the table is the only thing left.
+    (".codebook.codebook", ".codebook"),
 )
 
 
@@ -134,6 +162,11 @@ class Conversion:
     skipped: list[dict[str, str]] = field(default_factory=list)
     transformed: list[dict[str, str]] = field(default_factory=list)
     renamed: list[dict[str, str]] = field(default_factory=list)
+    # Not tensors that were removed -- both halves are always carried in full.
+    # This records which encoder codebook is bit-identical to which decoder
+    # one, measured at this revision, so that fact is on the record even
+    # though nothing acts on it.
+    measured_shared_codebooks: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -287,8 +320,38 @@ def reconstruct_codebooks(tensors: dict[str, torch.Tensor], conversion: Conversi
     return remaining
 
 
+def measure_shared_codebooks(tensors: dict[str, torch.Tensor], conversion: Conversion) -> None:
+    """Record which encoder codebooks are bit-identical to a decoder one.
+
+    Measured, not assumed: equality is tested at this revision rather than
+    carried over from Stage 1's measurement. Nothing is removed here -- an
+    alias with no in-package record of where it points is a name a consumer
+    cannot resolve, so both halves are always carried in full regardless of
+    what this finds. The measurement is kept anyway because it is real and
+    worth having on the record.
+    """
+    decoder_tables = {
+        name: tensor for name, tensor in tensors.items()
+        if name.startswith("decoder.") and name.endswith(".codebook")
+    }
+    for name, tensor in tensors.items():
+        if not (name.startswith("encoder.") and name.endswith(".codebook")):
+            continue
+        twin = next(
+            (d for d, table in decoder_tables.items()
+             if table.shape == tensor.shape and torch.equal(table, tensor)),
+            None,
+        )
+        if twin is not None:
+            conversion.measured_shared_codebooks.append({
+                "encoder_tensor": name,
+                "decoder_tensor": twin,
+                "note": "bit-identical at this revision; both are carried in the package",
+            })
+
+
 def convert_file(path: Path, prefix: str, conversion: Conversion, reconstruct: bool,
-                 drop_prefix: str | None = None) -> None:
+                 drop_prefix: str | None = None, measure_duplicates: bool = False) -> None:
     # Imported here rather than at module scope so the pure-python rules above
     # stay importable in environments without safetensors -- the registered
     # python unit suite runs under a different family's locked environment.
@@ -310,14 +373,18 @@ def convert_file(path: Path, prefix: str, conversion: Conversion, reconstruct: b
             "logical_source_name": f"{prefix}{drop_prefix}*",
             "count": len(dropped),
             "reason": (
-                "the tokenizer's encoder half turns audio into codes; synthesis only goes "
-                "the other way, this checkpoint carries no speaker encoder to clone with, "
-                "and its first sixteen codebooks duplicate the decoder's exactly"
+                "CustomVoice carries no speaker encoder to clone with, so nothing in this "
+                "package can reach the tokenizer's encoder half; synthesis only runs "
+                "codes-to-audio anyway. (Base carries this half in full instead of dropping "
+                "it -- see convert_file's caller.)"
             ),
         })
 
     if reconstruct:
         tensors = reconstruct_codebooks(tensors, conversion)
+
+    if measure_duplicates:
+        measure_shared_codebooks(tensors, conversion)
 
     for name in sorted(tensors):
         tensor = tensors[name]
@@ -630,9 +697,12 @@ def main() -> int:
     if digests["talker"] != expected and digests["codec"] != expected:
         raise ConverterError("neither checkpoint matches the manifest's pinned digest")
 
+    profile = variant_profile(config)
     conversion = Conversion()
     convert_file(talker_path, "", conversion, reconstruct=False)
-    convert_file(codec_path, "codec.", conversion, reconstruct=True, drop_prefix="encoder.")
+    convert_file(codec_path, "codec.", conversion, reconstruct=True,
+                 drop_prefix=None if profile.carries_codec_encoder else "encoder.",
+                 measure_duplicates=profile.carries_codec_encoder)
 
     names = [o.name for o in conversion.outputs]
     if len(set(names)) != len(names):
@@ -691,6 +761,7 @@ def main() -> int:
         "transformed": conversion.transformed,
         "renamed": conversion.renamed,
         "skipped": conversion.skipped,
+        "measured_shared_codebooks": conversion.measured_shared_codebooks,
         "tensors": [o.report() for o in conversion.outputs],
     }
     report_path = args.report or Path(f"reports/convert/{ARCH_KEY}/{manifest['variant']}-{PROFILE_NAME}.json")
@@ -700,6 +771,7 @@ def main() -> int:
     print(f"  tensors: {len(conversion.outputs)} {by_dtype}")
     print(f"  reconstructed codebooks: {len(conversion.transformed)}")
     print(f"  skipped: {len(conversion.skipped)}")
+    print(f"  measured shared codebooks (both carried): {len(conversion.measured_shared_codebooks)}")
     print(f"  report: {report_path}")
     return 0
 

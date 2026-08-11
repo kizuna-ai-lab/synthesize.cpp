@@ -147,8 +147,10 @@ class TensorNameLengthTests(unittest.TestCase):
     """GGML stores a tensor name in a fixed 64-byte field and truncates past it.
 
     A truncated name is not findable by the name the catalog asks for, and the
-    package still loads, so nothing reports the problem. Five of this
-    checkpoint's paths overflowed.
+    package still loads, so nothing reports the problem. Five paths overflow in
+    CustomVoice's talker-plus-codec-decoder conversion; carrying the codec's
+    encoder half for Base introduces its own, additional overflowing paths
+    (`EncoderTensorNameShorteningTests` below covers those).
     """
 
     def test_shortens_the_paths_that_overflow(self) -> None:
@@ -166,6 +168,10 @@ class TensorNameLengthTests(unittest.TestCase):
             "codec.decoder.pre_transformer.layers.7.self_attn_layer_scale.scale",
             "codec.decoder.quantizer.rvq_first.vq.layers.0._codebook.codebook",
             "talker.code_predictor.model.layers.4.post_attention_layernorm.weight",
+            "codec.encoder.encoder_transformer.layers.0.input_layernorm.weight",
+            "codec.encoder.quantizer.acoustic_residual_vector_quantizer.output_proj.weight",
+            "codec.encoder.quantizer.semantic_residual_vector_quantizer.output_proj.weight",
+            "codec.encoder.quantizer.acoustic_residual_vector_quantizer.layers.30.codebook.codebook",
         ):
             shortened = convert.shorten_name(name, convert.Conversion())
             self.assertLess(len(shortened), convert.GGML_MAX_NAME, name)
@@ -240,6 +246,119 @@ class VariantDiscriminationTests(unittest.TestCase):
     def test_an_unknown_model_type_is_refused(self) -> None:
         with self.assertRaises(convert.ConverterError):
             convert.variant_profile({"tts_model_type": "voice_design", "tts_model_size": "1b7"})
+
+
+class EncoderCodebookMeasurementTests(unittest.TestCase):
+    """Stage 1 measured 16 encoder codebooks as bit-identical to the decoder's.
+
+    Both halves are carried in the package in full regardless of what this
+    measures: an alias with no in-package record of where it points is a name
+    a consumer cannot resolve, so nothing here is ever removed. The
+    measurement is kept as a reported fact -- "we looked and both are
+    carried" is a different statement from "we never looked".
+    """
+
+    def test_identical_tables_are_recorded_but_both_are_kept(self) -> None:
+        shared = torch.arange(12, dtype=torch.float32).reshape(4, 3)
+        tensors = {
+            "decoder.quantizer.rvq_first.vq.layers.0._codebook.codebook": shared,
+            "encoder.quantizer.acoustic_residual_vector_quantizer.layers.0.codebook.codebook": shared.clone(),
+        }
+        conversion = convert.Conversion()
+        convert.measure_shared_codebooks(tensors, conversion)
+
+        self.assertEqual(len(tensors), 2, "both tensors must still be present; nothing is removed")
+        self.assertEqual(len(conversion.measured_shared_codebooks), 1)
+        self.assertEqual(
+            conversion.measured_shared_codebooks[0]["encoder_tensor"],
+            "encoder.quantizer.acoustic_residual_vector_quantizer.layers.0.codebook.codebook",
+        )
+        self.assertEqual(
+            conversion.measured_shared_codebooks[0]["decoder_tensor"],
+            "decoder.quantizer.rvq_first.vq.layers.0._codebook.codebook",
+        )
+
+    def test_tables_with_no_decoder_match_are_not_recorded(self) -> None:
+        """Not every encoder codebook has a same-index decoder counterpart at all.
+
+        This is the case the measurement must not misreport: an encoder table
+        with no matching decoder table is neither an error nor a duplicate --
+        it is simply carried, unremarked.
+        """
+        tensors = {
+            "decoder.quantizer.rvq_first.vq.layers.0._codebook.codebook":
+                torch.arange(12, dtype=torch.float32).reshape(4, 3),
+            "encoder.quantizer.acoustic_residual_vector_quantizer.layers.0.codebook.codebook":
+                torch.ones(4, 3, dtype=torch.float32),
+        }
+        conversion = convert.Conversion()
+        convert.measure_shared_codebooks(tensors, conversion)
+
+        self.assertEqual(len(tensors), 2, "both tensors must still be present; nothing is removed")
+        self.assertEqual(conversion.measured_shared_codebooks, [])
+
+
+class EncoderTensorNameShorteningTests(unittest.TestCase):
+    """Carrying the codec's encoder half for Base introduced its own
+    overflowing tensor-name patterns, on top of the five CustomVoice already
+    had. The four new `NAME_SHORTENINGS` entries this needed only ever fired
+    during a real conversion before this class existed -- CI cannot run one,
+    so each entry gets a focused test of its own.
+    """
+
+    def test_encoder_transformer_is_shortened(self) -> None:
+        name = "codec.encoder.encoder_transformer.layers.0.input_layernorm.weight"
+        self.assertGreaterEqual(len(name), convert.GGML_MAX_NAME)
+        shortened = convert.shorten_name(name, convert.Conversion())
+        self.assertEqual(shortened, "codec.encoder.enc_transformer.layers.0.input_layernorm.weight")
+        self.assertNotIn("encoder_transformer", shortened)
+        self.assertLess(len(shortened), convert.GGML_MAX_NAME)
+
+    def test_acoustic_quantizer_is_shortened_to_rvq(self) -> None:
+        name = "codec.encoder.quantizer.acoustic_residual_vector_quantizer.output_proj.weight"
+        self.assertGreaterEqual(len(name), convert.GGML_MAX_NAME)
+        shortened = convert.shorten_name(name, convert.Conversion())
+        self.assertEqual(shortened, "codec.encoder.quantizer.acoustic_rvq.output_proj.weight")
+        self.assertNotIn("acoustic_residual_vector_quantizer", shortened)
+        self.assertLess(len(shortened), convert.GGML_MAX_NAME)
+
+    def test_semantic_quantizer_is_shortened_to_rvq(self) -> None:
+        name = "codec.encoder.quantizer.semantic_residual_vector_quantizer.output_proj.weight"
+        self.assertGreaterEqual(len(name), convert.GGML_MAX_NAME)
+        shortened = convert.shorten_name(name, convert.Conversion())
+        self.assertEqual(shortened, "codec.encoder.quantizer.semantic_rvq.output_proj.weight")
+        self.assertNotIn("semantic_residual_vector_quantizer", shortened)
+        self.assertLess(len(shortened), convert.GGML_MAX_NAME)
+
+    def test_reconstructed_encoder_codebook_name_is_shortened(self) -> None:
+        name = "codec.encoder.quantizer.acoustic_residual_vector_quantizer.layers.30.codebook.codebook"
+        self.assertGreaterEqual(len(name), convert.GGML_MAX_NAME)
+        shortened = convert.shorten_name(name, convert.Conversion())
+        self.assertEqual(shortened, "codec.encoder.quantizer.acoustic_rvq.layers.30.codebook")
+        self.assertLess(len(shortened), convert.GGML_MAX_NAME)
+
+    def test_the_new_codebook_rule_does_not_collide_with_the_decoders_underscored_one(self) -> None:
+        """`.codebook.codebook` and `._codebook.codebook` must stay two distinct
+        rules.
+
+        The decoder's post-reconstruction name keeps the underscore
+        (`._codebook.codebook`, from its `_codebook` module); the encoder's has
+        none (`.codebook.codebook`, from its `codebook` module). A rule
+        careless about that -- for instance one that also matched
+        `._codebook.codebook` -- could make two different source tensors
+        collapse onto the same output name, which is exactly the truncation
+        failure this whole mechanism exists to prevent.
+        """
+        decoder_name = "codec.decoder.quantizer.rvq_first.vq.layers.0._codebook.codebook"
+        encoder_name = "codec.encoder.quantizer.acoustic_residual_vector_quantizer.layers.30.codebook.codebook"
+        decoder_shortened = convert.shorten_name(decoder_name, convert.Conversion())
+        encoder_shortened = convert.shorten_name(encoder_name, convert.Conversion())
+
+        self.assertNotEqual(decoder_shortened, encoder_shortened)
+        self.assertEqual(decoder_shortened, "codec.decoder.quantizer.rvq_first.vq.layers.0.codebook")
+        self.assertTrue(encoder_shortened.endswith(".codebook"))
+        self.assertLess(len(decoder_shortened), convert.GGML_MAX_NAME)
+        self.assertLess(len(encoder_shortened), convert.GGML_MAX_NAME)
 
 
 if __name__ == "__main__":

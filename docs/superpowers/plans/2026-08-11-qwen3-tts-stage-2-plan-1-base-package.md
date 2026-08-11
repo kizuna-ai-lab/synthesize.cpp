@@ -216,7 +216,7 @@ Copy `qwen3-tts-12hz-0-6b-customvoice.manifest.json` as the structural model. It
 `package_contract` differs from Stage 1's in exactly these fields:
 
 ```json
-"voices": { "mode": "profile-only", "default_id": null, "preset_ids": [] },
+"voices": { "mode": "profile-sources", "default_id": null, "preset_ids": [] },
 "profile": {
   "schema": "qwen3-tts-voice-clone",
   "schema_version": 1,
@@ -518,7 +518,7 @@ git commit -m "qwen3-tts: carry the speaker encoder and both codec halves for Ba
 - Test: `tests/python/test_convert_qwen3_tts.py`
 
 **Interfaces:**
-- Produces these metadata keys, which Tasks 7 and 8 read: `synthesize.voice.mode` = `profile-only`, `synthesize.voice.preset_count` = 0, `synthesize.profile.schema`, `synthesize.profile.schema_version`, `synthesize.profile.compatibility_id`, `synthesize.reference.target_sample_rate`, `synthesize.reference.target_channels`, `synthesize.reference.min_frames_per_clip`, `synthesize.reference.max_frames_per_clip`, `synthesize.reference.max_total_frames`, `synthesize.reference.max_reference_count`, `synthesize.qwen3-tts.speaker_encoder.{enc_dim,sample_rate,mel_bins,n_fft,hop_length,win_length,fmin,fmax}`.
+- Produces these metadata keys, which Tasks 7 and 8 read: `synthesize.voice.mode` = `profile-sources`, `synthesize.voice.preset_count` = 0, `synthesize.profile.schema`, `synthesize.profile.schema_version`, `synthesize.profile.compatibility_id`, `synthesize.reference.target_sample_rate`, `synthesize.reference.target_channels`, `synthesize.reference.min_frames_per_clip`, `synthesize.reference.max_frames_per_clip`, `synthesize.reference.max_total_frames`, `synthesize.reference.max_reference_count`, `synthesize.qwen3-tts.speaker_encoder.{enc_dim,sample_rate,mel_bins,n_fft,hop_length,win_length,fmin,fmax}`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -646,7 +646,7 @@ GgufContext base_metadata() {
     GgufContext c = valid_metadata();
     gguf_context * g = c.get();
     gguf_set_val_str(g, "synthesize.model_variant", "qwen3-tts-12hz-0-6b-base");
-    gguf_set_val_str(g, "synthesize.voice.mode", "profile-only");
+    gguf_set_val_str(g, "synthesize.voice.mode", "profile-sources");
     gguf_set_val_u32(g, "synthesize.voice.preset_count", 0);
     set_string_array(g, "synthesize.qwen3-tts.speakers.names", {});
     gguf_set_val_str(g, "synthesize.profile.schema", "qwen3-tts-voice-clone");
@@ -674,7 +674,7 @@ void test_base_package_loads_without_any_preset_voice() {
     synth::qwen3tts::HParams hparams;
     ASSERT_TRUE(synth::qwen3tts::read_hparams(c.get(), hparams) == SYNTH_OK);
     ASSERT_TRUE(hparams.preset_voices.empty());
-    ASSERT_TRUE(hparams.voice_mode == synth::qwen3tts::VoiceMode::ProfileOnly);
+    ASSERT_TRUE(hparams.voice_mode == synth::qwen3tts::VoiceMode::ProfileSources);
     ASSERT_TRUE(hparams.profile.max_reference_count == 1);
 }
 
@@ -722,7 +722,7 @@ In `weights.h`:
 ```cpp
 enum class VoiceMode : uint32_t {
     PresetCatalog,  // speakers are codec-vocabulary token ids
-    ProfileOnly,    // no selectable Voice; every request carries a Voice Profile
+    ProfileSources,    // no selectable Voice; every request carries a Voice Profile
 };
 
 // The ECAPA-TDNN speaker encoder Base variants carry. Its output width equals
@@ -765,14 +765,22 @@ In `weights.cpp`, replace the `read_voices` guard at line 377:
             std::fprintf(stderr, "qwen3-tts: preset-catalog mode with no presets\n");
             return false;
         }
-    } else if (mode == "profile-only") {
+    } else if (mode == "profile-sources") {
         // Base variants carry no selectable Voice at all: upstream ships an
         // empty spk_id table. The package says so positively rather than
         // arriving as a catalog that happens to be empty, so a truncated
         // catalog cannot be mistaken for this.
-        hparams.voice_mode = VoiceMode::ProfileOnly;
+        //
+        // `profile-sources` is the value omnivoice already established
+        // (src/arch/omnivoice/weights.cpp:181) and the manifest schema's own
+        // enum. This plan first invented `profile-only`, which exists nowhere
+        // in the codebase; corrected during Task 3. The two families differ on
+        // exactly one point below: omnivoice REQUIRES a package default
+        // because auto-voice is its default Voice, while this variant has
+        // none, so the check runs the other way.
+        hparams.voice_mode = VoiceMode::ProfileSources;
         if (preset_count != 0) {
-            std::fprintf(stderr, "qwen3-tts: profile-only mode with %u presets\n", preset_count);
+            std::fprintf(stderr, "qwen3-tts: profile-sources mode with %u presets\n", preset_count);
             return false;
         }
         hparams.preset_voices.clear();
@@ -943,7 +951,7 @@ Expected: FAIL
 
 - [ ] **Step 3: Implement it**
 
-In `model.cpp`'s shared-info builder, emit an empty `preset_voice_ids` and set `voice_profile.source_flags` from `hparams.has_speaker_encoder`, together with `reference_transcript = SYNTH_REQUIREMENT_OPTIONAL`, `reference_language = SYNTH_REQUIREMENT_OPTIONAL`, and the reference target and limit values from `hparams.profile`. In `resolve_voice`, return the Catalog-less error before the preset lookup when `voice_mode == VoiceMode::ProfileOnly`.
+In `model.cpp`'s shared-info builder, emit an empty `preset_voice_ids` and set `voice_profile.source_flags` from `hparams.has_speaker_encoder`, together with `reference_transcript = SYNTH_REQUIREMENT_OPTIONAL`, `reference_language = SYNTH_REQUIREMENT_OPTIONAL`, and the reference target and limit values from `hparams.profile`. In `resolve_voice`, return the Catalog-less error before the preset lookup when `voice_mode == VoiceMode::ProfileSources`.
 
 Note for the implementer: `SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` is claimed alongside Reference Audio because every successfully prepared v1 Profile can be serialized — the same rule `src/synthesize.cpp` documents for OmniVoice. Preparation itself still returns `SYNTH_ERR_UNSUPPORTED_VOICE` until Plan 2 lands the graph; that is a dispatch gap, not a capability lie, and Plan 2 closes it.
 

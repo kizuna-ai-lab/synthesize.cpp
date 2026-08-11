@@ -72,6 +72,29 @@ validation:
   metric_note: |
     Drift is the largest absolute difference between one PCM sample and the
     reference's.
+  # Set explicitly 2026-08-12, for the same reason as `vits-ljspeech.yaml`:
+  # this card inherited the generator's old `full` default and asserted zero
+  # executable CPU fallback. The measurement behind that sentence predates
+  # `df1351e` (2026-07-26), which moved this family's text encoder and duration
+  # predictor onto CPU. See that spec's comment for the full account.
+  cuda_placement: partial
+  cuda_placement_note: >-
+    Two of this family's stages run on CPU on every Execution Backend, and the
+    other five run on CUDA. `Model::Impl::compute_duration_stage` uses a
+    CPU-only scheduler over CPU-resident mirrors of the text encoder, the
+    duration predictor and the Voice tensors, because the duration path ceils
+    its logits into an integer frame count and every later stage's shape
+    follows from that integer. Removing the strict-FP32 gate made it
+    backend-dependent: on the 315-token `ljs-long` case CUDA ceiled one token
+    differently and moved the frame count by 256 samples. The text encoder is
+    held too, not just the rounding stage, because the duration stage re-runs
+    it and feeds its output straight into the predictor. 27.5 of the model's
+    113.2 MB are consequently resident in both buffers, and synthesis wall time
+    on the family's longest case rises from 1.09 s to 1.39 s, still 7.6 times
+    faster than real time. In exchange the frame counts match CPU exactly --
+    156,416 for `vctk-long` -- and both variants report `structural_exact` on
+    all twelve CUDA cases. This is a deliberate placement, not a fallback: no
+    node falls back to CPU inside a CUDA graph.
   platforms:
     - DGX Spark CPU
     - NVIDIA GB10 CUDA 13.3

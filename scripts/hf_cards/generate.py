@@ -130,9 +130,27 @@ def validate_spec(spec: dict) -> None:
     # made that claim, and it must say which stage stayed on CPU when the
     # claim is partial rather than silently generalizing a codec-only result
     # to the whole package.
-    cuda_placement = spec["validation"].get("cuda_placement", "full")
-    if cuda_placement not in {"full", "partial", "none"}:
-        raise ValueError("validation.cuda_placement must be full, partial or none")
+    #
+    # This field is REQUIRED, and deliberately has no usable default. It used
+    # to default to `full`, which meant four of the five shipped cards asserted
+    # "CUDA placement contained zero executable CPU fallback nodes" without any
+    # spec ever saying so. Three of those four were false: VITS, Kokoro and
+    # Qwen3-TTS each hold stages on CPU by design under `docs/backends.md`'s
+    # discrete-outputs rule. `docs/backends.md` line 9 forbids exactly this --
+    # placement "must not be presented as full GPU execution" -- and a default
+    # is how the strongest possible claim got made by nobody's decision. A
+    # package with no placement measurement declares `not_recorded`; saying so
+    # is honest, and inventing a placement description would be worse.
+    if "cuda_placement" not in spec["validation"]:
+        raise ValueError(
+            "validation.cuda_placement is required: declare full, partial, none or "
+            "not_recorded rather than relying on a default"
+        )
+    cuda_placement = spec["validation"]["cuda_placement"]
+    if cuda_placement not in {"full", "partial", "none", "not_recorded"}:
+        raise ValueError(
+            "validation.cuda_placement must be full, partial, none or not_recorded"
+        )
     if cuda_placement == "partial" and not spec["validation"].get("cuda_placement_note"):
         raise ValueError("validation.cuda_placement 'partial' requires a cuda_placement_note")
 

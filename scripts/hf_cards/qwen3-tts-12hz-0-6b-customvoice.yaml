@@ -116,6 +116,33 @@ validation:
     quoted is the worst case over the suite. The oracle ran bfloat16 on CUDA and
     the CPU column runs F32, so these cover a dtype and a device difference as
     well as an implementation one.
+  # Set explicitly 2026-08-12. This card inherited the generator's old `full`
+  # default and so asserted "CUDA placement contained zero executable CPU
+  # fallback nodes" -- for this family the plain opposite of what ships. The
+  # talker and the code predictor are 59 percent of wall clock and never leave
+  # the CPU; `src/arch/qwen3-tts/qwen3-tts.h` states the constraint and
+  # `scripts/validate-qwen3-tts-replay.py` fails the run if either places a
+  # single node off it. Note the note claims no node totals: unlike OmniVoice's
+  # 8,440/880,032 sweep, this family enforces placement relationally per case
+  # and publishes no suite-wide counts, so quoting one would be inventing it.
+  cuda_placement: partial
+  cuda_placement_note: >-
+    One of this package's three stages runs on CUDA and two never do. The codec
+    is the half that moves, and it gets same-named accelerator-resident twins
+    the catalog binds against; the talker and the code predictor stay on the CPU
+    on every Execution Backend, because each sampled code is a discrete value
+    that conditions the next step and therefore the sequence length, which is
+    `docs/backends.md`'s discrete-outputs rule. They get no twins at all -- a
+    second copy of 1.8 GB that can never leave the CPU would be read by nothing.
+    Together the two held stages are 59 percent of wall clock under the F16
+    profile and the codec is the other 41: moving it takes that stage from 8.44
+    s to 0.24 s and the end-to-end 37-frame case from 20.69 s to 12.50 s, 35
+    times on the stage and 1.66 end to end. The move is checked rather than
+    trusted -- the replay validator fails if the talker or the predictor places
+    any node off the CPU, or if the codec leaves any node on it -- and six of
+    the eight probes stay bit-identical to the CPU stage, with only `audio.pcm`
+    moving, in the sixth decimal of its cosine. Suite-wide node totals have not
+    been published for this family, so none is quoted here.
   platforms:
     - DGX Spark CPU
     - NVIDIA GB10 CUDA 13.3

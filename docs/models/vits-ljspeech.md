@@ -29,8 +29,15 @@ matrix layout, and execution details remain private to the architecture module.
 Seven graph stages and 12 deterministic cases run on DGX Spark CPU and NVIDIA
 GB10 CUDA 13.3. The RTX 4070 SUPER CUDA 13.3 host also ran them for the packages
 cut on 2026-07-23; it was not available for the 2026-07-27 re-cut. Duration structure
-is exact in every case. Every CUDA placement record has one split and zero
-executable CPU fallback nodes.
+is exact in every case. Two of the seven stages — the text encoder and the
+duration predictor — run on CPU on every Execution Backend under
+`docs/backends.md`'s discrete-outputs rule, and the other five run on CUDA. No
+node falls back: the hold is a separate CPU scheduler over mirrored weights, not
+a mixed graph. (Corrected 2026-08-12: this read "Every CUDA placement record has
+one split and zero executable CPU fallback nodes", which was measured on
+2026-07-22 — `docs/backends.md`'s five-stage checkpoint — four days before
+`df1351e` moved the duration path onto CPU. The claim was true about fallback
+and false about full GPU execution, which `docs/backends.md` forbids conflating.)
 
 | Profile | CPU max PCM drift | GB10 CUDA |
 | --- | ---: | ---: |

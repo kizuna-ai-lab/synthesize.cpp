@@ -1,6 +1,6 @@
 # Execution Backend Policy
 
-Status: Confirmed, last updated on 2026-08-10.
+Status: Confirmed, last updated on 2026-08-12.
 
 ## Shared Inference Graph
 
@@ -355,6 +355,18 @@ and 516 waveform-decoder nodes. View-only nodes are reported separately,
 executable CPU fallback is zero, and each stage has one CUDA split. Both hosts
 use strict FP32, native cubins (`sm_121a` and `sm_89`), and the R580 driver
 branch.
+
+**That placement is superseded and must not be quoted as current.** Added
+2026-08-12. The measurement above was taken on 2026-07-22, and on 2026-07-26
+`df1351e` moved this family's text encoder and duration predictor onto CPU under
+"Discrete Outputs Are Held On CPU" above — so the 893 CUDA duration-stage nodes
+it counts are the very stage that no longer runs there, and the family table's
+VITS row is the current statement. The counts remain accurate for the
+configuration and date they name; what expired is "every executable node ... on
+CUDA" as a description of what ships. This paragraph exists because four
+published model cards asserted zero executable CPU fallback on the strength of
+the sentence above, three of them for families that were never measured that way
+at all.
 
 This completes the release-toolkit physical-Linux implementation checkpoint,
 not the full `cu13` Provider qualification. VITS/CUDA remains Experimental until

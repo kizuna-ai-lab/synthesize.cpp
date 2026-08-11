@@ -117,7 +117,13 @@ Per-family status differs and is deliberately not generalized:
 | VITS | runs; recorded as **Experimental** until the remaining Provider gates close | text encoder, duration predictor |
 | Kokoro | runs; no Support State word recorded | PL-BERT, duration predictor |
 | Qwen3-TTS | runs; no Support State word recorded | talker, code predictor (the codec is the half that moves) |
-| OmniVoice | runs; card records `cuda_placement: partial` | none, since 2026-08-08 |
+| OmniVoice | runs; both halves move, since 2026-08-08 | none, since 2026-08-08 |
+
+Every published model card states its own placement in these terms: as of
+2026-08-12 all five declare `cuda_placement` explicitly, and none can inherit a
+default. Four of them previously asserted "CUDA placement contained zero
+executable CPU fallback nodes" because the card generator defaulted to that
+sentence; the "Stages held on CPU" column above is what those cards now say.
 
 A stage whose output is a discrete value — a rounded frame count, an argmax, a
 sampled token index — runs on CPU on every backend, and so does every stage

@@ -131,19 +131,32 @@ model = Qwen3TTSModel.from_pretrained(
     attn_implementation="eager",
 )
 
-# Both switches, or the trajectory is silently non-deterministic. Setting only
-# one of them is the Stage 1 trap.
 prompt_items = model.create_voice_clone_prompt(
     ref_audio=(ref_wav, ref_sr),
     ref_text=None if case["x_vector_only"] else case["ref_text"],
     x_vector_only_mode=case["x_vector_only"],
 )
+# Sampled with a fixed seed, NOT greedy. Stage 1 tried greedy and abandoned it:
+# docs/porting/families/qwen3-tts.md:780-783 records that it degenerates on some
+# speaker-and-input pairings, and every case in the Stage 1 Golden Manifest runs
+# do_sample/subtalker_dosample true at max_new_tokens 2048. Reproducibility comes
+# from the stochastic-replay rule in docs/port-validation.md -- the oracle records
+# the sequence it sampled and a validation-only seam replays it -- not from
+# forcing both frameworks down a greedy path.
+torch.manual_seed(case["seed"])
 wavs, sr = model.generate_voice_clone(
     text=case["text"], language=case["language"],
     voice_clone_prompt=prompt_items,
-    do_sample=False, subtalker_dosample=False,
+    do_sample=True, subtalker_dosample=True, max_new_tokens=2048,
 )
 ```
+
+**Corrected during execution, 2026-08-11.** This step first said to set both
+sampling switches to False. Run under greedy, the very first case ran away to
+8191 frames — 655 s of audio for one short sentence, the model never emitting
+the codec end token — which is precisely the degeneration the family record
+already documents. The instruction was wrong, and the evidence for it is on
+disk. Reproducing a Stage 1 finding by ignoring it costs an hour of GPU time.
 
 Dump, in this order, before synthesis so a failure downstream still leaves the deterministic stages on disk:
 

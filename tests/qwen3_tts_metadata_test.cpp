@@ -175,6 +175,50 @@ GgufContext valid_metadata() {
     return c;
 }
 
+// A Base package: no speakers at all, and a Voice Profile contract instead.
+GgufContext base_metadata() {
+    GgufContext    c = valid_metadata();
+    gguf_context * g = c.get();
+    gguf_set_val_str(g, "synthesize.model_variant", "qwen3-tts-12hz-0-6b-base");
+    gguf_set_val_str(g, "synthesize.voice.mode", "profile-sources");
+    gguf_set_val_u32(g, "synthesize.voice.preset_count", 0);
+    set_string_array(g, "synthesize.qwen3-tts.speakers.names", {});
+    gguf_set_val_str(g, "synthesize.profile.schema", "qwen3-tts-voice-clone");
+    gguf_set_val_u32(g, "synthesize.profile.schema_version", 1);
+    gguf_set_val_str(g, "synthesize.profile.compatibility_id", std::string(64, 'a').c_str());
+    gguf_set_val_u32(g, "synthesize.reference.target_sample_rate", 24000);
+    gguf_set_val_u32(g, "synthesize.reference.target_channels", 1);
+    gguf_set_val_u64(g, "synthesize.reference.min_frames_per_clip", 24000);
+    gguf_set_val_u64(g, "synthesize.reference.max_frames_per_clip", 720000);
+    gguf_set_val_u64(g, "synthesize.reference.max_total_frames", 720000);
+    gguf_set_val_u64(g, "synthesize.reference.max_reference_count", 1);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.enc_dim", 1024);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.sample_rate", 24000);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.mel_bins", 128);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.n_fft", 1024);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.hop_length", 256);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.win_length", 1024);
+    gguf_set_val_f32(g, "synthesize.qwen3-tts.speaker_encoder.fmin", 0.0f);
+    gguf_set_val_f32(g, "synthesize.qwen3-tts.speaker_encoder.fmax", 12000.0f);
+    return c;
+}
+
+// A Base-shaped package that never got its Voice Profile contract or speaker
+// encoder written: everything base_metadata() sets, minus the
+// synthesize.profile.* and synthesize.qwen3-tts.speaker_encoder.* blocks.
+// Exercises the truncation read_voices's profile-sources comment warns
+// against -- a package that claims every request must carry a Voice Profile
+// but carries nothing to validate one against.
+GgufContext truncated_base_metadata() {
+    GgufContext    c = valid_metadata();
+    gguf_context * g = c.get();
+    gguf_set_val_str(g, "synthesize.model_variant", "qwen3-tts-12hz-0-6b-base");
+    gguf_set_val_str(g, "synthesize.voice.mode", "profile-sources");
+    gguf_set_val_u32(g, "synthesize.voice.preset_count", 0);
+    set_string_array(g, "synthesize.qwen3-tts.speakers.names", {});
+    return c;
+}
+
 int expect_rejected(const std::function<void(gguf_context *)> & mutate, const char * label) {
     GgufContext context = valid_metadata();
     SYNTH_TEST_CHECK(context != nullptr);
@@ -185,6 +229,92 @@ int expect_rejected(const std::function<void(gguf_context *)> & mutate, const ch
         std::fprintf(stderr, "expected rejection: %s\n", label);
         return 1;
     }
+    return 0;
+}
+
+// Same as expect_rejected, but mutating a Base package instead of the
+// CustomVoice fixture -- the profile and speaker-encoder keys only exist on
+// the Base package, so their rejection paths can only be exercised from here.
+int expect_base_rejected(const std::function<void(gguf_context *)> & mutate, const char * label) {
+    GgufContext context = base_metadata();
+    SYNTH_TEST_CHECK(context != nullptr);
+    mutate(context.get());
+    synth::qwen3tts::HParams hparams;
+    const synth_status_t     status = synth::qwen3tts::read_hparams(context.get(), hparams);
+    if (status == SYNTH_OK) {
+        std::fprintf(stderr, "expected rejection: %s\n", label);
+        return 1;
+    }
+    return 0;
+}
+
+int test_base_package_loads_without_any_preset_voice() {
+    GgufContext              c = base_metadata();
+    synth::qwen3tts::HParams hparams;
+    SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) == SYNTH_OK);
+    SYNTH_TEST_CHECK(hparams.preset_voices.empty());
+    SYNTH_TEST_CHECK(hparams.voice_mode == synth::qwen3tts::VoiceMode::ProfileSources);
+    SYNTH_TEST_CHECK(hparams.profile.max_reference_count == 1);
+    return 0;
+}
+
+// enc_dim feeds the talker's prompt slot directly. A package whose speaker
+// encoder is a different width would build a prompt of the wrong shape.
+int test_speaker_embedding_width_must_equal_the_talker_hidden_size() {
+    GgufContext c = base_metadata();
+    gguf_set_val_u32(c.get(), "synthesize.qwen3-tts.speaker_encoder.enc_dim", 512);
+    synth::qwen3tts::HParams hparams;
+    SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    return 0;
+}
+
+int test_profile_only_mode_with_presets_is_refused() {
+    GgufContext c = base_metadata();
+    gguf_set_val_u32(c.get(), "synthesize.voice.preset_count", 9);
+    synth::qwen3tts::HParams hparams;
+    SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    return 0;
+}
+
+int test_preset_catalog_mode_with_no_presets_is_still_refused() {
+    GgufContext c = valid_metadata();
+    gguf_set_val_u32(c.get(), "synthesize.voice.preset_count", 0);
+    synth::qwen3tts::HParams hparams;
+    SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    return 0;
+}
+
+// A reference bound of zero would let a Profile be prepared from no audio.
+int test_zero_reference_bounds_are_refused() {
+    GgufContext c = base_metadata();
+    gguf_set_val_u64(c.get(), "synthesize.reference.min_frames_per_clip", 0);
+    synth::qwen3tts::HParams hparams;
+    SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    return 0;
+}
+
+// This variant's one deliberate divergence from omnivoice: omnivoice REQUIRES
+// a package default (auto-voice is its default Voice), while a profile-sources
+// Base package must have none, because every request has to carry a Voice
+// Profile. Flipping weights.cpp's `return !hparams.has_package_default;` to
+// `return true;` would leave the rest of the suite green -- this is the test
+// that would catch it.
+int test_profile_sources_names_a_package_default_is_refused() {
+    GgufContext c = base_metadata();
+    gguf_set_val_bool(c.get(), "synthesize.voice.has_package_default", true);
+    synth::qwen3tts::HParams hparams;
+    SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    return 0;
+}
+
+// A package that declares profile-sources mode but never got its Voice
+// Profile contract or speaker encoder written must not load clean with a
+// zeroed contract and no encoder -- there would be nothing to validate a
+// Voice Profile against for a model that requires one on every request.
+int test_truncated_profile_sources_package_is_refused() {
+    GgufContext              c = truncated_base_metadata();
+    synth::qwen3tts::HParams hparams;
+    SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
     return 0;
 }
 
@@ -202,6 +332,11 @@ int run_valid_package() {
     SYNTH_TEST_CHECK(hparams.preset_voices.size() == 9);
     SYNTH_TEST_CHECK(hparams.language_names.size() == 12);
     SYNTH_TEST_CHECK(!hparams.has_package_default);
+    // A CustomVoice package carries none of the profile/speaker-encoder keys:
+    // it must keep loading exactly as it did before this task, with the
+    // preset-catalog Voice Mode and no speaker encoder recorded.
+    SYNTH_TEST_CHECK(hparams.voice_mode == synth::qwen3tts::VoiceMode::PresetCatalog);
+    SYNTH_TEST_CHECK(!hparams.has_speaker_encoder);
     return 0;
 }
 
@@ -355,6 +490,128 @@ int run_rejections() {
     return 0;
 }
 
+// Every validation rule Task 7 adds for the Voice Profile contract and the
+// speaker encoder, exercised from the Base fixture (the only one that carries
+// these keys at all). Each case below proves one rejection branch actually
+// fires, rather than trusting the prose description of the rule.
+int run_base_package_rejections() {
+    // --- Profile contract: schema identity ---
+    SYNTH_TEST_CHECK(
+        expect_base_rejected(
+            [](gguf_context * g) { gguf_set_val_str(g, "synthesize.profile.schema", "omnivoice-clone-prompt"); },
+            "the profile schema must be qwen3-tts-voice-clone") == 0);
+
+    SYNTH_TEST_CHECK(
+        expect_base_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.profile.schema_version", 2); },
+                             "an unknown profile schema version") == 0);
+
+    // --- Profile contract: compatibility id is 32 bytes of lowercase hex ---
+    SYNTH_TEST_CHECK(expect_base_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_str(g, "synthesize.profile.compatibility_id", std::string(63, 'a').c_str());
+                         },
+                         "a compatibility id shorter than 64 hex chars") == 0);
+
+    SYNTH_TEST_CHECK(expect_base_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_str(g, "synthesize.profile.compatibility_id", std::string(64, 'A').c_str());
+                         },
+                         "an uppercase compatibility id is not lowercase hex") == 0);
+
+    // --- Profile contract: reference audio format ---
+    SYNTH_TEST_CHECK(
+        expect_base_rejected([](gguf_context * g) { gguf_set_val_u32(g, "synthesize.reference.target_channels", 2); },
+                             "reference audio must be single-channel") == 0);
+
+    SYNTH_TEST_CHECK(expect_base_rejected(
+                         [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.reference.target_sample_rate", 0); },
+                         "a zero reference sample rate is refused") == 0);
+
+    // --- Profile contract: min <= max <= total, and max_reference_count != 0 ---
+    SYNTH_TEST_CHECK(
+        expect_base_rejected(
+            [](gguf_context * g) { gguf_set_val_u64(g, "synthesize.reference.min_frames_per_clip", 800000); },
+            "min_frames_per_clip may not exceed max_frames_per_clip") == 0);
+
+    SYNTH_TEST_CHECK(expect_base_rejected(
+                         [](gguf_context * g) { gguf_set_val_u64(g, "synthesize.reference.max_total_frames", 100000); },
+                         "max_frames_per_clip may not exceed max_total_frames") == 0);
+
+    SYNTH_TEST_CHECK(expect_base_rejected(
+                         [](gguf_context * g) { gguf_set_val_u64(g, "synthesize.reference.max_reference_count", 0); },
+                         "a zero reference count admits no clip") == 0);
+
+    // --- Speaker encoder: the three widths only the zero-check catches ---
+    // read_speaker_encoder's zero-check covers mel_bins, n_fft and hop_length
+    // and nothing else: for each of these, deleting its term from that
+    // condition makes the package load. The three that used to sit alongside
+    // them (enc_dim, sample_rate, win_length) are checked further down
+    // instead, and are exercised by their own cases below.
+    SYNTH_TEST_CHECK(expect_base_rejected(
+                         [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.n_fft", 0); },
+                         "n_fft must be non-zero") == 0);
+
+    SYNTH_TEST_CHECK(
+        expect_base_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.mel_bins", 0); },
+            "mel_bins must be non-zero") == 0);
+
+    // A zero hop advances the mel window by nothing and would frame forever.
+    // Distinct from the hop_length >= win_length case below: at hop 0 that
+    // rule is satisfied (0 < 1024), so only the zero-check refuses this.
+    SYNTH_TEST_CHECK(
+        expect_base_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.hop_length", 0); },
+            "a zero hop_length is refused even though it is below win_length") == 0);
+
+    // --- Speaker encoder: width must equal the talker's hidden size ---
+    // Zero included: read_talker already refuses a zero hidden size, so a
+    // zero enc_dim can only ever be unequal to it.
+    SYNTH_TEST_CHECK(
+        expect_base_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.enc_dim", 0); },
+            "a zero speaker-encoder enc_dim cannot equal the talker hidden size") == 0);
+
+    // --- Speaker encoder: rate must match the codec's own rate ---
+    // Zero included, for the same reason: read_codec already refuses a codec
+    // rate of zero (it could not produce the declared frame rate).
+    SYNTH_TEST_CHECK(
+        expect_base_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.sample_rate", 16000); },
+            "the speaker encoder must run at the codec's sample rate") == 0);
+
+    SYNTH_TEST_CHECK(
+        expect_base_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.sample_rate", 0); },
+            "a zero speaker-encoder sample rate cannot equal the codec's") == 0);
+
+    // --- Speaker encoder: hop_length < win_length ---
+    SYNTH_TEST_CHECK(
+        expect_base_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.hop_length", 1024); },
+            "hop_length equal to win_length is refused") == 0);
+
+    // Zero win_length is this same rule, not a separate zero-check: every
+    // hop_length is >= 0.
+    SYNTH_TEST_CHECK(
+        expect_base_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.win_length", 0); },
+            "a zero win_length leaves no hop inside it") == 0);
+
+    // --- Speaker encoder: fmax > fmin and fmax <= sample_rate / 2 ---
+    SYNTH_TEST_CHECK(
+        expect_base_rejected(
+            [](gguf_context * g) { gguf_set_val_f32(g, "synthesize.qwen3-tts.speaker_encoder.fmax", 0.0f); },
+            "fmax must be strictly greater than fmin") == 0);
+
+    SYNTH_TEST_CHECK(
+        expect_base_rejected(
+            [](gguf_context * g) { gguf_set_val_f32(g, "synthesize.qwen3-tts.speaker_encoder.fmax", 13000.0f); },
+            "fmax may not exceed sample_rate / 2") == 0);
+
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -363,5 +620,13 @@ int main() {
     SYNTH_TEST_CHECK(run_valid_package() == 0);
     SYNTH_TEST_CHECK(run_voice_and_language_routing() == 0);
     SYNTH_TEST_CHECK(run_rejections() == 0);
+    SYNTH_TEST_CHECK(run_base_package_rejections() == 0);
+    SYNTH_TEST_CHECK(test_base_package_loads_without_any_preset_voice() == 0);
+    SYNTH_TEST_CHECK(test_speaker_embedding_width_must_equal_the_talker_hidden_size() == 0);
+    SYNTH_TEST_CHECK(test_profile_only_mode_with_presets_is_refused() == 0);
+    SYNTH_TEST_CHECK(test_preset_catalog_mode_with_no_presets_is_still_refused() == 0);
+    SYNTH_TEST_CHECK(test_zero_reference_bounds_are_refused() == 0);
+    SYNTH_TEST_CHECK(test_profile_sources_names_a_package_default_is_refused() == 0);
+    SYNTH_TEST_CHECK(test_truncated_profile_sources_package_is_refused() == 0);
     return 0;
 }

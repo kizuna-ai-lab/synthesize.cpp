@@ -460,7 +460,10 @@ tolerance file to the per-stage format first, which is tracked separately:
 Backend Plan inspection separates zero-compute views from executable nodes. The
 duration, prior, latent, flow, and decoder graphs place 893, 6, 4, 357, and 516
 executable nodes on CUDA respectively, with zero executable CPU fallback and one
-CUDA split per stage. Weightless prior expansion and latent sampling are anchored
+CUDA split per stage. **These counts predate the hold recorded above** (measured
+2026-07-22; the hold landed 2026-07-26) and the 893 duration-stage nodes are the
+stage that now runs on a CPU-only scheduler. Quote them as the pre-hold
+configuration, never as what ships. Weightless prior expansion and latent sampling are anchored
 to the primary backend so their input flags do not pin the graph to CPU.
 
 The initial GGML CUDA transpose-convolution kernel scanned the entire input for

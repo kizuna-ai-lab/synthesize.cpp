@@ -89,12 +89,24 @@ struct LanguageCapability {
 };
 
 // What the public Voice Profile capability query (`synth_voice_profile_capabilities_t`,
-// include/synthesize.h) reports about a Loaded Model, filled by each family's
-// own `shared_info` -- today only OmniVoice's, from its ProfileContract
-// (src/arch/omnivoice/weights.h). A family with no Voice Profile support at
-// all leaves this at its all-zero default, which is exactly the
-// "SYNTH_REQUIREMENT_UNSUPPORTED, zero everything else" shape
-// docs/c-interface.md requires for an unsupported source.
+// include/synthesize.h) reports about a Loaded Model. Two families fill this
+// today, by deliberately opposite routes:
+//   - OmniVoice keeps its family ModelInfo to the raw ProfileContract
+//     (src/arch/omnivoice/weights.h) and src/synthesize.cpp's own
+//     `shared_info` assembles this struct inline, at the family/core seam.
+//   - Qwen3-TTS (its Base variant, Plan 1 Task 9) assembles the whole struct
+//     in the family layer instead (src/arch/qwen3-tts/weights.h's
+//     fill_voice_profile_capability, called from Model::get_info), and its
+//     own `shared_info` just copies the finished result through.
+// The second route exists so the assembly logic -- which Voice Profile
+// sources a package supports and why -- is a pure function of the family's
+// own HParams, testable at the `unit` tier without a loaded Model: neither
+// family's real package is small enough for a unit test to depend on
+// (docs/testing.md). Pick whichever route suits a new family; both produce
+// the same field. A family with no Voice Profile support at all leaves this
+// at its all-zero default, which is exactly the "SYNTH_REQUIREMENT_UNSUPPORTED,
+// zero everything else" shape docs/c-interface.md requires for an
+// unsupported source.
 //
 // `compatibility_id` is decoded here (decode_profile_compatibility_id below)
 // but is exposed through the public query ONLY once `source_flags` also
@@ -194,7 +206,11 @@ struct ModelInfo {
     float                               min_speaking_rate    = 0.0f;
     float                               max_speaking_rate    = 0.0f;
     // Zero-valued (VoiceProfileInfo's own default) for every family that has
-    // not filled it in; only OmniVoice's `shared_info` does, as of Task 14.
+    // not filled it in. OmniVoice's `shared_info` fills it as of Task 14 and
+    // is the only family that does; Qwen3-TTS routes through its own family
+    // layer (fill_voice_profile_capability) but deliberately reports the
+    // all-zero shape until it can actually prepare a Profile -- see
+    // VoiceProfileInfo's own doc comment above for the two fill routes.
     VoiceProfileInfo                    voice_profile;
 };
 

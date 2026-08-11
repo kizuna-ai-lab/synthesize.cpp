@@ -1,7 +1,20 @@
 # Text Frontend Boundary
 
-Status: `synthesize.symbol_map` phoneme input implemented and validated on
-2026-07-23. Raw-text/G2P providers are not implemented yet.
+Status: Confirmed 2026-08-12. Two built-in Text Frontend Providers are
+implemented. `synthesize.symbol_map` supplies phoneme input (Input Level 2),
+implemented and validated on 2026-07-23, and is what the VITS and Kokoro
+packages declare. `synthesize.qwen_bpe` supplies **raw UTF-8 text input (Input
+Level 1)** through a declarative byte-level BPE whose vocabulary and merges are
+read from the Model Package — `src/bpe-frontend.cpp`, which returns
+`SYNTH_INPUT_SUPPORT_TEXT_UTF8` and is constructed by the OmniVoice and
+Qwen3-TTS families. **A G2P Provider is still not implemented**, so raw text
+reaches Level 1 by tokenization rather than by grapheme-to-phoneme conversion,
+and the eSpeak NG licensing constraint recorded below is unchanged.
+
+**This line read "Raw-text/G2P providers are not implemented yet" until
+2026-08-12.** It was accurate when written and was not revisited when the BPE
+Provider landed and was hoisted to a shared module; conjoining raw text with
+G2P made half a true sentence carry a false one.
 
 ## Decision
 

@@ -1,0 +1,1395 @@
+{
+  "$schema": "../../../docs/schemas/synthesize-golden-manifest-v1.schema.json",
+  "schema": "synthesize-golden-manifest-v1",
+  "suite_version": 1,
+  "family": "qwen3-tts",
+  "variant": "qwen3-tts-12hz-0-6b-base",
+  "source": {
+    "repository": "https://github.com/QwenLM/Qwen3-TTS",
+    "revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
+    "artifacts": [
+      {
+        "role": "checkpoint",
+        "locator": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/resolve/5d83992436eae1d760afd27aff78a71d676296fc/model.safetensors",
+        "sha256": "180b3b10eb1c9f1b4db7806d5475bae3071c0243c299d49926bab1da3b6946f6"
+      },
+      {
+        "role": "checkpoint",
+        "locator": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/resolve/5d83992436eae1d760afd27aff78a71d676296fc/speech_tokenizer/model.safetensors",
+        "sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
+      },
+      {
+        "role": "config",
+        "locator": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/resolve/5d83992436eae1d760afd27aff78a71d676296fc/config.json",
+        "sha256": "2e714c787c8edb98b05432685cddb634add2de4d4e645f653d68251ef72ba011"
+      },
+      {
+        "role": "frontend-resource",
+        "locator": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/resolve/5d83992436eae1d760afd27aff78a71d676296fc/vocab.json",
+        "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+      },
+      {
+        "role": "frontend-resource",
+        "locator": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/resolve/5d83992436eae1d760afd27aff78a71d676296fc/merges.txt",
+        "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3"
+      },
+      {
+        "role": "license",
+        "locator": "https://github.com/QwenLM/Qwen3-TTS/blob/022e286b98fbec7e1e916cb940cdf532cd9f488e/LICENSE",
+        "sha256": "a44a6081c73ad75f0255bb2bb5cab74ef1829565a895a24e53a4f11290ab7655"
+      },
+      {
+        "role": "reference-audio",
+        "locator": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+        "sha256": "480f55f41c71c3d79c2a9acc48f0bfb3c5a46222e6e9ebf3e2888e93501a6b5c"
+      }
+    ]
+  },
+  "reference": {
+    "implementation": "QwenLM/Qwen3-TTS@022e286b98fbec7e1e916cb940cdf532cd9f488e",
+    "framework": "pytorch-2.13.0+cu130",
+    "runner": "scripts/dump_reference_qwen3_tts_base.py",
+    "environment_lock": "scripts/envs/qwen3-tts/uv.lock",
+    "dtype": "bfloat16",
+    "device": "cuda"
+  },
+  "package_contract": {
+    "native_audio": {
+      "sample_rate_hz": 24000,
+      "channels": 1,
+      "sample_format": "f32le"
+    },
+    "input_kinds": [
+      "text_utf8"
+    ],
+    "frontend": {
+      "provider": "synthesize.qwen_bpe",
+      "contract_version": 1
+    },
+    "language_tags": [
+      "auto",
+      "chinese",
+      "english",
+      "french",
+      "german",
+      "italian",
+      "japanese",
+      "korean",
+      "portuguese",
+      "russian",
+      "spanish"
+    ],
+    "voices": {
+      "mode": "profile-sources",
+      "default_id": null,
+      "preset_ids": []
+    },
+    "profile": {
+      "schema": "qwen3-tts-voice-clone",
+      "schema_version": 1,
+      "sources": [
+        "reference_audio",
+        "serialized_profile"
+      ],
+      "reference": {
+        "target_sample_rate": 24000,
+        "target_channels": 1,
+        "min_frames_per_clip": 24000,
+        "max_frames_per_clip": 720000,
+        "max_total_frames": 720000,
+        "max_reference_count": 1
+      }
+    },
+    "stochastic": true,
+    "speaking_rate_range": [
+      1.0,
+      1.0
+    ],
+    "max_input_tokens": 1024,
+    "max_output_frames": 15728640
+  },
+  "tolerance_file": "tests/tolerances/qwen3-tts.json",
+  "case_artifact_root": "build/goldens/qwen3-tts/qwen3-tts-12hz-0-6b-base",
+  "cases": [
+    {
+      "id": "base-upstream-clone-en",
+      "origin": {
+        "kind": "upstream_example",
+        "locator": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/blob/5d83992436eae1d760afd27aff78a71d676296fc/README.md"
+      },
+      "coverage": [
+        "upstream-example",
+        "baseline",
+        "voice-clone-icl"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "I am solving the equation: x = [-b ± √(b²-4ac)] / 2a? Nobody can — it's a disaster (◍•͈⌔•͈◍), very sad!",
+        "reference": {
+          "artifact": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+          "transcript": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "language_tag": "english"
+        }
+      },
+      "voice": {
+        "kind": "reference_audio"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "x_vector_only": false,
+          "ref_text": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "speaker.x_vector",
+            "path": "speaker/x_vector.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.reference",
+            "path": "codes/reference.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.icl_embed",
+            "path": "prompt/icl_embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio.pcm",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "base-xvector-en",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "x-vector-only",
+        "no-transcript"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "This is a test of Qwen three T T S base voice cloning.",
+        "reference": {
+          "artifact": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+          "transcript": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "language_tag": "english"
+        }
+      },
+      "voice": {
+        "kind": "reference_audio"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "x_vector_only": true,
+          "ref_text": null,
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "speaker.x_vector",
+            "path": "speaker/x_vector.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio.pcm",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "base-icl-en",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "transcript-assisted",
+        "icl-mode"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "This is a test of Qwen three T T S base voice cloning.",
+        "reference": {
+          "artifact": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+          "transcript": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "language_tag": "english"
+        }
+      },
+      "voice": {
+        "kind": "reference_audio"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "x_vector_only": false,
+          "ref_text": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "speaker.x_vector",
+            "path": "speaker/x_vector.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.reference",
+            "path": "codes/reference.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.icl_embed",
+            "path": "prompt/icl_embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio.pcm",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "base-icl-zh",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "second-language",
+        "icl-mode",
+        "non-latin-script"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "chinese",
+        "text": "其实我真的有发现，我是一个特别善于观察别人情绪的人。",
+        "reference": {
+          "artifact": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+          "transcript": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "language_tag": "english"
+        }
+      },
+      "voice": {
+        "kind": "reference_audio"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "Chinese",
+          "x_vector_only": false,
+          "ref_text": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "speaker.x_vector",
+            "path": "speaker/x_vector.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.reference",
+            "path": "codes/reference.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.icl_embed",
+            "path": "prompt/icl_embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio.pcm",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "base-icl-ja",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "third-language",
+        "icl-mode",
+        "non-latin-script"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "japanese",
+        "text": "こんにちは、世界。",
+        "reference": {
+          "artifact": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+          "transcript": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "language_tag": "english"
+        }
+      },
+      "voice": {
+        "kind": "reference_audio"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "Japanese",
+          "x_vector_only": false,
+          "ref_text": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "speaker.x_vector",
+            "path": "speaker/x_vector.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.reference",
+            "path": "codes/reference.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.icl_embed",
+            "path": "prompt/icl_embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio.pcm",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "base-xvector-zh",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "mode-against-language",
+        "x-vector-only",
+        "non-latin-script"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "chinese",
+        "text": "其实我真的有发现，我是一个特别善于观察别人情绪的人。",
+        "reference": {
+          "artifact": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+          "transcript": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "language_tag": "english"
+        }
+      },
+      "voice": {
+        "kind": "reference_audio"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "Chinese",
+          "x_vector_only": true,
+          "ref_text": null,
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "speaker.x_vector",
+            "path": "speaker/x_vector.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio.pcm",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "base-ref-min",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "reference-duration-min",
+        "min-frames-per-clip"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "This is a test of Qwen three T T S base voice cloning.",
+        "reference": {
+          "artifact": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+          "transcript": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "language_tag": "english"
+        }
+      },
+      "voice": {
+        "kind": "reference_audio"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "x_vector_only": false,
+          "ref_text": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "seeded_by": "request.seed_u64",
+          "trim_seconds": 1.0
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "speaker.x_vector",
+            "path": "speaker/x_vector.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.reference",
+            "path": "codes/reference.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.icl_embed",
+            "path": "prompt/icl_embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio.pcm",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "base-ref-max",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "reference-duration-max",
+        "max-frames-per-clip"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "This is a test of Qwen three T T S base voice cloning.",
+        "reference": {
+          "artifact": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+          "transcript": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "language_tag": "english"
+        }
+      },
+      "voice": {
+        "kind": "reference_audio"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "x_vector_only": false,
+          "ref_text": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "seeded_by": "request.seed_u64",
+          "trim_seconds": 30.0
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "speaker.x_vector",
+            "path": "speaker/x_vector.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.reference",
+            "path": "codes/reference.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.icl_embed",
+            "path": "prompt/icl_embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio.pcm",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "base-text-short",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "one-word-target-text",
+        "short-utterance"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Hi.",
+        "reference": {
+          "artifact": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+          "transcript": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "language_tag": "english"
+        }
+      },
+      "voice": {
+        "kind": "reference_audio"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "x_vector_only": false,
+          "ref_text": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "speaker.x_vector",
+            "path": "speaker/x_vector.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.reference",
+            "path": "codes/reference.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.icl_embed",
+            "path": "prompt/icl_embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio.pcm",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "base-text-long",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "near-max-input-tokens",
+        "long-sequence"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "A small speech synthesis library should produce the same finite waveform whenever its model, input, controls, and random seed are unchanged. That is the whole promise, and everything else is detail. It runs on the machine in front of you, with no network call and no account, and it keeps working long after the service that trained it has been retired. The stable interface is a small, versioned, C surface: opaque handles for a loaded model, a synthesis context, and a voice profile, none of which ever expose the tensors or the graph underneath. A command line tool and a set of language bindings sit on top of that same surface, so nothing a user can reach from Python or Rust is unreachable from plain C, and nothing shipped in the CLI is a special case the library itself cannot do. Cloning a voice from a short reference clip is one of the more delicate corners of that contract, because the reference audio itself becomes part of the request rather than a fixed asset chosen ahead of time. A clip that is too short forces the encoder to guess at a speaker identity from too little evidence, and a clip that is too long starts to behave like a second utterance rather than a voice sample, which is why a package states minimum and maximum reference durations as part of its contract instead of leaving them to be discovered by trial and error later. In-context cloning conditions on both the reference audio and its transcript, so the model can align what it hears against what it is told was said, while the faster x-vector path drops the transcript entirely and relies only on a fixed-size speaker embedding, trading a small amount of similarity for a much shorter time to first audio. Choosing between the two modes is therefore not a matter of taste but a matter of matching the request to what the caller actually has on hand: a clean, transcribed reference clip favors the slower, higher-fidelity path, while an untranscribed snippet captured from a live microphone favors the faster one. None of this changes how the request is seeded. Decoding still samples rather than choosing the single most likely code at every step, because greedy decoding on this family of models is known to degenerate into a fixed point that repeats one acoustic code far past the point where any listener would call the result speech. Sampling avoids that trap, and reproducibility comes back through the seed alone: the same seed, the same reference clip, and the same target text must produce byte-identical audio on every run, on every supported backend, whether the codec executes on the CPU or is moved to an accelerator for the parts of the graph that do not feed a sampled token. That last property, more than any single tensor value, is what a golden manifest exists to pin down before a single line of the port is written, so that the question a reviewer asks later is never What should this have produced, but only Does it still produce what it already proved it could. A golden manifest earns that role only if it is honest about where its numbers came from. Provenance fields record the exact upstream revision, the digest of every weight file, and the runner and environment lock that produced the reference tensors, so a mismatch in any one of them is a signal to stop rather than a detail to ignore. Cases cover the ordinary path and its edges together: a short utterance next to a long one, a preset voice next to a cloned one, a single language next to a script the frontend has never been asked to tokenize before, because a defect that lives only at an edge is still a defect, and a suite that never visits the edge will never catch it. Tolerances are not chosen to make a suite pass; they are measured once, from the first working implementation, and then held fixed so that a later regression shows up as a threshold violation instead of being quietly absorbed into a number that moves to match whatever the code currently does. None of this is free. Every case adds a directory of captured tensors to keep in sync with the runner that produced them, every tolerance key adds one more place a reviewer has to check before trusting a green run, and every new variant of a family multiplies both by however many cases its own contract demands. The alternative, though, is worse: a port that merely sounds right to whoever last listened to it, with no record of what was compared, at what precision, against which upstream commit, and no way for the next contributor to tell whether a change made things better or only different. A contract with numbers in it can be wrong, and it can be argued with, and eventually it can be fixed; a contract that was never written down can only be guessed at, forever, by whoever inherits the code next.",
+        "reference": {
+          "artifact": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+          "transcript": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "language_tag": "english"
+        }
+      },
+      "voice": {
+        "kind": "reference_audio"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "x_vector_only": false,
+          "ref_text": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "speaker.x_vector",
+            "path": "speaker/x_vector.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.reference",
+            "path": "codes/reference.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.icl_embed",
+            "path": "prompt/icl_embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio.pcm",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "base-seed-one",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "alternate-stochastic-path"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "This is a test of Qwen three T T S base voice cloning.",
+        "reference": {
+          "artifact": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+          "transcript": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "language_tag": "english"
+        }
+      },
+      "voice": {
+        "kind": "reference_audio"
+      },
+      "request": {
+        "seed_u64": "1",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "x_vector_only": false,
+          "ref_text": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "speaker.x_vector",
+            "path": "speaker/x_vector.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.reference",
+            "path": "codes/reference.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.icl_embed",
+            "path": "prompt/icl_embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio.pcm",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "base-seed-forty-two",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
+      },
+      "coverage": [
+        "alternate-stochastic-path"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "This is a test of Qwen three T T S base voice cloning.",
+        "reference": {
+          "artifact": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+          "transcript": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "language_tag": "english"
+        }
+      },
+      "voice": {
+        "kind": "reference_audio"
+      },
+      "request": {
+        "seed_u64": "42",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "x_vector_only": false,
+          "ref_text": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "speaker.x_vector",
+            "path": "speaker/x_vector.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.reference",
+            "path": "codes/reference.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.icl_embed",
+            "path": "prompt/icl_embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio.pcm",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    }
+  ],
+  "relations": [
+    {
+      "kind": "artifact_differs",
+      "phase": "public_request",
+      "cases": [
+        "base-icl-en",
+        "base-seed-one",
+        "base-seed-forty-two"
+      ],
+      "artifact": "audio.pcm"
+    }
+  ]
+}

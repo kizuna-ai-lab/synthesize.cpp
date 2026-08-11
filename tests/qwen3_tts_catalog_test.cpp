@@ -14,6 +14,7 @@
 #include "ggml.h"
 #include "test-assert.h"
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -248,6 +249,133 @@ std::vector<Entry> expected_entries(const synth::qwen3tts::HParams & h) {
     return out;
 }
 
+// Base adds the ECAPA-TDNN speaker encoder and the codec's encoder half. Every
+// width below must match catalog.cpp's `resolve_speaker_encoder` /
+// `resolve_codec_encoder` exactly: unlike the talker and codec-decoder tensors
+// above, these are fixed by the checkpoint's architecture rather than derived
+// from `h`, so this synthetic package cannot shrink them and still resolve.
+// Only the codec encoder's transformer and quantizer widths, which do come
+// from `h.codec.decoder`, vary with the hparams passed in.
+constexpr int64_t  kSpeakerEncoderChannels          = 512;
+constexpr int64_t  kSpeakerEncoderAttentionChannels = 128;
+constexpr int64_t  kSpeakerEncoderSeChannels        = 128;
+constexpr int64_t  kSpeakerEncoderRes2NetScale      = 8;
+constexpr int64_t  kSpeakerEncoderRes2NetWidth      = kSpeakerEncoderChannels / kSpeakerEncoderRes2NetScale;
+constexpr int64_t  kSpeakerEncoderMfaChannels       = 3 * kSpeakerEncoderChannels;
+constexpr uint32_t kSpeakerEncoderBlockCount        = 3;
+
+std::vector<Entry> speaker_encoder_entries(const synth::qwen3tts::HParams & h) {
+    std::vector<Entry> out;
+    add_conv(out, "speaker_encoder.blocks.0.conv", 5, h.speaker_encoder.mel_bins, kSpeakerEncoderChannels);
+    for (uint32_t block = 1; block <= kSpeakerEncoderBlockCount; ++block) {
+        const std::string base = "speaker_encoder.blocks." + std::to_string(block) + ".";
+        add_conv(out, base + "tdnn1.conv", 1, kSpeakerEncoderChannels, kSpeakerEncoderChannels);
+        for (int64_t sub = 0; sub < kSpeakerEncoderRes2NetScale - 1; ++sub) {
+            add_conv(out, base + "res2net_block.blocks." + std::to_string(sub) + ".conv", 3,
+                     kSpeakerEncoderRes2NetWidth, kSpeakerEncoderRes2NetWidth);
+        }
+        add_conv(out, base + "se_block.conv1", 1, kSpeakerEncoderChannels, kSpeakerEncoderSeChannels);
+        add_conv(out, base + "se_block.conv2", 1, kSpeakerEncoderSeChannels, kSpeakerEncoderChannels);
+        add_conv(out, base + "tdnn2.conv", 1, kSpeakerEncoderChannels, kSpeakerEncoderChannels);
+    }
+    add_conv(out, "speaker_encoder.mfa.conv", 1, kSpeakerEncoderMfaChannels, kSpeakerEncoderMfaChannels);
+    add_conv(out, "speaker_encoder.asp.tdnn.conv", 1, 3 * kSpeakerEncoderMfaChannels, kSpeakerEncoderAttentionChannels);
+    add_conv(out, "speaker_encoder.asp.conv", 1, kSpeakerEncoderAttentionChannels, kSpeakerEncoderMfaChannels);
+    add_conv(out, "speaker_encoder.fc", 1, 2 * kSpeakerEncoderMfaChannels, h.speaker_encoder.enc_dim);
+    return out;
+}
+
+constexpr int64_t                kCodecEncoderInitialChannels        = 64;
+constexpr std::array<int64_t, 4> kCodecEncoderStageWidths            = { 128, 256, 512, 1024 };
+constexpr std::array<int64_t, 4> kCodecEncoderDownsampleKernels      = { 8, 10, 12, 16 };
+constexpr int64_t                kCodecEncoderDownsampleConvKernel   = 4;
+constexpr uint32_t               kCodecEncoderTransformerLayerCount  = 8;
+constexpr uint32_t               kCodecEncoderAcousticQuantizerCount = 31;
+
+std::vector<Entry> codec_encoder_entries(const synth::qwen3tts::HParams & h) {
+    std::vector<Entry> out;
+    add_conv(out, "codec.encoder.encoder.layers.0.conv", 7, 1, kCodecEncoderInitialChannels);
+
+    int64_t width = kCodecEncoderInitialChannels;
+    for (size_t stage = 0; stage < kCodecEncoderStageWidths.size(); ++stage) {
+        const size_t      residual_index = 3 * stage + 1;
+        const std::string base           = "codec.encoder.encoder.layers." + std::to_string(residual_index) + ".block.";
+        const int64_t     narrower       = width / 2;
+        add_conv(out, base + "1.conv", 3, width, narrower);
+        add_conv(out, base + "3.conv", 1, narrower, width);
+
+        const size_t downsample_index = 3 * stage + 3;
+        add_conv(out, "codec.encoder.encoder.layers." + std::to_string(downsample_index) + ".conv",
+                 kCodecEncoderDownsampleKernels[stage], width, kCodecEncoderStageWidths[stage]);
+        width = kCodecEncoderStageWidths[stage];
+    }
+
+    const int64_t hidden = h.codec.decoder.codebook_dim;
+    add_conv(out, "codec.encoder.encoder.layers.14.conv", 3, width, hidden);
+    add(out, "codec.encoder.downsample.conv.weight", { kCodecEncoderDownsampleConvKernel, hidden, hidden });
+
+    const int64_t intermediate = 4 * hidden;
+    for (uint32_t layer = 0; layer < kCodecEncoderTransformerLayerCount; ++layer) {
+        const std::string base = "codec.encoder.enc_transformer.layers." + std::to_string(layer) + ".";
+        add(out, base + "input_layernorm.weight", { hidden });
+        add(out, base + "input_layernorm.bias", { hidden });
+        add(out, base + "self_attn.q_proj.weight", { hidden, hidden });
+        add(out, base + "self_attn.k_proj.weight", { hidden, hidden });
+        add(out, base + "self_attn.v_proj.weight", { hidden, hidden });
+        add(out, base + "self_attn.o_proj.weight", { hidden, hidden });
+        add(out, base + "self_attn_scale.scale", { hidden });
+        add(out, base + "post_attn_norm.weight", { hidden });
+        add(out, base + "post_attn_norm.bias", { hidden });
+        add(out, base + "mlp.fc1.weight", { hidden, intermediate });
+        add(out, base + "mlp.fc2.weight", { intermediate, hidden });
+        add(out, base + "mlp_scale.scale", { hidden });
+    }
+
+    // Unlike the decoder's quantizer, the encoder's codebook table sits
+    // directly under `layers.<n>` rather than `vq.layers.<n>`.
+    const synth::qwen3tts::CodecDecoderParams & codec = h.codec.decoder;
+    const int64_t                               inner = codec.codebook_dim / 2;
+    add(out, "codec.encoder.quantizer.semantic_rvq.input_proj.weight", { 1, codec.codebook_dim, inner });
+    add(out, "codec.encoder.quantizer.semantic_rvq.output_proj.weight", { 1, inner, codec.codebook_dim });
+    for (uint32_t index = 0; index < codec.semantic_quantizer_count; ++index) {
+        add(out, "codec.encoder.quantizer.semantic_rvq.layers." + std::to_string(index) + ".codebook",
+            { inner, codec.codebook_size });
+    }
+    add(out, "codec.encoder.quantizer.acoustic_rvq.input_proj.weight", { 1, codec.codebook_dim, inner });
+    add(out, "codec.encoder.quantizer.acoustic_rvq.output_proj.weight", { 1, inner, codec.codebook_dim });
+    for (uint32_t index = 0; index < kCodecEncoderAcousticQuantizerCount; ++index) {
+        add(out, "codec.encoder.quantizer.acoustic_rvq.layers." + std::to_string(index) + ".codebook",
+            { inner, codec.codebook_size });
+    }
+    return out;
+}
+
+// `small_hparams()` plus a speaker encoder, mirroring what a real Base package
+// declares (`has_speaker_encoder == true`, `voice_mode == ProfileSources`).
+synth::qwen3tts::HParams base_hparams() {
+    synth::qwen3tts::HParams h    = small_hparams();
+    h.voice_mode                  = synth::qwen3tts::VoiceMode::ProfileSources;
+    h.has_speaker_encoder         = true;
+    h.speaker_encoder.enc_dim     = h.talker.hidden_size;
+    h.speaker_encoder.sample_rate = h.codec.sample_rate;
+    h.speaker_encoder.mel_bins    = 4;
+    h.speaker_encoder.n_fft       = 8;
+    h.speaker_encoder.hop_length  = 2;
+    h.speaker_encoder.win_length  = 4;
+    h.speaker_encoder.fmin        = 0.0f;
+    h.speaker_encoder.fmax        = 1.0f;
+    return h;
+}
+
+std::vector<Entry> base_entries(const synth::qwen3tts::HParams & h) {
+    std::vector<Entry>       out     = expected_entries(h);
+    const std::vector<Entry> speaker = speaker_encoder_entries(h);
+    const std::vector<Entry> codec   = codec_encoder_entries(h);
+    out.insert(out.end(), speaker.begin(), speaker.end());
+    out.insert(out.end(), codec.begin(), codec.end());
+    return out;
+}
+
 // The talker half carries the checkpoint's BF16, the codec half the speech
 // tokenizer's F32.
 ggml_type default_type(const std::string & name) {
@@ -475,6 +603,90 @@ int check_real_package_count() {
     return 0;
 }
 
+// Stage 1 left the catalog covering exactly what a graph could reach. Base
+// adds two regions, and the catalog's own sweep makes cataloguing them
+// mandatory rather than optional: "a tensor the catalog never asked for is an
+// error".
+int check_base_package_resolves() {
+    const synth::qwen3tts::HParams h       = base_hparams();
+    const std::vector<Entry>       entries = base_entries(h);
+    Context                        context = make_context();
+    synth::qwen3tts::ModelWeights  weights;
+    populate(context.get(), entries, nullptr);
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_OK);
+    SYNTH_TEST_CHECK(synth::qwen3tts::expected_tensor_count(h) == entries.size());
+    return 0;
+}
+
+// `fc` maps the pooled statistics onto the embedding the prompt slot takes, so
+// its output extent is `enc_dim`. A package that disagrees builds a prompt of
+// the wrong width, which is wrong audio rather than an error.
+int check_speaker_encoder_fc_shape_checked_against_enc_dim() {
+    const synth::qwen3tts::HParams h       = base_hparams();
+    const std::vector<Entry>       entries = base_entries(h);
+    Context                        context = make_context();
+    synth::qwen3tts::ModelWeights  parsed;
+    populate(context.get(), entries, [](const Entry & entry, Entry & effective, ggml_type &) {
+        if (entry.name == "speaker_encoder.fc.weight") {
+            // ne = [kernel, in, out]; out is the enc_dim axis.
+            effective.ne[2] += 1;
+            return true;
+        }
+        return false;
+    });
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
+    return 0;
+}
+
+// The sweep is the reason this matters: a CustomVoice package that somehow
+// carried speaker-encoder or codec-encoder tensors would be refused rather
+// than silently carrying a region nobody resolves.
+int check_uncatalogued_new_region_tensors_are_refused() {
+    const synth::qwen3tts::HParams h = small_hparams();  // has_speaker_encoder == false
+    SYNTH_TEST_CHECK(!h.has_speaker_encoder);
+    for (const Entry & stray : {
+             Entry{ "speaker_encoder.fc.weight",            { 1, 3072, 1024 } },
+             Entry{ "codec.encoder.downsample.conv.weight", { 4, 512, 512 }   }
+    }) {
+        std::vector<Entry> entries = expected_entries(h);
+        entries.push_back(stray);
+        Context                       context = make_context();
+        synth::qwen3tts::ModelWeights parsed;
+        populate(context.get(), entries, nullptr);
+        SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, h, parsed) == SYNTH_ERR_GGUF);
+    }
+    return 0;
+}
+
+// 76 speaker-encoder tensors plus the tokenizer's encoder half, carried in
+// full: nothing is stored once and aliased (see catalog.cpp's codec-encoder
+// quantizer resolver, and the converter's `measure_shared_codebooks`, which
+// measures the overlap without acting on it). Task 1's census fixes the
+// number; assert it here so a silent change to either region fails a test.
+int check_real_base_package_count() {
+    synth::qwen3tts::HParams h;
+    h.talker.layer_count                     = 28;
+    h.code_predictor.layer_count             = 5;
+    h.code_predictor.code_group_count        = 16;
+    h.codec.decoder.quantizer_count          = 16;
+    h.codec.decoder.semantic_quantizer_count = 1;
+    h.codec.decoder.layer_count              = 8;
+    h.codec.decoder.upsample_rates           = { 8, 5, 4, 3 };
+    h.codec.decoder.upsampling_ratios        = { 2, 2 };
+    h.has_speaker_encoder                    = true;
+    const uint64_t base                      = synth::qwen3tts::expected_tensor_count(h);
+    h.has_speaker_encoder                    = false;
+    const uint64_t custom_voice              = synth::qwen3tts::expected_tensor_count(h);
+    SYNTH_TEST_CHECK(custom_voice == 657);
+    SYNTH_TEST_CHECK(base == 894);
+    // The difference, accounted for rather than merely bounded: 76 speaker
+    // encoder tensors and 161 codec encoder ones. A `base > custom_voice + 76`
+    // check stood here and could not fail -- both operands are pinned exactly
+    // two lines up -- so it proved nothing about how the 237 divide.
+    SYNTH_TEST_CHECK(base - custom_voice == 76 + 161);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -484,5 +696,10 @@ int main() {
     SYNTH_TEST_CHECK(check_resolution(h, entries) == 0);
     SYNTH_TEST_CHECK(check_rejections(h, entries) == 0);
     SYNTH_TEST_CHECK(check_real_package_count() == 0);
+
+    SYNTH_TEST_CHECK(check_base_package_resolves() == 0);
+    SYNTH_TEST_CHECK(check_speaker_encoder_fc_shape_checked_against_enc_dim() == 0);
+    SYNTH_TEST_CHECK(check_uncatalogued_new_region_tensors_are_refused() == 0);
+    SYNTH_TEST_CHECK(check_real_base_package_count() == 0);
     return 0;
 }

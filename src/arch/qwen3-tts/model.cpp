@@ -326,6 +326,15 @@ synth_status_t Model::get_info(ModelInfo & output) const {
     }
     output.frontend_present  = hparams.frontend_present;
     output.frontend_provider = hparams.frontend_provider;
+    // A profile-sources package (this family's Base variant) reports no
+    // preset Voice at all -- `preset_voice_ids` above is already empty,
+    // because `hparams.preset_voices` is -- and, as of Plan 1, no Voice
+    // Profile source either: nothing in the runtime can prepare or consume
+    // one for this family yet, and docs/c-interface.md says a Model without
+    // runtime Voice Profile support reports zero flags. See
+    // fill_voice_profile_capability itself for why the package's own
+    // ProfileContract is still read and validated regardless.
+    fill_voice_profile_capability(hparams, output.voice_profile);
     return SYNTH_OK;
 }
 
@@ -364,6 +373,21 @@ synth_status_t Model::resolve_voice(const std::string & voice_id,
     has_language   = false;
     language_token = 0;
 
+    // A profile-sources package carries no Preset Voice Catalog at all --
+    // every request must supply a prepared Voice Profile instead (Plan 2) --
+    // and the lookup below is what refuses it: read_voices guarantees such a
+    // package reaches here with an empty `preset_voices` (it refuses a
+    // nonzero preset_count outright and clears the vector; see
+    // qwen3_tts_metadata_test.cpp's profile-sources cases), so no id can
+    // match and every request is refused whether it names a Voice or not.
+    //
+    // An explicit `has_preset_voice_catalog` guard stood here until the
+    // branch's final review: it returned the same SYNTH_ERR_UNSUPPORTED_VOICE
+    // one line earlier, so removing it changed no observable behaviour and no
+    // test could be written that saw it work. What it was documenting -- that
+    // the refusal is "there is no catalog" rather than "that name is not in
+    // the catalog" -- is not expressible here anyway: the ABI defines exactly
+    // one voice-error status (include/synthesize.h) and both refusals take it.
     PresetVoice voice;
     if (!find_preset_voice(implementation_->hparams, voice_id, voice)) {
         return SYNTH_ERR_UNSUPPORTED_VOICE;
@@ -430,9 +454,18 @@ synth_status_t Model::load(const std::string &      path,
         if (status != SYNTH_OK) {
             return status;
         }
-        // Twins of the codec half, so it can run on the primary backend while
-        // the autoregressive half stays on the CPU. Declared before binding,
-        // because the catalog binds the codec against them.
+        // Twins of the codec decoder, so it can run on the primary backend
+        // while the autoregressive half stays on the CPU. Declared before
+        // binding, because the catalog binds the codec against them.
+        //
+        // Decoder only, and the prefix must stay in step with what
+        // build_model_weights binds against the twin context: it calls
+        // resolve_codec there, which resolves `codec.decoder.*` and nothing
+        // else. A Base package also carries 161 `codec.encoder.*` tensors,
+        // and twinning those mirrored 224,674,944 bytes onto the device that
+        // no graph ever bound -- there is no codec encoder graph until Plan 2,
+        // and when there is one it needs a twin pass of its own rather than
+        // this one widened by accident.
         const bool split = implementation->backend_plan->primary() != implementation->backend_plan->cpu_backend();
         if (split) {
             ggml_init_params twin_params{};
@@ -444,7 +477,7 @@ synth_status_t Model::load(const std::string &      path,
             }
             for (ggml_tensor * tensor = ggml_get_first_tensor(implementation->weights_context); tensor != nullptr;
                  tensor               = ggml_get_next_tensor(implementation->weights_context, tensor)) {
-                if (std::strncmp(tensor->name, "codec.", 6) != 0) {
+                if (std::strncmp(tensor->name, "codec.decoder.", 14) != 0) {
                     continue;
                 }
                 ggml_tensor * twin =

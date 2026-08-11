@@ -1,6 +1,6 @@
 # Testing Policy
 
-Status: Confirmed, last updated on 2026-08-08.
+Status: Confirmed, last updated on 2026-08-12.
 
 Testing is a per-slice completion gate. A new converter rule, graph stage,
 runtime control, backend path, or public Interface is not complete merely because
@@ -96,7 +96,11 @@ cmake --build build --target synthesize-check-integration
 `synthesize-qwen3-tts-replay-golden` runs the replay validator with `--check`, so
 it is a gate against the committed tolerances rather than a measurement -- without
 it `tests/tolerances/qwen3-tts.json` is a record nothing enforces. It needs the
-oracle payload under `build/goldens/qwen3-tts/` and is not registered without it.
+oracle payload under `build/goldens/qwen3-tts/<variant>/` and is not registered
+without it. Each Reference Model Variant of a family owns its own artifact root
+under `build/goldens/<family>/`, as VITS and Qwen3-TTS both do: two variants
+sharing one root would let a case id common to both overwrite the other's
+payload in place.
 
 `synthesize-golden-manifest-contract` (`unit`) is the structural test over every
 committed Golden Manifest against its schema

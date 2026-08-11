@@ -131,11 +131,51 @@ class GoldenManifestSchemaTest(unittest.TestCase):
         The qwen3-tts file said 18 while its manifest had grown to 20 -- an
         honest historical number that read as a current claim. case_count is
         bookkeeping about the suite, so it tracks the suite.
+
+        A file whose `tolerance_file` is shared by more than one Reference
+        Model Variant (VITS, and qwen3-tts since 2026-08-11) cannot carry one
+        flat top-level number that is right for both -- it records
+        `variants.<name>.case_count` instead, and this checks that form too.
+        Checking only the flat key left both VITS variants silently
+        unchecked from the day that shape was introduced: neither vits.json
+        variant carries a top-level `case_count` at all, so the old
+        `"case_count" not in tolerance` guard skipped every VITS manifest
+        every time, and nothing failed when this test's own module was
+        exercised by making a `variants.*.case_count` wrong on purpose.
+
+        A manifest whose variant is absent from a per-variant file, or present
+        without a `case_count`, is a FAILURE rather than a skip. That was the
+        same skip-shaped hole one level down: the branch that introduced this
+        form fixed "the flat key is missing" and left "this variant is
+        missing" silently passing, which is exactly how a third variant added
+        to a shared file would arrive unchecked. All four committed
+        per-variant entries carry the key today, so nothing legitimately
+        needs the escape.
         """
         for path, manifest in self.manifests:
             with self.subTest(manifest=path.name):
                 tolerance_path = REPO_ROOT / manifest["tolerance_file"]
                 tolerance = json.loads(tolerance_path.read_text(encoding="utf-8"))
+                if "variants" in tolerance:
+                    variant = manifest["variant"]
+                    entry = tolerance["variants"].get(variant)
+                    self.assertIsNotNone(
+                        entry,
+                        f"{manifest['tolerance_file']}: no variants.{variant} entry for {path.name}; "
+                        f"a per-variant tolerance file must describe every manifest that points at it")
+                    self.assertIn(
+                        "case_count", entry,
+                        f"{manifest['tolerance_file']}: variants.{variant} carries no case_count "
+                        f"for {path.name}")
+                    self.assertEqual(
+                        entry["case_count"], len(manifest["cases"]),
+                        f"{manifest['tolerance_file']}: variants.{variant}.case_count "
+                        f"disagrees with {path.name}")
+                    continue
+                # A flat file describes exactly one variant, so its
+                # `case_count` is that manifest's. Kept optional only because
+                # a flat file that never carried the key is a different,
+                # older shape than a per-variant file missing an entry.
                 if "case_count" not in tolerance:
                     continue
                 self.assertEqual(

@@ -138,6 +138,13 @@ struct ModelWeights {
 // instead of producing wrong audio later. Afterwards the package is swept: a
 // tensor the catalog never asked for is an error, not something to ignore,
 // because a name nobody resolves is a name nobody checked.
+//
+// When `hparams.has_speaker_encoder` is set (Base variants), the catalog also
+// covers `speaker_encoder.*` and `codec.encoder.*`: the ECAPA-TDNN speaker
+// encoder and the speech tokenizer's encoder half. Neither has a graph builder
+// yet -- Plans 2 and 3 add those -- so they are resolved here purely to bring
+// their names into the sweep; a Base package that carries them uncatalogued is
+// refused rather than silently accepted.
 // `codec_context`, when non-null, holds same-named twins of the codec half and
 // the codec is bound against those instead. That is what lets the codec run on
 // an accelerator while the talker and the code predictor stay on the CPU, which

@@ -164,6 +164,7 @@ synth_add_unit_test(synthesize-kokoro-metadata-test kokoro_metadata_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-metadata-test qwen3_tts_metadata_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-bpe-test qwen3_tts_bpe_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-catalog-test qwen3_tts_catalog_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-voice-required-test qwen3_tts_voice_required_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-decoder-layer-test qwen3_tts_decoder_layer_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-talker-test qwen3_tts_talker_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-codec-ops-test qwen3_tts_codec_ops_test.cpp)
@@ -709,6 +710,26 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             TIMEOUT 600)
     endif()
 
+    # Stage 2 Plan 1's closing check: the real Base package through the
+    # public C interface only. Task 9's review proved the capability-snapshot
+    # seam line in src/synthesize.cpp (`shared.voice_profile =
+    # info.voice_profile;`) had zero coverage at the ABI level -- deleting it
+    # left the full unit gate green. This is that coverage: it needs the real
+    # package because a synthetic HParams fixture (as
+    # tests/qwen3_tts_voice_required_test.cpp already uses) cannot prove the
+    # on-disk metadata reaches the public struct, only that the function
+    # would do the right thing if it did.
+    if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}")
+        add_executable(synthesize-qwen3-tts-base-load-real qwen3_tts_base_load_real.cpp)
+        target_link_libraries(synthesize-qwen3-tts-base-load-real PRIVATE synthesize)
+        synth_register_integration_target(synthesize-qwen3-tts-base-load-real)
+        add_test(NAME synthesize-qwen3-tts-base-load-real
+            COMMAND synthesize-qwen3-tts-base-load-real ${SYNTH_QWEN3_TTS_BASE_TEST_MODEL})
+        set_tests_properties(synthesize-qwen3-tts-base-load-real PROPERTIES
+            LABELS "integration;abi;qwen3-tts"
+            TIMEOUT 300)
+    endif()
+
     # The foundation slice's closing check: the real OmniVoice package through
     # the family loader and then through the public seam. It needs the package
     # because that is the whole point — every earlier omnivoice test runs
@@ -958,8 +979,11 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     # committed tolerances rather than a measurement: without it the file is a
     # record nothing enforces. The golden sentinel is the oracle payload the
     # replay needs, which is deliberately not committed.
+    # Each Reference Model Variant owns its own artifact root, as VITS's two
+    # already do: the Base and CustomVoice case-id spaces are disjoint today,
+    # but one shared id would have overwritten published goldens in place.
     set(_synth_qwen3_tts_golden_sentinel
-        "${CMAKE_SOURCE_DIR}/build/goldens/qwen3-tts/qwen3-minimal/audio/pcm.f32")
+        "${CMAKE_SOURCE_DIR}/build/goldens/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/qwen3-minimal/audio/pcm.f32")
     if(EXISTS "${SYNTH_QWEN3_TTS_TEST_MODEL}")
         if(EXISTS "${_synth_qwen3_tts_golden_sentinel}")
             add_test(

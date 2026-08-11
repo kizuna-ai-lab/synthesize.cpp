@@ -68,6 +68,9 @@ def base_fixture_spec() -> dict:
             "columns": [{"key": "cpu_metric", "title": "CPU metric"}],
             "metric_note": "The metric is a fixture.",
             "platforms": ["CPU", "CUDA"],
+            # Required, and deliberately the weakest value: a fixture must not
+            # be the reason a card asserts full GPU execution.
+            "cuda_placement": "not_recorded",
         },
         "architecture_label": "Fixture",
         "license_note": "Upstream terms apply: [licence]({{ license_link }}).",
@@ -841,8 +844,42 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
 
     # -- Task 13, feature 5: the conditional CUDA placement sentence --------
 
-    def test_cuda_placement_defaults_to_the_unconditional_full_sentence(self) -> None:
+    def test_cuda_placement_is_required_rather_than_defaulted(self) -> None:
+        """The regression this whole field exists to prevent.
+
+        `cuda_placement` used to default to `full`, so four of the five shipped
+        cards asserted "CUDA placement contained zero executable CPU fallback
+        nodes" without any spec ever saying so -- and three of the four were
+        false. A spec that omits the field must now fail loudly instead of
+        silently making the strongest possible claim.
+        """
         spec = base_fixture_spec()
+        del spec["validation"]["cuda_placement"]
+        with self.assertRaisesRegex(ValueError, "cuda_placement is required"):
+            self.generator.validate_spec(spec)
+
+    def test_an_omitted_cuda_placement_never_renders_the_full_sentence(self) -> None:
+        """Belt to the validator's braces: the template must be safe alone."""
+        spec = base_fixture_spec()
+        del spec["validation"]["cuda_placement"]
+        card = self.generator.render(spec, "# stub")
+        self.assertNotIn("zero executable CPU fallback", card)
+        self.assertIn("Which stages run on CUDA was not recorded", card)
+
+    def test_cuda_placement_not_recorded_says_so_explicitly(self) -> None:
+        spec = base_fixture_spec()
+        spec["validation"]["cuda_placement"] = "not_recorded"
+        self.generator.validate_spec(spec)
+        card = self.generator.render(spec, "# stub")
+        self.assertNotIn("zero executable CPU fallback", card)
+        self.assertIn(
+            "case. Which stages run on CUDA was not recorded for this package.", card
+        )
+
+    def test_cuda_placement_full_still_renders_the_measured_sentence(self) -> None:
+        spec = base_fixture_spec()
+        spec["validation"]["cuda_placement"] = "full"
+        self.generator.validate_spec(spec)
         card = self.generator.render(spec, "# stub")
         self.assertIn(
             "case. CUDA placement contained zero executable CPU fallback nodes.", card

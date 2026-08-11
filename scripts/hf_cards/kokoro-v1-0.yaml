@@ -98,6 +98,37 @@ validation:
     while the speech does not. The figure quoted is the worst case over the
     suite. What is bit-exact, on every profile and both backends, is the
     predicted durations.
+  # Set explicitly 2026-08-12. This card inherited the generator's old `full`
+  # default and so asserted "CUDA placement contained zero executable CPU
+  # fallback nodes" -- a sentence no measurement in this repository supports for
+  # this family. Kokoro's hold decision is thoroughly measured (18 of 21 CUDA
+  # validation runs failed before it, 2,372 scheduler splits for the rejected
+  # mechanism, 89.2 of 352.8 MB mirrored), but its per-stage node placement was
+  # never counted: `log_placement_if_enabled` sits behind
+  # SYNTH_DEBUG_BACKEND_PLACEMENT and no run was recorded, and none of the seven
+  # validate-kokoro-*.py scripts reads placement. The note below therefore says
+  # which stages are held and why, and stops where the evidence stops.
+  cuda_placement: partial
+  cuda_placement_note: >-
+    Two of this package's seven stages run on CPU on every Execution Backend --
+    the PL-BERT encoder with its `bert_encoder` projection, and the duration
+    predictor -- and the other five run on CUDA when CUDA is the selected
+    Execution Backend. `resolve_durations` rounds the
+    predictor's logits to integer frame counts and every later stage's shape
+    follows from that integer, so TF32's roughly 1e-3 relative error is enough
+    to break the graph rather than perturb it: on the 146-token `kokoro-long`
+    case one token's duration rounded from 1 to 2, moving the frame count from
+    376 to 377, `prosody.en` to 241,280 elements against the oracle's 240,640,
+    and 18 of 21 CUDA validation runs failed that way -- only three of them
+    numerically. Holding the predictor alone was measured and found
+    insufficient: with PL-BERT still on CUDA the logits stayed 8.8e-2 from the
+    reference, so the whole path to the rounding is held. The cost is real: 89.2
+    of the model's 352.8 MB are resident in both buffers and the longest case's
+    wall time rises from 1.5 s to 2.9 s, still 3.2 times faster than real time,
+    in exchange for durations, frame count and alignment being exact on all
+    three profiles and all fifteen cases. How many individual graph nodes each
+    stage places on CUDA has not been counted for this family, so this package
+    makes no node-level placement claim in either direction.
   platforms:
     - DGX Spark CPU
     - NVIDIA GB10 CUDA 13.3

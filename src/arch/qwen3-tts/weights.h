@@ -1,5 +1,6 @@
 #pragma once
 
+#include "model-info.h"
 #include "synthesize.h"
 
 #include <cstdint>
@@ -15,6 +16,39 @@ enum class QuantizationProfile : uint32_t {
     F16,
     Q8Mixed,
     Q5KMixed,
+};
+
+enum class VoiceMode : uint32_t {
+    PresetCatalog,   // speakers are codec-vocabulary token ids
+    ProfileSources,  // no selectable Voice; every request carries a Voice Profile
+};
+
+// The ECAPA-TDNN speaker encoder Base variants carry. Its output width equals
+// the talker's hidden size because the x-vector substitutes directly for the
+// prompt's speaker embedding -- there is no projection between them.
+struct SpeakerEncoderParams {
+    uint32_t enc_dim     = 0;
+    uint32_t sample_rate = 0;
+    uint32_t mel_bins    = 0;
+    uint32_t n_fft       = 0;
+    uint32_t hop_length  = 0;
+    uint32_t win_length  = 0;
+    float    fmin        = 0.0f;
+    float    fmax        = 0.0f;
+};
+
+// Read and validated here so the package is whole from its first cut; the Voice
+// Profile module enforces these from Plan 2 on.
+struct ProfileContract {
+    std::string schema;
+    uint32_t    schema_version = 0;
+    std::string compatibility_id_hex;  // 64 hex chars = 32 bytes
+    uint32_t    reference_sample_rate = 0;
+    uint32_t    reference_channels    = 0;
+    uint64_t    min_frames_per_clip   = 0;
+    uint64_t    max_frames_per_clip   = 0;
+    uint64_t    max_total_frames      = 0;
+    uint64_t    max_reference_count   = 0;
 };
 
 // The autoregressive language model that emits one semantic code per frame.
@@ -155,8 +189,14 @@ struct HParams {
     CodecParams         codec;
     SpecialTokens       tokens;
 
+    VoiceMode                voice_mode          = VoiceMode::PresetCatalog;
     bool                     has_package_default = false;
     std::vector<PresetVoice> preset_voices;
+
+    // Only present for a variant with a speaker encoder (currently just Base).
+    bool                 has_speaker_encoder = false;
+    SpeakerEncoderParams speaker_encoder;
+    ProfileContract      profile;
 
     std::vector<std::string> language_names;
     std::vector<uint32_t>    language_token_ids;
@@ -169,7 +209,8 @@ struct HParams {
 synth_status_t read_hparams(const gguf_context * gguf, HParams & hparams);
 
 // Resolves a preset Voice id to its catalog entry. Returns false when the id is
-// not in the package, which the caller maps to SYNTH_ERR_VOICE_NOT_FOUND.
+// not in the package, which the caller maps to SYNTH_ERR_UNSUPPORTED_VOICE --
+// the ABI's only voice-error status (include/synthesize.h).
 bool find_preset_voice(const HParams & hparams, const std::string & id, PresetVoice & voice);
 
 // Resolves the codec language token for a request. A speaker carrying a dialect
@@ -180,5 +221,54 @@ bool resolve_language_token(const HParams &     hparams,
                             const PresetVoice & voice,
                             uint32_t &          token_id,
                             std::string &       resolved_name);
+
+// Whether this package carries a Preset Voice Catalog at all. False for a
+// profile-sources package (this family's Base variant): read_voices refuses
+// such a package unless its preset_count is zero and clears `preset_voices`,
+// so there is no catalog to resolve a Voice id against and
+// Model::resolve_voice's lookup refuses every request, named or not.
+//
+// Deliberately answered from `voice_mode` rather than from
+// `preset_voices.empty()`: the mode is what the package DECLARES, and a
+// truncated catalog that merely arrived empty is a different thing that must
+// not read as this one.
+//
+// It has no production caller as of Plan 1. Its two callers -- the
+// capability gate in fill_voice_profile_capability and the catalog-less
+// refusal in Model::resolve_voice -- were both removed by this branch's final
+// review, each for the same reason: neither could be observed doing anything
+// the code around it did not already do. It is kept because the unit tests
+// assert the discriminator itself (tests/qwen3_tts_voice_required_test.cpp)
+// and because Plan 2's capability gate is specified against it.
+inline bool has_preset_voice_catalog(const HParams & hparams) {
+    return hparams.voice_mode == VoiceMode::PresetCatalog;
+}
+
+// Fills the Voice Profile capability fields this package supports -- what
+// Model::get_info reports through synth::VoiceProfileInfo. Unlike OmniVoice,
+// which keeps its family ModelInfo to the raw ProfileContract and lets
+// src/synthesize.cpp's shared_info assemble VoiceProfileInfo inline at the
+// seam, this family assembles the whole struct here, in the family layer, and
+// shared_info just copies the result through -- see src/model-info.h's own
+// VoiceProfileInfo doc comment for why the two routes differ
+// (unit-testability without a loaded Model).
+//
+// As of Plan 1 every variant of this family reports NOTHING: zero source
+// flags and, with them, zero in every field that describes a source. That is
+// docs/c-interface.md's required shape for a Model with no runtime Voice
+// Profile support, and this family has none -- src/voice-profile.cpp
+// dispatches preparation, consumption and serialization for OmniVoice alone,
+// so nothing here could create or consume a Profile if a caller believed the
+// advertisement. A Base package's ProfileContract and speaker-encoder
+// metadata are still read and validated in full at load time (read_hparams):
+// the package declaring a contract and the runtime advertising a capability
+// are different statements, and only the second would be false.
+//
+// Plan 2 lands the speaker encoder and Profile preparation and flips this to
+// SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO, with
+// SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE alongside it (every successfully
+// prepared v1 Profile can be serialized), published from hparams.profile's
+// already-validated limits and gated on has_preset_voice_catalog.
+void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & info);
 
 }  // namespace synth::qwen3tts

@@ -13,13 +13,27 @@ which is exactly what an earlier oracle run did before
 `docs/port-validation.md` grew its "Choosing the Oracle's dtype and Device"
 section.
 
-The speech tokenizer's *encoder* half is deliberately not carried. Synthesis
-runs one way -- codes to audio -- so nothing in this package can reach it, and
-this checkpoint could not use it anyway: `model.safetensors` is 402 tensors, all
-`talker.`, with no speaker encoder at all, and the reference builds voice-clone
-prompts from the Base variant instead. Sixteen of its codebooks and both of its
-quantizer projections are in any case bit-identical to the ones the decoder
-already carries. Dropping it removes 161 tensors and 225 MB that no graph reads.
+For CustomVoice, the speech tokenizer's *encoder* half is deliberately not
+carried. Synthesis runs one way -- codes to audio -- so nothing in this
+package can reach it, and this checkpoint could not use it anyway:
+`model.safetensors` is 402 tensors, all `talker.`, with no speaker encoder at
+all, and the reference builds voice-clone prompts from the Base variant
+instead. Dropping it removes 161 tensors and 225 MB that no graph reads.
+
+For Base, the encoder half is carried in full: it is what turns a reference
+clip into codes for voice cloning. 16 of its 32 codebooks -- exactly the ones
+with a same-index decoder counterpart -- are measured bit-identical to the
+decoder's at this revision by `measure_shared_codebooks` below, which compares
+every `.codebook` tensor on both sides at every conversion. The four
+input/output projections on those same two quantizer stages were found
+identical too, by hand at Stage 1 and again during Stage 2's review; nothing
+in this file re-measures them, and that is deliberate, because nothing acts on
+either measurement.
+
+They are all carried, in full, rather than stored once and aliased under the
+decoder's name: an alias with no in-package record of where it points is a
+name a consumer cannot resolve, and this project chose the ~35 MB of duplicate
+bytes (~1.4% of the 2.52 GB package) over that.
 
 Two conversion rules here fail silently rather than loudly if they are dropped.
 Each is asserted, not assumed:
@@ -52,7 +66,7 @@ import json
 from pathlib import Path
 import re
 import sys
-from typing import Any
+from typing import Any, Sequence
 
 from gguf import GGMLQuantizationType, GGUFReader, GGUFWriter
 import numpy as np
@@ -79,9 +93,15 @@ RVQ_EPS = 1e-5
 
 # GGML stores a tensor name in a fixed 64-byte field and truncates silently past
 # it. A truncated name is not findable by the name the catalog asks for, and two
-# names that differ only past the cut become the same tensor. Five of this
-# checkpoint's paths overflowed, so the components that made them long are
-# shortened -- the shortest edit that fixes it, not a renaming scheme.
+# names that differ only past the cut become the same tensor. This table has two
+# independent reasons to grow: CustomVoice's conversion (talker + codec decoder
+# only) overflowed on five paths; Base's conversion additionally carries the
+# codec's encoder half, whose own paths are longer for reasons specific to that
+# half (`encoder_transformer` is four characters longer than the decoder's
+# `pre_transformer`, and its residual-vector-quantizer names spell out
+# "residual_vector" where the decoder already abbreviates to
+# `rvq_first`/`rvq_rest`). The components that made them long are shortened --
+# the shortest edit that fixes it, not a renaming scheme.
 GGML_MAX_NAME = 64
 NAME_SHORTENINGS = (
     (".post_attention_layernorm.", ".post_attn_norm."),
@@ -92,6 +112,18 @@ NAME_SHORTENINGS = (
     # `_codebook` is the module that holds the table, and the table is the only
     # thing left in it after reconstruction.
     ("._codebook.codebook", ".codebook"),
+    # The encoder's own transformer block, distinct from the decoder's
+    # `pre_transformer` -- shortened on its own terms, not aliased to a
+    # different module's name.
+    (".encoder_transformer.", ".enc_transformer."),
+    # The decoder already spells its residual vector quantizers `rvq_first` /
+    # `rvq_rest`; the encoder's two quantizer stages get the same abbreviation
+    # rather than a second, inconsistent one.
+    (".quantizer.acoustic_residual_vector_quantizer.", ".quantizer.acoustic_rvq."),
+    (".quantizer.semantic_residual_vector_quantizer.", ".quantizer.semantic_rvq."),
+    # Mirrors `._codebook.codebook` above for the encoder's un-underscored
+    # module name: after reconstruction, the table is the only thing left.
+    (".codebook.codebook", ".codebook"),
 )
 
 
@@ -134,6 +166,20 @@ class Conversion:
     skipped: list[dict[str, str]] = field(default_factory=list)
     transformed: list[dict[str, str]] = field(default_factory=list)
     renamed: list[dict[str, str]] = field(default_factory=list)
+    # Not tensors that were removed -- both halves are always carried in full.
+    # This records which encoder codebook is bit-identical to which decoder
+    # one, measured at this revision, so that fact is on the record even
+    # though nothing acts on it.
+    measured_shared_codebooks: list[dict[str, str]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class VariantProfile:
+    model_type: str
+    carries_speaker_encoder: bool
+    carries_codec_encoder: bool
+    display_name: str
+    size_label: str
 
 
 def shorten_name(name: str, conversion: Conversion) -> str:
@@ -164,11 +210,130 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def variant_profile(config: dict[str, Any]) -> VariantProfile:
+    """Decide what this checkpoint carries from what it declares.
+
+    The two supported variants differ by a whole subsystem: Base ships a
+    76-tensor ECAPA-TDNN speaker encoder and needs the tokenizer's encoder half
+    to turn reference audio into codes; CustomVoice ships neither and resolves
+    speakers as codec-vocabulary token ids. Keying that on the declared type and
+    then checking the declaration against the config is what keeps a future
+    variant from silently converting as whichever branch it fell into.
+    """
+    model_type = str(config.get("tts_model_type", ""))
+    has_encoder_config = "speaker_encoder_config" in config
+    if model_type == "base":
+        if not has_encoder_config:
+            raise ConverterError(
+                "config declares tts_model_type=base but carries no speaker_encoder_config; "
+                "a Base package without a speaker encoder cannot prepare a Voice Profile"
+            )
+        return VariantProfile("base", True, True, "Qwen3-TTS 12Hz 0.6B Base", "0.6B")
+    if model_type == "custom_voice":
+        if has_encoder_config:
+            raise ConverterError(
+                "config declares tts_model_type=custom_voice but carries a speaker_encoder_config"
+            )
+        return VariantProfile("custom_voice", False, False, "Qwen3-TTS 12Hz 0.6B CustomVoice", "0.6B")
+    raise ConverterError(f"unsupported tts_model_type {model_type!r}")
+
+
+# modeling_qwen3_tts.py:1941 -- the speaker encoder consumes a 128-bin mel, not
+# a waveform. These five numbers are the front end's whole contract and they are
+# carried in the package rather than written into the C++ port.
+SPEAKER_MEL = {"mel_bins": 128, "n_fft": 1024, "hop_length": 256,
+               "win_length": 1024, "fmin": 0.0, "fmax": 12000.0}
+
+
+def speaker_encoder_metadata(config: dict[str, Any]) -> dict[str, Any]:
+    enc_dim = int(config["enc_dim"])
+    sample_rate = int(config["sample_rate"])
+    if sample_rate != 24000:
+        raise ConverterError(f"speaker encoder declares {sample_rate} Hz; the mel front end is pinned to 24000")
+    return {"enc_dim": enc_dim, "sample_rate": sample_rate, **SPEAKER_MEL}
+
+
+def speaker_catalog(talker: dict[str, Any], preset_ids: list[str]) -> tuple[list[str], list[int], list[str]]:
+    """Cross-check the manifest's Catalog against the checkpoint's speaker table.
+
+    Stage 1's hazard was ordering; this variant's is emptiness. Both directions
+    are checked, so a Base package cannot inherit a CustomVoice catalog and a
+    CustomVoice package cannot lose one.
+    """
+    if set(preset_ids) != set(talker["spk_id"]):
+        raise ConverterError(
+            f"the manifest lists {sorted(preset_ids)} but the checkpoint carries "
+            f"{sorted(talker['spk_id'])}"
+        )
+    names = list(preset_ids)
+    return (names,
+            [int(talker["spk_id"][n]) for n in names],
+            [str(talker["spk_is_dialect"][n]) if talker["spk_is_dialect"][n] else "" for n in names])
+
+
 def source_artifact(manifest: dict[str, Any], role: str, needle: str) -> dict[str, Any]:
     for artifact in manifest["source"]["artifacts"]:
         if artifact["role"] == role and needle in artifact["locator"]:
             return artifact
     raise ConverterError(f"manifest has no {role} artifact matching {needle!r}")
+
+
+def talker_checkpoint_locator(manifest: dict[str, Any]) -> str:
+    """The manifest's talker checkpoint artifact, matched unambiguously.
+
+    Both variants' manifests carry two "checkpoint"-role artifacts -- the
+    talker's `model.safetensors` and the codec's
+    `speech_tokenizer/model.safetensors` -- and both locators contain the
+    substring "model.safetensors", so a plain substring search (as
+    `source_artifact` above does, for the unrelated pinned-digest check in
+    `main()`) finds the right one only because it happens to be listed first.
+    This matches on the talker's own path shape -- it has no
+    `speech_tokenizer/` segment -- so the result does not depend on manifest
+    ordering.
+    """
+    matches = [
+        artifact["locator"] for artifact in manifest["source"]["artifacts"]
+        if artifact["role"] == "checkpoint"
+        and artifact["locator"].endswith("/model.safetensors")
+        and "/speech_tokenizer/" not in artifact["locator"]
+    ]
+    if len(matches) != 1:
+        raise ConverterError(
+            f"expected exactly one talker checkpoint artifact, found {len(matches)}"
+        )
+    return matches[0]
+
+
+def license_link_for(manifest: dict[str, Any]) -> str:
+    """The Hugging Face model page to link as this package's license source.
+
+    Derived from the pinned talker checkpoint's own locator, not from
+    `manifest["source"]["repository"]`: CustomVoice's `repository` field is a
+    GitHub URL (where the code lives), not the Hugging Face model page its
+    checkpoint is actually pinned under. Every variant's package must link
+    its own page, not whichever variant's happened to be converted first.
+    """
+    return talker_checkpoint_locator(manifest).split("/resolve/", 1)[0]
+
+
+def compatibility_id(schema: str, version: int, digests: Sequence[str]) -> str:
+    """Profile Compatibility ID: sha256 over the family compatibility manifest.
+
+    Schema identity plus the fingerprints of every weight and config that
+    changes what prepared conditioning means. `schema` and `version` are
+    hashed together as one `"{schema}/{version}"` piece, then each digest is
+    hashed as its own separate piece (not joined into a single string first),
+    mirroring `scripts/convert-omnivoice.py`'s construction exactly so both
+    families compute a Compatibility ID the same way. The digest order is
+    part of the contract: reordering, rejoining, or hashing a different
+    representation changes every already-shipped package's id silently
+    unless a test like `CompatibilityIdTests` pins the exact output.
+    """
+    compat = hashlib.sha256()
+    compat.update(f"{schema}/{version}".encode())
+    for digest in digests:
+        compat.update(digest.encode())
+    return compat.hexdigest()
 
 
 def numpy_of(tensor: torch.Tensor) -> tuple[np.ndarray, GGMLQuantizationType]:
@@ -250,8 +415,38 @@ def reconstruct_codebooks(tensors: dict[str, torch.Tensor], conversion: Conversi
     return remaining
 
 
+def measure_shared_codebooks(tensors: dict[str, torch.Tensor], conversion: Conversion) -> None:
+    """Record which encoder codebooks are bit-identical to a decoder one.
+
+    Measured, not assumed: equality is tested at this revision rather than
+    carried over from Stage 1's measurement. Nothing is removed here -- an
+    alias with no in-package record of where it points is a name a consumer
+    cannot resolve, so both halves are always carried in full regardless of
+    what this finds. The measurement is kept anyway because it is real and
+    worth having on the record.
+    """
+    decoder_tables = {
+        name: tensor for name, tensor in tensors.items()
+        if name.startswith("decoder.") and name.endswith(".codebook")
+    }
+    for name, tensor in tensors.items():
+        if not (name.startswith("encoder.") and name.endswith(".codebook")):
+            continue
+        twin = next(
+            (d for d, table in decoder_tables.items()
+             if table.shape == tensor.shape and torch.equal(table, tensor)),
+            None,
+        )
+        if twin is not None:
+            conversion.measured_shared_codebooks.append({
+                "encoder_tensor": name,
+                "decoder_tensor": twin,
+                "note": "bit-identical at this revision; both are carried in the package",
+            })
+
+
 def convert_file(path: Path, prefix: str, conversion: Conversion, reconstruct: bool,
-                 drop_prefix: str | None = None) -> None:
+                 drop_prefix: str | None = None, measure_duplicates: bool = False) -> None:
     # Imported here rather than at module scope so the pure-python rules above
     # stay importable in environments without safetensors -- the registered
     # python unit suite runs under a different family's locked environment.
@@ -273,14 +468,18 @@ def convert_file(path: Path, prefix: str, conversion: Conversion, reconstruct: b
             "logical_source_name": f"{prefix}{drop_prefix}*",
             "count": len(dropped),
             "reason": (
-                "the tokenizer's encoder half turns audio into codes; synthesis only goes "
-                "the other way, this checkpoint carries no speaker encoder to clone with, "
-                "and its first sixteen codebooks duplicate the decoder's exactly"
+                "CustomVoice carries no speaker encoder to clone with, so nothing in this "
+                "package can reach the tokenizer's encoder half; synthesis only runs "
+                "codes-to-audio anyway. (Base carries this half in full instead of dropping "
+                "it -- see convert_file's caller.)"
             ),
         })
 
     if reconstruct:
         tensors = reconstruct_codebooks(tensors, conversion)
+
+    if measure_duplicates:
+        measure_shared_codebooks(tensors, conversion)
 
     for name in sorted(tensors):
         tensor = tensors[name]
@@ -300,27 +499,28 @@ def convert_file(path: Path, prefix: str, conversion: Conversion, reconstruct: b
 def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str, Any],
                  tokenizer_config: dict[str, Any], codec_config: dict[str, Any],
                  generation_config: dict[str, Any],
-                 vocab: dict[str, int], merges: list[str], digests: dict[str, str]) -> None:
+                 vocab: dict[str, int], merges: list[str], digests: dict[str, str],
+                 profile: VariantProfile) -> None:
     talker = config["talker_config"]
     predictor = talker["code_predictor_config"]
 
     add_general_identity(
         writer,
-        name="Qwen3-TTS 12Hz 0.6B CustomVoice",
+        name=profile.display_name,
         basename=manifest["variant"],
-        size_label="0.6B",
+        size_label=profile.size_label,
         languages=[t for t in manifest["package_contract"]["language_tags"] if t != "auto"],
         tags=["text-to-speech", "qwen3-tts", "synthesize.cpp"],
         author="Alibaba Qwen",
         organization="Qwen",
         source_url=manifest["source"]["repository"],
         description=(
-            "Source-dtype synthesize.cpp conversion of the pinned Qwen3-TTS 12Hz "
-            "0.6B CustomVoice checkpoint: BF16 talker, F32 speech tokenizer."
+            f"Source-dtype synthesize.cpp conversion of the pinned {profile.display_name} "
+            "checkpoint: BF16 talker, F32 speech tokenizer."
         ),
         license_id="apache-2.0",
         license_name="Apache License 2.0",
-        license_link="https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+        license_link=license_link_for(manifest),
     )
     writer.add_repo_url(manifest["source"]["repository"])
 
@@ -509,24 +709,46 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
         writer.add_uint32(f"synthesize.qwen3-tts.token.{key}", int(talker[key]))
 
     # Preset Voice Catalog: speakers are codec-vocabulary token ids, not
-    # embeddings, which is why this variant carries no speaker encoder.
+    # embeddings, which is why only a variant with no speaker encoder carries
+    # one at all.
     #
     # The order is the Voice catalog's, not the checkpoint's token order. The two
     # arrays describe one catalog and the loader reads them index by index, so
     # ordering them differently -- alphabetically here, by token id there -- makes
     # every entry name one speaker and select another.
-    speakers = list(voices["preset_ids"])
-    if set(speakers) != set(talker["spk_id"]):
-        raise ConverterError(
-            f"the manifest lists {sorted(speakers)} but the checkpoint carries "
-            f"{sorted(talker['spk_id'])}"
+    #
+    # A Base package's checkpoint and manifest both carry an empty catalog, so
+    # `speaker_catalog` returns three empty lists and nothing is emitted below:
+    # an empty `synthesize.qwen3-tts.speakers.*` array would be a Catalog that
+    # exists but selects nothing, not the absence this variant means to declare.
+    speaker_names, speaker_token_ids, speaker_dialects = speaker_catalog(talker, list(voices["preset_ids"]))
+    if speaker_names:
+        writer.add_array("synthesize.qwen3-tts.speakers.names", speaker_names)
+        writer.add_array("synthesize.qwen3-tts.speakers.token_ids", speaker_token_ids)
+        writer.add_array("synthesize.qwen3-tts.speakers.dialect_override", speaker_dialects)
+
+    if profile.carries_speaker_encoder:
+        writer.add_string("synthesize.profile.schema", "qwen3-tts-voice-clone")
+        writer.add_uint32("synthesize.profile.schema_version", 1)
+        reference = package["profile"]["reference"]
+        for key in ("target_sample_rate", "target_channels"):
+            writer.add_uint32(f"synthesize.reference.{key}", int(reference[key]))
+        for key in ("min_frames_per_clip", "max_frames_per_clip",
+                    "max_total_frames", "max_reference_count"):
+            writer.add_uint64(f"synthesize.reference.{key}", int(reference[key]))
+        for key, value in speaker_encoder_metadata(config["speaker_encoder_config"]).items():
+            if isinstance(value, float):
+                writer.add_float32(f"synthesize.qwen3-tts.speaker_encoder.{key}", value)
+            else:
+                writer.add_uint32(f"synthesize.qwen3-tts.speaker_encoder.{key}", int(value))
+        writer.add_string(
+            "synthesize.profile.compatibility_id",
+            compatibility_id(
+                "qwen3-tts-voice-clone", 1,
+                (digests["talker"], digests["codec"], digests["config"]),
+            ),
         )
-    writer.add_array("synthesize.qwen3-tts.speakers.names", speakers)
-    writer.add_array("synthesize.qwen3-tts.speakers.token_ids", [int(talker["spk_id"][n]) for n in speakers])
-    writer.add_array(
-        "synthesize.qwen3-tts.speakers.dialect_override",
-        [str(talker["spk_is_dialect"][n]) if talker["spk_is_dialect"][n] else "" for n in speakers],
-    )
+
     languages = sorted(talker["codec_language_id"], key=lambda n: talker["codec_language_id"][n])
     writer.add_array("synthesize.qwen3-tts.languages.names", languages)
     writer.add_array("synthesize.qwen3-tts.languages.token_ids",
@@ -593,9 +815,12 @@ def main() -> int:
     if digests["talker"] != expected and digests["codec"] != expected:
         raise ConverterError("neither checkpoint matches the manifest's pinned digest")
 
+    profile = variant_profile(config)
     conversion = Conversion()
     convert_file(talker_path, "", conversion, reconstruct=False)
-    convert_file(codec_path, "codec.", conversion, reconstruct=True, drop_prefix="encoder.")
+    convert_file(codec_path, "codec.", conversion, reconstruct=True,
+                 drop_prefix=None if profile.carries_codec_encoder else "encoder.",
+                 measure_duplicates=profile.carries_codec_encoder)
 
     names = [o.name for o in conversion.outputs]
     if len(set(names)) != len(names):
@@ -605,7 +830,7 @@ def main() -> int:
     with atomic_output_path(args.output) as staging:
         writer = GGUFWriter(str(staging), ARCH_KEY)
         add_metadata(writer, manifest, config, tokenizer_config, codec_config,
-                     generation_config, vocab, merges, digests)
+                     generation_config, vocab, merges, digests, profile)
         for output in conversion.outputs:
             writer.add_tensor(output.name, output.array, raw_dtype=output.dtype)
         writer.write_header_to_file()
@@ -654,6 +879,7 @@ def main() -> int:
         "transformed": conversion.transformed,
         "renamed": conversion.renamed,
         "skipped": conversion.skipped,
+        "measured_shared_codebooks": conversion.measured_shared_codebooks,
         "tensors": [o.report() for o in conversion.outputs],
     }
     report_path = args.report or Path(f"reports/convert/{ARCH_KEY}/{manifest['variant']}-{PROFILE_NAME}.json")
@@ -663,6 +889,7 @@ def main() -> int:
     print(f"  tensors: {len(conversion.outputs)} {by_dtype}")
     print(f"  reconstructed codebooks: {len(conversion.transformed)}")
     print(f"  skipped: {len(conversion.skipped)}")
+    print(f"  measured shared codebooks (both carried): {len(conversion.measured_shared_codebooks)}")
     print(f"  report: {report_path}")
     return 0
 

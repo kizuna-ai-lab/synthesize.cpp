@@ -1,7 +1,25 @@
 # Kokoro Port Validation Plan
 
-Status: Intake complete on 2026-07-25. Conversion, C++ implementation, and port
-validation are not started.
+Status: Confirmed 2026-08-12. Intake completed on 2026-07-25; conversion, the
+C++ implementation, port validation, the Quantization Profiles and publication
+are all done. `kokoro-v1-0` is a Published Model Package at
+[`jiangzhuo9357/kokoro-v1-0-gguf`](https://huggingface.co/jiangzhuo9357/kokoro-v1-0-gguf)
+carrying F32, F16 and Q8_MIXED, each `port_validated` across 15 cases and seven
+graph stages on DGX Spark CPU and NVIDIA GB10 CUDA 13.3 — all 42 profile,
+backend and stage combinations. A Listening Audit on 2026-07-26 recorded
+`no_obvious_regression`; Quality Evaluation has not run and remains deferred by
+ADR 0017. Evidence: `docs/models/kokoro-v1-0.md`,
+`scripts/hf_cards/kokoro-v1-0.yaml`,
+`tests/golden/kokoro/kokoro-v1-0.manifest.json`, and the Hugging Face API
+(repository created 2026-07-25, last modified 2026-07-29, three GGUFs).
+
+**This line read "Conversion, C++ implementation, and port validation are not
+started" until 2026-08-12.** It was written at intake and never revisited, while
+the sections below it went on to record measured CUDA placement decisions, an
+LSTM accumulation spike, and a shipped package — the document contradicted its
+own opening for over two weeks. It is one of three stale status lines corrected
+in one week; the README's "The records drift, and that is checkable" section
+names the other two.
 
 ## Reference Contract
 

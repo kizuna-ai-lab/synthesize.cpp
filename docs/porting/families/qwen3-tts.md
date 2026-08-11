@@ -1,12 +1,27 @@
 # Qwen3-TTS Family Selection and Port Plan
 
-Status: Confirmed 2026-08-12. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`):
-intake, the oracle and conversion are complete; stages 4 through 7 have their
-measured work done: oracle replay and the public seam pass, the F16 profile is
-measured, and the codec runs on CUDA while the autoregressive half stays on
-the CPU. Q8_MIXED, the public backend control and stage 8 are not done. Port
-validation is not started. Selection was accepted on 2026-07-26; the intake
-packet is `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
+Status: Confirmed 2026-08-12. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
+complete and published. Intake, the oracle and conversion are done; stages 4
+through 7 have their measured work done: oracle replay and the public seam
+pass, and the codec runs on CUDA while the autoregressive half stays on the CPU
+under the discrete-outputs rule. **BF16, F16 and Q8_MIXED are all built and
+measured** (Q8_MIXED on 2026-07-29, see "Q8_MIXED, and the refusal that was
+wrong"); **the public backend control reaches the split** (`synth_model_load`
+with `SYNTH_BACKEND_CUDA`, see "It is reachable from the public seam"); **port
+validation passed** at Validation Level `port_validated`, 18 Golden cases over
+three stages, dated 2026-07-29 in `scripts/hf_cards/`; and **stage 8 published
+the package on 2026-07-28** at
+[`jiangzhuo9357/qwen3-tts-12hz-0-6b-customvoice-gguf`](https://huggingface.co/jiangzhuo9357/qwen3-tts-12hz-0-6b-customvoice-gguf),
+last updated there 2026-07-29 carrying all three profiles. Selection was
+accepted on 2026-07-26; the intake packet is
+`reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
+
+**Until 2026-08-12 this line read "Q8_MIXED, the public backend control and
+stage 8 are not done. Port validation is not started."** All four clauses were
+false, and each was contradicted by a later section of this same document —
+the parenthetical cross-references above are those sections. The Hugging Face
+API is the artifact that settles publication; the card specification and Open
+Question 6 agree with it.
 Stage 2 (`qwen3-tts-12hz-0.6b-base`) Plan 1 is done: the Base package is
 pinned, converted (894 tensors), loads through `synth_model_load`, and its
 capability snapshot -- zero Preset Voices and, as of the 2026-08-12
@@ -1861,13 +1876,23 @@ deployment choice rather than a default, which is what the backend request on
 
 The repeated-run cleanup the contract asks for is not written.
 
-## Stage 8: Publication, Prepared
+## Stage 8: Publication, Done
 
 The model card is written and rendered from
 `scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml`, with the digests checked
-against the packages on disk by the generator. **Nothing has been published.**
-Publishing is an outward-facing act and needs its own confirmation, which has not
-been given; see `OUTWARD_INTERACTION_POLICY.md`.
+against the packages on disk by the generator. **The package was published on
+2026-07-28** to
+[`jiangzhuo9357/qwen3-tts-12hz-0-6b-customvoice-gguf`](https://huggingface.co/jiangzhuo9357/qwen3-tts-12hz-0-6b-customvoice-gguf),
+on jiangzhuo's per-act confirmation, and last updated there on 2026-07-29
+carrying BF16, F16 and Q8_MIXED. Every later edit to that repository is a fresh
+outward act needing its own confirmation; see `OUTWARD_INTERACTION_POLICY.md`.
+
+**This section read "Publication, Prepared" and "Nothing has been published"
+until 2026-08-12**, two weeks after the upload, while Open Question 6 in this
+same file already recorded "published 2026-07-28". The table and the list below
+were written before the upload and are superseded by the card specification,
+which carries the shipped digests and the third profile: they name two profiles
+where three shipped, and their BF16 digest is from a pre-final cut.
 
 | profile | size | sha256 (first 16) | CPU cosine | CUDA cosine |
 | --- | --- | --- | --- | --- |

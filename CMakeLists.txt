@@ -128,6 +128,13 @@ set(SYNTH_KOKORO_TEST_MODEL "${CMAKE_SOURCE_DIR}/models/kokoro-v1-0/kokoro-v1-0-
 set(SYNTH_QWEN3_TTS_TEST_MODEL
     "${CMAKE_SOURCE_DIR}/models/qwen3-tts-12hz-0-6b-customvoice/qwen3-tts-12hz-0-6b-customvoice-BF16.gguf"
     CACHE FILEPATH "Local Qwen3-TTS BF16 GGUF used by integration tests")
+# Stage 2's Reference Model Variant: the Base checkpoint, profile-sources
+# voice mode, no Preset Voice Catalog. Same BF16 source-profile reasoning as
+# the CustomVoice variable above -- this family's talker checkpoint is
+# bfloat16 regardless of which variant it is.
+set(SYNTH_QWEN3_TTS_BASE_TEST_MODEL
+    "${CMAKE_SOURCE_DIR}/models/qwen3-tts-12hz-0-6b-base/qwen3-tts-12hz-0-6b-base-BF16.gguf"
+    CACHE FILEPATH "Local Qwen3-TTS Base BF16 GGUF used by integration tests")
 # F32 is this family's source profile: the checkpoint stores F32 in both the
 # generator and the codec halves, so it is the package a port is checked
 # against. Plan 4 Task 3 measured both Q8_CODEC_MIXED and F16_CODEC codec-only

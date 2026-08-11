@@ -1,12 +1,23 @@
 # Qwen3-TTS Family Selection and Port Plan
 
-Status: Confirmed 2026-07-28. Intake, the oracle and conversion are complete;
-stages 4 through 7 have their measured work done: oracle replay and the public
-seam pass, the F16 profile is measured, and the codec runs on CUDA while the
-autoregressive half stays on the CPU. Q8_MIXED, the public backend control and
-stage 8 are not done. Port validation is not started. Selection was accepted on
-2026-07-26; the intake packet is
-`reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
+Status: Confirmed 2026-08-12. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`):
+intake, the oracle and conversion are complete; stages 4 through 7 have their
+measured work done: oracle replay and the public seam pass, the F16 profile is
+measured, and the codec runs on CUDA while the autoregressive half stays on
+the CPU. Q8_MIXED, the public backend control and stage 8 are not done. Port
+validation is not started. Selection was accepted on 2026-07-26; the intake
+packet is `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`.
+Stage 2 (`qwen3-tts-12hz-0.6b-base`) Plan 1 is done: the Base package is
+pinned, converted (894 tensors), loads through `synth_model_load`, and its
+capability snapshot -- zero Preset Voices, Reference Audio plus Serialized
+Profile with the six reference limits -- is reported correctly and covered by
+an integration test against the real package (see "Stage 2: Base Package,
+Plan 1" below). Not done: any graph (ECAPA-TDNN speaker encoder, Audio
+Normalizer, mel front end) and Voice Profile preparation --
+`synth_voice_profile_create_from_reference` still refuses this family with
+`SYNTH_ERR_UNSUPPORTED_VOICE` -- both of which are Plan 2's scope. The
+reference-duration bounds Task 6 shipped are safety ceilings, not
+perceptually validated ones; no listening pass has happened.
 
 ## Decision
 
@@ -1850,6 +1861,189 @@ What the card declares and why:
 - The CUDA column for the source profile, which was never measured -- the
   accelerator work was done under F16.
 - The repeated-run cleanup stage 7 owes.
+
+## Stage 2: Base Package, Plan 1
+
+The Reference Model Variant Ladder's second rung
+(`qwen3-tts-12hz-0.6b-base`, `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO`) has its
+first plan done: intake, oracle, conversion, loading, and public-seam
+validation. This section records what Stage 2 Plan 1 measured and shipped.
+It does not add a rung to the ladder's completion gate on its own -- Plan 2
+is what actually makes the family clone a voice.
+
+### Pinned revision and digests
+
+`Qwen/Qwen3-TTS-12Hz-0.6B-Base` at revision
+`5d83992436eae1d760afd27aff78a71d676296fc`, the same Apache-2.0 basis as
+Stage 1. 13 files, 2,516,106,051 bytes total, recorded in
+`reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-base/intake.json`. The three
+digests that matter downstream -- they are exactly what
+`synthesize.profile.compatibility_id` hashes together, per Task 6 -- are:
+
+| artifact | sha256 |
+| --- | --- |
+| `model.safetensors` (talker + speaker encoder) | `180b3b10eb1c9f1b4db7806d5475bae3071c0243c299d49926bab1da3b6946f6` |
+| `speech_tokenizer/model.safetensors` (codec, both halves) | `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258` |
+| `config.json` | `2e714c787c8edb98b05432685cddb634add2de4d4e645f653d68251ef72ba011` |
+
+`compatibility_id = sha256("qwen3-tts-voice-clone/1" + talker + codec +
+config)` resolves to
+`34d4de22a329b6bc8347cb952b6fa16513320012628598ab59743679cc16806e`, read
+back from the shipped GGUF and independently recomputed from these three
+digests by two separate reviewers (Tasks 6 and 9).
+
+### Tensor census and the emitted count
+
+Raw safetensors tensors: 402 talker + 76 speaker_encoder (`model.safetensors`)
+and 225 encoder + 271 decoder (`speech_tokenizer/model.safetensors`) = 974.
+The converter emits **894**:
+
+```
+402 (talker) + 76 (speaker_encoder) + 271 (codec decoder) + 225 (codec encoder)
+  = 974 raw safetensors tensors
+- 48 EMA-accumulator pairs collapsed into codebooks (16 decoder-layer +
+    32 encoder-layer pairs, each 2 raw tensors -> 1 reconstructed codebook)
+- 32 encoder `.initialized` shape-(1,) flags (not weights; the decoder half
+    carries none of these)
+= 894 emitted tensors
+```
+
+Split by GGUF type: BF16 478 = talker (402) + speaker_encoder (76), carried
+unchanged. F32 416 = the codec's contribution: 271 + 225 − 48 = 448 tensors
+survive reconstruction, 448 − 32 = 416 are emitted. 478 + 416 = 894, matching
+the tensor count the loader's catalog independently derives from the
+package's own hyperparameters (Task 8) and the count a reviewer got by
+reimplementing the catalog in Python and diffing name-and-shape against all
+894 tensors (0 missing, 0 stray, 0 shape mismatches).
+
+### The dedup measurement, and the decision not to act on it
+
+`measure_shared_codebooks` (Task 5) checked every one of the encoder's
+reconstructed RVQ codebooks against the decoder's own codebooks with a real
+`torch.equal` over the actual checkpoint data, not a name-based shortcut.
+Result: **16 of 16** index-aligned pairs that exist are bit-identical --
+the encoder's `semantic_residual_vector_quantizer` layer 0 and
+`acoustic_residual_vector_quantizer` layers 0-14 each match the decoder's
+`rvq_first`/`rvq_rest` counterpart exactly. (An earlier version of this
+measurement mis-described this as "16 of 32 diverge"; the encoder's
+remaining 16 acoustic layers, 15-30, have no decoder-side counterpart at
+all to compare against -- the decoder declares only 16 quantizer layers
+total -- so there was nothing for them to diverge from.) Four additional
+quantizer input/output projection tensors were separately confirmed
+identical the same way.
+
+The first implementation stored the 16 matched codebooks once and recorded
+the alias in `Conversion.deduplicated` -- a field that lands only in a
+gitignored convert report under `reports/convert/`, never in the package's
+own metadata. A controller ruling reversed this: **carry both halves in
+full, alias nothing.** The failure mode the reviewer named was "the alias
+nobody can look up" -- a consumer walking the encoder's RVQ layers would
+find some indices present and others silently absent, with no way to
+discover, from the package alone, that the missing ones live under
+`codec.decoder.quantizer.*`. The fix costs roughly 35 MB (~1.4% of the
+2.52 GB package) in exchange for every tensor name being resolvable without
+a side channel. The measurement itself -- 16 of 16 matched, not 16 of 32
+diverged -- is kept as a recorded fact; only the storage decision changed.
+
+### Measured reference-duration bounds
+
+`scripts/dump_reference_qwen3_tts_base.py --trim-seconds N` against the
+upstream `clone.wav` (8.08 s / 193,920 samples native; 10 s and 30 s loop the
+clip rather than sourcing longer audio), same target text, language, and
+seed 0 throughout. Full results, including per-duration `peak_abs`/`rms`/
+distinct-code-fraction signals and an `intelligibility_basis` string for
+each, are in `intake.json`'s `reference_bounds` key.
+
+| requested | applied samples | looped | reference frames | generated frames | generated duration |
+| ---: | ---: | --- | ---: | ---: | ---: |
+| 0.5 s | 12,000 | no | 7 | 136 | 10.88 s |
+| 1 s | 24,000 | no | 13 | 127 | 10.16 s |
+| 3 s | 72,000 | no | 38 | 111 | 8.88 s |
+| baseline (8.08 s, full clip) | 193,920 | no | 101 | 45 | 3.6 s |
+| 10 s | 240,000 | 2x | 125 | 42 | 3.36 s |
+| **30 s** | 720,000 | 4x | 375 | **9** | **0.72 s** |
+
+The 0.5 s/1 s/3 s points each produced 2.5x-3.0x the 45-frame baseline for
+the identical text and seed. **The 30 s point -- the plan's provisional
+upper bound -- produced only 9 generated frames (0.72 s) for an 11-word
+sentence that takes ~45 frames at the reference clip's native length**,
+consistent with premature termination rather than with this family's
+documented degeneracy signature (near-silence or one code dominating the
+output; neither fires at either edge). The 10 s point is the best-behaved
+of the five, landing within 3 frames of baseline.
+
+**No listening pass has happened.** `intake.json` records
+`perceptual_evaluation_performed: false` for every point, and its
+`recommendation` states plainly that the objective signals checked here
+cannot substitute for one: they rule out the family's *known* hard-failure
+pattern at both edges, but neither confirm nor deny that the resulting audio
+is usable speech, particularly at 30 s. Task 6 shipped
+`min_frames_per_clip=24000` / `max_frames_per_clip=720000` anyway, as safety
+ceilings pulled from the plan rather than as perceptually validated bounds,
+and every later task through this one has carried that distinction forward
+rather than quietly upgrading it. Per this project's practice of offering a
+listening pass before shipping, one on the 0.5 s/1 s/30 s renders under
+`build/qwen3-tts-reference-bounds/` is still owed.
+
+### What Plan 1 did not deliver
+
+- **No graphs.** The ECAPA-TDNN speaker encoder, the Audio Normalizer
+  (including vendored libsamplerate 0.2.2), and the mel front end that
+  `docs/voice-conditioning.md` specifies for this stage are not implemented.
+  The speaker-encoder tensors and their metadata are catalogued (Task 8) and
+  loaded, but nothing yet runs a forward pass over them.
+- **No Voice Profile preparation.** `synth_voice_profile_create_from_reference`
+  still returns `SYNTH_ERR_UNSUPPORTED_VOICE` for this family --
+  `src/voice-profile.cpp` dispatches that call only for OmniVoice today. This
+  is a dispatch gap, not a capability lie: the model honestly advertises
+  Reference Audio and Serialized Profile support through
+  `synth_model_get_voice_profile_capabilities` (Task 9), and a caller that
+  acts on that advertisement by trying to prepare a Profile is refused
+  loudly rather than answered with the wrong Voice.
+- **The reference-duration bounds are unaudited at the edges**, per the
+  measurement above.
+
+### What this task closed: ABI-level coverage for the capability snapshot
+
+Task 9's review found a real gap: deleting the one-line copy
+`shared.voice_profile = info.voice_profile;` in
+`src/synthesize.cpp::shared_info(qwen3tts::ModelInfo, ...)` left the entire
+`synthesize-check-unit` gate green (89/91, unchanged), because nothing in
+the unit tier loads a real package through the public C interface far
+enough to notice. This task added `tests/qwen3_tts_base_load_real.cpp`, a
+model-guarded integration test (`SYNTH_QWEN3_TTS_BASE_TEST_MODEL`,
+registered only when `SYNTH_BUILD_INTEGRATION_TESTS=ON` and the package
+exists on disk) that loads the real Base GGUF through
+`synth_model_load` and asserts, through the public interface only:
+
+- `synth_model_get_preset_voice_count` returns 0.
+- `synth_model_get_voice_profile_capabilities` reports `source_flags`
+  exactly `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO |
+  SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`; `reference_transcript` and
+  `reference_language` both `SYNTH_REQUIREMENT_OPTIONAL`;
+  `description_language` `SYNTH_REQUIREMENT_UNSUPPORTED`; and the six
+  reference values (sample rate 24000, channels 1, min/max frames per clip
+  24000/720000, max total frames 720000, max reference count 1) verbatim.
+- A `synth_synthesize_to_buffer` request naming no Voice at all, and a
+  second one naming a `voice_id` that could never exist in an empty
+  catalog, both fail with `SYNTH_ERR_UNSUPPORTED_VOICE` -- the one voice
+  error `docs/c-interface.md` defines, reached by two different code paths
+  (the generic core's preset lookup for the named case, this family's own
+  `has_preset_voice_catalog` gate for the unnamed one).
+
+**The guard was proven, not assumed.** With the seam line temporarily
+deleted, the test failed at the very first capability assertion:
+
+```
+tests/qwen3_tts_base_load_real.cpp:77: check failed: capabilities.source_flags ==
+  (SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE)
+tests/qwen3_tts_base_load_real.cpp:172: check failed: check_capabilities(model) == 0
+```
+
+Restoring the line restored a clean pass. Building and running this test
+needs a build directory configured with `-DSYNTH_BUILD_INTEGRATION_TESTS=ON`
+and the real Base GGUF on disk; it does not run against the standard `build/`
+unit-gate configuration and is not part of `synthesize-check-unit`.
 
 ## Open Questions for Intake
 

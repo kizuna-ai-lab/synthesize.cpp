@@ -710,6 +710,26 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             TIMEOUT 600)
     endif()
 
+    # Stage 2 Plan 1's closing check: the real Base package through the
+    # public C interface only. Task 9's review proved the capability-snapshot
+    # seam line in src/synthesize.cpp (`shared.voice_profile =
+    # info.voice_profile;`) had zero coverage at the ABI level -- deleting it
+    # left the full unit gate green. This is that coverage: it needs the real
+    # package because a synthetic HParams fixture (as
+    # tests/qwen3_tts_voice_required_test.cpp already uses) cannot prove the
+    # on-disk metadata reaches the public struct, only that the function
+    # would do the right thing if it did.
+    if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}")
+        add_executable(synthesize-qwen3-tts-base-load-real qwen3_tts_base_load_real.cpp)
+        target_link_libraries(synthesize-qwen3-tts-base-load-real PRIVATE synthesize)
+        synth_register_integration_target(synthesize-qwen3-tts-base-load-real)
+        add_test(NAME synthesize-qwen3-tts-base-load-real
+            COMMAND synthesize-qwen3-tts-base-load-real ${SYNTH_QWEN3_TTS_BASE_TEST_MODEL})
+        set_tests_properties(synthesize-qwen3-tts-base-load-real PROPERTIES
+            LABELS "integration;abi;qwen3-tts"
+            TIMEOUT 300)
+    endif()
+
     # The foundation slice's closing check: the real OmniVoice package through
     # the family loader and then through the public seam. It needs the package
     # because that is the whole point — every earlier omnivoice test runs

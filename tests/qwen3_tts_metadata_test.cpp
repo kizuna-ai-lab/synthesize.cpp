@@ -551,6 +551,14 @@ int run_base_package_rejections() {
                          [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.n_fft", 0); },
                          "n_fft must be non-zero") == 0);
 
+    // The mel front end's FFT is radix-2 (src/arch/qwen3-tts/mel.cpp); a
+    // non-power-of-two n_fft must be refused at load time rather than
+    // reaching compute_log_mel's own runtime check.
+    SYNTH_TEST_CHECK(
+        expect_base_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.n_fft", 1000); },
+            "non-power-of-two n_fft") == 0);
+
     SYNTH_TEST_CHECK(
         expect_base_rejected(
             [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.mel_bins", 0); },

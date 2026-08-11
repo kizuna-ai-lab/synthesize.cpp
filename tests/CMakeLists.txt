@@ -171,6 +171,7 @@ synth_add_unit_test(synthesize-qwen3-tts-codec-ops-test qwen3_tts_codec_ops_test
 synth_add_unit_test(synthesize-qwen3-tts-codec-test qwen3_tts_codec_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-code-predictor-test qwen3_tts_code_predictor_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-sampling-test qwen3_tts_sampling_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-mel-test qwen3_tts_mel_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-metadata-test omnivoice_metadata_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-catalog-test omnivoice_catalog_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-frontend-test omnivoice_frontend_test.cpp)
@@ -465,6 +466,15 @@ add_executable(synthesize-qwen3-tts-replay-real qwen3_tts_replay_real.cpp)
 target_include_directories(synthesize-qwen3-tts-replay-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(synthesize-qwen3-tts-replay-real PRIVATE synthesize ggml)
 synth_register_integration_target(synthesize-qwen3-tts-replay-real)
+
+# A tiny driver, not a test: runs compute_log_mel over a real WAV file so
+# scripts/validate-qwen3-tts-replay.py --compare-mel can diff it against Task
+# 1's oracle dump. No GGUF and no Model -- host DSP alone -- so unlike the
+# graph-building drivers above it needs no link against ggml.
+add_executable(synthesize-qwen3-tts-mel-driver qwen3_tts_mel_driver.cpp)
+target_include_directories(synthesize-qwen3-tts-mel-driver PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(synthesize-qwen3-tts-mel-driver PRIVATE synthesize)
+synth_register_integration_target(synthesize-qwen3-tts-mel-driver)
 
 add_executable(synthesize-omnivoice-replay-real omnivoice_replay_real.cpp)
 target_include_directories(synthesize-omnivoice-replay-real PRIVATE ${CMAKE_SOURCE_DIR}/src)

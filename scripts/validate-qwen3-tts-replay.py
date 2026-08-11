@@ -76,8 +76,11 @@ def resolve_tolerance_stage(tolerances: dict, variant: str, profile: str, backen
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", type=pathlib.Path,
-                        default=pathlib.Path("tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice.manifest.json"))
+    # None here, not the CustomVoice manifest: --compare-mel's own case lives
+    # only on the Base manifest, so the default is resolved in main() once
+    # --compare-mel is known, rather than picking one variant's manifest for
+    # every mode.
+    parser.add_argument("--manifest", type=pathlib.Path, default=None)
     parser.add_argument("--model", type=pathlib.Path,
                         default=pathlib.Path("models/qwen3-tts-12hz-0-6b-customvoice/"
                                              "qwen3-tts-12hz-0-6b-customvoice-BF16.gguf"))
@@ -102,7 +105,95 @@ def parse_args() -> argparse.Namespace:
     # have left it.
     parser.add_argument("--accelerate", action="store_true",
                         help="run the codec on the primary backend and require it to land there")
+    # Task 2 phase 7: measure the mel front end alone, against Task 1's oracle
+    # dump, instead of replaying a whole case through the talker/codec.
+    parser.add_argument("--compare-mel", action="store_true",
+                        help="run compute_log_mel via a tiny driver and diff it against speaker/mel.f32, "
+                             "instead of the ordinary replay comparison")
+    parser.add_argument("--mel-case", default="base-xvector-en",
+                        help="--compare-mel only: the manifest case whose reference clip and oracle "
+                             "speaker/mel.f32 to compare against")
+    parser.add_argument("--mel-driver", type=pathlib.Path,
+                        default=pathlib.Path("build/bin/synthesize-qwen3-tts-mel-driver"),
+                        help="--compare-mel only: the compute_log_mel driver (synth_register_integration_target)")
+    parser.add_argument("--reference-audio-dir", type=pathlib.Path,
+                        default=pathlib.Path("models/qwen3-tts-reference-audio"),
+                        help="--compare-mel only: where an http(s) reference-audio locator is cached locally "
+                             "(git-ignored) -- the same directory "
+                             "scripts/dump_reference_qwen3_tts_speaker.py fetches into")
     return parser.parse_args()
+
+
+# scripts/dump_reference_qwen3_tts_speaker.py's own caching convention for an
+# http(s) reference-audio locator: a fixed local directory, keyed by the
+# locator's own basename. This validator never fetches -- it is a comparison,
+# not an oracle run -- so a locator that resolves to a file that is not
+# already there is refused with a pointer at the script that would fetch it.
+def resolve_local_reference(locator: str, cache_dir: pathlib.Path) -> pathlib.Path:
+    if locator.startswith("http://") or locator.startswith("https://"):
+        return cache_dir / locator.rsplit("/", 1)[-1]
+    return pathlib.Path(locator)
+
+
+def run_compare_mel(arguments: argparse.Namespace, manifest: dict, oracle_root: pathlib.Path) -> int:
+    case = next((c for c in manifest["cases"] if c["id"] == arguments.mel_case), None)
+    if case is None:
+        print(f"--mel-case names {arguments.mel_case!r}, which {arguments.manifest} does not define")
+        return 1
+    reference = case.get("input", {}).get("reference", {})
+    locator = reference.get("artifact")
+    if locator is None:
+        print(f"{case['id']} has no input.reference.artifact -- --compare-mel only applies to a "
+              "reference-audio case")
+        return 1
+
+    wav_path = resolve_local_reference(locator, arguments.reference_audio_dir)
+    if not wav_path.exists():
+        print(f"{wav_path} is not materialized locally -- run "
+              "scripts/dump_reference_qwen3_tts_speaker.py (which fetches and caches it) first")
+        return 1
+
+    oracle_mel = oracle_root / case["id"] / "speaker" / "mel.f32"
+    if not oracle_mel.exists():
+        print(f"{oracle_mel} does not exist -- run scripts/dump_reference_qwen3_tts_speaker.py "
+              f"for case {case['id']!r} first")
+        return 1
+    if not arguments.mel_driver.exists():
+        print(f"{arguments.mel_driver} does not exist -- build the "
+              "synthesize-qwen3-tts-mel-driver target first")
+        return 1
+
+    work_dir = arguments.work / case["id"]
+    work_dir.mkdir(parents=True, exist_ok=True)
+    work_mel = work_dir / "mel.f32"
+
+    finished = subprocess.run([str(arguments.mel_driver), str(wav_path), str(work_mel)],
+                              capture_output=True, text=True)
+    if finished.returncode != 0:
+        print(f"{arguments.mel_driver} failed: {finished.stderr.strip()}")
+        return 1
+    if finished.stdout.strip():
+        print(f"  driver: {finished.stdout.strip()}")
+
+    measurement = compare(read_f32(oracle_mel), read_f32(work_mel))
+    if "shape_mismatch" in measurement:
+        print(f"  speaker.mel: shape mismatch {measurement['shape_mismatch']}")
+        return 1
+    print(f"  speaker.mel: max_abs {measurement['max_abs']:.6g}  mean_abs {measurement['mean_abs']:.6g}  "
+          f"cosine {measurement['cosine']:.6f}  elements {measurement['elements']}")
+
+    if arguments.report is not None:
+        arguments.report.parent.mkdir(parents=True, exist_ok=True)
+        arguments.report.write_text(json.dumps({
+            "schema": "synthesize-validation-report-v1",
+            "family": "qwen3-tts",
+            "variant": manifest["variant"],
+            "phase": "mel_front_end",
+            "case": case["id"],
+            "probes": {"speaker.mel": measurement},
+        }, indent=2) + "\n", encoding="utf-8")
+        print(f"\nreport: {arguments.report}")
+    return 0
 
 
 # The public interface speaks BCP-47 and the manifest names languages in full,
@@ -242,8 +333,18 @@ def run_case(arguments: argparse.Namespace, case: dict, oracle_root: pathlib.Pat
 
 def main() -> int:
     arguments = parse_args()
+    if arguments.manifest is None:
+        # --compare-mel's own case (base-xvector-en) lives only on the Base
+        # manifest; every other mode keeps replaying the PUBLISHED CustomVoice
+        # variant this validator has always defaulted to.
+        arguments.manifest = pathlib.Path(
+            "tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json" if arguments.compare_mel
+            else "tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice.manifest.json")
     manifest = json.loads(arguments.manifest.read_text(encoding="utf-8"))
     oracle_root = pathlib.Path(manifest["case_artifact_root"])
+
+    if arguments.compare_mel:
+        return run_compare_mel(arguments, manifest, oracle_root)
 
     # A typo in --cases used to select nothing and then pass, which is the
     # same false green as running no cases at all -- refused before anything

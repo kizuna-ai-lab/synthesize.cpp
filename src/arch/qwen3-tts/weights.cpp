@@ -550,6 +550,13 @@ bool read_speaker_encoder(const GgufMetadata & meta, HParams & hparams) {
         std::fprintf(stderr, "qwen3-tts: speaker encoder mel front end has a zero mel_bins/n_fft/hop_length\n");
         return false;
     }
+    // The mel front end's FFT is an iterative radix-2 Cooley-Tukey
+    // (src/arch/qwen3-tts/mel.cpp), which only accepts a power of two. A
+    // load-time contract rather than a runtime surprise mid-enrollment.
+    if ((encoder.n_fft & (encoder.n_fft - 1)) != 0) {
+        std::fprintf(stderr, "qwen3-tts: speaker encoder n_fft %u is not a power of two\n", encoder.n_fft);
+        return false;
+    }
     if (encoder.enc_dim != hparams.talker.hidden_size) {
         std::fprintf(stderr, "qwen3-tts: the speaker encoder emits width %u but the talker's hidden size is %u\n",
                      encoder.enc_dim, hparams.talker.hidden_size);

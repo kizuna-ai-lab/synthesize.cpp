@@ -176,6 +176,16 @@ Expected: `build/goldens/qwen3-tts/base-xvector-en/speaker/x_vector.f32` is exac
 Run: the same command with `--case base-icl-en`
 Expected: `codes/reference.i32` exists, its length is a multiple of 16 int32 values, and `element_count / 16` equals `ceil(reference_samples / 1920)`.
 
+**Erratum, 2026-08-11.** The two `--case` commands above cannot run as written:
+`--case` resolves an id out of a Golden Manifest, and no manifest exists until
+Task 3 — this task is its prerequisite. The runner's primary interface is
+therefore explicit arguments (`--ref-audio`, `--ref-text`, `--text`,
+`--language`, `--x-vector-only`, `--out-dir`), and those two steps were executed
+in that form, writing to the same two case directories so Task 3's manifest
+lines up with what is already on disk. Copy-pasting the commands above gets an
+immediate `SystemExit`, not a wrong result. Task 3 is what makes the `--case`
+form real, and its field mapping is unexercised until then.
+
 - [ ] **Step 4: Record the measured duration bounds**
 
 Run the ICL case at 0.5 s, 1 s, 3 s, 10 s and 30 s of reference audio. Record in `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-base/intake.json` under a new `reference_bounds` key: for each duration, the reference-code frame count and whether the output is intelligible. This is what makes the spec's provisional 1 s / 30 s bounds measured rather than assumed. If 1 s produces unusable audio, raise `min_frames_per_clip` here and in Task 6 rather than shipping a bound the model does not honor.

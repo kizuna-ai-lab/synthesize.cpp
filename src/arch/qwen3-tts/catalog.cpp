@@ -415,6 +415,24 @@ bool resolve_codec_encoder_quantizer(Resolver &                 resolver,
     return resolver.ok();
 }
 
+// Geometry constants for the two new namespaces below. Each is declared once
+// here and used both by the resolvers and by expected_tensor_count's
+// arithmetic, so a change to one cannot silently disagree with the other. See
+// resolve_speaker_encoder's and resolve_codec_encoder's own comments, and this
+// task's report, for why these are literals rather than metadata.
+constexpr int64_t  kSpeakerEncoderChannels          = 512;
+constexpr int64_t  kSpeakerEncoderAttentionChannels = 128;
+constexpr int64_t  kSpeakerEncoderSeChannels        = 128;
+constexpr int64_t  kSpeakerEncoderRes2NetScale      = 8;
+constexpr uint32_t kSpeakerEncoderBlockCount        = 3;
+
+constexpr int64_t                kCodecEncoderInitialChannels        = 64;
+constexpr std::array<int64_t, 4> kCodecEncoderStageWidths            = { 128, 256, 512, 1024 };
+constexpr std::array<int64_t, 4> kCodecEncoderDownsampleKernels      = { 8, 10, 12, 16 };
+constexpr int64_t                kCodecEncoderDownsampleConvKernel   = 4;
+constexpr uint32_t               kCodecEncoderTransformerLayerCount  = 8;
+constexpr uint32_t               kCodecEncoderAcousticQuantizerCount = 31;
+
 // Base's ECAPA-TDNN speaker encoder (SpeechBrain's reference topology: a TDNN
 // stem, three SE-Res2Net blocks, multi-layer feature aggregation, and
 // attentive statistics pooling into `fc`). `enc_dim` and `mel_bins` are the
@@ -425,32 +443,28 @@ bool resolve_codec_encoder_quantizer(Resolver &                 resolver,
 // lookup. See this task's report for why that is the chosen tradeoff instead
 // of adding new metadata keys.
 bool resolve_speaker_encoder(Resolver & resolver, const SpeakerEncoderParams & params) {
-    constexpr int64_t  kChannels          = 512;
-    constexpr int64_t  kAttentionChannels = 128;
-    constexpr int64_t  kSeChannels        = 128;
-    constexpr int64_t  kRes2NetScale      = 8;
-    constexpr int64_t  kRes2NetWidth      = kChannels / kRes2NetScale;
-    constexpr uint32_t kBlockCount        = 3;
+    constexpr int64_t kRes2NetWidth = kSpeakerEncoderChannels / kSpeakerEncoderRes2NetScale;
     // The multi-layer feature aggregator concatenates the three blocks'
-    // channel-`kChannels` outputs before its own 1x1 convolution.
-    const int64_t      mfa_channels       = 3 * kChannels;
+    // channel-`kSpeakerEncoderChannels` outputs before its own 1x1 convolution.
+    const int64_t     mfa_channels  = 3 * kSpeakerEncoderChannels;
 
     Conv1dWeights scratch;
-    resolver.conv("speaker_encoder.blocks.0.conv", 5, int64_t(params.mel_bins), kChannels, scratch);
+    resolver.conv("speaker_encoder.blocks.0.conv", 5, int64_t(params.mel_bins), kSpeakerEncoderChannels, scratch);
 
-    for (uint32_t block = 1; block <= kBlockCount; ++block) {
+    for (uint32_t block = 1; block <= kSpeakerEncoderBlockCount; ++block) {
         const std::string base = index_of("speaker_encoder.blocks.", block, ".");
-        resolver.conv(base + "tdnn1.conv", 1, kChannels, kChannels, scratch);
+        resolver.conv(base + "tdnn1.conv", 1, kSpeakerEncoderChannels, kSpeakerEncoderChannels, scratch);
         // Res2Net at scale 8 applies a 3x3 convolution to 7 of its 8 equal
         // splits; the eighth passes through unconvolved, which is why this
-        // block carries `kRes2NetScale - 1` convolutions rather than 8.
-        for (int64_t sub = 0; sub < kRes2NetScale - 1; ++sub) {
+        // block carries `kSpeakerEncoderRes2NetScale - 1` convolutions rather
+        // than 8.
+        for (int64_t sub = 0; sub < kSpeakerEncoderRes2NetScale - 1; ++sub) {
             resolver.conv(index_of(base + "res2net_block.blocks.", sub, ".conv"), 3, kRes2NetWidth, kRes2NetWidth,
                           scratch);
         }
-        resolver.conv(base + "se_block.conv1", 1, kChannels, kSeChannels, scratch);
-        resolver.conv(base + "se_block.conv2", 1, kSeChannels, kChannels, scratch);
-        resolver.conv(base + "tdnn2.conv", 1, kChannels, kChannels, scratch);
+        resolver.conv(base + "se_block.conv1", 1, kSpeakerEncoderChannels, kSpeakerEncoderSeChannels, scratch);
+        resolver.conv(base + "se_block.conv2", 1, kSpeakerEncoderSeChannels, kSpeakerEncoderChannels, scratch);
+        resolver.conv(base + "tdnn2.conv", 1, kSpeakerEncoderChannels, kSpeakerEncoderChannels, scratch);
     }
 
     resolver.conv("speaker_encoder.mfa.conv", 1, mfa_channels, mfa_channels, scratch);
@@ -458,8 +472,8 @@ bool resolve_speaker_encoder(Resolver & resolver, const SpeakerEncoderParams & p
     // (3x the aggregated width) produces per-frame attention logits, which
     // then weight the mean and std (2x the aggregated width) that `fc` maps
     // onto the speaker embedding the talker's prompt slot expects.
-    resolver.conv("speaker_encoder.asp.tdnn.conv", 1, 3 * mfa_channels, kAttentionChannels, scratch);
-    resolver.conv("speaker_encoder.asp.conv", 1, kAttentionChannels, mfa_channels, scratch);
+    resolver.conv("speaker_encoder.asp.tdnn.conv", 1, 3 * mfa_channels, kSpeakerEncoderAttentionChannels, scratch);
+    resolver.conv("speaker_encoder.asp.conv", 1, kSpeakerEncoderAttentionChannels, mfa_channels, scratch);
     resolver.conv("speaker_encoder.fc", 1, 2 * mfa_channels, int64_t(params.enc_dim), scratch);
     return resolver.ok();
 }
@@ -475,20 +489,15 @@ bool resolve_speaker_encoder(Resolver & resolver, const SpeakerEncoderParams & p
 bool resolve_codec_encoder(Resolver & resolver, const HParams & hparams) {
     const CodecDecoderParams & p = hparams.codec.decoder;
 
-    constexpr int64_t                kInitialChannels      = 64;
-    constexpr std::array<int64_t, 4> kStageWidths          = { 128, 256, 512, 1024 };
-    constexpr std::array<int64_t, 4> kDownsampleKernels    = { 8, 10, 12, 16 };
-    constexpr int64_t                kDownsampleConvKernel = 4;
-
     Conv1dWeights scratch;
-    resolver.conv("codec.encoder.encoder.layers.0.conv", 7, 1, kInitialChannels, scratch);
+    resolver.conv("codec.encoder.encoder.layers.0.conv", 7, 1, kCodecEncoderInitialChannels, scratch);
 
     // A flat ModuleList: one narrow-then-wide residual bottleneck followed by
     // a strided convolution per downsampling stage, at positions 1, 3, 4, 6,
     // 7, 9, 10, 12 (each stage's activation-only position, 2/5/8/11, carries
     // no tensor and is skipped).
-    int64_t width = kInitialChannels;
-    for (size_t stage = 0; stage < kStageWidths.size(); ++stage) {
+    int64_t width = kCodecEncoderInitialChannels;
+    for (size_t stage = 0; stage < kCodecEncoderStageWidths.size(); ++stage) {
         const size_t      residual_index = 3 * stage + 1;
         const std::string base           = index_of("codec.encoder.encoder.layers.", residual_index, ".block.");
         const int64_t     narrower       = width / 2;
@@ -496,9 +505,9 @@ bool resolve_codec_encoder(Resolver & resolver, const HParams & hparams) {
         resolver.conv(base + "3.conv", 1, narrower, width, scratch);
 
         const size_t downsample_index = 3 * stage + 3;
-        resolver.conv(index_of("codec.encoder.encoder.layers.", downsample_index, ".conv"), kDownsampleKernels[stage],
-                      width, kStageWidths[stage], scratch);
-        width = kStageWidths[stage];
+        resolver.conv(index_of("codec.encoder.encoder.layers.", downsample_index, ".conv"),
+                      kCodecEncoderDownsampleKernels[stage], width, kCodecEncoderStageWidths[stage], scratch);
+        width = kCodecEncoderStageWidths[stage];
     }
 
     // The final positional entry narrows the stem's output to `codebook_dim`:
@@ -507,7 +516,8 @@ bool resolve_codec_encoder(Resolver & resolver, const HParams & hparams) {
     // so that width is not free to choose independently.
     const int64_t hidden = int64_t(p.codebook_dim);
     resolver.conv("codec.encoder.encoder.layers.14.conv", 3, width, hidden, scratch);
-    resolver.find("codec.encoder.downsample.conv.weight", { kDownsampleConvKernel, hidden, hidden }, Role::Matrix);
+    resolver.find("codec.encoder.downsample.conv.weight", { kCodecEncoderDownsampleConvKernel, hidden, hidden },
+                  Role::Matrix);
 
     // Standard LayerNorm (weight and bias) and a plain two-layer MLP, unlike
     // the decoder's RMSNorm and gated MLP -- this transformer is not a copy of
@@ -515,10 +525,9 @@ bool resolve_codec_encoder(Resolver & resolver, const HParams & hparams) {
     // idea. The MLP's 4x expansion mirrors the ratio ConvNeXt already uses
     // elsewhere in this file; the attention keeps the projection width
     // unchanged rather than narrowing through a GQA-style kv split.
-    constexpr uint32_t kTransformerLayerCount = 8;
-    const int64_t      intermediate           = 4 * hidden;
-    LayerNormWeights   norm_scratch;
-    for (uint32_t layer = 0; layer < kTransformerLayerCount; ++layer) {
+    const int64_t    intermediate = 4 * hidden;
+    LayerNormWeights norm_scratch;
+    for (uint32_t layer = 0; layer < kCodecEncoderTransformerLayerCount; ++layer) {
         const std::string base = index_of("codec.encoder.enc_transformer.layers.", layer, ".");
         resolver.layer_norm(base + "input_layernorm", hidden, norm_scratch);
         resolver.find(base + "self_attn.q_proj.weight", { hidden, hidden }, Role::Matrix);
@@ -537,9 +546,9 @@ bool resolve_codec_encoder(Resolver & resolver, const HParams & hparams) {
     // decoder) only ever reads the semantic stage plus the first
     // `quantizer_count - semantic_quantizer_count` acoustic ones. Nothing here
     // is deduplicated, so every stage the checkpoint carries is catalogued.
-    constexpr uint32_t kAcousticQuantizerCount = 31;
     resolve_codec_encoder_quantizer(resolver, "codec.encoder.quantizer.semantic_rvq.", p, p.semantic_quantizer_count);
-    resolve_codec_encoder_quantizer(resolver, "codec.encoder.quantizer.acoustic_rvq.", p, kAcousticQuantizerCount);
+    resolve_codec_encoder_quantizer(resolver, "codec.encoder.quantizer.acoustic_rvq.", p,
+                                    kCodecEncoderAcousticQuantizerCount);
     return resolver.ok();
 }
 
@@ -567,23 +576,26 @@ uint64_t expected_tensor_count(const HParams & hparams) {
     uint64_t speaker_encoder = 0;
     uint64_t codec_encoder   = 0;
     if (hparams.has_speaker_encoder) {
-        // 3 SE-Res2Net blocks, each: tdnn1(2) + 7 res2net convs(14) +
-        // se_block(2+2) + tdnn2(2); plus the stem, mfa, asp and fc pairs.
-        constexpr uint64_t kBlockCount             = 3;
-        constexpr uint64_t kTensorsPerRes2NetBlock = 2 + 7 * 2 + 2 + 2 + 2;
-        speaker_encoder = 2 /* blocks.0 */ + kBlockCount * kTensorsPerRes2NetBlock + 2 /* mfa */ + 2 /* asp.tdnn */ +
-                          2 /* asp.conv */ + 2 /* fc */;
+        // 3 SE-Res2Net blocks, each: tdnn1(2) + (scale-1) res2net convs*2 +
+        // se_block(2+2) + tdnn2(2); plus the stem, mfa, asp and fc pairs. Both
+        // block/scale constants are the same ones resolve_speaker_encoder
+        // resolves against, so the two cannot silently disagree.
+        constexpr uint64_t kTensorsPerRes2NetBlock = 2 + uint64_t(kSpeakerEncoderRes2NetScale - 1) * 2 + 2 + 2 + 2;
+        speaker_encoder = 2 /* blocks.0 */ + uint64_t(kSpeakerEncoderBlockCount) * kTensorsPerRes2NetBlock +
+                          2 /* mfa */ + 2 /* asp.tdnn */ + 2 /* asp.conv */ + 2 /* fc */;
 
-        // See resolve_codec_encoder: the stem is layers.0 (2) plus 4 stages of
-        // a residual block (2 + 2) and a downsampling conv (2), then layers.14
-        // (2); the transformer is 8 layers of 12 tensors each; the quantizer
-        // is an input/output projection pair plus one codebook per stage.
-        constexpr uint64_t kTransformerLayerCount      = 8;
+        // See resolve_codec_encoder, which this mirrors: the stem is layers.0
+        // (2) plus one residual block (2 + 2) and a downsampling conv (2) per
+        // stage, then layers.14 (2); the transformer is
+        // kCodecEncoderTransformerLayerCount layers of 12 tensors each; the
+        // quantizer is an input/output projection pair plus one codebook per
+        // stage.
         constexpr uint64_t kTensorsPerTransformerLayer = 12;
-        constexpr uint64_t kAcousticQuantizerCount     = 31;
-        codec_encoder = 1 /* downsample.conv, no bias */ + (2 + 4 * (2 + 2 + 2) + 2) /* encoder.layers stem */ +
-                        kTransformerLayerCount * kTensorsPerTransformerLayer +
-                        (2 + uint64_t(codec.semantic_quantizer_count)) + (2 + kAcousticQuantizerCount);
+        codec_encoder = 1 /* downsample.conv, no bias */ +
+                        (2 + uint64_t(kCodecEncoderStageWidths.size()) * (2 + 2 + 2) + 2) /* encoder.layers stem */ +
+                        uint64_t(kCodecEncoderTransformerLayerCount) * kTensorsPerTransformerLayer +
+                        (2 + uint64_t(codec.semantic_quantizer_count)) +
+                        (2 + uint64_t(kCodecEncoderAcousticQuantizerCount));
     }
 
     return talker + predictor + quantizers + 2 + transformer + upsample + residual + speaker_encoder + codec_encoder;

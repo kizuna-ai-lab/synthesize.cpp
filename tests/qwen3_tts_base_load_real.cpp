@@ -44,12 +44,12 @@ namespace {
 // safety ceilings pulled from the plan, not as perceptually validated
 // bounds -- this test asserts the ABI reports them faithfully, not that they
 // are the right numbers.
-constexpr uint32_t kReferenceSampleRate    = 24000;
-constexpr uint32_t kReferenceChannelCount  = 1;
-constexpr uint64_t kMinReferenceFrames     = 24000;
-constexpr uint64_t kMaxReferenceFrames     = 720000;
+constexpr uint32_t kReferenceSampleRate     = 24000;
+constexpr uint32_t kReferenceChannelCount   = 1;
+constexpr uint64_t kMinReferenceFrames      = 24000;
+constexpr uint64_t kMaxReferenceFrames      = 720000;
 constexpr uint64_t kMaxReferenceTotalFrames = 720000;
-constexpr uint64_t kMaxReferenceCount      = 1;
+constexpr uint64_t kMaxReferenceCount       = 1;
 
 // A profile-sources package still resolves through the ordinary
 // synth_request_t / synth_synthesize_to_buffer seam -- there is no separate
@@ -140,10 +140,10 @@ int check_named_voice_refused(synth_context_t * context) {
     synth_request_t request;
     synth_request_init(&request, sizeof(request));
     request.input_kind    = SYNTH_INPUT_TEXT_UTF8;
-    request.input_data     = kText;
-    request.input_count    = std::strlen(kText);
-    request.voice_id       = voice_id;
-    request.voice_id_size  = std::strlen(voice_id);
+    request.input_data    = kText;
+    request.input_count   = std::strlen(kText);
+    request.voice_id      = voice_id;
+    request.voice_id_size = std::strlen(voice_id);
 
     synth_audio_buffer_t * audio = nullptr;
     synth_result_t         result;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "model-info.h"
 #include "synthesize.h"
 #include "text-frontend.h"
 
@@ -37,6 +38,13 @@ struct ModelInfo {
 
     bool        frontend_present = false;
     std::string frontend_provider;
+
+    // The Voice Profile capability snapshot (weights.h's
+    // fill_voice_profile_capability), all-zero for a preset-catalog package
+    // that has no speaker encoder and so supports no Voice Profile source at
+    // all. src/synthesize.cpp's shared_info copies this straight into
+    // synth::ModelInfo::voice_profile.
+    VoiceProfileInfo voice_profile;
 };
 
 // One synthesis. `codes` is kept because the Port Validation Contract compares

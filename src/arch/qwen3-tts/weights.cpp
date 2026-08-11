@@ -680,4 +680,31 @@ bool resolve_language_token(const HParams &     hparams,
     return false;
 }
 
+void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & info) {
+    info = VoiceProfileInfo{};
+    if (!hparams.has_speaker_encoder) {
+        return;
+    }
+    info.source_flags                 = SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE;
+    // Neither a transcript nor an explicit reference language is needed to
+    // clone a voice from audio alone, so both are optional rather than
+    // required or unsupported.
+    info.reference_transcript         = SYNTH_REQUIREMENT_OPTIONAL;
+    info.reference_language           = SYNTH_REQUIREMENT_OPTIONAL;
+    info.reference_target_sample_rate = hparams.profile.reference_sample_rate;
+    info.reference_target_channels    = hparams.profile.reference_channels;
+    info.min_frames_per_clip          = hparams.profile.min_frames_per_clip;
+    info.max_frames_per_clip          = hparams.profile.max_frames_per_clip;
+    info.max_total_frames             = hparams.profile.max_total_frames;
+    info.max_reference_count          = static_cast<uint32_t>(hparams.profile.max_reference_count);
+    // Best-effort, mirroring OmniVoice's own shared_info: HParams::profile is
+    // already validated at load time (read_profile_contract, is_sha256_hex),
+    // so this should never fail for a package that made it this far; a defect
+    // that slipped through leaves the bytes at their all-zero default rather
+    // than propagating a load failure this deep into a capability query.
+    (void) decode_profile_compatibility_id(hparams.profile.compatibility_id_hex, info.compatibility_id);
+    info.schema         = hparams.profile.schema;
+    info.schema_version = hparams.profile.schema_version;
+}
+
 }  // namespace synth::qwen3tts

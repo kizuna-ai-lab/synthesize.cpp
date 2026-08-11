@@ -326,6 +326,14 @@ synth_status_t Model::get_info(ModelInfo & output) const {
     }
     output.frontend_present  = hparams.frontend_present;
     output.frontend_provider = hparams.frontend_provider;
+    // A profile-sources package (this family's Base variant) reports no
+    // preset Voice at all -- `preset_voice_ids` above is already empty,
+    // because `hparams.preset_voices` is -- and instead claims Reference
+    // Audio (plus Serialized Profile) through the Voice Profile snapshot
+    // below. Preparing a Profile itself still returns
+    // SYNTH_ERR_UNSUPPORTED_VOICE until Plan 2 lands the graph that consumes
+    // one; this is a dispatch gap, not a capability lie.
+    fill_voice_profile_capability(hparams, output.voice_profile);
     return SYNTH_OK;
 }
 
@@ -363,6 +371,16 @@ synth_status_t Model::resolve_voice(const std::string & voice_id,
     speaker_token  = 0;
     has_language   = false;
     language_token = 0;
+
+    // A profile-sources package carries no Preset Voice Catalog at all --
+    // every request must supply a prepared Voice Profile instead (Plan 2) --
+    // so this refuses before the preset lookup ever runs: there is no catalog
+    // to have missed a voice in. Both refusals share the ABI's one
+    // voice-error status, SYNTH_ERR_UNSUPPORTED_VOICE; what distinguishes
+    // them is a diagnostic concern, not a status code.
+    if (!has_preset_voice_catalog(implementation_->hparams)) {
+        return SYNTH_ERR_UNSUPPORTED_VOICE;
+    }
 
     PresetVoice voice;
     if (!find_preset_voice(implementation_->hparams, voice_id, voice)) {

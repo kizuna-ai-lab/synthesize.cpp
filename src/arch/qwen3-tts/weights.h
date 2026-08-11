@@ -1,5 +1,6 @@
 #pragma once
 
+#include "model-info.h"
 #include "synthesize.h"
 
 #include <cstdint>
@@ -208,7 +209,8 @@ struct HParams {
 synth_status_t read_hparams(const gguf_context * gguf, HParams & hparams);
 
 // Resolves a preset Voice id to its catalog entry. Returns false when the id is
-// not in the package, which the caller maps to SYNTH_ERR_VOICE_NOT_FOUND.
+// not in the package, which the caller maps to SYNTH_ERR_UNSUPPORTED_VOICE --
+// the ABI's only voice-error status (include/synthesize.h).
 bool find_preset_voice(const HParams & hparams, const std::string & id, PresetVoice & voice);
 
 // Resolves the codec language token for a request. A speaker carrying a dialect
@@ -219,5 +221,32 @@ bool resolve_language_token(const HParams &     hparams,
                             const PresetVoice & voice,
                             uint32_t &          token_id,
                             std::string &       resolved_name);
+
+// Whether this package carries a Preset Voice Catalog at all. False for a
+// profile-sources package (this family's Base variant): no catalog exists to
+// resolve a Voice id against, so Model::resolve_voice refuses before
+// find_preset_voice ever runs -- there is no catalog entry to have missed a
+// voice in. Both refusals share the ABI's one voice-error status,
+// SYNTH_ERR_UNSUPPORTED_VOICE; what distinguishes them is a diagnostic
+// concern, not a status code.
+inline bool has_preset_voice_catalog(const HParams & hparams) {
+    return hparams.voice_mode == VoiceMode::PresetCatalog;
+}
+
+// Fills the Voice Profile capability fields this package supports, straight
+// from its already-validated HParams -- what Model::get_info reports through
+// synth::VoiceProfileInfo (src/model-info.h), and what
+// src/synthesize.cpp's shared_info copies verbatim into synth::ModelInfo.
+// A profile-sources package's speaker encoder (`has_speaker_encoder`) is what
+// turns Reference Audio into a Voice Profile at all, so REFERENCE_AUDIO is
+// claimed only then; SERIALIZED_PROFILE is claimed alongside it because every
+// successfully prepared v1 Profile can be serialized -- the same rule
+// src/synthesize.cpp documents for OmniVoice's own shared_info. A
+// preset-catalog package (no speaker encoder) leaves `info` at
+// VoiceProfileInfo's own all-zero default -- the "no Voice Profile support"
+// shape docs/c-interface.md requires. Preparing a Profile itself still
+// returns SYNTH_ERR_UNSUPPORTED_VOICE until Plan 2 lands the graph that
+// consumes one; this is a dispatch gap, not a capability lie.
+void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & info);
 
 }  // namespace synth::qwen3tts

@@ -326,6 +326,11 @@ synth::ModelInfo shared_info(const synth::qwen3tts::ModelInfo &         info,
     shared.max_output_frames    = info.max_output_frames;
     shared.min_speaking_rate    = info.min_speaking_rate;
     shared.max_speaking_rate    = info.max_speaking_rate;
+    // Already fully built by Model::get_info's own capability snapshot
+    // (weights.h's fill_voice_profile_capability): all-zero for a
+    // preset-catalog package, Reference Audio plus Serialized Profile for a
+    // profile-sources one.
+    shared.voice_profile        = info.voice_profile;
     return shared;
 }
 

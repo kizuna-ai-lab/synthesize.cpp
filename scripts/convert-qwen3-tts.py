@@ -62,7 +62,7 @@ import json
 from pathlib import Path
 import re
 import sys
-from typing import Any
+from typing import Any, Sequence
 
 from gguf import GGMLQuantizationType, GGUFReader, GGUFWriter
 import numpy as np
@@ -234,11 +234,102 @@ def variant_profile(config: dict[str, Any]) -> VariantProfile:
     raise ConverterError(f"unsupported tts_model_type {model_type!r}")
 
 
+# modeling_qwen3_tts.py:1941 -- the speaker encoder consumes a 128-bin mel, not
+# a waveform. These five numbers are the front end's whole contract and they are
+# carried in the package rather than written into the C++ port.
+SPEAKER_MEL = {"mel_bins": 128, "n_fft": 1024, "hop_length": 256,
+               "win_length": 1024, "fmin": 0.0, "fmax": 12000.0}
+
+
+def speaker_encoder_metadata(config: dict[str, Any]) -> dict[str, Any]:
+    enc_dim = int(config["enc_dim"])
+    sample_rate = int(config["sample_rate"])
+    if sample_rate != 24000:
+        raise ConverterError(f"speaker encoder declares {sample_rate} Hz; the mel front end is pinned to 24000")
+    return {"enc_dim": enc_dim, "sample_rate": sample_rate, **SPEAKER_MEL}
+
+
+def speaker_catalog(talker: dict[str, Any], preset_ids: list[str]) -> tuple[list[str], list[int], list[str]]:
+    """Cross-check the manifest's Catalog against the checkpoint's speaker table.
+
+    Stage 1's hazard was ordering; this variant's is emptiness. Both directions
+    are checked, so a Base package cannot inherit a CustomVoice catalog and a
+    CustomVoice package cannot lose one.
+    """
+    if set(preset_ids) != set(talker["spk_id"]):
+        raise ConverterError(
+            f"the manifest lists {sorted(preset_ids)} but the checkpoint carries "
+            f"{sorted(talker['spk_id'])}"
+        )
+    names = list(preset_ids)
+    return (names,
+            [int(talker["spk_id"][n]) for n in names],
+            [str(talker["spk_is_dialect"][n]) if talker["spk_is_dialect"][n] else "" for n in names])
+
+
 def source_artifact(manifest: dict[str, Any], role: str, needle: str) -> dict[str, Any]:
     for artifact in manifest["source"]["artifacts"]:
         if artifact["role"] == role and needle in artifact["locator"]:
             return artifact
     raise ConverterError(f"manifest has no {role} artifact matching {needle!r}")
+
+
+def talker_checkpoint_locator(manifest: dict[str, Any]) -> str:
+    """The manifest's talker checkpoint artifact, matched unambiguously.
+
+    Both variants' manifests carry two "checkpoint"-role artifacts -- the
+    talker's `model.safetensors` and the codec's
+    `speech_tokenizer/model.safetensors` -- and both locators contain the
+    substring "model.safetensors", so a plain substring search (as
+    `source_artifact` above does, for the unrelated pinned-digest check in
+    `main()`) finds the right one only because it happens to be listed first.
+    This matches on the talker's own path shape -- it has no
+    `speech_tokenizer/` segment -- so the result does not depend on manifest
+    ordering.
+    """
+    matches = [
+        artifact["locator"] for artifact in manifest["source"]["artifacts"]
+        if artifact["role"] == "checkpoint"
+        and artifact["locator"].endswith("/model.safetensors")
+        and "/speech_tokenizer/" not in artifact["locator"]
+    ]
+    if len(matches) != 1:
+        raise ConverterError(
+            f"expected exactly one talker checkpoint artifact, found {len(matches)}"
+        )
+    return matches[0]
+
+
+def license_link_for(manifest: dict[str, Any]) -> str:
+    """The Hugging Face model page to link as this package's license source.
+
+    Derived from the pinned talker checkpoint's own locator, not from
+    `manifest["source"]["repository"]`: CustomVoice's `repository` field is a
+    GitHub URL (where the code lives), not the Hugging Face model page its
+    checkpoint is actually pinned under. Every variant's package must link
+    its own page, not whichever variant's happened to be converted first.
+    """
+    return talker_checkpoint_locator(manifest).split("/resolve/", 1)[0]
+
+
+def compatibility_id(schema: str, version: int, digests: Sequence[str]) -> str:
+    """Profile Compatibility ID: sha256 over the family compatibility manifest.
+
+    Schema identity plus the fingerprints of every weight and config that
+    changes what prepared conditioning means. `schema` and `version` are
+    hashed together as one `"{schema}/{version}"` piece, then each digest is
+    hashed as its own separate piece (not joined into a single string first),
+    mirroring `scripts/convert-omnivoice.py`'s construction exactly so both
+    families compute a Compatibility ID the same way. The digest order is
+    part of the contract: reordering, rejoining, or hashing a different
+    representation changes every already-shipped package's id silently
+    unless a test like `CompatibilityIdTests` pins the exact output.
+    """
+    compat = hashlib.sha256()
+    compat.update(f"{schema}/{version}".encode())
+    for digest in digests:
+        compat.update(digest.encode())
+    return compat.hexdigest()
 
 
 def numpy_of(tensor: torch.Tensor) -> tuple[np.ndarray, GGMLQuantizationType]:
@@ -404,27 +495,28 @@ def convert_file(path: Path, prefix: str, conversion: Conversion, reconstruct: b
 def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str, Any],
                  tokenizer_config: dict[str, Any], codec_config: dict[str, Any],
                  generation_config: dict[str, Any],
-                 vocab: dict[str, int], merges: list[str], digests: dict[str, str]) -> None:
+                 vocab: dict[str, int], merges: list[str], digests: dict[str, str],
+                 profile: VariantProfile) -> None:
     talker = config["talker_config"]
     predictor = talker["code_predictor_config"]
 
     add_general_identity(
         writer,
-        name="Qwen3-TTS 12Hz 0.6B CustomVoice",
+        name=profile.display_name,
         basename=manifest["variant"],
-        size_label="0.6B",
+        size_label=profile.size_label,
         languages=[t for t in manifest["package_contract"]["language_tags"] if t != "auto"],
         tags=["text-to-speech", "qwen3-tts", "synthesize.cpp"],
         author="Alibaba Qwen",
         organization="Qwen",
         source_url=manifest["source"]["repository"],
         description=(
-            "Source-dtype synthesize.cpp conversion of the pinned Qwen3-TTS 12Hz "
-            "0.6B CustomVoice checkpoint: BF16 talker, F32 speech tokenizer."
+            f"Source-dtype synthesize.cpp conversion of the pinned {profile.display_name} "
+            "checkpoint: BF16 talker, F32 speech tokenizer."
         ),
         license_id="apache-2.0",
         license_name="Apache License 2.0",
-        license_link="https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+        license_link=license_link_for(manifest),
     )
     writer.add_repo_url(manifest["source"]["repository"])
 
@@ -613,24 +705,46 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
         writer.add_uint32(f"synthesize.qwen3-tts.token.{key}", int(talker[key]))
 
     # Preset Voice Catalog: speakers are codec-vocabulary token ids, not
-    # embeddings, which is why this variant carries no speaker encoder.
+    # embeddings, which is why only a variant with no speaker encoder carries
+    # one at all.
     #
     # The order is the Voice catalog's, not the checkpoint's token order. The two
     # arrays describe one catalog and the loader reads them index by index, so
     # ordering them differently -- alphabetically here, by token id there -- makes
     # every entry name one speaker and select another.
-    speakers = list(voices["preset_ids"])
-    if set(speakers) != set(talker["spk_id"]):
-        raise ConverterError(
-            f"the manifest lists {sorted(speakers)} but the checkpoint carries "
-            f"{sorted(talker['spk_id'])}"
+    #
+    # A Base package's checkpoint and manifest both carry an empty catalog, so
+    # `speaker_catalog` returns three empty lists and nothing is emitted below:
+    # an empty `synthesize.qwen3-tts.speakers.*` array would be a Catalog that
+    # exists but selects nothing, not the absence this variant means to declare.
+    speaker_names, speaker_token_ids, speaker_dialects = speaker_catalog(talker, list(voices["preset_ids"]))
+    if speaker_names:
+        writer.add_array("synthesize.qwen3-tts.speakers.names", speaker_names)
+        writer.add_array("synthesize.qwen3-tts.speakers.token_ids", speaker_token_ids)
+        writer.add_array("synthesize.qwen3-tts.speakers.dialect_override", speaker_dialects)
+
+    if profile.carries_speaker_encoder:
+        writer.add_string("synthesize.profile.schema", "qwen3-tts-voice-clone")
+        writer.add_uint32("synthesize.profile.schema_version", 1)
+        reference = package["profile"]["reference"]
+        for key in ("target_sample_rate", "target_channels"):
+            writer.add_uint32(f"synthesize.reference.{key}", int(reference[key]))
+        for key in ("min_frames_per_clip", "max_frames_per_clip",
+                    "max_total_frames", "max_reference_count"):
+            writer.add_uint64(f"synthesize.reference.{key}", int(reference[key]))
+        for key, value in speaker_encoder_metadata(config["speaker_encoder_config"]).items():
+            if isinstance(value, float):
+                writer.add_float32(f"synthesize.qwen3-tts.speaker_encoder.{key}", value)
+            else:
+                writer.add_uint32(f"synthesize.qwen3-tts.speaker_encoder.{key}", int(value))
+        writer.add_string(
+            "synthesize.profile.compatibility_id",
+            compatibility_id(
+                "qwen3-tts-voice-clone", 1,
+                (digests["talker"], digests["codec"], digests["config"]),
+            ),
         )
-    writer.add_array("synthesize.qwen3-tts.speakers.names", speakers)
-    writer.add_array("synthesize.qwen3-tts.speakers.token_ids", [int(talker["spk_id"][n]) for n in speakers])
-    writer.add_array(
-        "synthesize.qwen3-tts.speakers.dialect_override",
-        [str(talker["spk_is_dialect"][n]) if talker["spk_is_dialect"][n] else "" for n in speakers],
-    )
+
     languages = sorted(talker["codec_language_id"], key=lambda n: talker["codec_language_id"][n])
     writer.add_array("synthesize.qwen3-tts.languages.names", languages)
     writer.add_array("synthesize.qwen3-tts.languages.token_ids",
@@ -712,7 +826,7 @@ def main() -> int:
     with atomic_output_path(args.output) as staging:
         writer = GGUFWriter(str(staging), ARCH_KEY)
         add_metadata(writer, manifest, config, tokenizer_config, codec_config,
-                     generation_config, vocab, merges, digests)
+                     generation_config, vocab, merges, digests, profile)
         for output in conversion.outputs:
             writer.add_tensor(output.name, output.array, raw_dtype=output.dtype)
         writer.write_header_to_file()

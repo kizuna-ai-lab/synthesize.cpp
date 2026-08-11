@@ -8,8 +8,10 @@ the reason this test file exists rather than a smoke run.
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 import torch
@@ -359,6 +361,265 @@ class EncoderTensorNameShorteningTests(unittest.TestCase):
         self.assertTrue(encoder_shortened.endswith(".codebook"))
         self.assertLess(len(decoder_shortened), convert.GGML_MAX_NAME)
         self.assertLess(len(encoder_shortened), convert.GGML_MAX_NAME)
+
+
+class BaseCatalogTests(unittest.TestCase):
+    """A Base package advertises no Voice it can select and says so positively."""
+
+    def test_speaker_metadata_is_refused_when_the_checkpoint_has_no_speakers(self) -> None:
+        talker = {"spk_id": {}, "spk_is_dialect": {}}
+        with self.assertRaises(convert.ConverterError):
+            convert.speaker_catalog(talker, preset_ids=["aiden"])
+
+    def test_an_empty_checkpoint_and_an_empty_manifest_agree(self) -> None:
+        names, token_ids, dialects = convert.speaker_catalog(
+            {"spk_id": {}, "spk_is_dialect": {}}, preset_ids=[])
+        self.assertEqual((names, token_ids, dialects), ([], [], []))
+
+    def test_the_mel_front_end_parameters_are_the_ones_the_reference_uses(self) -> None:
+        params = convert.speaker_encoder_metadata({"enc_dim": 1024, "sample_rate": 24000})
+        self.assertEqual(params["mel_bins"], 128)
+        self.assertEqual(params["n_fft"], 1024)
+        self.assertEqual(params["hop_length"], 256)
+        self.assertEqual(params["win_length"], 1024)
+        self.assertEqual(params["fmin"], 0.0)
+        self.assertEqual(params["fmax"], 12000.0)
+
+
+def golden_manifest(variant: str) -> dict:
+    path = REPO_ROOT / "tests" / "golden" / "qwen3-tts" / f"qwen3-tts-12hz-0-6b-{variant}.manifest.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+class LicenseLinkTests(unittest.TestCase):
+    """Each variant's package must link its own Hugging Face model page.
+
+    CustomVoice's manifest carries a GitHub URL as `source.repository` (where
+    the code lives); the license link must come from the checkpoint's own
+    pinned locator instead, or every package would credit whichever variant's
+    repository field happened to be a Hugging Face URL.
+    """
+
+    def test_base_links_its_own_repository(self) -> None:
+        link = convert.license_link_for(golden_manifest("base"))
+        self.assertEqual(link, "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base")
+
+    def test_customvoice_links_its_own_repository_not_the_github_source(self) -> None:
+        link = convert.license_link_for(golden_manifest("customvoice"))
+        self.assertEqual(link, "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
+
+    def test_the_talker_checkpoint_is_matched_unambiguously_not_by_list_order(self) -> None:
+        """Both manifests carry a second "checkpoint"-role artifact --
+        `speech_tokenizer/model.safetensors` -- whose locator also contains
+        the substring "model.safetensors". Putting it first must not change
+        the answer: `talker_checkpoint_locator` matches on the talker's own
+        path shape (no `speech_tokenizer/` segment), not on being listed first.
+        """
+        manifest = golden_manifest("base")
+        artifacts = manifest["source"]["artifacts"]
+        checkpoint_artifacts = [a for a in artifacts if a["role"] == "checkpoint"]
+        self.assertEqual(len(checkpoint_artifacts), 2, "fixture assumption: two checkpoint artifacts")
+        reordered = dict(manifest)
+        reordered["source"] = dict(manifest["source"])
+        reordered["source"]["artifacts"] = list(reversed(artifacts))
+        self.assertEqual(
+            convert.talker_checkpoint_locator(reordered),
+            convert.talker_checkpoint_locator(manifest),
+        )
+
+    def test_an_ambiguous_manifest_is_refused(self) -> None:
+        manifest = {"source": {"artifacts": [
+            {"role": "checkpoint", "locator": "https://huggingface.co/x/y/resolve/rev/model.safetensors"},
+            {"role": "checkpoint", "locator": "https://huggingface.co/x/z/resolve/rev/model.safetensors"},
+        ]}}
+        with self.assertRaises(convert.ConverterError):
+            convert.talker_checkpoint_locator(manifest)
+
+    def test_a_manifest_with_no_talker_checkpoint_is_refused(self) -> None:
+        manifest = {"source": {"artifacts": [
+            {"role": "checkpoint", "locator": "https://huggingface.co/x/y/resolve/rev/speech_tokenizer/model.safetensors"},
+        ]}}
+        with self.assertRaises(convert.ConverterError):
+            convert.talker_checkpoint_locator(manifest)
+
+
+class CompatibilityIdTests(unittest.TestCase):
+    """Known-value vector from the real Base package's own digests.
+
+    Pins the exact formula and input order -- schema/version as one hashed
+    piece, then talker, codec, config digests in that order -- against the
+    id the shipped Base package actually carries today, so a change to any
+    of those (reordering, rejoining, hashing a different representation)
+    fails this test loudly instead of silently changing what compatibility
+    means for an already-shipped package.
+    """
+
+    def test_matches_the_id_the_base_package_ships_today(self) -> None:
+        result = convert.compatibility_id(
+            "qwen3-tts-voice-clone", 1,
+            (
+                "180b3b10eb1c9f1b4db7806d5475bae3071c0243c299d49926bab1da3b6946f6",  # talker
+                "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",  # codec
+                "2e714c787c8edb98b05432685cddb634add2de4d4e645f653d68251ef72ba011",  # config
+            ),
+        )
+        self.assertEqual(result, "34d4de22a329b6bc8347cb952b6fa16513320012628598ab59743679cc16806e")
+
+    def test_digest_order_matters(self) -> None:
+        """Swapping two digests must not land on the same id by coincidence."""
+        forward = convert.compatibility_id("s", 1, ("a" * 64, "b" * 64, "c" * 64))
+        swapped = convert.compatibility_id("s", 1, ("b" * 64, "a" * 64, "c" * 64))
+        self.assertNotEqual(forward, swapped)
+
+    def test_schema_and_version_are_both_part_of_the_id(self) -> None:
+        base = convert.compatibility_id("s", 1, ("a" * 64,))
+        self.assertNotEqual(base, convert.compatibility_id("t", 1, ("a" * 64,)))
+        self.assertNotEqual(base, convert.compatibility_id("s", 2, ("a" * 64,)))
+
+
+class ProfileMetadataEmissionTests(unittest.TestCase):
+    """The Voice Profile contract is emitted for a variant with a speaker
+    encoder and withheld from one without -- checked against a real written
+    and re-read GGUF, not against `add_metadata`'s source code, since a KV
+    that never makes it to the file is exactly the kind of failure that is
+    silent everywhere except here.
+    """
+
+    @staticmethod
+    def _minimal_add_metadata_args(carries_speaker_encoder: bool) -> tuple:
+        """The smallest fixture `add_metadata` accepts without raising.
+
+        Field values are arbitrary except where a converter rule constrains
+        them (e.g. the codec hop/frame-rate/quantizer-count cross-checks).
+        """
+        manifest = {
+            "variant": "qwen3-tts-test-variant",
+            "source": {
+                "repository": "https://huggingface.co/Test/Repo",
+                "revision": "deadbeef",
+                "artifacts": [
+                    {"role": "checkpoint",
+                     "locator": "https://huggingface.co/Test/Repo/resolve/deadbeef/model.safetensors"},
+                ],
+            },
+            "package_contract": {
+                "language_tags": ["auto", "english"],
+                "voices": {
+                    "mode": "profile-sources" if carries_speaker_encoder else "preset-catalog",
+                    "default_id": None,
+                    "preset_ids": [] if carries_speaker_encoder else ["voice1"],
+                },
+                "native_audio": {"sample_rate_hz": 24000, "channels": 1, "sample_format": "f32le"},
+                "speaking_rate_range": [1.0, 1.0],
+                "max_input_tokens": 1024,
+                "max_output_frames": 100,
+            },
+        }
+        if carries_speaker_encoder:
+            manifest["package_contract"]["profile"] = {
+                "reference": {
+                    "target_sample_rate": 24000,
+                    "target_channels": 1,
+                    "min_frames_per_clip": 24000,
+                    "max_frames_per_clip": 720000,
+                    "max_total_frames": 720000,
+                    "max_reference_count": 1,
+                }
+            }
+
+        talker_config = {
+            "num_hidden_layers": 1, "hidden_size": 4, "num_attention_heads": 1,
+            "num_key_value_heads": 1, "head_dim": 4, "intermediate_size": 4,
+            "vocab_size": 10, "text_vocab_size": 10, "text_hidden_size": 4,
+            "num_code_groups": 1, "rms_norm_eps": 1e-5, "rope_theta": 10000.0,
+            "code_predictor_config": {
+                "num_hidden_layers": 1, "hidden_size": 4, "num_attention_heads": 1,
+                "num_key_value_heads": 1, "head_dim": 4, "vocab_size": 10, "num_code_groups": 1,
+            },
+            "spk_id": {} if carries_speaker_encoder else {"voice1": 0},
+            "spk_is_dialect": {} if carries_speaker_encoder else {"voice1": ""},
+            "codec_language_id": {"english": 0},
+            "codec_bos_id": 7, "codec_eos_token_id": 8, "codec_pad_id": 9,
+            "codec_think_id": 10, "codec_nothink_id": 11,
+            "codec_think_bos_id": 12, "codec_think_eos_id": 13,
+        }
+        config = {
+            "talker_config": talker_config,
+            "tts_bos_token_id": 1, "tts_eos_token_id": 2, "tts_pad_token_id": 3,
+            "im_start_token_id": 4, "im_end_token_id": 5, "assistant_token_id": 6,
+        }
+        if carries_speaker_encoder:
+            config["speaker_encoder_config"] = {"enc_dim": 1024, "sample_rate": 24000}
+
+        codec_config = {
+            "decode_upsample_rate": convert.SAMPLES_PER_FRAME,
+            "input_sample_rate": int(convert.SAMPLES_PER_FRAME * convert.FRAME_RATE_HZ),
+            "decoder_config": {
+                "upsample_rates": [convert.SAMPLES_PER_FRAME], "upsampling_ratios": [1],
+                "latent_dim": 4, "decoder_dim": 4, "codebook_dim": 2, "codebook_size": 16,
+                "num_quantizers": 1, "num_semantic_quantizers": 0,
+                "hidden_size": 4, "intermediate_size": 4, "num_hidden_layers": 1,
+                "num_attention_heads": 1, "num_key_value_heads": 1, "head_dim": 4,
+                "sliding_window": 4, "rms_norm_eps": 1e-5, "rope_theta": 10000.0,
+            },
+        }
+
+        generation_config = {
+            "do_sample": True, "temperature": 1.0, "top_k": 50, "top_p": 0.9,
+            "repetition_penalty": 1.1, "subtalker_temperature": 1.0,
+            "subtalker_top_k": 50, "subtalker_top_p": 0.9,
+        }
+
+        digests = {"talker": "1" * 64, "codec": "2" * 64, "config": "3" * 64, "generation_config": "4" * 64}
+        profile = convert.VariantProfile(
+            "test", carries_speaker_encoder, carries_speaker_encoder, "Test Display Name", "0.0B")
+        return (manifest, config, {}, codec_config, generation_config, {"a": 0, "b": 1}, [], digests, profile)
+
+    def _written_keys(self, carries_speaker_encoder: bool) -> set[str]:
+        args = self._minimal_add_metadata_args(carries_speaker_encoder)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "meta.gguf"
+            writer = convert.GGUFWriter(str(path), convert.ARCH_KEY)
+            convert.add_metadata(writer, *args)
+            writer.write_header_to_file()
+            writer.write_kv_data_to_file()
+            writer.write_tensors_to_file()
+            writer.close()
+            reader = convert.GGUFReader(str(path))
+            return set(reader.fields.keys())
+
+    def test_a_variant_with_a_speaker_encoder_carries_the_profile_block(self) -> None:
+        keys = self._written_keys(carries_speaker_encoder=True)
+        for key in (
+            "synthesize.profile.schema",
+            "synthesize.profile.schema_version",
+            "synthesize.profile.compatibility_id",
+            "synthesize.reference.target_sample_rate",
+            "synthesize.reference.target_channels",
+            "synthesize.reference.min_frames_per_clip",
+            "synthesize.reference.max_frames_per_clip",
+            "synthesize.reference.max_total_frames",
+            "synthesize.reference.max_reference_count",
+            "synthesize.qwen3-tts.speaker_encoder.enc_dim",
+            "synthesize.qwen3-tts.speaker_encoder.sample_rate",
+            "synthesize.qwen3-tts.speaker_encoder.mel_bins",
+            "synthesize.qwen3-tts.speaker_encoder.n_fft",
+            "synthesize.qwen3-tts.speaker_encoder.hop_length",
+            "synthesize.qwen3-tts.speaker_encoder.win_length",
+            "synthesize.qwen3-tts.speaker_encoder.fmin",
+            "synthesize.qwen3-tts.speaker_encoder.fmax",
+        ):
+            self.assertIn(key, keys, key)
+
+    def test_a_variant_without_a_speaker_encoder_carries_none_of_it(self) -> None:
+        keys = self._written_keys(carries_speaker_encoder=False)
+        leaked = [
+            key for key in keys
+            if key.startswith("synthesize.profile.")
+            or key.startswith("synthesize.reference.")
+            or key.startswith("synthesize.qwen3-tts.speaker_encoder.")
+        ]
+        self.assertEqual(leaked, [])
 
 
 if __name__ == "__main__":

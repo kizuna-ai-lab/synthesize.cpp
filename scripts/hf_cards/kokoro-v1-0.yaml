@@ -112,7 +112,8 @@ validation:
   cuda_placement_note: >-
     Two of this package's seven stages run on CPU on every Execution Backend --
     the PL-BERT encoder with its `bert_encoder` projection, and the duration
-    predictor -- and the other five run on CUDA. `resolve_durations` rounds the
+    predictor -- and the other five run on CUDA when CUDA is the selected
+    Execution Backend. `resolve_durations` rounds the
     predictor's logits to integer frame counts and every later stage's shape
     follows from that integer, so TF32's roughly 1e-3 relative error is enough
     to break the graph rather than perturb it: on the 146-token `kokoro-long`

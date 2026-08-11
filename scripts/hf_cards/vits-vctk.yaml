@@ -80,7 +80,8 @@ validation:
   cuda_placement: partial
   cuda_placement_note: >-
     Two of this family's stages run on CPU on every Execution Backend, and the
-    other five run on CUDA. `Model::Impl::compute_duration_stage` uses a
+    other five run on CUDA when CUDA is the selected Execution Backend.
+    `Model::Impl::compute_duration_stage` uses a
     CPU-only scheduler over CPU-resident mirrors of the text encoder, the
     duration predictor and the Voice tensors, because the duration path ceils
     its logits into an integer frame count and every later stage's shape

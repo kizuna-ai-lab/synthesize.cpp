@@ -136,6 +136,15 @@ class Conversion:
     renamed: list[dict[str, str]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class VariantProfile:
+    model_type: str
+    carries_speaker_encoder: bool
+    carries_codec_encoder: bool
+    display_name: str
+    size_label: str
+
+
 def shorten_name(name: str, conversion: Conversion) -> str:
     """Bring a name under GGML's fixed-width limit, or refuse to emit it."""
     shortened = name
@@ -162,6 +171,34 @@ def parse_args() -> argparse.Namespace:
 
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def variant_profile(config: dict[str, Any]) -> VariantProfile:
+    """Decide what this checkpoint carries from what it declares.
+
+    The two supported variants differ by a whole subsystem: Base ships a
+    76-tensor ECAPA-TDNN speaker encoder and needs the tokenizer's encoder half
+    to turn reference audio into codes; CustomVoice ships neither and resolves
+    speakers as codec-vocabulary token ids. Keying that on the declared type and
+    then checking the declaration against the config is what keeps a future
+    variant from silently converting as whichever branch it fell into.
+    """
+    model_type = str(config.get("tts_model_type", ""))
+    has_encoder_config = "speaker_encoder_config" in config
+    if model_type == "base":
+        if not has_encoder_config:
+            raise ConverterError(
+                "config declares tts_model_type=base but carries no speaker_encoder_config; "
+                "a Base package without a speaker encoder cannot prepare a Voice Profile"
+            )
+        return VariantProfile("base", True, True, "Qwen3-TTS 12Hz 0.6B Base", "0.6B")
+    if model_type == "custom_voice":
+        if has_encoder_config:
+            raise ConverterError(
+                "config declares tts_model_type=custom_voice but carries a speaker_encoder_config"
+            )
+        return VariantProfile("custom_voice", False, False, "Qwen3-TTS 12Hz 0.6B CustomVoice", "0.6B")
+    raise ConverterError(f"unsupported tts_model_type {model_type!r}")
 
 
 def source_artifact(manifest: dict[str, Any], role: str, needle: str) -> dict[str, Any]:

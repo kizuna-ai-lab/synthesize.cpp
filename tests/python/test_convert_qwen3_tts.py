@@ -216,5 +216,31 @@ class ReportShapeTests(unittest.TestCase):
         self.assertIn("sha256", entry)
 
 
+class VariantDiscriminationTests(unittest.TestCase):
+    """The two variants differ by a whole subsystem, not by a label."""
+
+    def test_base_config_declares_the_speaker_encoder(self) -> None:
+        profile = convert.variant_profile({
+            "tts_model_type": "base",
+            "tts_model_size": "0b6",
+            "speaker_encoder_config": {"enc_dim": 1024, "sample_rate": 24000},
+        })
+        self.assertTrue(profile.carries_speaker_encoder)
+        self.assertTrue(profile.carries_codec_encoder)
+
+    def test_custom_voice_config_carries_neither(self) -> None:
+        profile = convert.variant_profile({"tts_model_type": "custom_voice", "tts_model_size": "0b6"})
+        self.assertFalse(profile.carries_speaker_encoder)
+        self.assertFalse(profile.carries_codec_encoder)
+
+    def test_base_config_without_a_speaker_encoder_is_refused(self) -> None:
+        with self.assertRaises(convert.ConverterError):
+            convert.variant_profile({"tts_model_type": "base", "tts_model_size": "0b6"})
+
+    def test_an_unknown_model_type_is_refused(self) -> None:
+        with self.assertRaises(convert.ConverterError):
+            convert.variant_profile({"tts_model_type": "voice_design", "tts_model_size": "1b7"})
+
+
 if __name__ == "__main__":
     unittest.main()

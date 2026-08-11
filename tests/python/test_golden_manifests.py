@@ -131,11 +131,32 @@ class GoldenManifestSchemaTest(unittest.TestCase):
         The qwen3-tts file said 18 while its manifest had grown to 20 -- an
         honest historical number that read as a current claim. case_count is
         bookkeeping about the suite, so it tracks the suite.
+
+        A file whose `tolerance_file` is shared by more than one Reference
+        Model Variant (VITS, and qwen3-tts since 2026-08-11) cannot carry one
+        flat top-level number that is right for both -- it records
+        `variants.<name>.case_count` instead, and this checks that form too.
+        Checking only the flat key left both VITS variants silently
+        unchecked from the day that shape was introduced: neither vits.json
+        variant carries a top-level `case_count` at all, so the old
+        `"case_count" not in tolerance` guard skipped every VITS manifest
+        every time, and nothing failed when this test's own module was
+        exercised by making a `variants.*.case_count` wrong on purpose.
         """
         for path, manifest in self.manifests:
             with self.subTest(manifest=path.name):
                 tolerance_path = REPO_ROOT / manifest["tolerance_file"]
                 tolerance = json.loads(tolerance_path.read_text(encoding="utf-8"))
+                if "variants" in tolerance:
+                    variant = manifest["variant"]
+                    entry = tolerance["variants"].get(variant)
+                    if entry is None or "case_count" not in entry:
+                        continue
+                    self.assertEqual(
+                        entry["case_count"], len(manifest["cases"]),
+                        f"{manifest['tolerance_file']}: variants.{variant}.case_count "
+                        f"disagrees with {path.name}")
+                    continue
                 if "case_count" not in tolerance:
                     continue
                 self.assertEqual(

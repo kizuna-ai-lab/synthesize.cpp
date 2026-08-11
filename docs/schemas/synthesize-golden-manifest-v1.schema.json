@@ -257,7 +257,7 @@
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "minLength": 1
+            "enum": ["reference_audio", "serialized_profile"]
           }
         },
         "reference": {

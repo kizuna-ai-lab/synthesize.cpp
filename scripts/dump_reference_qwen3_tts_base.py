@@ -129,6 +129,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root", type=pathlib.Path, default=None,
                          help="--manifest form only: root directory for case subdirectories; "
                               "defaults to the manifest's case_artifact_root.")
+    parser.add_argument(
+        "--reference-audio-dir",
+        type=pathlib.Path,
+        default=pathlib.Path("models/qwen3-tts-reference-audio"),
+        help="Where an http(s) input.reference.artifact locator is fetched and cached "
+             "(git-ignored), matching --reference-audio-dir in "
+             "scripts/dump_reference_omnivoice_pytorch.py. Unused for a local-path locator.",
+    )
 
     parser.add_argument("--report", type=pathlib.Path, default=None)
     return parser.parse_args()
@@ -385,11 +393,13 @@ def capture_generated_codes(model, sink: dict):
     return lambda: setattr(target, "generate", original)
 
 
-def run_case(model, case: RunCase, case_dir: pathlib.Path) -> dict:
+def run_case(
+    model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: pathlib.Path
+) -> dict:
     local_ref_audio = resolve_reference_locator(
         case.ref_audio,
         case.ref_sha256,
-        pathlib.Path("models/qwen3-tts-reference-audio"),
+        reference_audio_dir,
     )
     ref_wav, ref_sr, ref_info = load_reference_audio(local_ref_audio, case.trim_seconds)
 
@@ -570,7 +580,7 @@ def main() -> int:
     records = []
     for index, (case, case_dir) in enumerate(run_specs, 1):
         print(f"[{index}/{len(run_specs)}] {case.id}", flush=True)
-        records.append(run_case(model, case, case_dir))
+        records.append(run_case(model, case, case_dir, args.reference_audio_dir))
         print(f"    {records[-1]['result']['frames']} frames, "
               f"rtf {records[-1]['result']['real_time_factor']}", flush=True)
 

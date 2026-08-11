@@ -186,6 +186,13 @@ lines up with what is already on disk. Copy-pasting the commands above gets an
 immediate `SystemExit`, not a wrong result. Task 3 is what makes the `--case`
 form real, and its field mapping is unexercised until then.
 
+**Erratum, 2026-08-12.** Every `build/goldens/qwen3-tts/<case-id>/` path in
+this task (and in the file table above) is now
+`build/goldens/qwen3-tts/qwen3-tts-12hz-0-6b-base/<case-id>/`. The branch's
+final review gave each Reference Model Variant its own artifact root, as VITS
+already had: with one shared root, a case id common to the Base and CustomVoice
+manifests would overwrite published goldens in place.
+
 - [ ] **Step 4: Record the measured duration bounds**
 
 Run the ICL case at 0.5 s, 1 s, 3 s, 10 s and 30 s of reference audio. Record in `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-base/intake.json` under a new `reference_bounds` key: for each duration, the reference-code frame count and whether the output is intelligible. This is what makes the spec's provisional 1 s / 30 s bounds measured rather than assumed. If 1 s produces unusable audio, raise `min_frames_per_clip` here and in Task 6 rather than shipping a bound the model does not honor.
@@ -974,6 +981,12 @@ Expected: FAIL
 In `model.cpp`'s shared-info builder, emit an empty `preset_voice_ids` and set `voice_profile.source_flags` from `hparams.has_speaker_encoder`, together with `reference_transcript = SYNTH_REQUIREMENT_OPTIONAL`, `reference_language = SYNTH_REQUIREMENT_OPTIONAL`, and the reference target and limit values from `hparams.profile`. In `resolve_voice`, return the Catalog-less error before the preset lookup when `voice_mode == VoiceMode::ProfileSources`.
 
 Note for the implementer: `SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` is claimed alongside Reference Audio because every successfully prepared v1 Profile can be serialized — the same rule `src/synthesize.cpp` documents for OmniVoice. Preparation itself still returns `SYNTH_ERR_UNSUPPORTED_VOICE` until Plan 2 lands the graph; that is a dispatch gap, not a capability lie, and Plan 2 closes it.
+
+**Superseded, 2026-08-12 — this task's capability snapshot advertised what nothing implements.** The two paragraphs above were implemented as written and then reversed by the branch's final review. `docs/c-interface.md` says "A Model without runtime Voice Profile support reports zero flags", and for an unsupported source every field describing it is `SYNTH_REQUIREMENT_UNSUPPORTED` or zero. This family has no runtime support: `src/voice-profile.cpp` guards every Profile source on `family != ModelFamily::Omnivoice`, so a caller acting on the advertisement is refused by its very next call. "A dispatch gap, not a capability lie" was my argument, and the confirmed contract overrides it.
+
+**What governs instead:** `fill_voice_profile_capability` leaves `VoiceProfileInfo` at its all-zero default for every variant of this family. The package's own ProfileContract is still read and validated in full at load time — the package declaring a contract and the runtime advertising a capability are different statements, and only the second was false. Plan 2 publishes `REFERENCE_AUDIO | SERIALIZED_PROFILE` on the day it can prepare a Profile; the pairing rule in the paragraph above is correct and survives, it just applies then rather than now.
+
+The second sentence of the step above is also superseded: the Catalog-less early return in `resolve_voice` was removed, because it returned the same `SYNTH_ERR_UNSUPPORTED_VOICE` the preset lookup on the next line already returns for an empty catalog, and no test could be written that saw it work. See `docs/superpowers/plans/2026-08-12-qwen3-tts-stage-2-plan-1-carryover.md` §1.4.
 
 - [ ] **Step 4: Register the test**
 

@@ -127,20 +127,7 @@ class ToleranceCoverageTests(unittest.TestCase):
                             )
 
     def test_every_registered_validator_has_a_measured_stage(self) -> None:
-        """A stage with a validator but no measurement has never been run.
-
-        The reverse is not required: a variant may carry a measured stage that
-        has no validator yet. qwen3-tts-12hz-0-6b-base records honest,
-        clearly-labelled placeholder stages (speaker_encoder, codec_encoder,
-        plus empty public/replay placeholders so its stage set can be
-        compared against the family's validators at all) before any of the
-        C++ work that would let a real validator exist for them -- Tasks 4
-        through 10 build that. Checking validators-subset-of-measured, rather
-        than the set equality this test used while every measured stage
-        happened to already have a validator in the same commit, still
-        catches the case the docstring names (a validator with nothing
-        measured for it) without demanding the reverse.
-        """
+        """A stage with a validator but no measurement has never been run."""
         for family, document in load_tolerances().items():
             variants = measured_variants(document)
             if not variants:
@@ -154,11 +141,11 @@ class ToleranceCoverageTests(unittest.TestCase):
             for variant, profiles in variants.items():
                 with self.subTest(family=family, variant=variant):
                     measured = set(profiles[reference_profile(document)]["stages"])
-                    unmeasured_validators = validators - measured
-                    self.assertFalse(
-                        unmeasured_validators,
-                        f"{family}/{variant}: validators {sorted(unmeasured_validators)} have no "
-                        f"recorded measurement",
+                    self.assertEqual(
+                        validators,
+                        measured,
+                        f"{family}/{variant}: validators {sorted(validators - measured)} have no "
+                        f"recorded measurement; stages {sorted(measured - validators)} have no validator",
                     )
 
 

@@ -311,7 +311,20 @@ def main() -> int:
     # rather than inventing one is the point: a threshold the suite writes for
     # itself proves nothing.
     tolerances = json.loads(arguments.tolerances.read_text(encoding="utf-8"))
-    cell = tolerances.get("profiles", {}).get(arguments.profile, {})
+    # tests/tolerances/qwen3-tts.json moved from one flat `profiles` grid to a
+    # `variants.<name>.profiles` grid on 2026-08-11, when the Base variant's
+    # manifest started sharing this file -- one flat grid could not describe
+    # two Reference Model Variants with different subsystems and case counts.
+    # `manifest["variant"]` (loaded above) is exactly the coordinate that was
+    # missing: this validator already runs against one manifest at a time via
+    # `--manifest`, so it already knows which variant's grid to read. A file
+    # that still uses the old flat shape (e.g. a future `--tolerances`
+    # pointed at a single-variant family) falls through unchanged.
+    if "variants" in tolerances:
+        profiles = tolerances["variants"].get(manifest["variant"], {}).get("profiles", {})
+    else:
+        profiles = tolerances.get("profiles", {})
+    cell = profiles.get(arguments.profile, {})
     # CPU is the profile's own entry; anything else hangs off `backends`, which
     # is the shape the coverage test walks.
     if arguments.backend.upper() != "CPU":

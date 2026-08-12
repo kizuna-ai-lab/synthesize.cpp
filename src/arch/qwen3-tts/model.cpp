@@ -793,15 +793,26 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         return status;
     }
     if (external) {
-        // The graph-level enforcement is build_talker_prefill_input's own
-        // width check (talker.cpp), which runs unconditionally on every
-        // build configuration and refuses the request outright; this assert
-        // documents the invariant at the point where a mismatch would first
-        // exist rather than only where the graph notices it. NDEBUG makes it
-        // inert in both trees this project builds (see
-        // arch/omnivoice/frontend-host.cpp's tokenize-marker comment), which
-        // is acceptable here specifically because the graph's own check, not
-        // this one, is what actually refuses a malformed request.
+        // This is the real enforcement, not the graph's. t_speaker_embedding
+        // below is always constructed at hparams.talker.hidden_size,
+        // independent of request.x_vector's actual length, so
+        // build_talker_prefill_input's own width check (talker.cpp, comparing
+        // speaker_embedding->ne[0] against text->ne[0]) can never see a
+        // mismatch from this call site -- it guards a tensor built the wrong
+        // width some other way, not a short vector reaching here. Without
+        // this check, ggml_backend_tensor_set below (`ggml_nbytes(t_speaker_embedding)
+        // = hidden_size * 4 bytes`, read out of `*request.x_vector`
+        // regardless of its actual size) is an unchecked heap over-read for a
+        // short vector.
+        if (request.x_vector->size() != hparams.talker.hidden_size) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        // Documents the same invariant at the point it is established, for a
+        // reader stepping through in a debugger. Not what protects a release
+        // build: NDEBUG is defined in both trees this project ships (Release
+        // and RelWithDebInfo -- see arch/omnivoice/frontend-host.cpp's
+        // tokenize-marker comment), which makes this inert there. The check
+        // above is what actually refuses a malformed request.
         assert(request.x_vector->size() == hparams.talker.hidden_size);
     }
 

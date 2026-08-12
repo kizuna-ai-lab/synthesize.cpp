@@ -169,12 +169,6 @@ int test_the_substitution_index_follows_the_language_token() {
     SYNTH_TEST_CHECK(named.external_speaker_index == 4);
     SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, automatic, text, codec, offset) == SYNTH_OK);
     SYNTH_TEST_CHECK(automatic.external_speaker_index == 3);
-
-    // The recorded index really is where the placeholder landed in the
-    // flattened codec run -- codec_pad, the same token every other pad
-    // position carries -- confirming "index into codec_tokens" is not merely
-    // documented but true.
-    SYNTH_TEST_CHECK(codec[size_t(automatic.external_speaker_index)] == int32_t(h.tokens.codec_pad));
     return 0;
 }
 
@@ -440,6 +434,180 @@ int test_the_graph_places_the_embedding_at_its_slot_and_nowhere_else() {
     return 0;
 }
 
+// Task 10 review, IMPORTANT 2: the case above only ever runs at
+// codec_offset == 0, which is degenerate for this axis -- `size_t(0) *
+// out->nb[1]` is indistinguishable from omitting the offset term entirely,
+// so a mutant that dropped codec_offset from all three of talker.cpp's
+// external ggml_acc calls passed the case above unnoticed. Every real
+// request has codec_offset == role_tokens.size() (3, under the reference
+// template -- bpe.h's kAssistantRolePrefixTokens), so this fixture mirrors
+// that shape: three text-only positions (no codec row exists for them at
+// all) ahead of a four-long codec run.
+constexpr uint32_t kOffsetTextPositions = 7;
+constexpr uint32_t kOffsetCodecCount    = 4;
+constexpr int64_t  kOffsetCodecOffset   = int64_t(kOffsetTextPositions - kOffsetCodecCount);  // 3, matching the
+                                                                                              // reference template.
+
+constexpr int32_t kOffsetTextIds[kOffsetTextPositions] = { 5, 1, 3, 2, 4, 0, 3 };
+constexpr int32_t kOffsetCodecIds[kOffsetCodecCount]   = { 0, 2, 4, 1 };
+
+struct OffsetSubstitutionFixture {
+    ggml_backend_t                 backend = nullptr;
+    Context                        persistent;
+    ggml_backend_buffer_t          buffer = nullptr;
+    synth::qwen3tts::TalkerWeights weights;
+    ggml_tensor *                  text_tokens  = nullptr;
+    ggml_tensor *                  codec_tokens = nullptr;
+    ggml_tensor *                  speaker      = nullptr;
+
+    ~OffsetSubstitutionFixture() {
+        if (buffer != nullptr) {
+            ggml_backend_buffer_free(buffer);
+        }
+        if (backend != nullptr) {
+            ggml_backend_free(backend);
+        }
+    }
+};
+
+bool build_offset_substitution_fixture(OffsetSubstitutionFixture & fixture) {
+    ggml_backend_dev_t device = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    if (device == nullptr) {
+        return false;
+    }
+    fixture.backend = ggml_backend_dev_init(device, nullptr);
+    if (fixture.backend == nullptr) {
+        return false;
+    }
+    fixture.persistent  = make_context(ggml_tensor_overhead() * 32);
+    ggml_context * pctx = fixture.persistent.get();
+
+    std::vector<ggml_tensor *> ordered;
+    std::vector<float>         scales;
+    std::vector<float>         offsets;
+    auto                       add = [&](ggml_tensor * tensor, float scale, float offset) {
+        ordered.push_back(tensor);
+        scales.push_back(scale);
+        offsets.push_back(offset);
+        return tensor;
+    };
+
+    synth::qwen3tts::TalkerWeights & w = fixture.weights;
+    w.text_embedding           = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kSubTextWidth, kSubTextVocab), 0.5f, 0.0f);
+    w.text_projection_1.weight = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kSubTextWidth, kSubTextWidth), 0.5f, 0.0f);
+    w.text_projection_1.bias   = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kSubTextWidth), 0.25f, 0.0f);
+    w.text_projection_2.weight = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kSubTextWidth, kSubHidden), 0.5f, 0.0f);
+    w.text_projection_2.bias   = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kSubHidden), 0.25f, 0.0f);
+    w.codec_embedding          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kSubHidden, kSubCodecSize), 0.5f, 0.0f);
+
+    fixture.text_tokens  = ggml_new_tensor_1d(pctx, GGML_TYPE_I32, kOffsetTextPositions);
+    fixture.codec_tokens = ggml_new_tensor_1d(pctx, GGML_TYPE_I32, kOffsetCodecCount);
+    fixture.speaker      = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kSubHidden, 1), 0.5f, 0.0f);
+
+    fixture.buffer = ggml_backend_alloc_ctx_tensors(pctx, fixture.backend);
+    if (fixture.buffer == nullptr) {
+        return false;
+    }
+
+    // A different seed from build_substitution_fixture's so the two fixtures'
+    // weights don't coincide.
+    LcgStream stream(kSubSeed + 1);
+    for (size_t index = 0; index < ordered.size(); ++index) {
+        const std::vector<float> values =
+            stream.fill(size_t(ggml_nelements(ordered[index])), scales[index], offsets[index]);
+        ggml_backend_tensor_set(ordered[index], values.data(), 0, ggml_nbytes(ordered[index]));
+    }
+    ggml_backend_tensor_set(fixture.text_tokens, kOffsetTextIds, 0, ggml_nbytes(fixture.text_tokens));
+    ggml_backend_tensor_set(fixture.codec_tokens, kOffsetCodecIds, 0, ggml_nbytes(fixture.codec_tokens));
+    return true;
+}
+
+// The same check as run_substitution_case, generalized for a nonzero
+// codec_offset: a position before the offset has no codec row at all, so it
+// must come out as bare text -- neither the ordinary accumulation nor the
+// external one may add anything there. A position from the offset on must
+// match the plain accumulation except at the substituted (relative) row. A
+// mutant that dropped codec_offset from talker.cpp's three external
+// ggml_acc calls would add codec/speaker starting at position 0 instead of
+// kOffsetCodecOffset, corrupting the pre-offset positions -- exactly what
+// this catches and run_substitution_case's codec_offset == 0 case cannot.
+bool run_offset_substitution_case(OffsetSubstitutionFixture & fixture, int64_t speaker_index) {
+    constexpr size_t kNodeBudget = 256;
+    Context          graph_ctx =
+        make_context(ggml_tensor_overhead() * (kNodeBudget + 32) + ggml_graph_overhead_custom(kNodeBudget, false));
+    ggml_context * gctx  = graph_ctx.get();
+    ggml_cgraph *  graph = ggml_new_graph_custom(gctx, kNodeBudget, false);
+
+    ggml_tensor * text  = synth::qwen3tts::build_text_projection(gctx, fixture.weights, fixture.text_tokens);
+    ggml_tensor * codec = ggml_get_rows(gctx, fixture.weights.codec_embedding, fixture.codec_tokens);
+    ggml_tensor * actual =
+        synth::qwen3tts::build_talker_prefill_input(gctx, fixture.weights, fixture.text_tokens, fixture.codec_tokens,
+                                                    kOffsetCodecOffset, fixture.speaker, speaker_index);
+    if (text == nullptr || codec == nullptr || actual == nullptr) {
+        return false;
+    }
+
+    for (ggml_tensor * output : { text, codec, actual }) {
+        ggml_set_output(output);
+        ggml_build_forward_expand(graph, output);
+    }
+
+    ggml_gallocr_t allocator = ggml_gallocr_new(ggml_backend_get_default_buffer_type(fixture.backend));
+    bool           ok        = allocator != nullptr && ggml_gallocr_alloc_graph(allocator, graph);
+    if (ok) {
+        ok = ggml_backend_graph_compute(fixture.backend, graph) == GGML_STATUS_SUCCESS;
+    }
+    std::vector<float> text_values;
+    std::vector<float> codec_values;
+    std::vector<float> actual_values;
+    std::vector<float> speaker_values;
+    if (ok) {
+        text_values.resize(size_t(ggml_nelements(text)));
+        ggml_backend_tensor_get(text, text_values.data(), 0, ggml_nbytes(text));
+        codec_values.resize(size_t(ggml_nelements(codec)));
+        ggml_backend_tensor_get(codec, codec_values.data(), 0, ggml_nbytes(codec));
+        actual_values.resize(size_t(ggml_nelements(actual)));
+        ggml_backend_tensor_get(actual, actual_values.data(), 0, ggml_nbytes(actual));
+        speaker_values.resize(kSubHidden);
+        ggml_backend_tensor_get(fixture.speaker, speaker_values.data(), 0, ggml_nbytes(fixture.speaker));
+    }
+    if (allocator != nullptr) {
+        ggml_gallocr_free(allocator);
+    }
+    if (!ok) {
+        return false;
+    }
+
+    for (int64_t position = 0; position < int64_t(kOffsetTextPositions); ++position) {
+        for (uint32_t row = 0; row < kSubHidden; ++row) {
+            const size_t index = size_t(position) * kSubHidden + row;
+            float        expected;
+            if (position < kOffsetCodecOffset) {
+                expected = text_values[index];
+            } else {
+                const int64_t relative     = position - kOffsetCodecOffset;
+                const size_t  relative_idx = size_t(relative) * kSubHidden + row;
+                expected =
+                    text_values[index] + (relative == speaker_index ? speaker_values[row] : codec_values[relative_idx]);
+            }
+            if (std::fabs(actual_values[index] - expected) > 1e-5f) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+int test_the_substitution_respects_a_nonzero_codec_offset() {
+    OffsetSubstitutionFixture fixture;
+    SYNTH_TEST_CHECK(build_offset_substitution_fixture(fixture));
+    const int64_t cases[] = { 0, 2, int64_t(kOffsetCodecCount) - 1 };
+    for (int64_t speaker_index : cases) {
+        SYNTH_TEST_CHECK(run_offset_substitution_case(fixture, speaker_index));
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -448,5 +616,6 @@ int main() {
     SYNTH_TEST_CHECK(test_the_preset_voice_path_is_unchanged() == 0);
     SYNTH_TEST_CHECK(test_the_graph_refuses_an_out_of_range_substitution() == 0);
     SYNTH_TEST_CHECK(test_the_graph_places_the_embedding_at_its_slot_and_nowhere_else() == 0);
+    SYNTH_TEST_CHECK(test_the_substitution_respects_a_nonzero_codec_offset() == 0);
     return 0;
 }

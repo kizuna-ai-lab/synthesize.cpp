@@ -754,6 +754,23 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             TIMEOUT 300)
     endif()
 
+    # Task 10 review, IMPORTANT 1: Model::run_synthesis's x_vector length check
+    # (model.cpp) is family-layer code reachable only through a loaded Model,
+    # and the one correct length is hparams.talker.hidden_size -- a real
+    # package's own metadata, not a fixture's guess -- so this needs the real
+    # Base package rather than a synthetic HParams fixture.
+    if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}")
+        add_executable(synthesize-qwen3-tts-xvector-length-test qwen3_tts_xvector_length_test.cpp)
+        target_include_directories(synthesize-qwen3-tts-xvector-length-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+        target_link_libraries(synthesize-qwen3-tts-xvector-length-test PRIVATE synthesize)
+        synth_register_integration_target(synthesize-qwen3-tts-xvector-length-test)
+        add_test(NAME synthesize-qwen3-tts-xvector-length-test
+            COMMAND synthesize-qwen3-tts-xvector-length-test ${SYNTH_QWEN3_TTS_BASE_TEST_MODEL})
+        set_tests_properties(synthesize-qwen3-tts-xvector-length-test PROPERTIES
+            LABELS "integration;qwen3-tts"
+            TIMEOUT 300)
+    endif()
+
     # The foundation slice's closing check: the real OmniVoice package through
     # the family loader and then through the public seam. It needs the package
     # because that is the whole point — every earlier omnivoice test runs

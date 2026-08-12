@@ -125,6 +125,17 @@ struct SynthesisRequest {
     // Talker layers whose output is captured per frame, for comparison against
     // the oracle's probes. Empty captures nothing and leaves the graph alone.
     std::vector<uint32_t> probe_layers;
+
+    // Non-null selects the x-vector path: the speaker slot's embedding comes
+    // from a prepared Voice Profile instead of a preset Voice's codec token,
+    // and `voice_id` is not consulted. Mutually exclusive with naming a
+    // preset Voice at this rung -- a request carries one speaker source or
+    // the other, never both -- which is why this is a separate field rather
+    // than an alternate meaning for `voice_id`. Its length must equal
+    // hparams.talker.hidden_size; enc_dim == hidden_size is enforced at load
+    // (weights.cpp), so a Profile prepared against this same Model always
+    // satisfies it.
+    const std::vector<float> * x_vector = nullptr;
 };
 
 // The talker attends over the whole utterance, so its cache grows with it: at
@@ -205,6 +216,16 @@ class Model {
     const SpeakerEncoderWeights & speaker_encoder_weights() const;
 
   private:
+    // The language half of resolve_voice, for a request whose speaker is an
+    // external Voice Profile rather than a preset Voice: there is no
+    // PresetVoice to consult, so no dialect override can win over the
+    // requested language. Factored out rather than duplicated so the two
+    // paths share one implementation of that rule instead of a second copy
+    // free to drift from it.
+    synth_status_t resolve_language_only(const std::string & language,
+                                         bool &              has_language,
+                                         uint32_t &          language_token) const;
+
     struct Impl;
     explicit Model(std::unique_ptr<Impl> implementation);
     std::unique_ptr<Impl> implementation_;

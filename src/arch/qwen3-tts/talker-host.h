@@ -38,6 +38,11 @@ struct TalkerPrompt {
     // projected tts_pad embedding instead, which is what lets the talker keep
     // emitting frames after the text has run out.
     std::vector<TalkerInputPosition> trailing;
+    // Index into the flattened codec run whose embedding row the x-vector
+    // replaces, or -1 when the speaker is an ordinary codec token. It is an
+    // index into `codec_tokens`, not into `positions`: the codec run starts at
+    // `codec_offset` and the graph adds it as a tail.
+    int64_t                          external_speaker_index = -1;
 };
 
 // What the caller asks for. The text is already tokenized: the chat template and
@@ -52,12 +57,18 @@ struct TalkerPromptRequest {
     std::vector<uint32_t> text_tokens;
     // Absent selects the reference's no-think path, which emits no language token
     // at all rather than a default one.
-    bool                  has_language   = false;
-    uint32_t              language_token = 0;
+    bool                  has_language        = false;
+    uint32_t              language_token      = 0;
     // Absent when no preset Voice was selected. A speaker is a codec-vocabulary
     // token, not an embedding, which is why it sits in this stream.
-    bool                  has_speaker    = false;
-    uint32_t              speaker_token  = 0;
+    bool                  has_speaker         = false;
+    uint32_t              speaker_token       = 0;
+    // The speaker slot's embedding comes from a prepared Voice Profile rather
+    // than from the codec vocabulary. The POSITION is unchanged -- upstream
+    // substitutes the embedding, it does not move or remove the slot -- so
+    // `has_speaker` must also be set and `speaker_token` is written into the
+    // stream as an inert placeholder whose row the graph never reads.
+    bool                  speaker_is_external = false;
 };
 
 // Lays out the prefill and the trailing schedule.

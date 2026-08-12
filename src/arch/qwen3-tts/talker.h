@@ -31,12 +31,25 @@ ggml_tensor * build_text_projection(ggml_context * context, const TalkerWeights 
 // where that run starts. The layout that makes this a tail rather than a scatter
 // is decided and checked in talker-host.h.
 //
-// Returns nullptr rather than aborting on anything it cannot build.
+// `speaker_embedding` and `speaker_index` are the x-vector path: when
+// `speaker_embedding` is non-null, the row of the codec embedding at
+// `codec_tokens[speaker_index]` is discarded and `speaker_embedding` -- a row
+// of the same [hidden_size, 1] shape -- is summed into the text tower at that
+// position instead. `speaker_index` indexes `codec_tokens`, matching
+// TalkerPrompt::external_speaker_index (talker-host.h). Left at their
+// defaults, the Stage 1 path is byte-identical to before this parameter pair
+// existed.
+//
+// Returns nullptr rather than aborting on anything it cannot build, including
+// a `speaker_index` outside `[0, codec_tokens->ne[0])` or a `speaker_embedding`
+// whose width is not the talker's hidden size.
 ggml_tensor * build_talker_prefill_input(ggml_context *        context,
                                          const TalkerWeights & weights,
                                          ggml_tensor *         text_tokens,
                                          ggml_tensor *         codec_tokens,
-                                         int64_t               codec_offset);
+                                         int64_t               codec_offset,
+                                         ggml_tensor *         speaker_embedding = nullptr,
+                                         int64_t               speaker_index     = -1);
 
 // A decode step's input, [hidden_size, 1]: the frame's summed code embeddings
 // plus the text this step contributes. The sum comes from the code predictor's

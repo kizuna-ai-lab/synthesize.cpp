@@ -47,8 +47,22 @@ synth_status_t build_talker_prompt(const HParams & hparams, const TalkerPromptRe
         codec.push_back(request.language_token);
     }
     codec.push_back(tokens.codec_think_eos);
+    // The index recorded here is an index into `codec`, not into `positions`,
+    // and it survives unchanged into the flattened codec run: every entry
+    // before codec_pad below maps 1:1, in order, onto flatten_talker_prompt's
+    // output, because nothing before it is ever duplicated or skipped.
+    int64_t speaker_codec_index = -1;
     if (request.has_speaker) {
-        codec.push_back(request.speaker_token);
+        if (request.speaker_is_external) {
+            speaker_codec_index = static_cast<int64_t>(codec.size());
+            // codec_pad is a real codec-vocabulary token, so this position
+            // still round-trips through flatten_talker_prompt like any other;
+            // build_talker_prefill_input is what discards the row it produces
+            // in favour of the x-vector at this same index.
+            codec.push_back(tokens.codec_pad);
+        } else {
+            codec.push_back(request.speaker_token);
+        }
     }
     codec.push_back(tokens.codec_pad);
     codec.push_back(tokens.codec_bos);
@@ -82,6 +96,8 @@ synth_status_t build_talker_prompt(const HParams & hparams, const TalkerPromptRe
     out.positions.push_back(paired(TalkerInputPosition::Text::TtsEos, codec_pad));
     // codec_bos closes the prompt against a pad, not against a text token.
     out.positions.push_back(paired(TalkerInputPosition::Text::TtsPad, codec.back()));
+
+    out.external_speaker_index = speaker_codec_index;
 
     // Nothing is left for the decode loop to contribute, so every step adds the
     // projected tts_pad embedding. The schedule is empty rather than holding one

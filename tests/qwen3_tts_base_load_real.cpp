@@ -36,6 +36,17 @@
 // fill_voice_profile_capability logic itself, or the CustomVoice-model
 // dispatch guard, both already covered against synthetic HParams/a hand-built
 // `synth_model` in tests/qwen3_tts_voice_required_test.cpp.
+//
+// Task 11 adds a fourth thing only this tier proves: that a Profile prepared
+// against the real Base package actually SYNTHESIZES -- src/synthesize.cpp's
+// Qwen3Tts branch refused every non-null `prepared.voice_profile`
+// unconditionally before this task, so check_profile_synthesizes below is
+// the first test anywhere to reach model.cpp's x-vector prompt-substitution
+// path through the public seam -- and that a Profile presented to a
+// synthesis request bound to a DIFFERENT Loaded Model (the same package,
+// loaded a second time, so its `synth_model_t*` differs while its weights do
+// not) is refused as a Voice error rather than silently misread or left to
+// whatever a mismatched enc_dim would do downstream.
 
 #include "synthesize.h"
 #include "test-assert.h"
@@ -417,6 +428,104 @@ int check_named_voice_refused(synth_context_t * context) {
     return 0;
 }
 
+// Builds a fresh x-vector Profile from a short, non-silent tone against
+// `model`'s own declared reference limits -- the same shape
+// check_reference_profile_round_trip already proves is CREATABLE. The two
+// tests below are what prove it is USABLE.
+int create_test_profile(synth_model_t *                            model,
+                        const synth_voice_profile_capabilities_t & capabilities,
+                        synth_voice_profile_t *&                   out_profile) {
+    const std::vector<float> pcm =
+        make_tone(capabilities.min_reference_frames_per_clip, capabilities.reference_target_sample_rate);
+    const synth_voice_reference_t reference =
+        make_reference(pcm, capabilities.reference_target_sample_rate, capabilities.reference_target_channel_count);
+    const synth_voice_reference_params_t params = make_reference_params(&reference, 1, nullptr);
+
+    out_profile = nullptr;
+    SYNTH_TEST_CHECK(synth_voice_profile_create_from_reference(model, &params, &out_profile) == SYNTH_OK);
+    SYNTH_TEST_CHECK(out_profile != nullptr);
+    return 0;
+}
+
+// The whole point of Plan 2, at the public seam: a Profile prepared against
+// THIS Model synthesizes rather than refusing. `request.voice_id` is left
+// unset -- prepare_synthesis_request never resolves a preset voice id for a
+// profile-carrying request against this family's empty Preset Voice
+// Catalog (src/synthesis-request.cpp) -- so the x-vector is the request's
+// only speaker source, exercising model.cpp's `external` prompt-substitution
+// path for the first time through the public seam.
+int check_profile_synthesizes(synth_context_t * context, synth_voice_profile_t * profile) {
+    synth_request_t request;
+    synth_request_init(&request, sizeof(request));
+    request.input_kind    = SYNTH_INPUT_TEXT_UTF8;
+    request.input_data    = kText;
+    request.input_count   = std::strlen(kText);
+    request.voice_profile = profile;
+
+    synth_audio_buffer_t * audio = nullptr;
+    synth_result_t         result;
+    synth_result_init(&result, sizeof(result));
+    const synth_status_t status = synth_synthesize_to_buffer(context, &request, &audio, &result);
+    SYNTH_TEST_CHECK(status == SYNTH_OK);
+    SYNTH_TEST_CHECK(audio != nullptr);
+    SYNTH_TEST_CHECK(audio->frame_count > 0);
+    synth_audio_buffer_free(audio);
+    return 0;
+}
+
+// A Profile prepared against THIS Model, presented to a synthesis request
+// bound to a DIFFERENT Loaded Model's context, is refused -- and the
+// refusal is a Voice refusal rather than a graph failure: the ABI has one
+// voice-error status, so the diagnostic code is the only thing that tells a
+// caller a Voice refusal apart from a codec that failed to run (the same
+// property check_unnamed_voice_refused above asserts for the Catalog-less
+// case). The second Model is the same real Base package loaded a SECOND
+// time: the identity a Voice Profile is bound to is the in-memory
+// `synth_model_t*` src/voice-profile-handle.h stores, not any property of
+// the package's bytes on disk, so two loads of the identical file already
+// give this check two Models to tell apart.
+int check_cross_model_profile_refused(const char * model_path, synth_voice_profile_t * profile) {
+    synth_model_load_params_t load_params;
+    synth_model_load_params_init(&load_params, sizeof(load_params));
+    load_params.backend = SYNTH_BACKEND_CPU;
+
+    synth_model_t * other_model = nullptr;
+    SYNTH_TEST_CHECK(synth_model_load(model_path, &load_params, &other_model) == SYNTH_OK);
+    SYNTH_TEST_CHECK(other_model != nullptr);
+
+    synth_context_t * other_context = nullptr;
+    SYNTH_TEST_CHECK(synth_context_create(other_model, &other_context) == SYNTH_OK);
+    SYNTH_TEST_CHECK(other_context != nullptr);
+
+    SeenDiagnostic          diagnostic;
+    synth_diagnostic_sink_t sink;
+    synth_diagnostic_sink_init(&sink, sizeof(sink));
+    sink.emit      = record_diagnostic;
+    sink.user_data = &diagnostic;
+
+    synth_request_t request;
+    synth_request_init(&request, sizeof(request));
+    request.input_kind    = SYNTH_INPUT_TEXT_UTF8;
+    request.input_data    = kText;
+    request.input_count   = std::strlen(kText);
+    request.voice_profile = profile;
+    request.diagnostics   = &sink;
+
+    synth_audio_buffer_t * audio = nullptr;
+    synth_result_t         result;
+    synth_result_init(&result, sizeof(result));
+    const synth_status_t status = synth_synthesize_to_buffer(other_context, &request, &audio, &result);
+    SYNTH_TEST_CHECK(status == SYNTH_ERR_UNSUPPORTED_VOICE);
+    SYNTH_TEST_CHECK(audio == nullptr);
+    SYNTH_TEST_CHECK(diagnostic.seen);
+    SYNTH_TEST_CHECK(diagnostic.status == SYNTH_ERR_UNSUPPORTED_VOICE);
+    SYNTH_TEST_CHECK(diagnostic.code == "synthesis.voice_unsupported");
+
+    synth_context_free(other_context);
+    synth_model_free(other_model);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
@@ -447,6 +556,12 @@ int main(int argc, char ** argv) {
 
     SYNTH_TEST_CHECK(check_unnamed_voice_refused(context) == 0);
     SYNTH_TEST_CHECK(check_named_voice_refused(context) == 0);
+
+    synth_voice_profile_t * clone_profile = nullptr;
+    SYNTH_TEST_CHECK(create_test_profile(model, capabilities, clone_profile) == 0);
+    SYNTH_TEST_CHECK(check_profile_synthesizes(context, clone_profile) == 0);
+    SYNTH_TEST_CHECK(check_cross_model_profile_refused(model_path, clone_profile) == 0);
+    synth_voice_profile_free(clone_profile);
 
     synth_context_free(context);
     synth_model_free(model);

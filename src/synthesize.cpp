@@ -328,10 +328,13 @@ synth::ModelInfo shared_info(const synth::qwen3tts::ModelInfo &         info,
     shared.max_speaking_rate    = info.max_speaking_rate;
     // This family routes its Voice Profile capability snapshot through its own
     // layer (src/arch/qwen3-tts/weights.cpp's fill_voice_profile_capability),
-    // but deliberately reports zero source flags for both package variants
-    // until it can actually prepare a Profile. The package still carries and
-    // validates its Voice Profile contract; the runtime just advertises no
-    // capability yet. Plan 2 flips this once preparation exists.
+    // gated there on `voice_mode` rather than here: CustomVoice (PresetCatalog)
+    // still reports zero source flags -- it has no speaker encoder to prepare
+    // anything from -- while Base (ProfileSources) reports
+    // REFERENCE_AUDIO | SERIALIZED_PROFILE now that Stage 2 Plan 2 landed
+    // preparation. tests/qwen3_tts_base_load_real.cpp's check_capabilities is
+    // this line's own coverage: deleting it collapses Base's answer to the
+    // same all-zero shape CustomVoice reports, which that test now catches.
     shared.voice_profile        = info.voice_profile;
     return shared;
 }

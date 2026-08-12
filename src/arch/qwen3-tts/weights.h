@@ -233,13 +233,20 @@ bool resolve_language_token(const HParams &     hparams,
 // truncated catalog that merely arrived empty is a different thing that must
 // not read as this one.
 //
-// It has no production caller as of Plan 1. Its two callers -- the
-// capability gate in fill_voice_profile_capability and the catalog-less
-// refusal in Model::resolve_voice -- were both removed by this branch's final
-// review, each for the same reason: neither could be observed doing anything
-// the code around it did not already do. It is kept because the unit tests
-// assert the discriminator itself (tests/qwen3_tts_voice_required_test.cpp)
-// and because Plan 2's capability gate is specified against it.
+// It has no production caller. Its two Plan 1 callers -- the capability gate
+// in fill_voice_profile_capability and the catalog-less refusal in
+// Model::resolve_voice -- were both removed by that branch's final review,
+// each for the same reason: neither could be observed doing anything the code
+// around it did not already do. Plan 2's capability gate is specified against
+// `hparams.voice_mode == VoiceMode::ProfileSources` DIRECTLY, not against this
+// predicate: this predicate is that condition's INVERSE (true only for
+// PresetCatalog, i.e. CustomVoice, the variant with no speaker encoder that
+// can prepare nothing) -- an earlier draft of the carryover named this
+// predicate as the gate, backwards, and the carryover
+// (docs/superpowers/plans/2026-08-12-qwen3-tts-stage-2-plan-1-carryover.md
+// §1.4) records the correction that was made before Plan 2 was written. Kept,
+// with no production caller, because the unit tests assert the discriminator
+// itself (tests/qwen3_tts_voice_required_test.cpp).
 inline bool has_preset_voice_catalog(const HParams & hparams) {
     return hparams.voice_mode == VoiceMode::PresetCatalog;
 }
@@ -253,22 +260,37 @@ inline bool has_preset_voice_catalog(const HParams & hparams) {
 // VoiceProfileInfo doc comment for why the two routes differ
 // (unit-testability without a loaded Model).
 //
-// As of Plan 1 every variant of this family reports NOTHING: zero source
-// flags and, with them, zero in every field that describes a source. That is
-// docs/c-interface.md's required shape for a Model with no runtime Voice
-// Profile support, and this family has none -- src/voice-profile.cpp
-// dispatches preparation, consumption and serialization for OmniVoice alone,
-// so nothing here could create or consume a Profile if a caller believed the
-// advertisement. A Base package's ProfileContract and speaker-encoder
-// metadata are still read and validated in full at load time (read_hparams):
-// the package declaring a contract and the runtime advertising a capability
-// are different statements, and only the second would be false.
+// Gated on `hparams.voice_mode == VoiceMode::ProfileSources`, NOT on
+// `has_preset_voice_catalog(hparams)` above -- that predicate is this
+// condition's INVERSE (true only for PresetCatalog, i.e. CustomVoice, the
+// variant with no speaker encoder that can prepare nothing). An earlier draft
+// of this plan named the wrong one; the carryover
+// (docs/superpowers/plans/2026-08-12-qwen3-tts-stage-2-plan-1-carryover.md
+// §1.4) records the correction made before this function was written this
+// way.
 //
-// Plan 2 lands the speaker encoder and Profile preparation and flips this to
-// SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO, with
-// SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE alongside it (every successfully
-// prepared v1 Profile can be serialized), published from hparams.profile's
-// already-validated limits and gated on has_preset_voice_catalog.
+// A ProfileSources package (Base) publishes
+// SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO with
+// SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE alongside it -- docs/c-interface.md
+// requires the second bit on any Model that can create a v1 Profile, because
+// every successfully prepared v1 Profile can be serialized -- published from
+// hparams.profile's already-validated limits. `reference_transcript` and
+// `reference_language` stay SYNTH_REQUIREMENT_UNSUPPORTED: this rung
+// implements the x-vector clone mode only, and D4 (this plan's own ruling)
+// fixes the clone mode at preparation, so an optional transcript would invite
+// a caller to pass one and receive the weaker clone it did not ask for. Plan
+// 3 flips both to OPTIONAL in the same change that lands transcript-assisted
+// (ICL) cloning.
+//
+// A CustomVoice package (PresetCatalog) reports NOTHING: zero source flags
+// and, with them, zero in every field that describes a source, per
+// docs/c-interface.md's required shape for a Model with no runtime Voice
+// Profile support -- it has no speaker encoder to prepare anything from. A
+// Base package's ProfileContract and speaker-encoder metadata are still read
+// and validated in full at load time regardless (read_hparams): the package
+// declaring a contract and the runtime advertising a capability are different
+// statements. Description Text and Random Seed stay unadvertised at every
+// stage of this family's ladder; neither has an implementation here.
 void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & info);
 
 }  // namespace synth::qwen3tts

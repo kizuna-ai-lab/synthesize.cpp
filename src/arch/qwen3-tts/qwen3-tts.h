@@ -14,6 +14,10 @@ struct ggml_backend_device;
 
 namespace synth::qwen3tts {
 
+// SpeakerEncoderWeights is already forward-declared by speaker-encoder-host.h
+// above; HParams needs its own declaration for Model::hparams() below.
+struct HParams;
+
 struct ModelInfo {
     std::string family = "qwen3-tts";
     std::string variant;
@@ -186,6 +190,19 @@ class Model {
                                     XVectorEncoding &          output,
                                     const char *&              out_diagnostic_code,
                                     const char *&              out_diagnostic_message) const;
+
+    // What arch/qwen3-tts/profile.h's create_x_vector_profile needs from a
+    // live Model, exposed as two small accessors rather than that function
+    // taking a `Model &` directly -- see its own header comment for why:
+    // `synth::qwen3tts::Model` has a private constructor reachable only
+    // through `load`/`load_cpu`, both of which need a real GGUF on disk, and
+    // this family has no synthetic-package test harness yet, so a `Model &`
+    // parameter there would force create_x_vector_profile's own unit tests to
+    // depend on the ~2.5 GB real package. src/voice-profile.cpp's
+    // create_qwen3_tts_profile_from_reference is the one caller that needs
+    // these from a REAL Loaded Model rather than a synthetic HParams fixture.
+    const HParams &               hparams() const;
+    const SpeakerEncoderWeights & speaker_encoder_weights() const;
 
   private:
     struct Impl;

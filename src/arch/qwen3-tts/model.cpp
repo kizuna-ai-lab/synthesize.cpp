@@ -347,6 +347,14 @@ std::shared_ptr<const TextFrontend> Model::text_frontend() const {
     return implementation_->frontend;
 }
 
+const HParams & Model::hparams() const {
+    return implementation_->hparams;
+}
+
+const SpeakerEncoderWeights & Model::speaker_encoder_weights() const {
+    return implementation_->weights.speaker_encoder;
+}
+
 uint32_t Model::samples_per_frame() const {
     return implementation_->hparams.codec.hop_length;
 }

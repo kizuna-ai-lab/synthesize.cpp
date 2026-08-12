@@ -202,8 +202,15 @@ a manifest — now exercised, effectively closed.
 array where sibling schemas use enums; it now carries
 `"enum": ["reference_audio", "serialized_profile"]`. (b)
 `resolve_reference_locator` hardcodes its cache directory where the OmniVoice
-pattern exposes a flag. (c) The Base variant's provisional tolerance stages
-copy `talker.*` probe names the Base oracle never dumps.
+pattern exposes a flag. (c) **Closed in this commit (Plan 2 Task 6)** — the
+provisional `speaker_encoder` stage that copied `talker.*` probe names the
+Base oracle never dumps was retired from
+`tests/tolerances/qwen3-tts.json`'s `provisional_variants`; a real
+`speaker.x_vector` probe now lives in
+`variants.qwen3-tts-12hz-0-6b-base.profiles.BF16.stages.replay` instead.
+`provisional_variants`'s sibling `codec_encoder` stage still carries the same
+copied `talker.*` names — Plan 3's to close the same way, once it gives the
+codec encoder a real measurement to replace it with.
 
 **Task 4.** The "CustomVoice with a `speaker_encoder_config`" rejection branch
 in `variant_profile` has no covering test; `display_name` / `size_label` are

@@ -121,6 +121,27 @@ def parse_args() -> argparse.Namespace:
                         help="--compare-mel only: where an http(s) reference-audio locator is cached locally "
                              "(git-ignored) -- the same directory "
                              "scripts/dump_reference_qwen3_tts_speaker.py fetches into")
+    # Task 6: the speaker path's own probe, standalone like --compare-mel
+    # rather than folded into run_case's ordinary per-case loop. Not every
+    # x_vector_only case carries a full oracle replay dump -- base-xvector-zh
+    # has speaker/ but no codes/semantic.i32, because
+    # scripts/dump_reference_qwen3_tts_speaker.py captures only the speaker
+    # path -- so run_case's existing "no codes, skip" guard would silently
+    # drop it were this folded in there instead.
+    parser.add_argument("--compare-x-vector", action="store_true",
+                        help="run Model::prepare_x_vector via a tiny driver over every case whose "
+                             "oracle.parameters.x_vector_only is true, and diff each against speaker/x_vector.f32, "
+                             "instead of the ordinary replay comparison")
+    parser.add_argument("--xvector-driver", type=pathlib.Path,
+                        default=pathlib.Path("build/bin/synthesize-qwen3-tts-xvector-driver"),
+                        help="--compare-x-vector only: the prepare_x_vector driver "
+                             "(synth_register_integration_target)")
+    parser.add_argument("--xvector-model", type=pathlib.Path,
+                        default=pathlib.Path("models/qwen3-tts-12hz-0-6b-base/"
+                                             "qwen3-tts-12hz-0-6b-base-BF16.gguf"),
+                        help="--compare-x-vector only: the package to run the speaker encoder from. Not "
+                             "--model's own default -- that is CustomVoice, which resolves no "
+                             "SpeakerEncoderWeights and refuses prepare_x_vector outright.")
     return parser.parse_args()
 
 
@@ -193,6 +214,128 @@ def run_compare_mel(arguments: argparse.Namespace, manifest: dict, oracle_root: 
             "probes": {"speaker.mel": measurement},
         }, indent=2) + "\n", encoding="utf-8")
         print(f"\nreport: {arguments.report}")
+    return 0
+
+
+def run_compare_x_vector(arguments: argparse.Namespace, manifest: dict, oracle_root: pathlib.Path) -> int:
+    """speaker.x_vector, standalone like run_compare_mel rather than folded into run_case.
+
+    Every case in the manifest whose `oracle.parameters.x_vector_only` is true
+    (base-xvector-en, base-xvector-zh on the Base manifest today) is driven
+    through Model::prepare_x_vector and diffed against the oracle's own
+    speaker/x_vector.f32. `--cases` narrows the set the same way it narrows
+    the ordinary replay loop.
+
+    Not part of run_case: that function skips a case outright when
+    codes/semantic.i32 is missing, and base-xvector-zh's oracle dump
+    (scripts/dump_reference_qwen3_tts_speaker.py) captures only the speaker
+    path -- no codes, no audio. Folding this comparison in there would silently
+    drop exactly the case this mode exists to cover.
+    """
+    cases = [case for case in manifest["cases"]
+             if case.get("oracle", {}).get("parameters", {}).get("x_vector_only")
+             and (not arguments.cases or case["id"] in arguments.cases)]
+    if not cases:
+        print("no case in the manifest has oracle.parameters.x_vector_only set "
+              "(or --cases excluded all of them)")
+        return 1
+    if not arguments.xvector_driver.exists():
+        print(f"{arguments.xvector_driver} does not exist -- build the "
+              "synthesize-qwen3-tts-xvector-driver target first")
+        return 1
+
+    # A tolerance is a reviewed number in a committed file, resolved the same
+    # way the ordinary replay comparison resolves it (resolve_tolerance_stage,
+    # BF16/CPU/replay by default) -- checked up front so a missing cell is
+    # refused before any driver runs, not after.
+    stage = None
+    if arguments.check:
+        tolerances = json.loads(arguments.tolerances.read_text(encoding="utf-8"))
+        stage = resolve_tolerance_stage(tolerances, manifest["variant"], arguments.profile,
+                                        arguments.backend, arguments.stage)
+        if not stage:
+            print(f"\ntolerance cell {arguments.profile}/{arguments.backend}/{arguments.stage} "
+                  f"is not recorded in {arguments.tolerances}")
+            return 1
+
+    results = []
+    worst = {"max_abs": 0.0, "min_cosine": 1.0}
+    for case in cases:
+        reference = case.get("input", {}).get("reference", {})
+        locator = reference.get("artifact")
+        if locator is None:
+            print(f"{case['id']} has no input.reference.artifact -- --compare-x-vector only applies to a "
+                  "reference-audio case")
+            return 1
+        wav_path = resolve_local_reference(locator, arguments.reference_audio_dir)
+        if not wav_path.exists():
+            print(f"{wav_path} is not materialized locally -- run "
+                  "scripts/dump_reference_qwen3_tts_speaker.py (which fetches and caches it) first")
+            return 1
+
+        oracle_x_vector = oracle_root / case["id"] / "speaker" / "x_vector.f32"
+        if not oracle_x_vector.exists():
+            print(f"{oracle_x_vector} does not exist -- run scripts/dump_reference_qwen3_tts_speaker.py "
+                  f"for case {case['id']!r} first")
+            return 1
+
+        work_dir = arguments.work / case["id"]
+        work_dir.mkdir(parents=True, exist_ok=True)
+        work_x_vector = work_dir / "x_vector.f32"
+
+        finished = subprocess.run(
+            [str(arguments.xvector_driver), str(arguments.xvector_model), str(wav_path), str(work_x_vector)],
+            capture_output=True, text=True)
+        if finished.returncode != 0:
+            print(f"  {case['id']}: {arguments.xvector_driver} failed: {finished.stderr.strip()}")
+            return 1
+        if finished.stdout.strip():
+            print(f"  {case['id']}: driver {finished.stdout.strip()}")
+
+        measurement = compare(read_f32(oracle_x_vector), read_f32(work_x_vector))
+        if "shape_mismatch" in measurement:
+            print(f"  {case['id']}: speaker.x_vector shape mismatch {measurement['shape_mismatch']}")
+            return 1
+        print(f"  {case['id']}: speaker.x_vector max_abs {measurement['max_abs']:.6g}  "
+              f"mean_abs {measurement['mean_abs']:.6g}  cosine {measurement['cosine']:.8f}")
+        results.append({"case": case["id"], "probes": {"speaker.x_vector": measurement}})
+        worst["max_abs"] = max(worst["max_abs"], measurement["max_abs"])
+        worst["min_cosine"] = min(worst["min_cosine"], measurement["cosine"])
+
+    print(f"\nworst across {len(results)} case(s): speaker.x_vector max_abs {worst['max_abs']:.6g}  "
+          f"min_cosine {worst['min_cosine']:.8f}")
+
+    if arguments.report is not None:
+        arguments.report.parent.mkdir(parents=True, exist_ok=True)
+        arguments.report.write_text(json.dumps({
+            "schema": "synthesize-validation-report-v1",
+            "family": "qwen3-tts",
+            "variant": manifest["variant"],
+            "phase": "speaker_x_vector",
+            "cases": results,
+            "worst": {"speaker.x_vector": worst},
+        }, indent=2) + "\n", encoding="utf-8")
+        print(f"\nreport: {arguments.report}")
+
+    if not arguments.check:
+        return 0
+
+    limits = stage.get("probes", {}).get("speaker.x_vector")
+    if limits is None:
+        print(f"\ntolerance cell {arguments.profile}/{arguments.backend}/{arguments.stage} carries no "
+              "speaker.x_vector probe")
+        return 1
+    breaches = []
+    if "max_abs" in limits and worst["max_abs"] > limits["max_abs"]:
+        breaches.append(f"speaker.x_vector: max_abs {worst['max_abs']:.6g} exceeds {limits['max_abs']:.6g}")
+    if "min_cosine" in limits and worst["min_cosine"] < limits["min_cosine"]:
+        breaches.append(f"speaker.x_vector: cosine {worst['min_cosine']:.6f} below {limits['min_cosine']:.6f}")
+    if breaches:
+        print(f"\n{len(breaches)} tolerance breach(es):")
+        for breach in breaches:
+            print(f"  {breach}")
+        return 1
+    print("\nspeaker.x_vector within tolerance")
     return 0
 
 
@@ -334,17 +477,21 @@ def run_case(arguments: argparse.Namespace, case: dict, oracle_root: pathlib.Pat
 def main() -> int:
     arguments = parse_args()
     if arguments.manifest is None:
-        # --compare-mel's own case (base-xvector-en) lives only on the Base
-        # manifest; every other mode keeps replaying the PUBLISHED CustomVoice
-        # variant this validator has always defaulted to.
+        # --compare-mel's own case (base-xvector-en) and --compare-x-vector's
+        # cases (every x_vector_only one) live only on the Base manifest;
+        # every other mode keeps replaying the PUBLISHED CustomVoice variant
+        # this validator has always defaulted to.
         arguments.manifest = pathlib.Path(
-            "tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json" if arguments.compare_mel
+            "tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json"
+            if (arguments.compare_mel or arguments.compare_x_vector)
             else "tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice.manifest.json")
     manifest = json.loads(arguments.manifest.read_text(encoding="utf-8"))
     oracle_root = pathlib.Path(manifest["case_artifact_root"])
 
     if arguments.compare_mel:
         return run_compare_mel(arguments, manifest, oracle_root)
+    if arguments.compare_x_vector:
+        return run_compare_x_vector(arguments, manifest, oracle_root)
 
     # A typo in --cases used to select nothing and then pass, which is the
     # same false green as running no cases at all -- refused before anything

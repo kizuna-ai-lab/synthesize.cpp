@@ -478,6 +478,16 @@ target_include_directories(synthesize-qwen3-tts-mel-driver PRIVATE ${CMAKE_SOURC
 target_link_libraries(synthesize-qwen3-tts-mel-driver PRIVATE synthesize)
 synth_register_integration_target(synthesize-qwen3-tts-mel-driver)
 
+# A tiny driver, not a test: runs Model::prepare_x_vector over a real WAV file
+# against a real package so scripts/validate-qwen3-tts-replay.py
+# --compare-x-vector can diff it against Task 1's oracle dump. Needs a real
+# GGUF and a Model, unlike the mel driver above -- the ECAPA graph is resolved
+# against the package's own speaker_encoder weights.
+add_executable(synthesize-qwen3-tts-xvector-driver qwen3_tts_xvector_driver.cpp)
+target_include_directories(synthesize-qwen3-tts-xvector-driver PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(synthesize-qwen3-tts-xvector-driver PRIVATE synthesize)
+synth_register_integration_target(synthesize-qwen3-tts-xvector-driver)
+
 add_executable(synthesize-omnivoice-replay-real omnivoice_replay_real.cpp)
 target_include_directories(synthesize-omnivoice-replay-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(synthesize-omnivoice-replay-real PRIVATE synthesize ggml)

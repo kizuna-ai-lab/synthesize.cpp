@@ -1,6 +1,7 @@
 #pragma once
 
 #include "model-info.h"
+#include "speaker-encoder-host.h"
 #include "synthesize.h"
 #include "text-frontend.h"
 
@@ -176,6 +177,15 @@ class Model {
                                 uint64_t                     frame_count,
                                 int                          threads,
                                 std::vector<float> &         audio) const;
+
+    // Reference audio to a speaker embedding. Split out from Voice Profile
+    // preparation the way decode_codes is split from run_synthesis: this half
+    // is deterministic and is compared against the oracle on its own.
+    synth_status_t prepare_x_vector(const std::vector<float> & pcm_24k,
+                                    int                        threads,
+                                    XVectorEncoding &          output,
+                                    const char *&              out_diagnostic_code,
+                                    const char *&              out_diagnostic_message) const;
 
   private:
     struct Impl;

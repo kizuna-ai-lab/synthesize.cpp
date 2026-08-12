@@ -25,6 +25,7 @@
 #include "gguf.h"
 #include "qwen3-tts.h"
 #include "random-stream.h"
+#include "speaker-encoder-host.h"
 #include "talker-host.h"
 #include "talker.h"
 #include "weights.h"
@@ -693,6 +694,27 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> & codes,
     codec_placed_nodes_      = run.placed_nodes;
     codec_accelerator_nodes_ = run.accelerator_nodes;
     return SYNTH_OK;
+}
+
+synth_status_t Model::prepare_x_vector(const std::vector<float> & pcm_24k,
+                                       int                        threads,
+                                       XVectorEncoding &          output,
+                                       const char *&              out_diagnostic_code,
+                                       const char *&              out_diagnostic_message) const {
+    output                  = XVectorEncoding{};
+    out_diagnostic_code     = nullptr;
+    out_diagnostic_message  = nullptr;
+    const Impl &    impl    = *implementation_;
+    const HParams & hparams = impl.hparams;
+    // A CustomVoice package resolves no SpeakerEncoderWeights at all
+    // (build_model_weights leaves weights.speaker_encoder default-constructed
+    // for it), so this refuses before encode_speaker_reference ever sees a
+    // weights struct with every pointer null.
+    if (!hparams.has_speaker_encoder) {
+        return SYNTH_ERR_UNSUPPORTED_VOICE;
+    }
+    return encode_speaker_reference(hparams, impl.weights.speaker_encoder, pcm_24k, threads, output,
+                                    out_diagnostic_code, out_diagnostic_message);
 }
 
 synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisOutput & output) const {

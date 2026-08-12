@@ -40,13 +40,28 @@
 //     padding would be a silent error: it changes only the edge frames, which
 //     is a fraction of a percent of a long clip's pooled statistics and none of
 //     its plausibility.
-//   * `ggml_conv_1d`'s CPU path asserts an F16 kernel and this family's are
-//     F32, so convolutions are built from ggml_im2col and a matrix multiply,
-//     the way codec.cpp builds the decoder's. A kernel of one needs neither: it
-//     is already a matrix multiply over channels, and 16 of this graph's 38
-//     convolutions have one, so im2col is built 22 times rather than 38. The
-//     22 are the 5-wide stem and the three blocks' seven 3-wide res2net splits
-//     apiece; counted by instrumenting same_conv1d, not by reading the list.
+//   * `ggml_conv_1d`'s CPU path asserts an F16 kernel, so convolutions are
+//     built from ggml_im2col and a matrix multiply instead, the way codec.cpp
+//     builds the decoder's. A kernel of one needs neither: it is already a
+//     matrix multiply over channels, and 16 of this graph's 38 convolutions
+//     have one, so im2col is built 22 times rather than 38. The 22 are the
+//     5-wide stem and the three blocks' seven 3-wide res2net splits apiece;
+//     counted by instrumenting same_conv1d, not by reading the list.
+//   * im2col's own destination type must be F32, not the kernel's storage
+//     type: this package's speaker_encoder tensors are BF16 (measured with
+//     gguf-dump against the real Base package; only the codec decoder is kept
+//     F32 by this checkpoint's own quantization policy), and
+//     ggml_compute_forward_im2col's CPU switch only implements an F16 or F32
+//     destination -- a BF16 one hits its default case and aborts. Task 5 is
+//     what first ran this graph against real, quantized weights rather than
+//     Task 4's own synthetic F32 fixture, which is why this went unnoticed
+//     until then. The fix generalizes the kernel-of-one path's own contract
+//     (ggml_mul_mat's second operand must be F32; only the first may be a
+//     lower-precision weight) to the im2col path: same_conv1d's mel-derived
+//     activation is always F32 already, so requesting an F32 im2col output
+//     and multiplying it against a same-dtype-as-package `kernel_2d` is the
+//     same mixed-precision matmul the kernel-of-one branch already relies on,
+//     not a new one.
 //
 // Layout is channel-major throughout, [channels, length], as the rest of this
 // family is. Only the reflect padding and the pooling statistics work
@@ -86,8 +101,22 @@ bool bound(const Conv1dWeights & weights) {
 
 // A bias over [channels, length] is per channel, so it broadcasts along the
 // length rather than across it.
+//
+// `signal` is always F32 (every activation in this graph is); `bias` is
+// whatever the package stores, which is BF16 for this checkpoint's
+// speaker_encoder tensors. ggml's CPU binary_op has no F32+BF16 case -- only
+// matching types or specific promotions -- so a raw ggml_add aborts exactly
+// the way the im2col call above did before its own fix, and for the same
+// underlying reason: Task 4's own unit test only ever exercised F32 weights.
+// Cast only when needed (`bias->type != GGML_TYPE_F32`) rather than
+// unconditionally: an unconditional ggml_cast inserts a CPY node even when
+// `bias` is already F32, and this function runs once per convolution (38
+// times), which would have pushed the graph's node count past
+// tests/qwen3_tts_speaker_encoder_test.cpp's own 450-node ceiling for no
+// reason on the synthetic F32 fixture that test still uses.
 ggml_tensor * add_channel_bias(ggml_context * context, ggml_tensor * signal, ggml_tensor * bias) {
-    return ggml_add(context, signal, ggml_reshape_2d(context, bias, bias->ne[0], 1));
+    ggml_tensor * bias_f32 = bias->type == GGML_TYPE_F32 ? bias : ggml_cast(context, bias, GGML_TYPE_F32);
+    return ggml_add(context, signal, ggml_reshape_2d(context, bias_f32, bias_f32->ne[0], 1));
 }
 
 // One convolution at PyTorch's `padding="same", padding_mode="reflect"`.
@@ -132,9 +161,16 @@ ggml_tensor * same_conv1d(ggml_context *        context,
 
     ggml_tensor * time_major = ggml_cont(context, ggml_transpose(context, input));
     ggml_tensor * padded     = ggml_pad_reflect_1d(context, time_major, int(padding), int(padding));
-    // Padded already, so im2col pads by nothing of its own.
+    // Padded already, so im2col pads by nothing of its own. The destination
+    // type is always F32, not weights.weight->type: `padded` is already F32
+    // (this graph's mel input and every activation derived from it stay F32
+    // throughout), ggml_compute_forward_im2col's CPU path has no BF16 case to
+    // fall into, and the mul_mat below needs an F32 second operand regardless
+    // -- see this file's header comment for why a package whose kernels are
+    // not F32 (this checkpoint's speaker_encoder tensors are BF16) makes this
+    // the only correct choice rather than an optimization to skip.
     ggml_tensor * columns =
-        ggml_im2col(context, weights.weight, padded, 1, 0, 0, 0, int(dilation), 0, false, weights.weight->type);
+        ggml_im2col(context, weights.weight, padded, 1, 0, 0, 0, int(dilation), 0, false, GGML_TYPE_F32);
     ggml_tensor * kernel_2d = ggml_reshape_2d(context, weights.weight, kernel * in_channels, out_channels);
     ggml_tensor * wide =
         ggml_mul_mat(context, kernel_2d, ggml_reshape_2d(context, columns, columns->ne[0], columns->ne[1]));

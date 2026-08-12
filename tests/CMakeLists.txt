@@ -173,6 +173,7 @@ synth_add_unit_test(synthesize-qwen3-tts-code-predictor-test qwen3_tts_code_pred
 synth_add_unit_test(synthesize-qwen3-tts-sampling-test qwen3_tts_sampling_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-mel-test qwen3_tts_mel_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-speaker-encoder-test qwen3_tts_speaker_encoder_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-speaker-encoder-host-test qwen3_tts_speaker_encoder_host_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-metadata-test omnivoice_metadata_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-catalog-test omnivoice_catalog_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-frontend-test omnivoice_frontend_test.cpp)

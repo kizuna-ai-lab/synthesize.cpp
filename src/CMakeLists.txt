@@ -21,6 +21,7 @@ add_library(synthesize
     arch/qwen3-tts/mel.cpp
     arch/qwen3-tts/model.cpp
     arch/qwen3-tts/operations.cpp
+    arch/qwen3-tts/profile.cpp
     arch/qwen3-tts/speaker-encoder.cpp
     arch/qwen3-tts/speaker-encoder-host.cpp
     arch/qwen3-tts/talker.cpp

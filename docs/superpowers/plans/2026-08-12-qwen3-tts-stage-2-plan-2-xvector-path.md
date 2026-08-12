@@ -625,6 +625,12 @@ struct SpeakerEncoderWeights {
 };
 ```
 
+**Erratum, 2026-08-12 — the comment on lines 604–605 says "eighth split passes
+through unconvolved", but the first split is the one that passes through
+unconvolved and leads the concatenation.** This is established by
+`modeling_qwen3_tts.py:115-126` and already corrected in
+`src/arch/qwen3-tts/catalog.h` and `catalog.cpp`.
+
 and add `SpeakerEncoderWeights speaker_encoder;` to `ModelWeights`.
 
 - [ ] **Step 4: Change the resolver's signature and delete the scratch**
@@ -842,6 +848,12 @@ ggml_tensor * build_speaker_encoder(ggml_context *                context,
 ```
 
 Structure of the body, in order: stem convolution (kernel 5, dilation 1, same padding) and activation; three SE-Res2Net blocks at their recorded dilations, each concatenating the eighth pass-through split with the seven convolved ones; concatenate the three block outputs to `3 * 512 = 1536` and apply `mfa`; attentive statistics pooling — mean and standard deviation over time, broadcast and concatenated to `[4608, frames]`, `asp_tdnn` to 128, the recorded activation, `asp` to 1536, softmax over time, weighted mean and weighted standard deviation to `[3072]`; `fc` to `[enc_dim]`.
+
+**Erratum, 2026-08-12 — the paragraph says "each concatenating the eighth
+pass-through split with the seven convolved ones", but the first split is the
+one that passes through unconvolved and leads the concatenation.** This is
+established by `modeling_qwen3_tts.py:115-126` and already corrected in
+`src/arch/qwen3-tts/catalog.h` and `catalog.cpp`.
 
 Use `ggml_conv_1d` with explicit dilation. The standard deviation needs a floor before the square root — a one-frame clip makes the variance exactly zero and `ggml_sqrt` of it is fine, but the *derivative-free* NaN risk is in `sqrt(variance)` where variance goes slightly negative from catastrophic cancellation; clamp with `ggml_clamp` at a small positive epsilon and say so in a comment, because `test_a_single_frame_mel_stays_finite` is the only thing that will ever notice.
 

@@ -24,12 +24,12 @@ API is the artifact that settles publication; the card specification and Open
 Question 6 agree with it.
 Stage 2 (`qwen3-tts-12hz-0.6b-base`) Plan 1 is done: the Base package is
 pinned, converted (894 tensors), loads through `synth_model_load`, and its
-capability snapshot -- zero Preset Voices and, as of the 2026-08-12
-correction, zero Voice Profile sources, because nothing in the runtime can
-prepare or consume a Profile for this family yet -- is reported correctly and
-covered by an integration test against the real package (see "Stage 2: Base
-Package, Plan 1" below). The package's own Voice Profile contract is carried
-and validated at load time regardless.
+capability snapshot -- zero Preset Voices and, in the Plan 1 state, zero Voice
+Profile sources (because the runtime could not yet prepare or consume a Profile
+for this family) -- is reported correctly and covered by an integration test
+against the real package (see "Stage 2: Base Package, Plan 1" below). The
+package's own Voice Profile contract is carried and validated at load time
+regardless.
 
 **Stage 2 Plan 2 is done: reference audio in, cloned audio out, on CPU, in
 x-vector mode.** The mel front end and the ECAPA-TDNN speaker encoder graph

@@ -109,11 +109,12 @@ bool bound(const Conv1dWeights & weights) {
 // the way the im2col call above did before its own fix, and for the same
 // underlying reason: Task 4's own unit test only ever exercised F32 weights.
 // Cast only when needed (`bias->type != GGML_TYPE_F32`) rather than
-// unconditionally: an unconditional ggml_cast inserts a CPY node even when
-// `bias` is already F32, and this function runs once per convolution (38
-// times), which would have pushed the graph's node count past
-// tests/qwen3_tts_speaker_encoder_test.cpp's own 450-node ceiling for no
-// reason on the synthetic F32 fixture that test still uses.
+// unconditionally: casting a tensor that is already F32 is pure waste — a CPY
+// node per convolution for nothing. This function runs 38 times (once per
+// convolution), making the gap between F32 and BF16 graphs exactly 38 nodes
+// (435 vs 473). The unit test
+// (tests/qwen3_tts_speaker_encoder_test.cpp) now pins both counts, so the gap
+// cannot drift unnoticed; a conditional cast preserves the distinction.
 ggml_tensor * add_channel_bias(ggml_context * context, ggml_tensor * signal, ggml_tensor * bias) {
     ggml_tensor * bias_f32 = bias->type == GGML_TYPE_F32 ? bias : ggml_cast(context, bias, GGML_TYPE_F32);
     return ggml_add(context, signal, ggml_reshape_2d(context, bias_f32, bias_f32->ne[0], 1));

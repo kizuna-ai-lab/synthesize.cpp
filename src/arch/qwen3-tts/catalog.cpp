@@ -467,10 +467,15 @@ bool resolve_speaker_encoder(Resolver & resolver, const SpeakerEncoderParams & p
         SpeakerEncoderBlockWeights & into = target.blocks[block - 1];
         const std::string            base = index_of("speaker_encoder.blocks.", block, ".");
         resolver.conv(base + "tdnn1.conv", 1, kSpeakerEncoderChannels, kSpeakerEncoderChannels, into.tdnn1);
-        // Res2Net at scale 8 applies a 3x3 convolution to 7 of its 8 equal
-        // splits; the eighth passes through unconvolved, which is why this
-        // block carries `kSpeakerEncoderRes2NetScale - 1` convolutions rather
-        // than 8.
+        // Res2Net at scale 8 convolves 7 of its 8 equal splits with a 3-wide
+        // kernel; the FIRST split passes through unconvolved and leads the
+        // concatenation, which is why this block carries
+        // `kSpeakerEncoderRes2NetScale - 1` convolutions rather than 8.
+        // Which split passes through changes neither the tensor count nor
+        // what this resolver names, but it does change the forward pass --
+        // see SpeakerEncoderBlockWeights in catalog.h and
+        // modeling_qwen3_tts.py:115-126, where split 0 is
+        // `output_part = hidden_part`.
         into.res2net.assign(kSpeakerEncoderRes2NetScale - 1, Conv1dWeights{});
         for (int64_t sub = 0; sub < kSpeakerEncoderRes2NetScale - 1; ++sub) {
             resolver.conv(index_of(base + "res2net_block.blocks.", sub, ".conv"), 3, kRes2NetWidth, kRes2NetWidth,

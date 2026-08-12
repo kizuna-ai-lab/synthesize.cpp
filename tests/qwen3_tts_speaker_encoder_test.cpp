@@ -52,16 +52,28 @@ constexpr float kExpectedEmbedding[] = {
     0.418415725f, 1.78037608f,  -2.17367673f, -0.987673998f, -0.543753147f,
 };
 
-// Fifteen above the 435 nodes this topology builds, and an order of magnitude
-// below the 4096 the graph is sized for.
+// This topology builds TWO node counts, and which one you get is not a
+// property of the topology: 435 with F32 weights, 473 with BF16. The 38-node
+// difference is add_channel_bias's dtype-conditional ggml_cast
+// (speaker-encoder.cpp), one per convolution, inserted only when the bias is
+// not already F32. Nothing else about the graph moves -- not the mel bins,
+// not the frame count, not any width.
 //
-// The slack is deliberately thin. The node count depends only on the res2net
-// scale and the block count -- not on the mel bins, the frame count or any
-// width -- so it is a constant for a given topology, and a budget with room in
-// it does not detect anything: one redundant ggml_cont per convolution adds 33
-// nodes and would clear a budget of 600, let alone 4096.
-constexpr int    kNodeCeiling   = 450;
-constexpr size_t kGraphCapacity = 4096;
+// Both are pinned exactly, because a ceiling loose enough to hold both at
+// once detects nothing: one redundant ggml_cont per convolution is itself 38
+// nodes, exactly the gap between them. Task 4 pinned only the F32 number and
+// called 450 "deliberately thin slack" -- but the graph that actually runs is
+// the BF16 one (every one of the real Base package's 76 speaker_encoder
+// tensors is BF16), and it exceeds 450. That was harmless only because
+// speaker-encoder-host.cpp's own budget is 4096.
+//
+// The ceiling survives as the coarse guard the graph's capacity argument
+// needs, now set seven above the LARGER count rather than fifteen above the
+// smaller one. The exact pins below are what actually detect a change.
+constexpr int    kNodesWithF32Weights  = 435;
+constexpr int    kNodesWithBf16Weights = 473;
+constexpr int    kNodeCeiling          = 480;
+constexpr size_t kGraphCapacity        = 4096;
 
 class LcgStream {
   public:
@@ -118,11 +130,16 @@ struct Shape {
 // Creates every tensor the encoder resolves, in the order the reference script
 // draws them. `ordered`/`scales`, when non-null, collect them for filling; a
 // caller that only needs shapes passes null and skips the backend entirely.
+// `weight_type` is F32 for every case that computes -- the reference
+// embedding is an F32 measurement -- and BF16 only for the node count, where
+// nothing is filled or run. It is the package's own storage dtype, and the
+// real Base package stores all 76 of these tensors in BF16.
 void add_weights(ggml_context *                           context,
                  const Shape &                            shape,
                  synth::qwen3tts::SpeakerEncoderWeights & weights,
                  std::vector<ggml_tensor *> *             ordered,
-                 std::vector<float> *                     scales) {
+                 std::vector<float> *                     scales,
+                 ggml_type                                weight_type = GGML_TYPE_F32) {
     auto add = [&](ggml_tensor * tensor, float scale) {
         if (ordered != nullptr) {
             ordered->push_back(tensor);
@@ -132,8 +149,8 @@ void add_weights(ggml_context *                           context,
     };
     auto add_conv = [&](synth::qwen3tts::Conv1dWeights & target, int64_t kernel, int64_t in, int64_t out) {
         // ggml reports a Conv1d kernel stored as [out, in, kernel] in reverse.
-        target.weight = add(ggml_new_tensor_3d(context, GGML_TYPE_F32, kernel, in, out), kWeightScale);
-        target.bias   = add(ggml_new_tensor_1d(context, GGML_TYPE_F32, out), kBiasScale);
+        target.weight = add(ggml_new_tensor_3d(context, weight_type, kernel, in, out), kWeightScale);
+        target.bias   = add(ggml_new_tensor_1d(context, weight_type, out), kBiasScale);
     };
 
     add_conv(weights.stem, 5, shape.mel_bins, kChannels);
@@ -370,6 +387,45 @@ int check_node_ceiling(int nodes) {
     return 0;
 }
 
+// Builds the graph and counts its nodes without a backend, an allocation or a
+// forward pass: the count is a property of construction, and the BF16 case
+// below has no values to compute with anyway.
+int count_nodes(ggml_type weight_type) {
+    Context context = make_context(ggml_tensor_overhead() * (kGraphCapacity + 512) +
+                                   ggml_graph_overhead_custom(kGraphCapacity, false));
+    if (context == nullptr) {
+        return -1;
+    }
+    ggml_context * ctx = context.get();
+
+    synth::qwen3tts::SpeakerEncoderWeights weights;
+    add_weights(ctx, Shape{}, weights, nullptr, nullptr, weight_type);
+    ggml_tensor * mel       = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kMelBins, kFrames);
+    ggml_tensor * embedding = synth::qwen3tts::build_speaker_encoder(ctx, weights, mel);
+    if (embedding == nullptr) {
+        return -1;
+    }
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, kGraphCapacity, false);
+    ggml_build_forward_expand(graph, embedding);
+    return ggml_graph_n_nodes(graph);
+}
+
+// Both counts, exactly, and the reason they differ measured rather than
+// asserted: swapping only the weights' storage dtype must move the count by
+// exactly one node per convolution and by nothing else.
+int check_both_node_counts() {
+    const int f32_nodes  = count_nodes(GGML_TYPE_F32);
+    const int bf16_nodes = count_nodes(GGML_TYPE_BF16);
+    std::printf("    nodes: F32 weights %d, BF16 weights %d\n", f32_nodes, bf16_nodes);
+    SYNTH_TEST_CHECK(f32_nodes == kNodesWithF32Weights);
+    SYNTH_TEST_CHECK(bf16_nodes == kNodesWithBf16Weights);
+    // One ggml_cast per convolution, and this graph has 38 of them -- the same
+    // 16 kernel-1 plus 22 im2col split speaker-encoder.cpp's header counts.
+    SYNTH_TEST_CHECK(bf16_nodes - f32_nodes == 38);
+    SYNTH_TEST_CHECK(bf16_nodes < kNodeCeiling);
+    return 0;
+}
+
 int check_rejections() {
     // Room for several whole graphs: a rejection is only interesting beside the
     // accepted case it is compared against, and each accepted build is a graph.
@@ -434,6 +490,8 @@ int check_rejections() {
 
 int main() {
     SYNTH_TEST_CHECK(check_rejections() == 0);
+    // Construction only, so it runs once rather than per device.
+    SYNTH_TEST_CHECK(check_both_node_counts() == 0);
 
     const size_t device_count = ggml_backend_dev_count();
     SYNTH_TEST_CHECK(device_count > 0);

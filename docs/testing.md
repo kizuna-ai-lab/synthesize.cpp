@@ -102,6 +102,72 @@ under `build/goldens/<family>/`, as VITS and Qwen3-TTS both do: two variants
 sharing one root would let a case id common to both overwrite the other's
 payload in place.
 
+### The Qwen3-TTS Base variant's clone-path tests
+
+Stage 2's Reference Model Variant is a second package with its own cache
+variable, `SYNTH_QWEN3_TTS_BASE_TEST_MODEL`, defaulting to
+`models/qwen3-tts-12hz-0-6b-base/qwen3-tts-12hz-0-6b-base-BF16.gguf` -- BF16
+for the same source-profile reason as the CustomVoice variable above. Three
+integration tests register from it, and the last one needs two more local
+artifacts:
+
+```bash
+cmake -S . -B build \
+  -DSYNTH_BUILD_TESTS=ON \
+  -DSYNTH_BUILD_INTEGRATION_TESTS=ON \
+  -DSYNTH_QWEN3_TTS_BASE_TEST_MODEL="$PWD/models/qwen3-tts-12hz-0-6b-base/qwen3-tts-12hz-0-6b-base-BF16.gguf" \
+  -DSYNTH_QWEN3_TTS_REFERENCE_WAV="$PWD/models/qwen3-tts-reference-audio/clone.wav"
+cmake --build build --target synthesize-check-integration
+```
+
+- `synthesize-qwen3-tts-base-load-real` needs only the package: it loads the
+  real Base GGUF through `synth_model_load` and asserts the capability
+  snapshot and the Voice Profile refusal matrix through the public interface
+  only.
+- `synthesize-qwen3-tts-xvector-length-test` needs only the package: the one
+  correct x-vector length is the package's own `hidden_size`, which no
+  synthetic fixture can supply.
+- `synthesize-qwen3-tts-clone-real` is Stage 2 Plan 2's completion gate --
+  reference audio in, cloned audio out, through the public seam. It needs
+  **three** local artifacts and is not registered without all three: the
+  package, the Reference Audio clip (`SYNTH_QWEN3_TTS_REFERENCE_WAV`), and the
+  oracle x-vector dump at
+  `build/goldens/qwen3-tts/qwen3-tts-12hz-0-6b-base/base-xvector-en/speaker/x_vector.f32`.
+
+`SYNTH_QWEN3_TTS_REFERENCE_WAV` is a cache variable for the same reason every
+model path is: `models/` is gitignored, the clip is fetched rather than
+committed, and a checkout that keeps it elsewhere must be able to say so.
+`scripts/dump_reference_qwen3_tts_speaker.py` fetches it into that directory
+and produces the oracle dump in the same run.
+
+The oracle guard on `synthesize-qwen3-tts-clone-real` is the rule at the top
+of this section applied to a test rather than to a validator. That test's
+first assertion is the only consumer of the committed `speaker.x_vector`
+`min_cosine`; until 2026-08-12 it printed to stderr and passed when the
+payload was absent, so the whole mel/ECAPA/x-vector numerical claim went
+unchecked on any machine without the dump while the suite stayed green. It
+now refuses rather than skips, and registration is what handles the absent
+payload -- a missing test, not a passing one.
+
+Two further Base tests drive `scripts/validate-qwen3-tts-replay.py`'s
+standalone speaker-path modes, whose drivers were built by
+`synth_register_integration_target` and invoked by nothing until 2026-08-12
+(that function appends to the check target's build list; a registered *target*
+is not a registered *test*):
+
+- `synthesize-qwen3-tts-base-xvector-golden` runs `--compare-x-vector --check`
+  over every `x_vector_only` case in the Base manifest. This is the registered
+  gate against `tests/tolerances/qwen3-tts.json`'s `speaker.x_vector`
+  `min_cosine`. Same three-artifact guard as the clone test.
+- `synthesize-qwen3-tts-base-mel-shape` runs `--compare-mel`, which carries
+  **no committed tolerance** -- there is no `speaker.mel` probe in the
+  tolerance file and this registration deliberately did not invent one. It
+  therefore gates what that mode can actually decide: that the driver runs and
+  that the port's mel has the same shape as the oracle's, which is what a
+  wrong frame-count or bin-count convention breaks. It does **not** gate the
+  values. The measured mel deviation (max_abs 3.31e-4) is recorded in
+  `docs/porting/families/qwen3-tts.md` as evidence, not as a gate.
+
 `synthesize-golden-manifest-contract` (`unit`) is the structural test over every
 committed Golden Manifest against its schema
 (`docs/schemas/synthesize-golden-manifest-v1.schema.json`), shared across all

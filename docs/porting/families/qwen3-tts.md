@@ -32,17 +32,21 @@ Package, Plan 1" below). The package's own Voice Profile contract is carried
 and validated at load time regardless.
 
 **Stage 2 Plan 2 is done: reference audio in, cloned audio out, on CPU, in
-x-vector mode.** The mel front end and the 435-node ECAPA-TDNN speaker
-encoder graph exist and run; `synth_voice_profile_create_from_reference` now
-prepares a real Profile from the real package (measured against the oracle
-at cosine 0.99999536, a residual attributable to the oracle's own bfloat16
-weights, not the port); that Profile serializes, reloads, and substitutes
-into the synthesis prompt in place of a Preset Voice; and
+x-vector mode.** The mel front end and the ECAPA-TDNN speaker encoder graph
+exist and run (473 nodes as the real BF16 package builds it, 435 with F32
+weights -- see "ECAPA-TDNN graph and mel front end" below for what separates
+them); `synth_voice_profile_create_from_reference` now prepares a real
+Profile from the real package (measured against the oracle at cosine
+0.99999536, a residual attributable to the oracle's own bfloat16 weights,
+not the port); that Profile serializes, reloads, and substitutes into the
+synthesis prompt in place of a Preset Voice; and
 `tests/qwen3_tts_clone_real.cpp` proves, against the real package, that two
-different reference clips produce different cloned audio -- the assertion
-that actually distinguishes "cloned" from merely "synthesized" -- while a
-Serialized Profile round-trips to the same audio and CustomVoice stays
-byte-identical throughout. The capability snapshot now advertises
+different reference inputs produce different cloned audio -- the assertion
+that actually distinguishes "cloned" from merely "synthesized", though the
+second input is a synthesized tone rather than a second recording, so it
+says nothing about resemblance -- while a Serialized Profile round-trips to
+the same audio and CustomVoice stays byte-identical throughout. The
+capability snapshot now advertises
 `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`
 for Base. See "Stage 2: Base Package, Plan 2" below for the full record,
 including what remains: ICL / transcript-assisted cloning (Plan 3),
@@ -224,15 +228,18 @@ stage, while the Stage 2 Plan 1 record below claimed the Base package
 "honestly advertises Reference Audio and Serialized Profile support". Both
 cannot be right, and neither described what shipped. The end position:
 
-- **Plan 1 of Stage 2 advertises nothing.** `synth_model_get_voice_profile_capabilities`
-  returns zero source flags for both variants of this family, and therefore
-  zero in every field describing a source. The Base *package* carries a full
+- **Plan 1 of Stage 2 advertised nothing.** `synth_model_get_voice_profile_capabilities`
+  returned zero source flags for both variants of this family, and therefore
+  zero in every field describing a source. The Base *package* carried a full
   Voice Profile contract (`synthesize.profile.*`, `synthesize.reference.*`),
-  which the loader reads and validates; the *runtime* cannot prepare, consume
-  or serialize a Profile for this family, because `src/voice-profile.cpp`
-  dispatches every source for OmniVoice alone. `docs/c-interface.md` decides
-  which of those two facts the query reports: "A Model without runtime Voice
-  Profile support reports zero flags."
+  which the loader read and validated; the *runtime* could not prepare,
+  consume or serialize a Profile for this family, because at that point
+  `src/voice-profile.cpp` dispatched every source for OmniVoice alone.
+  `docs/c-interface.md` decides which of those two facts the query reports:
+  "A Model without runtime Voice Profile support reports zero flags." **Past
+  tense as of Plan 2**, which is the next bullet: `voice-profile.cpp` now has
+  a `ModelFamily::Qwen3Tts` arm on the create-from-reference, load-from-memory
+  and serialize paths, and Base reports source flags 9.
 - **Plan 2 advertises `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO`** on the day it
   can actually prepare a Profile from a reference clip — and
   `SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` with it, not as a separate
@@ -2057,25 +2064,35 @@ listening pass before shipping, one on the 0.5 s/1 s/30 s renders under
 
 ### What Plan 1 did not deliver
 
-- **No graphs.** The ECAPA-TDNN speaker encoder, the Audio Normalizer
-  (including vendored libsamplerate 0.2.2), and the mel front end that
-  `docs/voice-conditioning.md` specifies for this stage are not implemented.
-  The speaker-encoder tensors and their metadata are catalogued (Task 8) and
-  loaded, but nothing yet runs a forward pass over them.
+**Every bullet in this section is Plan 1's end state, in the past tense, and
+Plan 2 closed all of it — see "Stage 2: Base Package, Plan 2" below.** The
+section is kept because the capability correction it records is the reason
+this file is trusted about the difference between a package's declaration and
+a runtime's capability; it is not a description of the tree today.
+
+- **No graphs.** The ECAPA-TDNN speaker encoder and the mel front end that
+  `docs/voice-conditioning.md` specifies for this stage were not implemented,
+  and this family reached none of the Audio Normalizer (including vendored
+  libsamplerate 0.2.2), which already existed for OmniVoice. The
+  speaker-encoder tensors and their metadata were catalogued (Task 8) and
+  loaded, but nothing ran a forward pass over them. *Plan 2 wrote both graphs
+  and routed this family through the existing Audio Normalizer.*
 - **No Voice Profile preparation, and therefore no advertised source.**
-  `synth_voice_profile_create_from_reference` returns
-  `SYNTH_ERR_UNSUPPORTED_VOICE` for this family --
-  `src/voice-profile.cpp` dispatches that call only for OmniVoice today -- so
-  `synth_model_get_voice_profile_capabilities` reports zero source flags for
-  both variants, and zero in every field describing a source.
+  `synth_voice_profile_create_from_reference` returned
+  `SYNTH_ERR_UNSUPPORTED_VOICE` for this family -- `src/voice-profile.cpp`
+  dispatched that call for OmniVoice alone -- so
+  `synth_model_get_voice_profile_capabilities` reported zero source flags for
+  both variants, and zero in every field describing a source. *Plan 2 added
+  the `ModelFamily::Qwen3Tts` arm and Base now reports source flags 9;
+  CustomVoice still reports zero.*
 
   This is a correction, made 2026-08-12 on the branch's final review. Plan 1
   shipped the snapshot advertising `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO |
   SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`, on the argument that the gap was
   a dispatch gap rather than a capability lie. `docs/c-interface.md` does not
   leave that open: "A Model without runtime Voice Profile support reports zero
-  flags", and nothing in the runtime can create or consume such a Profile. The
-  confirmed contract wins over the argument.
+  flags", and at Plan 1 nothing in the runtime could create or consume such a
+  Profile. The confirmed contract wins over the argument.
 
   What did NOT change: the Base package still declares its full Voice Profile
   contract, and `src/arch/qwen3-tts/weights.cpp` still reads and validates
@@ -2146,21 +2163,34 @@ top of it. Six assertions, the last of which is the one that actually
 distinguishes "cloned" from "synthesized": a Profile prepared from the real
 clip matches the oracle x-vector above the committed tolerance; synthesis
 with it produces finite, non-silent 24 kHz PCM; the same Profile and seed
-reproduce that PCM bit-for-bit; **two different reference clips produce
+reproduce that PCM bit-for-bit; **two different reference inputs produce
 different PCM** — a Profile the graph silently ignored would pass every
 other assertion here too; a Serialized Profile round-trips (serialize, free
 the original, load, synthesize) to the same PCM; and a Profile presented to
 a second Loaded Model refuses with `SYNTH_ERR_UNSUPPORTED_VOICE` and writes
-no audio. A deliberate break of the x-vector substitution (a fixed dummy
-vector in place of the per-Profile one) was confirmed to fail exactly the
-"two different clips" assertion and nothing else, then restored; a
-deliberate loosening of the oracle threshold was confirmed to fail the
-x-vector assertion, then restored.
+no audio.
+
+The second "reference input" is **not** a second recording. Only one real
+clip is materialized in this tree, so that assertion pairs `clone.wav` with
+a synthesized 440 Hz sine at the package's minimum reference length
+(`tests/qwen3_tts_clone_real.cpp`'s `make_tone`, which its own header states
+and this paragraph did not until 2026-08-12). That is sufficient for what the
+assertion decides — two different inputs must not produce identical output —
+and it is **not** evidence that either clone resembles its source. No
+listening pass has happened.
+
+A deliberate break of the x-vector substitution (a fixed dummy vector in
+place of the per-Profile one) was confirmed to fail exactly the "two
+different inputs" assertion and nothing else, then restored; a deliberate
+**tightening** of the oracle threshold (to 0.999999999999, above the
+observed cosine) was confirmed to fail the x-vector assertion, then
+restored. This paragraph called that a "loosening" until 2026-08-12, which
+is backwards: loosening a `min_cosine` gate cannot make it fail.
 
 ### The mel front end's six conventions, read off upstream
 
 `docs/voice-conditioning.md`'s mel front end needs six conventions beyond the
-five numbers the package itself declares (`mel_bins` 128, `n_fft` 1024,
+six numbers the package itself declares (`mel_bins` 128, `n_fft` 1024,
 `hop_length` 256, `win_length` 1024, `fmin` 0, `fmax` 12000); each silently
 changes the answer, so each is read off the pinned upstream source
 (`QwenLM/Qwen3-TTS` at `022e286b98fbec7e1e916cb940cdf532cd9f488e`,
@@ -2188,11 +2218,30 @@ to pin the port's own frame-count fixed points.
 ### ECAPA-TDNN graph and mel front end, measured against upstream
 
 The GGML graph (`src/arch/qwen3-tts/speaker-encoder.h`/`.cpp`, Task 4) builds
-**435 nodes** and reproduces `Qwen3TTSSpeakerEncoder`'s own forward pass to
-**7.15e-07** max-abs difference against a from-scratch numpy transcription of
-the same topology, on synthetic weights at a small configuration — not
-against the real 76-tensor checkpoint, which the residual below measures
-separately. The topology facts a reader cannot get from the five declared
+**435 nodes with F32 weights and 473 with BF16**, and reproduces
+`Qwen3TTSSpeakerEncoder`'s own forward pass to **7.15e-07** max-abs
+difference, on synthetic weights at a small configuration — not against the
+real 76-tensor checkpoint, which the residual below measures separately.
+
+The node count is not a property of the topology alone, which is how this
+document carried only 435 until 2026-08-12. The res2net scale and the block
+count fix most of it, but the weights' own storage dtype fixes the rest:
+`add_channel_bias` inserts a `ggml_cast` only when the bias is not already
+F32, and the graph has 38 convolutions, so a BF16 package builds exactly 38
+more nodes. **473 is the graph that actually runs** — every one of the real
+Base package's 76 `speaker_encoder` tensors is BF16, measured with a GGUF
+read. 435 is what `tests/qwen3_tts_speaker_encoder_test.cpp`'s own synthetic
+F32 fixture builds; that test now pins both counts exactly and asserts the
+38-node gap, and its ceiling was raised from 450 (which the real graph
+exceeds) to 480.
+
+The 7.15e-07 is against **upstream's own `Qwen3TTSSpeakerEncoder`**, run
+directly — not against a re-transcription, which is the weaker claim this
+paragraph made until 2026-08-12. A from-scratch numpy transcription of the
+same topology was a separate and looser check, agreeing to 1.2e-6
+(`src/arch/qwen3-tts/speaker-encoder.cpp`'s own header records it as such).
+
+The topology facts a reader cannot get from the six declared
 numbers alone (Res2Net dilations `[1,2,3,4,1]`, `reflect`-padded "same"
 convolutions, the pass-through-first accumulation rule, the squeeze-excite
 statistic and activations, the attention input's 4608-channel concatenation)
@@ -2225,7 +2274,7 @@ observed_max_abs:    0.021114349365234375
 ```
 
 The residual is bfloat16 quantization of the **oracle's own** tensors, not a
-port defect. Six of the seven dumped `speaker/*.f32` artifacts (everything
+port defect. Seven of the eight dumped `speaker/*.f32` artifacts (everything
 but `mel.f32`) round-trip through bfloat16 exactly (max abs diff 0.0) — the
 oracle's speaker encoder runs in `torch.bfloat16` throughout. At the
 x-vector's own largest element (`|ref| = 7.28`), 0.02111 is 0.68 of one
@@ -2358,8 +2407,13 @@ the tree.
   "Measured reference-duration bounds" above remain safety ceilings, not
   perceptually validated ones. The 30 s point that produced only 9 output
   frames for an 11-word sentence is still unadjudicated by ear; a listening
-  pass on the 0.5 s / 1 s / 30 s renders is owed before Stage 2 ships, and is
-  scheduled last, after Plan 4.
+  pass on the 0.5 s / 1 s / 30 s renders is owed before Stage 2 ships.
+  jiangzhuo scheduled it **last, after the plan work** (2026-08-12) — that
+  is, in Plan 4's ship-prep phase, where the Stage 2 spec's own phase table
+  (§8, phase 4) already places the listening audit. Not after Plan 2, which
+  is what this branch's SDD ledger said until 2026-08-12; the ledger recorded
+  "after Plan 2" because Plan 2 was the plan in flight when the decision was
+  taken, not because Plan 2 was the boundary.
 - **Publication and Quality Evaluation.** Unchanged: publication requires
   separate, per-submission confirmation; Quality Evaluation is deferred per
   ADR 0017.

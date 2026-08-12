@@ -31,11 +31,18 @@ namespace synth::qwen3tts {
 
 namespace {
 
-// The encoder itself builds 435 nodes for this topology -- fixed by the
-// res2net scale and block count, not by the mel's width or length (see
-// speaker-encoder.cpp's own header comment) -- so this budget is a constant
-// with the same order-of-magnitude headroom
-// tests/qwen3_tts_speaker_encoder_test.cpp already measured is enough.
+// The encoder builds 435 nodes with F32 weights and 473 with BF16. Three
+// things fix that count and none of them is the mel: the res2net scale, the
+// block count, and the weights' own storage dtype. The 38 extra nodes are
+// add_channel_bias's dtype-conditional ggml_cast (speaker-encoder.cpp), one
+// per convolution, inserted only when the bias is not already F32.
+//
+// 473 is the number that matters here: every one of the real Base package's
+// 76 speaker_encoder tensors is BF16, so 473 is what this host actually
+// builds, and 435 is what tests/qwen3_tts_speaker_encoder_test.cpp's own
+// synthetic F32 fixture builds. Both are pinned exactly by that test. This
+// budget is a constant for a given package, and 4096 keeps the same
+// order-of-magnitude headroom over the larger of the two.
 constexpr size_t kSpeakerGraphNodeBudget = 4096;
 
 // Not upstream's own quantity: there is nothing named "ref_rms" in the

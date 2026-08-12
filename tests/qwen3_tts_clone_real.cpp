@@ -32,13 +32,22 @@
 //   6. a Profile presented to a second Loaded Model refuses with
 //      SYNTH_ERR_UNSUPPORTED_VOICE and writes no audio.
 //
-// Only one real reference clip is committed to this tree
-// (models/qwen3-tts-reference-audio/clone.wav); assertion 4's "two different
-// reference clips" therefore pairs it with a synthesized tone rather than a
-// second pinned file, the same substitution
-// tests/qwen3_tts_base_load_real.cpp's own make_tone already makes for every
-// wiring/refusal check that needs "a valid, non-silent reference" without
-// caring what voice it names.
+// Only one real reference clip is materialized in this tree
+// (SYNTH_QWEN3_TTS_REFERENCE_WAV, models/qwen3-tts-reference-audio/clone.wav
+// by default -- fetched, not committed, since models/ is gitignored);
+// assertion 4's "two different reference clips" therefore pairs it with a
+// synthesized 440 Hz tone rather than a second real recording, the same
+// substitution tests/qwen3_tts_base_load_real.cpp's own make_tone already
+// makes for every wiring/refusal check that needs "a valid, non-silent
+// reference" without caring what voice it names. That is enough for what
+// assertion 4 decides -- the two inputs differ, so the two outputs must --
+// but it is NOT evidence that the clone resembles the speaker in the clip.
+// No listening pass has happened.
+//
+// This test is registration-gated on the oracle x-vector dump as well as on
+// the package and the clip: assertion 1 is the only enforcement of the
+// committed speaker.x_vector tolerance, and it refuses rather than skips when
+// the dump is unreadable. See tests/CMakeLists.txt beside its add_test.
 //
 // What this file does NOT re-test: the capability snapshot, the full
 // refusal matrix (bad rate/channels, too many clips, out-of-bounds length,
@@ -312,8 +321,7 @@ synth_sink_result_t SYNTH_CALL refuse_audio(void * user_data, const synth_audio_
 
 int main(int argc, char ** argv) {
     if (argc != 5) {
-        std::fprintf(stderr, "usage: %s <model.gguf> <reference.wav> <golden-x-vector.f32-or-missing> <scratch-dir>\n",
-                     argv[0]);
+        std::fprintf(stderr, "usage: %s <model.gguf> <reference.wav> <golden-x-vector.f32> <scratch-dir>\n", argv[0]);
         return 2;
     }
     const std::string model_path          = argv[1];
@@ -366,31 +374,49 @@ int main(int argc, char ** argv) {
         // captured here instead of requiring a separate driver invocation.
         SYNTH_TEST_CHECK(write_f32(scratch_dir + "/x_vector.f32", encoding.x_vector));
 
+        // Required, not optional. This was a skip until 2026-08-12: an absent
+        // payload (or a size mismatch) printed to stderr and returned 0, so
+        // the committed min_cosine below -- the only enforcement of the whole
+        // mel/ECAPA/x-vector numerical claim anywhere -- was checked by
+        // nothing on any machine that had not run the oracle dump, and the
+        // suite was green. The payload is deliberately uncommitted
+        // (build/goldens/... is ignored, "commit golden contracts, not golden
+        // payloads"), so its absence is handled where docs/testing.md says to
+        // handle it: at REGISTRATION. tests/CMakeLists.txt gates this test on
+        // the same file existing, which makes an unmaterialized oracle a
+        // missing test rather than a passing one. Here, having been given the
+        // path, the only correct response to not being able to read it is to
+        // fail.
         std::vector<float> golden;
-        if (read_f32(golden_xvector_path, golden) && golden.size() == encoding.x_vector.size()) {
-            double cosine  = 0.0;
-            float  max_abs = 0.0f;
-            compare_vectors(encoding.x_vector, golden, cosine, max_abs);
-            // tests/tolerances/qwen3-tts.json,
-            // variants.qwen3-tts-12hz-0-6b-base.profiles.BF16.stages.replay.
-            // probes.speaker.x_vector.min_cosine -- Task 6, measured
-            // 2026-08-12 on CPU (build/, Release) over base-xvector-en and
-            // base-xvector-zh against this exact clip
-            // (models/qwen3-tts-reference-audio/clone.wav). Committed
-            // observed_min_cosine there is 0.9999953552841363 with
-            // observed_max_abs 0.021114349365234375; the residual is
-            // bfloat16 quantization of the oracle's own tensors (that file's
-            // own note), not gated on max_abs for the same reason the talker
-            // probes above it are not: an x-vector is a direction consumed
-            // by a dot product, not compared elementwise.
-            constexpr double kMinCosine = 0.9999767764206815;
-            SYNTH_TEST_CHECK(cosine >= kMinCosine);
-        } else {
+        if (!read_f32(golden_xvector_path, golden)) {
             std::fprintf(stderr,
-                         "qwen3-tts-clone-real: no golden x-vector at %s (uncommitted oracle artifact) or a size "
-                         "mismatch; skipping the oracle comparison\n",
+                         "qwen3-tts-clone-real: cannot read the oracle x-vector at %s. It is an uncommitted "
+                         "dump artifact -- run scripts/dump_reference_qwen3_tts_speaker.py for case "
+                         "base-xvector-en, then re-configure so this test registers again.\n",
                          golden_xvector_path.c_str());
+            return 1;
         }
+        SYNTH_TEST_CHECK(golden.size() == encoding.x_vector.size());
+
+        double cosine  = 0.0;
+        float  max_abs = 0.0f;
+        compare_vectors(encoding.x_vector, golden, cosine, max_abs);
+        // tests/tolerances/qwen3-tts.json,
+        // variants.qwen3-tts-12hz-0-6b-base.profiles.BF16.stages.replay.
+        // probes.speaker.x_vector.min_cosine -- Task 6, measured
+        // 2026-08-12 on CPU (build/, Release) over base-xvector-en and
+        // base-xvector-zh against this exact clip
+        // (SYNTH_QWEN3_TTS_REFERENCE_WAV, models/qwen3-tts-reference-audio/
+        // clone.wav by default). Committed observed_min_cosine there is
+        // 0.9999953552841363 with observed_max_abs 0.021114349365234375; the
+        // residual is bfloat16 quantization of the oracle's own tensors (that
+        // file's own note), not gated on max_abs for the same reason the
+        // talker probes above it are not: an x-vector is a direction consumed
+        // by a dot product, not compared elementwise.
+        constexpr double kMinCosine = 0.9999767764206815;
+        std::fprintf(stderr, "qwen3-tts-clone-real: oracle cosine %.10f (gate %.10f), max_abs %.9g\n", cosine,
+                     kMinCosine, double(max_abs));
+        SYNTH_TEST_CHECK(cosine >= kMinCosine);
     }
 
     // The Profile every remaining assertion needs, through the public seam --

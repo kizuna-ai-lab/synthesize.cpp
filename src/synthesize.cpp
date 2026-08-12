@@ -1084,11 +1084,15 @@ synth_status_t synth_synthesize(synth_context_t *          context,
                                     "this build supports x-vector Voice Profiles only");
                     return SYNTH_ERR_UNSUPPORTED_VOICE;
                 }
-                // request.voice_id stays empty above (prepare_synthesis_request
-                // never resolves a preset_voice_id for a profile-carrying
-                // request against this family's empty Preset Voice Catalog),
-                // so model.cpp's own external/voice_id mutual-exclusivity
-                // check is always satisfied here.
+                // request.voice_id stays empty above, so model.cpp's own
+                // external/voice_id mutual-exclusivity check is always
+                // satisfied here. The guarantee is
+                // src/synthesis-request.cpp:201, which refuses a request
+                // carrying voice_id AND voice_profile together for EVERY
+                // family before it ever reaches this dispatch -- not this
+                // variant's empty Preset Voice Catalog, which happens to hold
+                // as well and would stop holding the day a Base-shaped
+                // package shipped a catalog.
                 family_request.x_vector = &clone.x_vector;
             }
             family_request.seed              = actual_seed;

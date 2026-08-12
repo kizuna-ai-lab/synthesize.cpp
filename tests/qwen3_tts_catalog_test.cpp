@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -687,6 +688,77 @@ int check_real_base_package_count() {
     return 0;
 }
 
+// Plan 1 resolved these 76 names into a scratch struct nobody read -- there
+// was no graph to hold them for. A resolver that resolves and discards passes
+// every sweep check there is, so the only thing that can catch the regression
+// is asserting the pointers arrived. Every one of them, by name: a loop that
+// checked "at least one is non-null" would pass with 75 dropped.
+int check_speaker_encoder_resolver_keeps_every_pointer() {
+    const synth::qwen3tts::HParams h       = base_hparams();
+    const std::vector<Entry>       entries = base_entries(h);
+    Context                        context = make_context();
+    populate(context.get(), entries, nullptr);
+
+    synth::qwen3tts::ModelWeights weights;
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_OK);
+
+    const synth::qwen3tts::SpeakerEncoderWeights & speaker = weights.speaker_encoder;
+    SYNTH_TEST_CHECK(speaker.stem.weight != nullptr && speaker.stem.bias != nullptr);
+    SYNTH_TEST_CHECK(speaker.blocks.size() == 3);
+    for (const synth::qwen3tts::SpeakerEncoderBlockWeights & block : speaker.blocks) {
+        SYNTH_TEST_CHECK(block.tdnn1.weight != nullptr && block.tdnn1.bias != nullptr);
+        SYNTH_TEST_CHECK(block.res2net.size() == 7);
+        for (const synth::qwen3tts::Conv1dWeights & conv : block.res2net) {
+            SYNTH_TEST_CHECK(conv.weight != nullptr && conv.bias != nullptr);
+        }
+        SYNTH_TEST_CHECK(block.se1.weight != nullptr && block.se2.weight != nullptr);
+        SYNTH_TEST_CHECK(block.tdnn2.weight != nullptr && block.tdnn2.bias != nullptr);
+    }
+    SYNTH_TEST_CHECK(speaker.mfa.weight != nullptr && speaker.asp_tdnn.weight != nullptr);
+    SYNTH_TEST_CHECK(speaker.asp.weight != nullptr && speaker.fc.weight != nullptr);
+    return 0;
+}
+
+// The res2net convolutions differ only by index. A resolver that wrote all
+// seven into one slot would leave six aliases of the seventh, which the null
+// checks above cannot see.
+int check_res2net_convolutions_are_seven_distinct_tensors() {
+    const synth::qwen3tts::HParams h       = base_hparams();
+    const std::vector<Entry>       entries = base_entries(h);
+    Context                        context = make_context();
+    populate(context.get(), entries, nullptr);
+
+    synth::qwen3tts::ModelWeights weights;
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_OK);
+
+    std::set<const ggml_tensor *> seen;
+    for (const synth::qwen3tts::SpeakerEncoderBlockWeights & block : weights.speaker_encoder.blocks) {
+        for (const synth::qwen3tts::Conv1dWeights & conv : block.res2net) {
+            SYNTH_TEST_CHECK(seen.insert(conv.weight).second);
+        }
+    }
+    SYNTH_TEST_CHECK(seen.size() == 21);
+    return 0;
+}
+
+// A CustomVoice package has no speaker encoder (`small_hparams` carries
+// `has_speaker_encoder == false`, the same discriminator base_hparams flips
+// on), and the struct must say so rather than carrying stale pointers from a
+// previous resolve.
+int check_customvoice_leaves_the_speaker_encoder_empty() {
+    const synth::qwen3tts::HParams h = small_hparams();
+    SYNTH_TEST_CHECK(!h.has_speaker_encoder);
+    const std::vector<Entry> entries = expected_entries(h);
+    Context                  context = make_context();
+    populate(context.get(), entries, nullptr);
+
+    synth::qwen3tts::ModelWeights weights;
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_OK);
+    SYNTH_TEST_CHECK(weights.speaker_encoder.blocks.empty());
+    SYNTH_TEST_CHECK(weights.speaker_encoder.fc.weight == nullptr);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -701,5 +773,8 @@ int main() {
     SYNTH_TEST_CHECK(check_speaker_encoder_fc_shape_checked_against_enc_dim() == 0);
     SYNTH_TEST_CHECK(check_uncatalogued_new_region_tensors_are_refused() == 0);
     SYNTH_TEST_CHECK(check_real_base_package_count() == 0);
+    SYNTH_TEST_CHECK(check_speaker_encoder_resolver_keeps_every_pointer() == 0);
+    SYNTH_TEST_CHECK(check_res2net_convolutions_are_seven_distinct_tensors() == 0);
+    SYNTH_TEST_CHECK(check_customvoice_leaves_the_speaker_encoder_empty() == 0);
     return 0;
 }

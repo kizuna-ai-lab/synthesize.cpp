@@ -34,9 +34,11 @@
 #include "voice-profile-handle.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <set>
 #include <string>
@@ -850,6 +852,18 @@ int test_non_default_alignment_is_invalid_arg() {
 // --- Tensor count 0 -> INVALID_ARG: exactly one x-vector tensor. Patches
 // the header's own n_tensors field (byte offset 8: magic[4] + version[4]) on
 // a real, otherwise-valid envelope.
+//
+// As written, prescan_buffer's own `n_tensors != 1` gate rejects this
+// immediately. Mutation-tested by temporarily disabling just that
+// comparison: `gguf_get_n_tensors(g) != 1`, checked later, still catches
+// it -- gguf_init_from_buffer itself parses this buffer fine (it declares
+// zero tensor-info entries and finds none, consistent with itself), so the
+// mismatch against a REQUIRED width of 1 is a semantic check this project
+// owns, not something ggml's own parser would ever refuse on its own. A
+// third, independent layer sits behind even that one: with BOTH checks
+// disabled, `gguf_find_tensor(g, "profile.x_vector") < 0` still catches it,
+// since a context that parsed zero tensor-info entries has no tensor by
+// that name to find.
 int test_tensor_count_zero_is_invalid_arg() {
     constexpr uint32_t kProfileEncDim = 11;
     uint8_t            compatibility_id[32];
@@ -871,6 +885,16 @@ int test_tensor_count_zero_is_invalid_arg() {
 }
 
 // --- Tensor count 2 -> INVALID_ARG: same field, the other direction.
+//
+// Different mechanism from the n_tensors=0 arm above, confirmed by the same
+// mutation-testing experiment: with prescan_buffer's own gate disabled,
+// gguf_init_from_buffer ITSELF returns null for this buffer -- it tries to
+// parse two tensor-info entries, and the "second" one is actually this
+// envelope's own tensor DATA bytes misread as tensor-info, which fails
+// ggml's own internal length sanity check ("string length ... exceeds
+// maximum"). `gguf_get_n_tensors(g) != 1`, checked later in this function,
+// is consequently NEVER REACHED for this specific input -- it is not a
+// backstop for this arm, unlike the n_tensors=0 arm above where it is.
 int test_tensor_count_two_is_invalid_arg() {
     constexpr uint32_t kProfileEncDim = 11;
     uint8_t            compatibility_id[32];
@@ -1048,6 +1072,209 @@ int test_writer_emits_exactly_the_whitelisted_keys() {
     return 0;
 }
 
+// =============================================================================
+// Reviewer follow-up, IMPORTANT 1: the writer must never be able to emit an
+// envelope its own reader refuses. Before kMaxLanguageTagLength existed and
+// was tied to profile.cpp's own kPrescanMaxStringLength, a profile with a 1
+// MiB + 8 byte language_tag serialized fine (1,049,376 bytes) and then
+// failed to load with a bare INVALID_ARG -- measured on exactly this shape
+// below.
+// =============================================================================
+
+// --- The reviewer's own measured buffer, at the creation entry point:
+// create_x_vector_profile now refuses a language_tag over the tied ceiling
+// before the (expensive) encode chain ever runs.
+int test_language_tag_too_long_is_rejected_at_creation() {
+    Fixture fixture;
+    SYNTH_TEST_CHECK(build_fixture(fixture));
+    const std::string                     oversized_tag(size_t(synth::qwen3tts::kMaxLanguageTagLength) + 8, 'x');
+    const char *                          code    = nullptr;
+    const char *                          message = nullptr;
+    std::shared_ptr<const XVectorProfile> profile;
+    const synth_status_t                  status = synth::qwen3tts::create_x_vector_profile(
+        fixture.hparams, fixture.weights, one_second_of_speech(), "", oversized_tag, 1, profile, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(profile == nullptr);
+    SYNTH_TEST_CHECK(code != nullptr && std::strcmp(code, "voice_profile.language_tag_too_long") == 0);
+    SYNTH_TEST_CHECK(message != nullptr);
+    return 0;
+}
+
+// --- The reviewer's own measured buffer, at the writer entry point: a
+// hand-built XVectorProfile (bypassing create_x_vector_profile entirely,
+// the same way every round-trip test in this file does) with a 1 MiB + 8
+// byte language_tag. Before this task's fix, serialize_x_vector_profile
+// returned SYNTH_OK here (1,049,376 bytes) and load_profile_from_memory
+// then refused the result with a bare INVALID_ARG -- "your writer emits
+// envelopes your own reader refuses." The writer itself now refuses this
+// input before producing any bytes at all.
+int test_oversized_language_tag_is_rejected_by_the_writer() {
+    constexpr uint32_t                    kProfileEncDim = 11;
+    const std::shared_ptr<XVectorProfile> profile        = make_serializable_profile(
+        kProfileEncDim, 0.5f, std::string(size_t(synth::qwen3tts::kMaxLanguageTagLength) + 8, 'x'));
+
+    uint8_t compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    std::vector<uint8_t> bytes;
+    const synth_status_t status = synth::qwen3tts::serialize_x_vector_profile(*profile, compatibility_id, bytes);
+    SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(bytes.empty());
+    return 0;
+}
+
+// --- Boundary proof that the tie is correct, not merely stricter: a
+// language_tag at EXACTLY kMaxLanguageTagLength (not one byte over) still
+// serializes and loads back byte-for-byte, so the fix closes the gap
+// without narrowing what a legitimate (if pathological) caller could
+// already do.
+int test_language_tag_at_the_max_length_round_trips() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    const std::string                     tag(size_t(synth::qwen3tts::kMaxLanguageTagLength), 'x');
+    const std::shared_ptr<XVectorProfile> profile = make_serializable_profile(kProfileEncDim, 0.5f, tag);
+
+    std::vector<uint8_t> bytes;
+    SYNTH_TEST_CHECK(synth::qwen3tts::serialize_x_vector_profile(*profile, compatibility_id, bytes) == SYNTH_OK);
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> payload;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
+        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_OK);
+    const auto * reloaded = static_cast<const XVectorProfile *>(payload.get());
+    SYNTH_TEST_CHECK(reloaded->language_tag == tag);
+    return 0;
+}
+
+// =============================================================================
+// Reviewer follow-up, IMPORTANT 2: a loaded XVectorProfile must satisfy the
+// same invariants a CREATED one does, not just the same structure. Before
+// this task's fix, all five buffers below loaded with SYNTH_OK.
+// =============================================================================
+
+// --- ref_rms == 0.0f: the exact silent-reference state
+// encode_speaker_reference itself refuses at creation with
+// "voice_profile.reference_silent". A hand-built envelope claiming it is
+// the untrusted-bytes counterpart of that same rejection.
+int test_zero_ref_rms_is_rejected_by_the_reader() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    const std::shared_ptr<XVectorProfile> profile = make_serializable_profile(kProfileEncDim, 0.0f, "en-US");
+    std::vector<uint8_t>                  bytes;
+    SYNTH_TEST_CHECK(synth::qwen3tts::serialize_x_vector_profile(*profile, compatibility_id, bytes) == SYNTH_OK);
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> payload;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
+        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(payload == nullptr);
+    return 0;
+}
+
+// --- ref_rms < 0: reference_rms() (a sqrt of a sum of squares) can never
+// itself produce a negative result, so a stored negative value can only
+// come from a corrupted or hand-forged envelope.
+int test_negative_ref_rms_is_rejected_by_the_reader() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    const std::shared_ptr<XVectorProfile> profile = make_serializable_profile(kProfileEncDim, -1.0f, "en-US");
+    std::vector<uint8_t>                  bytes;
+    SYNTH_TEST_CHECK(synth::qwen3tts::serialize_x_vector_profile(*profile, compatibility_id, bytes) == SYNTH_OK);
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> payload;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
+        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(payload == nullptr);
+    return 0;
+}
+
+// --- ref_rms == +inf: another state reference_rms() can never itself
+// produce for real PCM. `ref_rms > 0.0f` alone would NOT catch this
+// (+inf > 0.0f is true) -- the reader's own check pairs it with
+// std::isfinite specifically because of this case.
+int test_infinite_ref_rms_is_rejected_by_the_reader() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    const std::shared_ptr<XVectorProfile> profile =
+        make_serializable_profile(kProfileEncDim, std::numeric_limits<float>::infinity(), "en-US");
+    std::vector<uint8_t> bytes;
+    SYNTH_TEST_CHECK(synth::qwen3tts::serialize_x_vector_profile(*profile, compatibility_id, bytes) == SYNTH_OK);
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> payload;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
+        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(payload == nullptr);
+    return 0;
+}
+
+// --- ref_rms == NaN: `ref_rms > 0.0f` alone WOULD catch this (any NaN
+// comparison is false), but is checked here anyway so a future change to
+// that check's shape cannot silently drop NaN coverage unnoticed.
+int test_nan_ref_rms_is_rejected_by_the_reader() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    const std::shared_ptr<XVectorProfile> profile =
+        make_serializable_profile(kProfileEncDim, std::numeric_limits<float>::quiet_NaN(), "en-US");
+    std::vector<uint8_t> bytes;
+    SYNTH_TEST_CHECK(synth::qwen3tts::serialize_x_vector_profile(*profile, compatibility_id, bytes) == SYNTH_OK);
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> payload;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
+        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(payload == nullptr);
+    return 0;
+}
+
+// --- An all-zero x-vector: finite in every element (so the isfinite check
+// alone would accept it), but this network's own bias terms make an
+// exactly-all-zero output indistinguishable from a corrupted or hand-forged
+// payload rather than a real embedding.
+int test_all_zero_x_vector_is_rejected_by_the_reader() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    auto profile  = std::make_shared<XVectorProfile>();
+    profile->mode = CloneMode::XVector;
+    profile->x_vector.assign(kProfileEncDim, 0.0f);
+    profile->ref_rms      = 0.5f;
+    profile->language_tag = "en-US";
+
+    std::vector<uint8_t> bytes;
+    SYNTH_TEST_CHECK(synth::qwen3tts::serialize_x_vector_profile(*profile, compatibility_id, bytes) == SYNTH_OK);
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> payload;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
+        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(payload == nullptr);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -1075,6 +1302,15 @@ int main() {
     SYNTH_TEST_CHECK(test_whitelisted_key_wrong_type_is_invalid_arg() == 0);
     SYNTH_TEST_CHECK(test_wrong_n_kv_count_is_invalid_arg() == 0);
     SYNTH_TEST_CHECK(test_writer_emits_exactly_the_whitelisted_keys() == 0);
+
+    SYNTH_TEST_CHECK(test_language_tag_too_long_is_rejected_at_creation() == 0);
+    SYNTH_TEST_CHECK(test_oversized_language_tag_is_rejected_by_the_writer() == 0);
+    SYNTH_TEST_CHECK(test_language_tag_at_the_max_length_round_trips() == 0);
+    SYNTH_TEST_CHECK(test_zero_ref_rms_is_rejected_by_the_reader() == 0);
+    SYNTH_TEST_CHECK(test_negative_ref_rms_is_rejected_by_the_reader() == 0);
+    SYNTH_TEST_CHECK(test_infinite_ref_rms_is_rejected_by_the_reader() == 0);
+    SYNTH_TEST_CHECK(test_nan_ref_rms_is_rejected_by_the_reader() == 0);
+    SYNTH_TEST_CHECK(test_all_zero_x_vector_is_rejected_by_the_reader() == 0);
 
     std::printf("qwen3-tts-profile: all checks passed\n");
     return 0;

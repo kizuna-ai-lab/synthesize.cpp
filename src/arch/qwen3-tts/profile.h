@@ -28,6 +28,25 @@ enum class CloneMode : uint32_t {
     // Icl -- Plan 3.
 };
 
+// The maximum length, in bytes, of an `XVectorProfile::language_tag` this
+// family will ever CREATE or ACCEPT. Tied by name to profile.cpp's own
+// `kPrescanMaxStringLength` -- the Serialized Profile loader's
+// positive-validation prescan whitelist refuses any GGUF string value
+// longer than that -- so the two can never drift apart, the same tie
+// omnivoice::kMaxClonePromptTranscriptLength holds with its own
+// `kPrescanMaxStringLength` (see that constant's own header comment). Before
+// this tie existed, a reviewer measured the exact defect that comment
+// warns about: a hand-built profile with a 1 MiB + 8 byte `language_tag`
+// serialized fine (1,049,376 bytes) and then failed to load with a bare
+// INVALID_ARG -- our own writer's output, rejected by our own reader.
+// `create_x_vector_profile` and `serialize_x_vector_profile` below both
+// refuse a `language_tag` over this bound, so the defect cannot recur from
+// either entry point. A real BCP-47 tag (Task 9's own shape validation,
+// `valid_bcp47_shape`-style, capping at a few dozen characters) never
+// approaches this bound; it exists only to give a pathological caller a
+// deterministic, named refusal instead of a silently-broken round trip.
+constexpr uint64_t kMaxLanguageTagLength = 1u << 20;  // 1 MiB
+
 // The prepared clone payload a Reference Audio Voice Profile carries once
 // create_x_vector_profile below has run the whole x-vector encode chain
 // (Model::prepare_x_vector / encode_speaker_reference) over an
@@ -78,8 +97,13 @@ struct XVectorProfile {
 // (expensive) encode chain ever runs. Plan 3 is the change that turns this
 // rejection into the mode selector.
 //
-// Order: reject a non-empty transcript; reject a package with no speaker
-// encoder (`SYNTH_ERR_UNSUPPORTED_VOICE`, mirroring
+// Order: reject a non-empty transcript; reject a `language_tag` over
+// `kMaxLanguageTagLength` with "voice_profile.language_tag_too_long" (a
+// reviewer-measured Task 8 finding: our own writer must never produce an
+// envelope our own reader refuses -- see that constant's own header comment
+// -- checked here, cheaply, before the expensive encode chain, the same
+// reasoning the transcript check above already uses); reject a package with
+// no speaker encoder (`SYNTH_ERR_UNSUPPORTED_VOICE`, mirroring
 // Model::prepare_x_vector's own CustomVoice guard); run
 // encode_speaker_reference, whose own refusals (including the
 // "voice_profile.reference_silent" digitally-silent-reference rejection)
@@ -90,10 +114,10 @@ struct XVectorProfile {
 //
 // On any non-OK return `output` is left untouched (reset to null).
 // `out_diagnostic_code`/`out_diagnostic_message` are set to non-null static
-// strings only for the two refusals this function itself names
-// ("voice_profile.transcript_unsupported" and whatever
-// encode_speaker_reference itself sets); otherwise both stay null and the
-// returned status is specific enough on its own.
+// strings only for the three refusals this function itself names
+// ("voice_profile.transcript_unsupported", "voice_profile.language_tag_too_long",
+// and whatever encode_speaker_reference itself sets); otherwise both stay
+// null and the returned status is specific enough on its own.
 synth_status_t create_x_vector_profile(const HParams &                         hparams,
                                        const SpeakerEncoderWeights &           speaker_encoder,
                                        const std::vector<float> &              pcm_24k,
@@ -195,11 +219,17 @@ inline constexpr int64_t kPrescanKvCountXVector = 10;
 // and nothing here reads the wall clock, an address, or any other
 // environment-derived value.
 //
-// Returns SYNTH_ERR_INVALID_ARG if `profile.x_vector` is empty: a
-// zero-length tensor is not a shape this family's own reader (or any real
-// Profile create_x_vector_profile ever builds) could load back, so writing
-// one out is this writer's own defect to refuse rather than a caller mistake
-// to diagnose further.
+// Returns SYNTH_ERR_INVALID_ARG if `profile.x_vector` is empty (a
+// zero-length tensor is not a shape this family's own reader, or any real
+// Profile create_x_vector_profile ever builds, could load back) or if
+// `profile.language_tag` exceeds `kMaxLanguageTagLength` (that constant's
+// own header comment records the exact defect this refusal closes). Both
+// are this writer's own defects to refuse, independently of whatever
+// `create_x_vector_profile` itself already checked -- this function has no
+// way to know whether `profile` reached it through that path or was built
+// by hand (as, deliberately, every round-trip test in
+// tests/qwen3_tts_profile_test.cpp does), so it re-asserts both invariants
+// itself rather than trusting a caller-specific history.
 synth_status_t serialize_x_vector_profile(const XVectorProfile & profile,
                                           const uint8_t (&compatibility_id)[32],
                                           std::vector<uint8_t> & out_bytes);
@@ -210,19 +240,42 @@ synth_status_t serialize_x_vector_profile(const XVectorProfile & profile,
 // ceiling, since a Profile of the wrong width builds a wrong-shaped prompt).
 //
 // Unlike omnivoice::load_profile_from_memory, this takes `enc_dim` by value
-// rather than a `Model &`: every check this function needs -- the tensor's
-// own declared element count -- comes from that one scalar, and this
-// family's XVectorProfile carries no discrete token stream to range-check
-// against a vocabulary/mask id, no transcript to re-tokenize through a text
-// frontend, and no declared-language validation of its own (`language_tag`
-// is stored verbatim here, exactly as XVectorProfile's own header comment
-// says create_x_vector_profile itself does -- validating it is the caller's
-// job, the same way profile.cpp's own header comment defers language
-// validation for the in-memory Profile). None of the reasons
-// omnivoice::load_profile_from_memory needs a live `Model &` apply here, so
-// this takes the one scalar it actually needs, the same substitution
-// create_x_vector_profile's own header comment already makes (and
-// justifies) for `HParams`/`SpeakerEncoderWeights` in place of a `Model &`.
+// rather than a `Model &`. This is NOT because no payload-VALUE invariant
+// needs re-checking here -- it does (see the ref_rms/x_vector paragraph
+// below), the same way omnivoice's own ref_rms>0 parity check does for
+// ClonePrompt. It is because every check this function needs, INCLUDING
+// that one, is answerable from data already in hand: the tensor's own
+// declared element count against the one scalar `enc_dim`, and ref_rms/
+// x_vector against invariants that are properties of the stored FLOATS
+// themselves, needing no Model lookup at all. What genuinely has no
+// counterpart here is the set of checks that DO need a live Model:
+// range-checking a discrete token stream against a vocabulary/mask id,
+// re-tokenizing a transcript through a text frontend, and matching a
+// declared language tag against the Model's own declared list --
+// XVectorProfile carries no token stream, no transcript, and (Task 9's own
+// job, not this function's) no validated language tag; `language_tag` is
+// stored verbatim here, exactly as XVectorProfile's own header comment says
+// create_x_vector_profile itself does. That is the actual substitution this
+// signature makes, the same one create_x_vector_profile's own header
+// comment already makes (and justifies) for `HParams`/`SpeakerEncoderWeights`
+// in place of a `Model &`.
+//
+// Payload-value parity (a reviewer finding on this task): a loaded
+// XVectorProfile satisfies the same invariants a CREATED one does, not just
+// the same shape. `ref_rms` must be finite and strictly positive --
+// encode_speaker_reference's own "voice_profile.reference_silent" rejection
+// (speaker-encoder-host.cpp) refuses a silent reference at EXACTLY
+// ref_rms == 0.0f, and reference_rms() -- a sqrt of a sum of squares over
+// real PCM -- can never itself produce a negative, infinite, or NaN result,
+// so any of those four states in a loaded envelope is the untrusted-bytes
+// counterpart of the same rejection, checked without needing a Model.
+// `x_vector` must have every element finite (encode_speaker_reference's own
+// graph-level check, mirrored here as a malformed-input INVALID_ARG rather
+// than that function's internal SYNTH_ERR_INTERNAL) and must not be
+// identically zero (this network's own bias terms make an exactly-all-zero
+// output indistinguishable from a corrupted or hand-forged payload, silent
+// reference or not). Before this check existed, a reviewer measured all
+// four ref_rms states plus an all-zero x_vector loading with SYNTH_OK.
 //
 // Status mapping (docs/c-interface.md: "Incompatible Model data returns
 // SYNTH_ERR_UNSUPPORTED_VOICE; malformed, truncated, or corrupt data returns
@@ -230,20 +283,39 @@ synth_status_t serialize_x_vector_profile(const XVectorProfile & profile,
 //   * structurally broken bytes (gguf_init_from_buffer itself refuses them,
 //     a required key is missing/wrongly typed/duplicated, the tensor shape
 //     or byte range does not fit `data`, the x-vector's declared length does
-//     not equal `enc_dim`, or the content digest does not match) ->
-//     SYNTH_ERR_INVALID_ARG;
+//     not equal `enc_dim`, the content digest does not match, or a
+//     payload-value invariant above is violated) -> SYNTH_ERR_INVALID_ARG;
 //   * a structurally well-formed envelope for a DIFFERENT model_family,
 //     schema, schema_version, or exact compatibility_id -> SYNTH_ERR_UNSUPPORTED_VOICE
 //     (this loader understands the envelope, just not for this Model);
-//   * an unrecognized `kind` value (Plan 2: anything other than "x-vector",
-//     including a Plan 3 "icl" envelope this build does not implement yet)
+//   * an unrecognized `kind` value (Plan 2: anything other than "x-vector")
 //     -> SYNTH_ERR_INVALID_ARG: unlike the three mismatches above, `kind` is
 //     this ONE schema's own internal tag, not a different schema/version/
 //     model -- a value this build does not recognize means the payload
 //     structure the rest of the bytes describe cannot be interpreted at
 //     all, which this project treats as malformed rather than merely
-//     unsupported. This is also the exact rejection Plan 3 turns into a
-//     success once it adds the "icl" arm.
+//     unsupported. This branch is reachable only for a HAND-BUILT buffer
+//     that keeps Plan 2's own key set and count and swaps out just the
+//     `kind` string (exactly what this task's own tamper matrix does) -- a
+//     REAL Plan 3 "icl" envelope, carrying its own additional keys, is
+//     rejected earlier by the prescan whitelist/`n_kv` gate below, which
+//     Plan 3 must widen (kPrescanKnownKeys/kPrescanKvCountXVector's own
+//     header comments already say so) before this `kind` branch becomes the
+//     operative rejection for a genuine "icl" envelope, let alone a
+//     successful load.
+//
+//     Naming the cost this trade carries: because an unrecognized field is
+//     refused by a POSITIVE whitelist rather than accepted and ignored, a
+//     structurally sound Plan 3 envelope this build does not yet understand
+//     is reported as SYNTH_ERR_INVALID_ARG -- "malformed" -- rather than
+//     SYNTH_ERR_UNSUPPORTED_VOICE -- "newer than this build", the status a
+//     schema_version bump would have produced instead (see the
+//     schema_version row above). This project accepts that trade
+//     deliberately (this section's own top comment: discriminating on
+//     `kind` rather than `schema_version` is what lets a Plan 2 profile
+//     stay loadable under a Plan 3 build with no re-cut), but the trade is
+//     not free, and a future reader of this file should not have to
+//     rediscover the cost by reading a status code as a bug report.
 //
 // Size arithmetic runs BEFORE any allocation sized from the untrusted bytes:
 // the declared tensor element count is checked against `enc_dim` using only
@@ -254,7 +326,9 @@ synth_status_t serialize_x_vector_profile(const XVectorProfile & profile,
 // function names no refusal of its own that needs one (unlike
 // omnivoice::load_profile_from_memory's re-tokenization failure, which has
 // no counterpart here -- XVectorProfile carries no transcript to
-// re-tokenize). Both out-parameters exist only so this signature matches the
+// re-tokenize; the payload-value checks above return a bare INVALID_ARG,
+// the same way omnivoice::load_profile_from_memory's own ref_rms>0 parity
+// check does). Both out-parameters exist only so this signature matches the
 // same shape Task 9's dispatch already expects from the family loader.
 synth_status_t load_profile_from_memory(uint32_t        enc_dim,
                                         const uint8_t * data,

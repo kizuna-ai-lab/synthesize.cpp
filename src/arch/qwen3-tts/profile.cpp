@@ -8,6 +8,7 @@
 #include "sha256.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -44,6 +45,19 @@ synth_status_t create_x_vector_profile(const HParams &                         h
         out_diagnostic_message =
             "this package's Plan 2 runtime implements x-vector cloning only; a reference transcript names the "
             "transcript-assisted mode, which has no implementation yet";
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // Task 8 finding: this family's own writer (serialize_x_vector_profile)
+    // must never be able to produce an envelope its own reader
+    // (load_profile_from_memory's prescan_buffer, tied to this exact bound
+    // via kMaxLanguageTagLength/kPrescanMaxStringLength -- see that
+    // constant's own header comment, profile.h) refuses. Checked here,
+    // cheaply, before the expensive encode chain, the same reasoning the
+    // transcript check above already uses.
+    if (language_tag.size() > kMaxLanguageTagLength) {
+        out_diagnostic_code    = "voice_profile.language_tag_too_long";
+        out_diagnostic_message = "the reference language tag exceeds this package's maximum supported length";
         return SYNTH_ERR_INVALID_ARG;
     }
 
@@ -334,13 +348,22 @@ bool find_u8_32_value_offset(const uint8_t * data, size_t search_size, const std
 // ---------------------------------------------------------------------------
 
 constexpr uint64_t kPrescanMaxKeyLength    = 256;
-// This family's own Serialized Profile carries no free-form transcript in
-// Plan 2 (language_tag is a short BCP-47-shaped tag, never anything close to
-// this bound) -- the ceiling exists purely so a hostile string length claim
-// cannot itself be used to justify an oversized skip, the same defensive
-// role omnivoice::kPrescanMaxStringLength plays for its own (much larger)
-// transcript field.
-constexpr uint64_t kPrescanMaxStringLength = 1u << 20;  // 1 MiB
+// Tied to kMaxLanguageTagLength (profile.h) rather than a second,
+// independent literal: create_x_vector_profile's own creation-time cap and
+// serialize_x_vector_profile's own defensive re-check must never drift from
+// this load-time ceiling, or a language_tag creation accepts could stop
+// round-tripping through this exact loader -- precisely the defect a
+// reviewer measured here before this tie existed (a 1 MiB + 8 byte
+// language_tag serialized fine and then failed to load with a bare
+// INVALID_ARG: our own writer's output, rejected by our own reader). This
+// family's own Serialized Profile carries no free-form transcript in Plan 2
+// (a real BCP-47 language_tag never approaches this bound), so the ceiling
+// exists purely so a hostile string length claim cannot itself be used to
+// justify an oversized skip -- the same defensive role
+// omnivoice::kPrescanMaxStringLength plays for its own transcript field, at
+// the same magnitude (both are `1u << 20`, not "much larger" as an earlier
+// draft of this comment claimed).
+constexpr uint64_t kPrescanMaxStringLength = kMaxLanguageTagLength;
 
 bool prescan_has_remaining(size_t offset, size_t size, size_t need) {
     return offset <= size && need <= size - offset;
@@ -427,6 +450,26 @@ bool prescan_skip_value(const uint8_t * data, size_t size, size_t & offset, gguf
 // whether or not gguf_init_from_buffer would also refuse it -- and the
 // caller maps `false` to SYNTH_ERR_INVALID_ARG without ever calling
 // gguf_init_from_buffer on these bytes.
+//
+// Scoping note (reviewer finding, minor): the per-entry lookup below matches
+// each buffer key against kPrescanKnownKeys by NAME, not by POSITION -- "our
+// own format" is currently enforced as the key SET (every key present is
+// whitelisted, no key repeats, and the count matches exactly) plus each
+// key's own declared type/shape, but NOT the writer's own emission order. A
+// hand-built buffer with `set_common_metadata`'s 8 keys followed by
+// `ref_rms`/`language_tag` in fully REVERSED order, with a digest
+// recomputed over that reversed layout, loads successfully. This has no
+// security impact -- content_sha256 is a corruption check, never a
+// signature (sha256.h's own header comment) -- and is inherited verbatim
+// from omnivoice::prescan_buffer, which has the identical property for its
+// own two kinds. Left unpinned rather than fixed: pinning order here would
+// mean checking `key == kPrescanKnownKeys[index].key` positionally for
+// indices 0-7 (fine, `kind`'s own value is not yet known at that point) but
+// would need to BRANCH on the `kind` value read at index 7 to know which
+// kind-specific sequence to expect from index 8 onward once a second kind
+// (Plan 3's "icl") exists -- a real design decision for whoever adds that
+// second kind, not a one-line fix to make now for a kind that does not
+// exist yet.
 bool prescan_buffer(const uint8_t * data, size_t size) {
     size_t offset = 0;
 
@@ -575,12 +618,36 @@ synth_status_t serialize_x_vector_profile(const XVectorProfile & profile,
     if (profile.x_vector.empty()) {
         return SYNTH_ERR_INVALID_ARG;
     }
+    // Defensive, independent of whatever create_x_vector_profile already
+    // checked (a reviewer finding on this task): this function has no way
+    // to know whether `profile` reached it through that path or was built
+    // by hand, so it re-asserts the writer's own invariant itself rather
+    // than trusting a caller-specific history -- see kMaxLanguageTagLength's
+    // own header comment (profile.h) for the exact defect this closes.
+    if (profile.language_tag.size() > kMaxLanguageTagLength) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
     OwnedGgufContext ctx(gguf_init_empty());
     if (ctx == nullptr) {
         return SYNTH_ERR_OOM;
     }
     set_common_metadata(ctx.get(), kKindXVector, compatibility_id);
     gguf_set_val_f32(ctx.get(), "synthesize.voice_profile.ref_rms", profile.ref_rms);
+    // Known gap (reviewer finding, minor, left unfixed): gguf_set_val_str
+    // takes a null-terminated `const char *` -- ggml/include/gguf.h has no
+    // length-aware string setter/getter pair at all -- so an EMBEDDED NUL in
+    // `language_tag` silently truncates here (a 5-byte "en\0US" round-trips
+    // as a 2-byte "en", not as itself). Fixing this for real would mean
+    // bypassing gguf's own KV setter/getter API for this one field
+    // specifically, which is exactly the "genuinely goes through gguf's own
+    // setter/getter API" property write_envelope's own header comment relies
+    // on to keep the metadata section a thin wrapper rather than a second
+    // hand-rolled encoder alongside the header/tensor-info framing that
+    // already IS hand-rolled. A BCP-47 tag (this family's own declared shape
+    // for this field, Task 9's job to enforce) is ASCII letters, digits, and
+    // hyphens only, so a real caller's input can never contain a NUL to
+    // begin with; only a caller that already bypassed that shape validation
+    // could reach this gap.
     gguf_set_val_str(ctx.get(), "synthesize.voice_profile.language_tag", profile.language_tag.c_str());
     return write_envelope(ctx.get(), profile.x_vector, out_bytes);
 }
@@ -664,11 +731,16 @@ synth_status_t load_profile_from_memory(uint32_t        enc_dim,
         return SYNTH_ERR_INVALID_ARG;
     }
     if (kind != kKindXVector) {
-        // Plan 2 recognizes exactly one kind. A value outside it -- a Plan 3
-        // "icl" envelope included -- means the payload structure the rest of
-        // the bytes describe cannot be interpreted by this build at all,
-        // which this project treats as malformed rather than merely
-        // unsupported (profile.h's own header comment on this function).
+        // Plan 2 recognizes exactly one kind. A value outside it means the
+        // payload structure the rest of the bytes describe cannot be
+        // interpreted by this build at all, which this project treats as
+        // malformed rather than merely unsupported (profile.h's own header
+        // comment on this function, including the forward-compatibility
+        // cost this trade carries). This branch fires for a HAND-BUILT
+        // buffer that keeps Plan 2's own key set/count and swaps out just
+        // this string -- a REAL Plan 3 "icl" envelope, carrying its own
+        // additional keys, never reaches this line: the prescan whitelist/
+        // `n_kv` gate above already rejected it first.
         return SYNTH_ERR_INVALID_ARG;
     }
     uint8_t file_compatibility_id[32];
@@ -737,6 +809,22 @@ synth_status_t load_profile_from_memory(uint32_t        enc_dim,
         !meta.string("synthesize.voice_profile.language_tag", language_tag)) {
         return SYNTH_ERR_INVALID_ARG;
     }
+    // Payload-value parity (reviewer finding): load_profile_from_memory
+    // validated structure exhaustively but, until now, values not at all --
+    // a hand-edited envelope could carry a ref_rms state
+    // encode_speaker_reference's own "voice_profile.reference_silent"
+    // rejection (speaker-encoder-host.cpp) refuses by name at creation
+    // (EXACTLY ref_rms == 0.0f), or one reference_rms() -- a sqrt of a sum
+    // of squares over real PCM -- could never itself produce (negative,
+    // infinite, or NaN), straight into Task 11's consumer. One check rejects
+    // all four measured states: `!isfinite` catches NaN and +/-inf,
+    // `!(ref_rms > 0.0f)` catches zero and negative (and NaN again, since
+    // any comparison with NaN is false) -- bare INVALID_ARG, no diagnostic
+    // code, the same style omnivoice::load_profile_from_memory's own
+    // ref_rms>0 parity check uses.
+    if (!std::isfinite(ref_rms) || !(ref_rms > 0.0f)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
 
     // Truncation guard: the DECLARED tensor byte range must actually fit
     // inside the SUPPLIED buffer. gguf_init_from_buffer was called with
@@ -759,6 +847,30 @@ synth_status_t load_profile_from_memory(uint32_t        enc_dim,
 
     std::vector<float> x_vector(size_t{ element_count });
     std::memcpy(x_vector.data(), data + data_offset + tensor_offset, tensor_bytes);
+
+    // Payload-value parity, extended to the x-vector itself:
+    // encode_speaker_reference's own graph-level check (speaker-encoder-host.cpp)
+    // already refuses a non-finite element with SYNTH_ERR_INTERNAL before a
+    // created XVectorProfile can ever hold one -- a serialized envelope
+    // claiming one is the same malformed state, mapped to INVALID_ARG
+    // instead (the untrusted-bytes counterpart of that internal check, the
+    // same status split this function already draws elsewhere between "our
+    // own defect" and "the bytes are bad"). An identically-all-zero
+    // x-vector is refused alongside it: this network's own bias terms make
+    // an exactly-all-zero output indistinguishable from a corrupted or
+    // hand-forged payload rather than a real embedding of any reference
+    // audio, silent or not -- a reviewer measured both states loading with
+    // SYNTH_OK before this check existed.
+    bool any_nonzero = false;
+    for (float value : x_vector) {
+        if (!std::isfinite(value)) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        any_nonzero = any_nonzero || (value != 0.0f);
+    }
+    if (!any_nonzero) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
 
     auto profile          = std::make_shared<XVectorProfile>();
     profile->mode         = CloneMode::XVector;

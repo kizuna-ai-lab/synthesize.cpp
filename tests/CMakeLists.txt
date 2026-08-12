@@ -771,6 +771,40 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             TIMEOUT 300)
     endif()
 
+    # Stage 2 Plan 2's completion gate: reference audio in, cloned audio out,
+    # entirely through the public seam, against the real Base package and its
+    # pinned reference clip. Guarded on the wav too -- a locally-materialized
+    # asset like the model itself (models/ is gitignored), the same double
+    # guard tests/omnivoice_profile_test.cpp's own registration below uses.
+    # The golden x-vector path is passed unconditionally: it is an
+    # uncommitted oracle dump artifact (build/goldens/...), and the test
+    # itself tolerates its absence (tests/qwen3_tts_clone_real.cpp's own
+    # top-of-file comment), so its non-existence does not gate registration.
+    set(_synth_qwen3_tts_reference_wav "${CMAKE_SOURCE_DIR}/models/qwen3-tts-reference-audio/clone.wav")
+    if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}" AND EXISTS "${_synth_qwen3_tts_reference_wav}")
+        add_executable(synthesize-qwen3-tts-clone-real qwen3_tts_clone_real.cpp)
+        target_include_directories(synthesize-qwen3-tts-clone-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
+        target_link_libraries(synthesize-qwen3-tts-clone-real PRIVATE synthesize)
+        synth_register_integration_target(synthesize-qwen3-tts-clone-real)
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-clone-real")
+        add_test(NAME synthesize-qwen3-tts-clone-real
+            COMMAND synthesize-qwen3-tts-clone-real
+                ${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}
+                ${_synth_qwen3_tts_reference_wav}
+                ${CMAKE_SOURCE_DIR}/build/goldens/qwen3-tts/qwen3-tts-12hz-0-6b-base/base-xvector-en/speaker/x_vector.f32
+                ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-clone-real)
+        set_tests_properties(synthesize-qwen3-tts-clone-real PROPERTIES
+            LABELS "integration;qwen3-tts;abi"
+            # Four full autoregressive synthesis passes over a two-word
+            # sentence (assertions 2/3, 4, and 5) plus two ECAPA-TDNN
+            # encode passes (assertion 1's direct call and assertion 4's
+            # second Profile) against the real ~2.5 GB Base package -- the
+            # same per-call budget tests/qwen3_tts_base_load_real.cpp's own
+            # TIMEOUT reasoning already sizes for a single such call, times
+            # roughly four, with headroom for the sanitizer build.
+            TIMEOUT 3600)
+    endif()
+
     # The foundation slice's closing check: the real OmniVoice package through
     # the family loader and then through the public seam. It needs the package
     # because that is the whole point — every earlier omnivoice test runs

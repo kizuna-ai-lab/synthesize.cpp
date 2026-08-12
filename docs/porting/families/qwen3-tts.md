@@ -29,14 +29,28 @@ correction, zero Voice Profile sources, because nothing in the runtime can
 prepare or consume a Profile for this family yet -- is reported correctly and
 covered by an integration test against the real package (see "Stage 2: Base
 Package, Plan 1" below). The package's own Voice Profile contract is carried
-and validated at load time regardless. Not done: any graph (ECAPA-TDNN
-speaker encoder, Audio Normalizer, mel front end) and Voice Profile
-preparation -- `synth_voice_profile_create_from_reference` still refuses this
-family with `SYNTH_ERR_UNSUPPORTED_VOICE` -- both of which are Plan 2's
-scope, and both of which are what will make the snapshot advertise Reference
-Audio. The
-reference-duration bounds Task 6 shipped are safety ceilings, not
-perceptually validated ones; no listening pass has happened.
+and validated at load time regardless.
+
+**Stage 2 Plan 2 is done: reference audio in, cloned audio out, on CPU, in
+x-vector mode.** The mel front end and the 435-node ECAPA-TDNN speaker
+encoder graph exist and run; `synth_voice_profile_create_from_reference` now
+prepares a real Profile from the real package (measured against the oracle
+at cosine 0.99999536, a residual attributable to the oracle's own bfloat16
+weights, not the port); that Profile serializes, reloads, and substitutes
+into the synthesis prompt in place of a Preset Voice; and
+`tests/qwen3_tts_clone_real.cpp` proves, against the real package, that two
+different reference clips produce different cloned audio -- the assertion
+that actually distinguishes "cloned" from merely "synthesized" -- while a
+Serialized Profile round-trips to the same audio and CustomVoice stays
+byte-identical throughout. The capability snapshot now advertises
+`SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`
+for Base. See "Stage 2: Base Package, Plan 2" below for the full record,
+including what remains: ICL / transcript-assisted cloning (Plan 3),
+Description Text (Stage 3), the CLI (a cross-family slice, deliberately not
+this plan's), quantization and CUDA for the new graphs (Plan 4), and the
+listening pass on the reference-duration bounds, which are safety ceilings
+Task 6 shipped, not perceptually validated ones -- still owed before Stage 2
+ships.
 
 ## Decision
 
@@ -2119,6 +2133,236 @@ Building and running this test needs a build directory configured with
 `-DSYNTH_BUILD_INTEGRATION_TESTS=ON` and the real Base GGUF on disk; it does
 not run against the standard `build/` unit-gate configuration and is not part
 of `synthesize-check-unit`.
+
+## Stage 2: Base Package, Plan 2
+
+Plan 2 is the ladder's second-rung completion gate: **reference audio in,
+cloned audio out, on CPU, in x-vector mode — a usable clone capability
+exists.** `tests/qwen3_tts_clone_real.cpp` closes it against the real Base
+package and its pinned reference clip
+(`models/qwen3-tts-reference-audio/clone.wav`, 8.08 s / 193,920 samples native
+at 24 kHz mono), passing at commit `ecf8203` and this task's own commit on
+top of it. Six assertions, the last of which is the one that actually
+distinguishes "cloned" from "synthesized": a Profile prepared from the real
+clip matches the oracle x-vector above the committed tolerance; synthesis
+with it produces finite, non-silent 24 kHz PCM; the same Profile and seed
+reproduce that PCM bit-for-bit; **two different reference clips produce
+different PCM** — a Profile the graph silently ignored would pass every
+other assertion here too; a Serialized Profile round-trips (serialize, free
+the original, load, synthesize) to the same PCM; and a Profile presented to
+a second Loaded Model refuses with `SYNTH_ERR_UNSUPPORTED_VOICE` and writes
+no audio. A deliberate break of the x-vector substitution (a fixed dummy
+vector in place of the per-Profile one) was confirmed to fail exactly the
+"two different clips" assertion and nothing else, then restored; a
+deliberate loosening of the oracle threshold was confirmed to fail the
+x-vector assertion, then restored.
+
+### The mel front end's six conventions, read off upstream
+
+`docs/voice-conditioning.md`'s mel front end needs six conventions beyond the
+five numbers the package itself declares (`mel_bins` 128, `n_fft` 1024,
+`hop_length` 256, `win_length` 1024, `fmin` 0, `fmax` 12000); each silently
+changes the answer, so each is read off the pinned upstream source
+(`QwenLM/Qwen3-TTS` at `022e286b98fbec7e1e916cb940cdf532cd9f488e`,
+`qwen_tts/core/models/modeling_qwen3_tts.py`) rather than assumed, and
+recorded verbatim in `conventions.json` (Task 1):
+
+| convention | value | upstream |
+| --- | --- | --- |
+| mel scale | Slaney (not HTK) | `:435-437` — `librosa.filters.mel(...)` called with no `htk` kwarg; librosa 0.11.0 defaults `htk=False` |
+| filterbank normalization | Slaney area (not peak, not unnormalized) | `:435-437`, same call, no `norm` kwarg; librosa 0.11.0 defaults `norm='slaney'` |
+| spectrum magnitude | amplitude `\|X\|` with epsilon `1e-9` inside the square root (not power `\|X\|^2`) | `:459` |
+| log compression | natural log, floor `1e-5`, `C=1` | `:396-397,462` |
+| window | Hann, `periodic=True` (torch's default; never passed explicitly) | `:440` |
+| padding / centering | **not** `center=True` STFT and **not** uncentered: a manual reflect pad of `(n_fft - hop_length) // 2` samples per side, then `torch.stft(center=False)` on the already-padded signal | `:442-445`, `:408`, `:453` |
+
+The padding rule is the one a reader would most likely guess wrong: for this
+package's `hop_length=256` the manual pad is 384 samples per side, not the
+512 a naive `center=True` assumption would use. `conventions.json` also
+records `min_pcm_samples = 385` (`(n_fft - hop_length) // 2 + 1`, the point
+below which upstream's own reflect pad fails outright — observed directly by
+padding a synthetic input, not derived from the formula alone) and the two
+one-second frame counts (93 at `hop_length=256`, 46 at `hop_length=512`) used
+to pin the port's own frame-count fixed points.
+
+### ECAPA-TDNN graph and mel front end, measured against upstream
+
+The GGML graph (`src/arch/qwen3-tts/speaker-encoder.h`/`.cpp`, Task 4) builds
+**435 nodes** and reproduces `Qwen3TTSSpeakerEncoder`'s own forward pass to
+**7.15e-07** max-abs difference against a from-scratch numpy transcription of
+the same topology, on synthetic weights at a small configuration — not
+against the real 76-tensor checkpoint, which the residual below measures
+separately. The topology facts a reader cannot get from the five declared
+numbers alone (Res2Net dilations `[1,2,3,4,1]`, `reflect`-padded "same"
+convolutions, the pass-through-first accumulation rule, the squeeze-excite
+statistic and activations, the attention input's 4608-channel concatenation)
+are in `conventions.json`'s `ecapa_topology` block, each with its own
+upstream line citation.
+
+The mel front end (`src/arch/qwen3-tts/mel.h`/`.cpp`, Task 2) is
+bit-exact-able in principle — it runs entirely in float32 on the CPU upstream,
+never touching bfloat16 — and measures **max_abs 3.31e-4, mean_abs 5.26e-7,
+cosine 1.000000** against the oracle's own `mel.f32`. Recomputing the
+reference FFT/filterbank independently in float64 puts the port's own mel
+*closer* to that float64 truth (1.14e-4) than the oracle's is (2.21e-4): the
+residual is ordinary cross-implementation floating-point rounding between two
+different FFT/DFT implementations, not a defect in either the port or the
+mel stage's contribution to the x-vector's own residual (see below).
+
+### The x-vector's measured residual
+
+`tests/tolerances/qwen3-tts.json`,
+`variants.qwen3-tts-12hz-0-6b-base.profiles.BF16.stages.replay.probes.speaker.x_vector`
+(Task 6, measured 2026-08-12 on CPU, `build/` at `CMAKE_BUILD_TYPE=Release`,
+over cases `base-xvector-en` and `base-xvector-zh` — both the same reference
+clip with no trim, byte-identical `speaker/*.f32` outputs between them, so
+one measurement taken twice rather than two independent points):
+
+```
+min_cosine:          0.9999767764206815   (gate: 1 - 5 * (1 - observed))
+observed_min_cosine: 0.9999953552841363
+observed_max_abs:    0.021114349365234375
+```
+
+The residual is bfloat16 quantization of the **oracle's own** tensors, not a
+port defect. Six of the seven dumped `speaker/*.f32` artifacts (everything
+but `mel.f32`) round-trip through bfloat16 exactly (max abs diff 0.0) — the
+oracle's speaker encoder runs in `torch.bfloat16` throughout. At the
+x-vector's own largest element (`|ref| = 7.28`), 0.02111 is 0.68 of one
+bfloat16 ulp there, and **recomputing the oracle's own final ASP/FC layer
+directly in float64 disagrees with the oracle's own recorded x-vector by
+more** (0.022367) **than this port does.** `max_abs` is recorded but does not
+gate: an x-vector is a direction consumed by a dot product against the
+prompt, the same reasoning that leaves the talker probes' own `max_abs`
+ungated elsewhere in this file.
+
+### Profile Schema identity
+
+Schema `qwen3-tts-voice-clone`, version 1 — the same string and version the
+Base package's own `synthesize.profile.schema`/`schema_version` metadata
+already declared and the loader already validated in Plan 1, now also the
+identity a runtime-prepared Profile's v1 Serialized envelope carries
+(`src/arch/qwen3-tts/profile.h`/`.cpp`, Tasks 7–8). One `kind` value ships
+this plan: `"x-vector"`. Plan 3 adds `"icl"` for transcript-assisted cloning
+**without a schema version bump** — the envelope discriminates on the
+in-payload `kind` key rather than on `schema_version`, the same shape
+`arch/omnivoice/profile.h`'s two kinds already use, so every Plan 2 profile
+stays loadable under a Plan 3 build.
+
+### The six family-conditioned points, and which four Plan 2 changed
+
+Reference Audio support is decided at six places a family can hook into
+across the shared core (`.superpowers/sdd/plan2-interfaces.md` §1) — five
+dispatch arms in `src/voice-profile.cpp` plus one synthesis-time consumption
+point in `src/synthesize.cpp`. Plan 2 changes four of the six:
+
+| point | location | Plan 2 |
+| --- | --- | --- |
+| A — `synth_voice_profile_create_from_reference` | `voice-profile.cpp` | **Changed** (Task 9): a `Qwen3Tts` arm gated on `source_flags & REFERENCE_AUDIO`, refusing a transcript by name |
+| B — `synth_voice_profile_create_from_description` | `voice-profile.cpp` | Untouched — Description Text is Stage 3's, not this rung's |
+| C — `synth_voice_profile_create_random` | `voice-profile.cpp` | Untouched — no family, including OmniVoice, implements Random Seed |
+| D — `synth_voice_profile_load_from_memory` | `voice-profile.cpp` | **Changed** (Task 9): a `Qwen3Tts` arm gated on `source_flags & SERIALIZED_PROFILE`, preserving the params-before-model validation order |
+| E — `synth_voice_profile_serialize` | `voice-profile.cpp` | **Changed** (Task 9): branches on the **profile's** `family_tag == Qwen3TtsClone`, not the model's family |
+| 6th — synthesis-time consumption | `synthesize.cpp`, the `ModelFamily::Qwen3Tts` arm inside `synth_synthesize` | **Changed** (Task 11): a blanket `SYNTH_ERR_UNSUPPORTED_VOICE` refusal replaced with a cross-model check, a `family_tag`/`CloneMode` check, and `family_request.x_vector = &clone.x_vector` |
+
+Points A, D and E each additionally required `fill_voice_profile_capability`
+(`src/arch/qwen3-tts/weights.cpp`, gated on `hparams.voice_mode ==
+VoiceMode::ProfileSources`, not the inverse predicate `has_preset_voice_catalog`)
+to publish real values, and Task 10 restructured `Model::resolve_voice` /
+`Model::run_synthesis` to consult a Profile's x-vector instead of refusing
+every Base request before one is reached — the family-internal half of the
+same seam, not itself one of the six shared-core points.
+
+### CustomVoice stayed byte-identical
+
+None of Plan 2's changes touch the `PresetCatalog` (CustomVoice) path: every
+dispatch point above additionally gates on this Loaded Model's own
+`source_flags`/`family_tag`, not just `family == Qwen3Tts`, which is what a
+CustomVoice Model shares with Base under one `ModelFamily` tag. Verified
+directly for this task: `synthesize-cli --model
+qwen3-tts-12hz-0-6b-customvoice-BF16.gguf --text "Hi." --voice aiden
+--language en --seed 42` produces
+`9ffbe5e5d41a7fc36cbb3f138660ee55cf13c4d3363e716ae944c0ab7cf1fddf` at this
+task's own commit, identical to the digest value Tasks 10 and 11 each
+recorded in their own reports for the same command.
+
+### The Python binding needed no work — verified two ways, not assumed
+
+The claim under test: the binding is entirely family-generic, so a second
+family needs zero binding changes. Verified twice.
+
+**Statically**:
+`grep -rniE "omnivoice|qwen3|vits|kokoro|family" bindings/python/src/
+bindings/python/CMakeLists.txt bindings/python/pyproject.toml` returns zero
+matches.
+
+**Dynamically**: built fresh Provider and API wheels (`uv build --wheel`,
+the same two artifacts `tests/check-python-api-wheel.cmake` builds for its
+own gate), installed both into a throwaway venv alongside `numpy`/`soundfile`,
+and drove the real Base package through the installed extension —
+`create_voice_profile_from_reference` from `clone.wav`, `synthesize_text`
+with that Profile, `serialize()` — with **no change to any file under
+`bindings/`**:
+
+```
+sources 9 transcript 0
+frames 30720 finite True
+serialized bytes 4832
+```
+
+`sources == 9` is `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO (1) |
+SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE (8)`; `transcript == 0` is
+`SYNTH_REQUIREMENT_UNSUPPORTED` — both match the C capability snapshot
+exactly, surfaced correctly through the extension. One correction to how
+this check is written, for whoever runs it next: the binding's actual shape
+is `model.voice_profile_capabilities` (a property, not a call),
+`model.create_context().synthesize_text(text, voice_profile=..., language="en")`
+(there is no top-level `model.synthesize(...)`, and the `language` keyword
+takes a BCP-47 tag like `"en"`, not a spelled-out name like `"english"`) —
+three shape details that do not match a natural first guess at the API, not
+family-conditioning of any kind.
+
+### The CLI's position, stated rather than left implied
+
+`examples/cli/` is untouched by this plan, and stays untouched on purpose:
+`grep -rn "voice_profile\|reference\|omnivoice\|family" examples/cli/`
+returns zero matches, confirmed directly. The CLI has no audio reader and
+never assigns `synth_request_t.voice_profile` for **any** Model Family,
+including OmniVoice, which has had cloning capability for weeks. Adding one
+is a cross-family slice — jiangzhuo's ruling, 2026-08-12 — not a qwen3-tts
+increment; the spec's §8 row for this plan listing "CLI and binding Adapters"
+overstated the CLI half of that clause, which does not survive contact with
+the tree.
+
+### What Plan 2 does not deliver
+
+- **ICL / transcript-assisted cloning.** Plan 3's. `reference_transcript` and
+  `reference_language` report `SYNTH_REQUIREMENT_UNSUPPORTED`, and a request
+  carrying a transcript is refused by name
+  (`voice_profile.transcript_unsupported`). The codec encoder graph is not
+  written; `resolve_codec_encoder` still discards its pointers into a scratch
+  struct, deliberately. Ten of the Base manifest's twelve Golden cases are
+  ICL and cannot be driven end to end by anything in this plan.
+- **Description Text.** Stage 3's, on `qwen3-tts-12hz-1.7b-voicedesign`. No
+  `ModelFamily::Qwen3Tts` arm exists at dispatch point B above, and
+  `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT` stays unadvertised. Random Seed
+  stays unadvertised too, by every family.
+- **The CLI path.** See above.
+- **Quantization or CUDA for the new graphs.** The speaker encoder runs on
+  the CPU in F32/BF16 as the package ships it — Plan 1's own catalog note
+  said the encoder half "stays on the CPU until a graph exists that reads
+  it"; a graph now exists, and whether quantizing or accelerating it pays is
+  a measured decision for Plan 4, not assumed from another family's
+  precedent. No performance number is claimed by this plan.
+- **The listening pass.** The reference-duration bounds recorded under
+  "Measured reference-duration bounds" above remain safety ceilings, not
+  perceptually validated ones. The 30 s point that produced only 9 output
+  frames for an 11-word sentence is still unadjudicated by ear; a listening
+  pass on the 0.5 s / 1 s / 30 s renders is owed before Stage 2 ships, and is
+  scheduled last, after Plan 4.
+- **Publication and Quality Evaluation.** Unchanged: publication requires
+  separate, per-submission confirmation; Quality Evaluation is deferred per
+  ADR 0017.
 
 ## Open Questions for Intake
 

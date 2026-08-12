@@ -389,6 +389,107 @@ def build_conventions(frames_observed: int, frames_observed_pcm_samples: Optiona
                    "in_channels": 3072, "out_channels": 1024,
                    "note": ("not tapped separately -- its output, squeezed, is the "
                              "x_vector artifact already dumped.")},
+            # Everything above is a shape, and every shape is checked by the
+            # resolver against a tensor. Everything below is NOT: a dilation, an
+            # activation, an accumulation order and a softmax axis leave no trace
+            # in the checkpoint, so a port that guesses one wrong still resolves
+            # all 76 tensors, still builds, and still emits a finite 1024-vector.
+            "conventions": {
+                "padding": {
+                    "mode": "reflect",
+                    "extent": "same",
+                    "value": "dilation * (kernel_size - 1) // 2 on each side",
+                    "source": f"{UPSTREAM_FILE}:261-263, :136-138, :146-147, :172-176, :368-371 -- "
+                              "every Conv1d in this encoder is constructed with "
+                              "padding='same', padding_mode='reflect'. torch's "
+                              "_ConvNd routes a non-'zeros' padding_mode through "
+                              "F.pad before the convolution, so this is NOT the "
+                              "zero padding a ggml_conv_1d would apply. All "
+                              "kernels here are odd, so the split is symmetric.",
+                },
+                "res2net_dilations": {
+                    "blocks.1": 2,
+                    "blocks.2": 3,
+                    "blocks.3": 4,
+                    "source": "configuration_qwen3_tts.py:47-67 (enc_dilations=[1,2,3,4,1]); "
+                              f"{UPSTREAM_FILE}:346 passes enc_dilations[i] into "
+                              "SqueezeExcitationRes2NetBlock, :291 passes it on to "
+                              "Res2NetBlock, and :108 into each split's "
+                              "TimeDelayNetBlock. The stem (:333) and mfa (:355) "
+                              "take enc_dilations[0] and [-1], both 1.",
+                },
+                "activations": {
+                    "after_tdnn_conv": "relu",
+                    "after_se_conv1": "relu",
+                    "after_se_conv2": "sigmoid",
+                    "after_asp_conv": "none",
+                    "after_fc": "none",
+                    "source": f"{UPSTREAM_FILE}:264,:267 (TimeDelayNetBlock is "
+                              "Conv1d then ReLU, and the stem, all res2net splits, "
+                              "both tdnns of every block, mfa and asp.tdnn are "
+                              "TimeDelayNetBlocks); :140,:153 and :148,:154 (the "
+                              "squeeze-excite pair is ReLU then Sigmoid); :234 "
+                              "(asp.conv's output goes straight to the softmax); "
+                              ":390 (fc's output is the x-vector).",
+                },
+                "res2net_accumulation": {
+                    "accumulates": True,
+                    "passthrough_split": 0,
+                    "rule": "y_0 = x_0; y_1 = f_0(x_1); y_i = f_{i-1}(x_i + y_{i-1}) for i >= 2; "
+                            "cat([y_0, ..., y_7], dim=1)",
+                    "source": f"{UPSTREAM_FILE}:115-126. The pass-through split is the "
+                              "FIRST, and it LEADS the concatenation -- a port that "
+                              "passes the last split through instead builds the same "
+                              "shapes from the same weights and a different encoder.",
+                },
+                "squeeze_excite": {
+                    "statistic": "mean over time, keepdim",
+                    "activations": ["relu", "sigmoid"],
+                    "application": "elementwise multiply, broadcast over time",
+                    "source": f"{UPSTREAM_FILE}:150-156.",
+                },
+                "block_residual": {
+                    "present": True,
+                    "source": f"{UPSTREAM_FILE}:301,:308 -- SqueezeExcitationRes2NetBlock "
+                              "keeps its input and adds it back after the "
+                              "squeeze-excite. Dropping it leaves a plausible "
+                              "encoder that is not this one.",
+                },
+                "attentive_statistics_pooling": {
+                    "attention_input": "cat([x, mean, std], dim=1), mean and std broadcast over time",
+                    "attention_input_channels": 4608,
+                    "activation_before_asp_conv": "relu then tanh",
+                    "softmax_axis": "time",
+                    "variance_floor": 1e-12,
+                    "variance_floor_applied_to": "the variance, before the square root",
+                    "mask_is_inert": True,
+                    "source": f"{UPSTREAM_FILE}:229-231 (the broadcast concatenation, which "
+                              "is why asp.tdnn's input extent is 3 * 1536 = 4608); "
+                              ":234 (self.conv(self.tanh(self.tdnn(attention))) -- "
+                              "TWO activations, TimeDelayNetBlock's own ReLU and then "
+                              "the tanh); :239 (F.softmax(..., dim=2), which is time); "
+                              ":167,:211 (.clamp(self.eps) with eps 1e-12, applied to "
+                              "the summed squared deviation BEFORE torch.sqrt); "
+                              ":214-228,:237 (lengths is all-ones times seq_length, so "
+                              "the mask is all ones, mask/total is a uniform 1/L and "
+                              "the masked_fill before the softmax changes nothing -- a "
+                              "port reproducing it would add a tensor of ones).",
+                },
+                "fc_input": {
+                    "is_concatenated_mean_and_std": True,
+                    "channels": 3072,
+                    "source": f"{UPSTREAM_FILE}:242-243 (cat((mean, std), dim=1) then "
+                              "unsqueeze to one frame); :366 (fc's in_channels is "
+                              "enc_channels[-1] * 2, which is what says so from the "
+                              "package's side).",
+                },
+                "confirmed_by": "Not read off the page alone: a numpy transcription of exactly "
+                                "the above reproduced Qwen3TTSSpeakerEncoder's own output on "
+                                "random weights at a tiny configuration to 1.2e-6, and the C++ "
+                                "graph reproduces it to 7.2e-7 "
+                                "(tests/qwen3_tts_speaker_encoder_test.cpp, values from "
+                                "scripts/dump_reference_qwen3_tts_speaker_encoder.py).",
+            },
         },
         "provenance": {
             "mel_scale": (

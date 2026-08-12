@@ -316,7 +316,18 @@ int test_a_non_power_of_two_n_fft_is_refused() {
 }  // namespace
 ```
 
-`kExpectedFramesForOneSecond` and `kExpectedFramesForOneSecondAtHop512` are **not** in this plan: take them from Task 1's `conventions.json` (`frames_observed` and the centring rule), so the port's frame arithmetic is pinned to what upstream actually did rather than to a formula this plan chose.
+`kExpectedFramesForOneSecond` and `kExpectedFramesForOneSecondAtHop512` are **not** in this plan: take them from Task 1's `conventions.json` (`frames_for_one_second` and `frames_for_one_second_at_hop_512`), so the port's frame arithmetic is pinned to what upstream actually did rather than to a formula this plan chose.
+
+**Measured 2026-08-12 by Task 1, and this is why the plan refused to guess.**
+The values are **93** and **46**, with **757** for the 193,920-sample reference
+clip. Neither of the two formulas this plan floated produces them: upstream
+neither centres nor leaves uncentred in the ordinary sense. It reflect-pads
+`(n_fft - hop) // 2` samples per side by hand and then calls
+`torch.stft(center=False)` — a third convention, giving
+`frames = 1 + (len + 2*((n_fft - hop)//2) - n_fft) // hop`. A centred formula
+predicts 758 and a plainly uncentred one 754. Task 1's reviewer re-derived all
+three numbers from upstream's source and re-ran `mel_spectrogram` to observe
+them. Use `conventions.json`; do not re-derive.
 
 - [ ] **Step 2: Run it and watch it fail**
 

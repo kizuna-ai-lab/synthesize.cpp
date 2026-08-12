@@ -43,8 +43,10 @@
 //   * `ggml_conv_1d`'s CPU path asserts an F16 kernel and this family's are
 //     F32, so convolutions are built from ggml_im2col and a matrix multiply,
 //     the way codec.cpp builds the decoder's. A kernel of one needs neither: it
-//     is already a matrix multiply over channels, and taking that path keeps
-//     im2col out of thirty of this graph's thirty-eight convolutions.
+//     is already a matrix multiply over channels, and 16 of this graph's 38
+//     convolutions have one, so im2col is built 22 times rather than 38. The
+//     22 are the 5-wide stem and the three blocks' seven 3-wide res2net splits
+//     apiece; counted by instrumenting same_conv1d, not by reading the list.
 //
 // Layout is channel-major throughout, [channels, length], as the rest of this
 // family is. Only the reflect padding and the pooling statistics work

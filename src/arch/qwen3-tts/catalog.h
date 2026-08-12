@@ -125,9 +125,16 @@ struct CodecDecoderWeights {
     Conv1dWeights                   output_conv;
 };
 
-// One SE-Res2Net block: a TDNN 1x1 in, a scale-8 res2net body whose eighth
-// split passes through unconvolved (hence seven convolutions, not eight), a
-// squeeze-excite bottleneck pair, and a TDNN 1x1 out.
+// One SE-Res2Net block: a TDNN 1x1 in, a scale-8 res2net body whose FIRST
+// split passes through unconvolved and leads the concatenation (hence seven
+// convolutions, not eight), a squeeze-excite bottleneck pair, and a TDNN 1x1
+// out. The block's own input is then added back as a residual.
+//
+// Which split passes through does not change the tensor count, so it does not
+// change what this struct resolves -- but it does change the forward pass, and
+// speaker-encoder.cpp is the file that reads these pointers. See
+// modeling_qwen3_tts.py:115-126, where split 0 is `output_part = hidden_part`
+// and the outputs are concatenated in split order.
 struct SpeakerEncoderBlockWeights {
     Conv1dWeights              tdnn1;
     std::vector<Conv1dWeights> res2net;

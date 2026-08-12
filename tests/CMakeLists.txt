@@ -829,6 +829,14 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     # dump, for the reason above the clone test.
     if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}" AND EXISTS "${SYNTH_QWEN3_TTS_REFERENCE_WAV}"
             AND EXISTS "${_synth_qwen3_tts_base_xvector_sentinel}")
+        # Both modes resolve the manifest's http(s) reference locator against a
+        # local cache directory. Derive that directory from
+        # SYNTH_QWEN3_TTS_REFERENCE_WAV rather than letting the script's own
+        # default win, or the cache variable would be shadowed here and a
+        # checkout that keeps the clip elsewhere would satisfy the guard above
+        # and then fail inside the validator.
+        get_filename_component(_synth_qwen3_tts_reference_dir
+            "${SYNTH_QWEN3_TTS_REFERENCE_WAV}" DIRECTORY)
         add_test(
             NAME synthesize-qwen3-tts-base-xvector-golden
             COMMAND ${SYNTH_UV_EXECUTABLE} run
@@ -838,6 +846,7 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                 --compare-x-vector --check
                 --xvector-model ${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}
                 --xvector-driver $<TARGET_FILE:synthesize-qwen3-tts-xvector-driver>
+                --reference-audio-dir ${_synth_qwen3_tts_reference_dir}
                 --profile BF16 --backend CPU --stage replay)
         set_tests_properties(synthesize-qwen3-tts-base-xvector-golden PROPERTIES
             LABELS "integration;qwen3-tts;golden"
@@ -860,7 +869,8 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                 --locked python ${CMAKE_SOURCE_DIR}/scripts/validate-qwen3-tts-replay.py
                 --manifest ${CMAKE_SOURCE_DIR}/tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json
                 --compare-mel --mel-case base-xvector-en
-                --mel-driver $<TARGET_FILE:synthesize-qwen3-tts-mel-driver>)
+                --mel-driver $<TARGET_FILE:synthesize-qwen3-tts-mel-driver>
+                --reference-audio-dir ${_synth_qwen3_tts_reference_dir})
         set_tests_properties(synthesize-qwen3-tts-base-mel-shape PROPERTIES
             LABELS "integration;qwen3-tts"
             TIMEOUT 600

@@ -858,10 +858,20 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         # deliberately did not invent one: the measured 3.31e-4 is recorded in
         # docs/porting/families/qwen3-tts.md as evidence, not as a reviewed
         # gate. So this registration enforces what the mode can actually
-        # decide -- that the driver runs and that the port's mel has the same
-        # shape as the oracle's, which is what a wrong frame-count or bin-count
-        # convention would break -- and NOT the values. Say so rather than let
-        # a reader assume the front end is numerically gated here.
+        # decide -- that the driver runs, and that the port's mel has the same
+        # shape as the oracle's in BOTH axes (the driver's reported bins and
+        # frames against the oracle conventions.json's mel_bins and
+        # frames_observed), which is what a wrong frame-count or bin-count
+        # convention would break -- and NOT the values.
+        #
+        # Both axes, deliberately: until 2026-08-12 the mode compared two flat
+        # float32 buffers, so "shape" meant total element count and a
+        # compensating pair of wrong axes passed a test named -mel-shape. Four
+        # integers need no tolerance, so tightening it decided nothing the
+        # missing speaker.mel probe was left to decide. What stays ungated is
+        # the on-disk layout -- a transposed buffer with the right axes is a
+        # values question. Say all of this rather than let a reader assume the
+        # front end is numerically gated here.
         add_test(
             NAME synthesize-qwen3-tts-base-mel-shape
             COMMAND ${SYNTH_UV_EXECUTABLE} run

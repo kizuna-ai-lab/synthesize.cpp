@@ -2107,6 +2107,14 @@ a runtime's capability; it is not a description of the tree today.
 
 ### The real Base package through the public C interface
 
+**This section records `tests/qwen3_tts_base_load_real.cpp` as Plan 1 left it,
+in the past tense, and Plan 2 changed two of the assertions described below —
+see "Stage 2: Base Package, Plan 2".** It is kept because the reasoning for
+adding a model-guarded integration test at all, and the seam it was written to
+cover, are still the reasons that file exists; the *current* assertions are in
+the file itself, and the two that moved are marked inline. As with the section
+above, this is not a description of the tree today.
+
 Task 9's review found a real gap: deleting the one-line copy
 `shared.voice_profile = info.voice_profile;` in
 `src/synthesize.cpp::shared_info(qwen3tts::ModelInfo, ...)` left the entire
@@ -2119,12 +2127,19 @@ exists on disk) that loads the real Base GGUF through
 `synth_model_load` and asserts, through the public interface only:
 
 - `synth_model_get_preset_voice_count` returns 0.
-- `synth_model_get_voice_profile_capabilities` reports `source_flags`
+- `synth_model_get_voice_profile_capabilities` reported `source_flags`
   exactly zero, and with it zero (or `SYNTH_REQUIREMENT_UNSUPPORTED`) in
   every field describing a source, down to a null `profile_schema` and 32
-  zero compatibility-id bytes. This assertion was inverted on 2026-08-12,
-  from the two-bit advertisement Plan 1 originally shipped; see "What Plan 1
-  did not deliver" above.
+  zero compatibility-id bytes. This assertion was inverted once already on
+  2026-08-12, from the two-bit advertisement Plan 1 originally shipped; see
+  "What Plan 1 did not deliver" above. *Plan 2 inverted it back, because the
+  capability it describes now exists: `check_capabilities` asserts
+  `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO |
+  SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` exactly, the six real reference
+  limits the package declares, `profile_schema` equal to
+  `"qwen3-tts-voice-clone"` at version 1, and a nonzero compatibility id.
+  `SYNTH_REQUIREMENT_UNSUPPORTED` survives on the three requirement fields
+  alone.*
 - A `synth_synthesize_to_buffer` request naming no Voice at all, and a
   second one naming a `voice_id` that could never exist in an empty
   catalog, both fail with `SYNTH_ERR_UNSUPPORTED_VOICE` -- the one voice
@@ -2137,14 +2152,17 @@ exists on disk) that loads the real Base GGUF through
   from a codec that failed to run, and both used to arrive as
   `synthesis.graph_failed`.
 
-**A cost of the 2026-08-12 correction, stated rather than left implicit.**
-While the capability snapshot is all-zero, this test no longer covers the
-seam line it was written for: an all-zero copy of an all-zero struct is
-unobservable, so deleting `shared.voice_profile = info.voice_profile;` leaves
-the integration test green too. The line stays because Plan 2 makes it carry
-something, and the coverage returns with the first nonzero field. What the
-test still proves at the ABI is the empty Preset Voice Catalog and both
-refusal paths.
+**A cost of the 2026-08-12 correction, stated rather than left implicit —
+and paid off by Plan 2.** While the capability snapshot was all-zero, this
+test did not cover the seam line it was written for: an all-zero copy of an
+all-zero struct is unobservable, so deleting
+`shared.voice_profile = info.voice_profile;` left the integration test green
+too. The line stayed because Plan 2 was expected to make it carry something,
+and the coverage would return with the first nonzero field. What the test
+still proved at the ABI meanwhile was the empty Preset Voice Catalog and both
+refusal paths. *Plan 2 delivered the nonzero fields, so this cost is settled:
+`tests/qwen3_tts_base_load_real.cpp`'s own header now records that deleting
+that line fails this test rather than passing it silently.*
 
 Building and running this test needs a build directory configured with
 `-DSYNTH_BUILD_INTEGRATION_TESTS=ON` and the real Base GGUF on disk; it does

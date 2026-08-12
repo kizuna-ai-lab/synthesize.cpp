@@ -507,6 +507,27 @@ bool read_profile_contract(const GgufMetadata & meta, HParams & hparams) {
                      profile.reference_channels, profile.reference_sample_rate);
         return false;
     }
+    // ...and "before it reaches the speaker encoder" is the whole point: this
+    // rate is what create_qwen3_tts_profile_from_reference resamples the
+    // caller's clip to (src/voice-profile.cpp, via
+    // capabilities.reference_target_sample_rate), while the mel filterbank
+    // that then consumes the clip derives its FFT bin frequencies from the
+    // ENCODER's own rate (src/arch/qwen3-tts/mel.cpp). Two independently
+    // declared package fields describing one physical signal, so they are
+    // tied here the way enc_dim is tied to the talker's hidden size in
+    // read_speaker_encoder below -- and for a sharper reason: a package
+    // declaring 16000 here against a 24000 Hz encoder changes no shape
+    // anywhere (the mel's geometry is n_fft/hop_length, the x-vector's width
+    // is enc_dim, and the frame bounds are self-consistent against whichever
+    // rate they were computed for), so nothing downstream can notice. It
+    // would return SYNTH_OK and a frequency-scaled x-vector -- a silent
+    // mis-clone. read_speaker_encoder runs before this function so the
+    // comparison has something to make; see read_profile_and_speaker_encoder.
+    if (profile.reference_sample_rate != hparams.speaker_encoder.sample_rate) {
+        std::fprintf(stderr, "qwen3-tts: reference audio is resampled to %u Hz but the speaker encoder runs at %u Hz\n",
+                     profile.reference_sample_rate, hparams.speaker_encoder.sample_rate);
+        return false;
+    }
     // A reference bound of zero would let a Profile be prepared from no audio.
     if (profile.min_frames_per_clip == 0 || profile.min_frames_per_clip > profile.max_frames_per_clip) {
         std::fprintf(stderr, "qwen3-tts: a clip is between %llu and %llu frames, which admits nothing\n",
@@ -657,9 +678,18 @@ bool read_frontend(const GgufMetadata & meta, HParams & hparams) {
 // profile-sources comment above claims to rule out; gating on the mode
 // closes the gap because a truncated package still fails inside
 // read_profile_contract/read_speaker_encoder on their own missing keys.
+//
+// The speaker encoder is read FIRST, though the contract is the more
+// externally visible half: read_profile_contract ties the declared reference
+// target rate to the encoder's own rate, and cannot do that against a
+// SpeakerEncoderParams nobody has filled in yet. Same ordering rule the rest
+// of read_hparams follows -- read_speaker_encoder itself only checks enc_dim
+// against the talker and its rate against the codec because read_talker and
+// read_codec already ran. Nothing in read_speaker_encoder reads
+// hparams.profile, so the pair has exactly one valid order.
 bool read_profile_and_speaker_encoder(const GgufMetadata & meta, HParams & hparams) {
     hparams.has_speaker_encoder = true;
-    return read_profile_contract(meta, hparams) && read_speaker_encoder(meta, hparams);
+    return read_speaker_encoder(meta, hparams) && read_profile_contract(meta, hparams);
 }
 
 }  // namespace

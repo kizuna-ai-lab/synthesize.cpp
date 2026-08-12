@@ -163,10 +163,17 @@ is not a registered *test*):
   **no committed tolerance** -- there is no `speaker.mel` probe in the
   tolerance file and this registration deliberately did not invent one. It
   therefore gates what that mode can actually decide: that the driver runs and
-  that the port's mel has the same shape as the oracle's, which is what a
-  wrong frame-count or bin-count convention breaks. It does **not** gate the
-  values. The measured mel deviation (max_abs 3.31e-4) is recorded in
-  `docs/porting/families/qwen3-tts.md` as evidence, not as a gate.
+  that the port's mel has the same shape as the oracle's in **both axes** --
+  the driver's reported `bins`/`frames` against the oracle
+  `conventions.json`'s `mel_bins`/`frames_observed` -- which is what a wrong
+  frame-count or bin-count convention breaks. Four integers, so no tolerance
+  is involved. It does **not** gate the values, and therefore not the on-disk
+  layout either: a transposed buffer with the right axes is a values question.
+  The measured mel deviation (max_abs 3.31e-4) is recorded in
+  `docs/porting/families/qwen3-tts.md` as evidence, not as a gate. Before
+  2026-08-12 this mode compared two flat float32 buffers, where "shape" meant
+  total element count -- 128x757 and 64x1514 alike -- so the name overstated
+  it.
 
 `synthesize-golden-manifest-contract` (`unit`) is the structural test over every
 committed Golden Manifest against its schema

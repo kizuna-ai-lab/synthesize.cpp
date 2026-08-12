@@ -109,7 +109,9 @@ def parse_args() -> argparse.Namespace:
     # dump, instead of replaying a whole case through the talker/codec.
     parser.add_argument("--compare-mel", action="store_true",
                         help="run compute_log_mel via a tiny driver and diff it against speaker/mel.f32, "
-                             "instead of the ordinary replay comparison")
+                             "instead of the ordinary replay comparison. Fails on a shape disagreement "
+                             "(both axes, against the oracle's conventions.json); reports the numbers "
+                             "without gating them, since there is no committed speaker.mel tolerance")
     parser.add_argument("--mel-case", default="base-xvector-en",
                         help="--compare-mel only: the manifest case whose reference clip and oracle "
                              "speaker/mel.f32 to compare against")
@@ -196,10 +198,63 @@ def run_compare_mel(arguments: argparse.Namespace, manifest: dict, oracle_root: 
     if finished.stdout.strip():
         print(f"  driver: {finished.stdout.strip()}")
 
-    measurement = compare(read_f32(oracle_mel), read_f32(work_mel))
+    # The shape gate, and the whole of what this mode decides. Until
+    # 2026-08-12 the only structural check here was `compare`'s
+    # `shape_mismatch`, which for two 1-D buffers read by `read_f32` is a
+    # comparison of TOTAL ELEMENT COUNTS -- 128x757 and 64x1514 are the same
+    # 96896 floats to it, so a compensating pair of wrong axes passed a test
+    # named `-mel-shape`. Both axes are available as integers on both sides
+    # and neither needs a tolerance: the driver prints its own `bins` and
+    # `frames`, and the oracle's conventions.json records `mel_bins` and the
+    # `frames_observed` its dump actually produced. Comparing four integers
+    # is a structural check, not a measurement, so it belongs in a mode that
+    # deliberately carries no numeric threshold.
+    #
+    # What this still does NOT decide is the on-disk LAYOUT: the driver
+    # reports the mel it computed, then transposes into the oracle's
+    # bin-major order on the way out (tests/qwen3_tts_mel_driver.cpp), and
+    # deleting that transpose would change no integer reported here. Telling
+    # a transposed 128x757 buffer from a correct one is a comparison of
+    # values, which is exactly the numeric gate this mode does not carry.
+    oracle_conventions = oracle_root / case["id"] / "speaker" / "conventions.json"
+    if not oracle_conventions.exists():
+        print(f"{oracle_conventions} does not exist -- run scripts/dump_reference_qwen3_tts_speaker.py "
+              f"for case {case['id']!r} first")
+        return 1
+    conventions = json.loads(oracle_conventions.read_text(encoding="utf-8"))
+    lines = [line for line in finished.stdout.splitlines() if line.strip()]
+    try:
+        reported = json.loads(lines[-1])
+        produced_axes = (int(reported["bins"]), int(reported["frames"]))
+    except (IndexError, ValueError, KeyError, TypeError):
+        print(f"  speaker.mel: {arguments.mel_driver} printed no "
+              '{"bins": ..., "frames": ...} line to read a shape from')
+        return 1
+    try:
+        oracle_axes = (int(conventions["mel_bins"]), int(conventions["frames_observed"]))
+    except (KeyError, ValueError, TypeError):
+        print(f"  speaker.mel: {oracle_conventions} carries no mel_bins/frames_observed pair -- "
+              "re-run scripts/dump_reference_qwen3_tts_speaker.py to refresh it")
+        return 1
+    if produced_axes != oracle_axes:
+        print(f"  speaker.mel: shape {produced_axes[0]} bins x {produced_axes[1]} frames against the oracle's "
+              f"{oracle_axes[0]} x {oracle_axes[1]}")
+        return 1
+
+    # ...and the two axes describe the buffers actually being diffed, rather
+    # than a conventions.json that has drifted from the dump beside it.
+    oracle_values, port_values = read_f32(oracle_mel), read_f32(work_mel)
+    expected_elements = oracle_axes[0] * oracle_axes[1]
+    if oracle_values.size != expected_elements:
+        print(f"  speaker.mel: {oracle_mel} holds {oracle_values.size} floats, not the "
+              f"{oracle_axes[0]} x {oracle_axes[1]} = {expected_elements} its conventions.json records")
+        return 1
+
+    measurement = compare(oracle_values, port_values)
     if "shape_mismatch" in measurement:
         print(f"  speaker.mel: shape mismatch {measurement['shape_mismatch']}")
         return 1
+    print(f"  speaker.mel: {produced_axes[0]} bins x {produced_axes[1]} frames, matching the oracle")
     print(f"  speaker.mel: max_abs {measurement['max_abs']:.6g}  mean_abs {measurement['mean_abs']:.6g}  "
           f"cosine {measurement['cosine']:.6f}  elements {measurement['elements']}")
 

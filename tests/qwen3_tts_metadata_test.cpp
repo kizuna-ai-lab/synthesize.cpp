@@ -541,6 +541,25 @@ int run_base_package_rejections() {
                          [](gguf_context * g) { gguf_set_val_u64(g, "synthesize.reference.max_reference_count", 0); },
                          "a zero reference count admits no clip") == 0);
 
+    // --- Profile contract: the reference target rate is the encoder's rate ---
+    // The one mismatch in this file that changes no shape and so could only
+    // ever be caught here: reference audio is resampled to
+    // target_sample_rate, and the mel filterbank derives its bin frequencies
+    // from the speaker encoder's sample_rate. Declare 16000 against the
+    // fixture's 24000 encoder and every later rule still passes -- the frame
+    // bounds are frame counts, the mel's geometry is n_fft/hop_length, the
+    // x-vector's width is enc_dim -- so the package would load, advertise
+    // 16000, and hand the encoder a frequency-scaled spectrum.
+    //
+    // 16000 rather than 0: a zero would also trip the reference_sample_rate
+    // zero-check just above, which would make this case pass whether or not
+    // the rate equality exists. Isolating it needs a rate that is valid on
+    // its own terms and merely disagrees.
+    SYNTH_TEST_CHECK(
+        expect_base_rejected(
+            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.reference.target_sample_rate", 16000); },
+            "the reference target rate must equal the speaker encoder's rate") == 0);
+
     // --- Speaker encoder: the three widths only the zero-check catches ---
     // read_speaker_encoder's zero-check covers mel_bins, n_fft and hop_length
     // and nothing else: for each of these, deleting its term from that
@@ -554,10 +573,22 @@ int run_base_package_rejections() {
     // The mel front end's FFT is radix-2 (src/arch/qwen3-tts/mel.cpp); a
     // non-power-of-two n_fft must be refused at load time rather than
     // reaching compute_log_mel's own runtime check.
-    SYNTH_TEST_CHECK(
-        expect_base_rejected(
-            [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.n_fft", 1000); },
-            "non-power-of-two n_fft") == 0);
+    //
+    // win_length comes down to 512 alongside it, for the same reason the
+    // sibling case in tests/qwen3_tts_mel_test.cpp does: base_metadata()
+    // leaves win_length at 1024, and at n_fft 1000 the separate
+    // win_length-vs-n_fft rule below (1024 > 1000) rejects the very same
+    // package with the very same SYNTH_ERR_GGUF -- so a case that left
+    // win_length alone still passed with the power-of-two rule deleted,
+    // proving nothing. 512 stays under both 1000 and the fixture's hop of
+    // 256 stays under 512, so this case now isolates the power-of-two rule
+    // as the one doing the rejecting.
+    SYNTH_TEST_CHECK(expect_base_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.n_fft", 1000);
+                             gguf_set_val_u32(g, "synthesize.qwen3-tts.speaker_encoder.win_length", 512);
+                         },
+                         "non-power-of-two n_fft") == 0);
 
     // The other structural constraint the radix-2 transform imposes: a
     // window wider than the transform has no meaning for the zero-padded-

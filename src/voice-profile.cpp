@@ -385,18 +385,22 @@ synth_status_t create_omnivoice_profile_from_reference(const synth_model_t *    
 //
 // Steps 1-4 below mirror create_omnivoice_profile_from_reference's own Steps
 // 1, 4 in order -- there is no shared helper for them (family internals are
-// private, CLAUDE.md) -- with ONE family-specific substitution in place of
-// that function's Steps 2-3: a non-null transcript is refused BY NAME here,
-// before normalization, rather than required. D4 (this plan's own ruling)
-// fixes the clone mode at preparation; this rung implements the x-vector mode
-// only, so accepting a transcript and silently building the x-vector Profile
-// anyway would hand back a weaker clone than the caller asked for -- the same
-// capability lie the carryover's erratum removed from the source flags.
-// `reference_language` stays SYNTH_REQUIREMENT_UNSUPPORTED too: the tag is
-// stored verbatim inside the prepared payload rather than matched against
-// this Model's own declared synthesis languages, exactly as
-// arch/qwen3-tts/profile.h's own XVectorProfile::language_tag doc comment
-// says create_x_vector_profile does with it.
+// private, CLAUDE.md) -- with TWO family-specific substitutions in place of
+// that function's Steps 2-3: a non-null transcript (Step 2) and a non-null
+// reference_language tag (Step 3) are both refused BY NAME here, before
+// normalization, rather than required/matched. D4 (this plan's own ruling)
+// fixes the clone mode at preparation; this rung implements the x-vector
+// mode only, so accepting a transcript and silently building the x-vector
+// Profile anyway would hand back a weaker clone than the caller asked for --
+// the same capability lie the carryover's erratum removed from the source
+// flags. A language tag has no meaning without the transcript it would
+// qualify (2026-08-11-qwen3-tts-stage-2-design.md:174: "reference_language
+// follows the transcript: it qualifies a transcript this rung cannot use"),
+// so it is refused for the identical reason rather than silently accepted,
+// shape-checked, and persisted into a payload the capability snapshot says
+// this rung cannot describe -- docs/c-interface.md is explicit that
+// supplying a field declared unsupported must fail rather than being
+// silently ignored.
 synth_status_t create_qwen3_tts_profile_from_reference(const synth_model_t *                  model,
                                                        const synth_voice_reference_params_t * params,
                                                        synth_voice_profile_t **               out_profile) {
@@ -488,15 +492,20 @@ synth_status_t create_qwen3_tts_profile_from_reference(const synth_model_t *    
         return SYNTH_ERR_INVALID_ARG;
     }
 
-    // Step 3: language optional, stored verbatim (see this function's own
-    // header comment for why it is not matched against this Model's declared
-    // languages the way OmniVoice's own Step 3 does).
-    std::string language_text;
-    if (language_tag != nullptr) {
-        if (!valid_bcp47_shape(language_tag, static_cast<size_t>(language_size))) {
-            return SYNTH_ERR_INVALID_ARG;
-        }
-        language_text.assign(language_tag, static_cast<size_t>(language_size));
+    // Step 3: the same UNSUPPORTED/refuse-by-name reasoning Step 2 applies to
+    // the transcript applies here (see this function's own header comment).
+    // A reviewer measured the defect this closes: before this check existed,
+    // `language_tag="en"` returned SYNTH_OK and was written verbatim into
+    // the serialized envelope, and `language_tag="zz-ZZ"` -- a tag this
+    // package does not even declare -- also returned SYNTH_OK, where
+    // OmniVoice's own equivalent check (this file's `declared_language`)
+    // would have refused it with SYNTH_ERR_UNSUPPORTED_LANGUAGE. Checked
+    // before normalization, the same reason Step 2 is.
+    if (language_tag != nullptr && language_size != 0) {
+        emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.reference_language_unsupported",
+                        "this package's Voice Profile creation does not accept a Reference Audio language tag at "
+                        "this rung; the tag would qualify a transcript this rung cannot use");
+        return SYNTH_ERR_INVALID_ARG;
     }
 
     // Step 4: the Audio Normalizer, RFE-prechecked against this package's
@@ -541,16 +550,19 @@ synth_status_t create_qwen3_tts_profile_from_reference(const synth_model_t *    
     // through Model::hparams()/speaker_encoder_weights() rather than a
     // `Model &` -- see that function's own header comment, and
     // qwen3-tts.h's own comment on those two accessors, for why. `transcript`
-    // is always empty here: Step 2 above already refused any non-empty one,
-    // so create_x_vector_profile's own identical check can never fire; it
-    // stays in that function as the defense-in-depth for any future caller
-    // that reaches it a different way.
+    // and `language_tag` are always empty here: Steps 2-3 above already
+    // refused any non-empty one of either, so create_x_vector_profile's own
+    // identical transcript check can never fire; it stays in that function
+    // as the defense-in-depth for any future caller that reaches it a
+    // different way. `XVectorProfile::language_tag` (arch/qwen3-tts/profile.h)
+    // exists for Plan 3's ICL payload, which pairs a transcript with a
+    // language; nothing populates it at this rung.
     std::shared_ptr<const synth::qwen3tts::XVectorProfile> x_vector_profile;
     const char *                                           diagnostic_code    = nullptr;
     const char *                                           diagnostic_message = nullptr;
     const synth_status_t                                   create_status = synth::qwen3tts::create_x_vector_profile(
         model->qwen3_tts->hparams(), model->qwen3_tts->speaker_encoder_weights(), normalized.pcm, std::string(),
-        language_text, 0, x_vector_profile, diagnostic_code, diagnostic_message);
+        std::string(), 0, x_vector_profile, diagnostic_code, diagnostic_message);
     if (create_status != SYNTH_OK) {
         emit_diagnostic(diagnostics, create_status, diagnostic_code, diagnostic_message);
         return create_status;

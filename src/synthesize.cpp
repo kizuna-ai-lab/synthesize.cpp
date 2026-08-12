@@ -998,19 +998,25 @@ synth_status_t synth_synthesize(synth_context_t *          context,
     }
 
     if (context->model->info.family == synth::ModelFamily::Qwen3Tts) {
-        // This family cannot consume a Voice Profile yet. Its Base package
-        // does carry a Voice Profile contract -- `synthesize.profile.*`, read
-        // and validated at load time -- but nothing in the runtime can
-        // prepare or consume one: src/voice-profile.cpp dispatches every
-        // source for OmniVoice alone, and the family's own capability
-        // snapshot therefore advertises zero sources
-        // (src/arch/qwen3-tts/weights.cpp's fill_voice_profile_capability).
-        // So a profile reaching here would either be a defect in the
-        // cross-model check above (see the omnivoice branch) or a future
-        // family's own profile presented to the wrong one. Either way,
-        // silently ignoring
-        // `prepared.voice_profile` and synthesizing anyway would answer with
-        // the wrong Voice rather than the refusal the caller asked for.
+        // Creation, serialization, and loading of a Qwen3-TTS Voice Profile
+        // all work now (Stage 2 Plan 2 Task 9's src/voice-profile.cpp
+        // dispatch, gated on Base's own SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO/
+        // SERIALIZED_PROFILE bits -- see fill_voice_profile_capability,
+        // src/arch/qwen3-tts/weights.cpp): a caller can legitimately build
+        // one from this exact Model and hand it straight back here. What is
+        // still missing is the SYNTHESIS-TIME consumption half: nothing
+        // below reads a prepared XVectorProfile's x-vector into the
+        // talker's prompt the way the OmniVoice branch above reads its own
+        // `clone`/`instruct` payloads, including that branch's own
+        // model-identity check (`prepared.voice_profile->model !=
+        // context->model`) -- this branch has no equivalent of its own yet.
+        // Task 11 is what wires all of that in. Until then, ANY non-null
+        // `prepared.voice_profile` reaching here is refused rather than
+        // silently ignored, whether it is a legitimately-created profile for
+        // this very Model, one built against a different Model, or a
+        // different family's profile presented to the wrong one -- silently
+        // ignoring it and synthesizing anyway would answer with the wrong
+        // Voice rather than the refusal the caller asked for.
         if (prepared.voice_profile != nullptr) {
             return SYNTH_ERR_UNSUPPORTED_VOICE;
         }

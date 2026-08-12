@@ -26,7 +26,9 @@
 // synthetic-HParams unit test cannot: that create_from_reference ->
 // serialize -> load_from_memory actually works end to end against the real
 // 894-tensor Base GGUF and its real speaker encoder, that every one of this
-// family's new public refusal paths (a transcript, too many clips, a clip
+// family's new public refusal paths (a transcript, a reference_language tag
+// -- declared or not, per the Task 9 review's own finding that this rung
+// must refuse the field it advertises UNSUPPORTED -- too many clips, a clip
 // outside the declared frame bounds, an out-of-contract rate or channel
 // count) fires with the real package's own declared limits rather than a
 // fixture's, and that a real Preset Voice Catalog request still refuses.
@@ -231,6 +233,44 @@ int check_reference_transcript_refused(synth_model_t * model, const synth_voice_
     return 0;
 }
 
+// reference_language is advertised SYNTH_REQUIREMENT_UNSUPPORTED
+// (check_capabilities above), and docs/c-interface.md requires a caller
+// supplying a field declared unsupported to be refused rather than silently
+// accepted. Both a real, package-declared tag ("en") and one this package
+// does not declare at all ("zz-ZZ") are refused identically and by name --
+// the point is that NO language tag is accepted at this rung, not that an
+// undeclared one is treated differently from a declared one the way
+// OmniVoice's own (fully supported) reference_language handling would.
+// Before this task's review fix, both of these returned SYNTH_OK -- "en"
+// was written verbatim into the serialized envelope, and "zz-ZZ" was
+// accepted despite naming no language this package has ever heard of.
+int check_reference_language_refused(synth_model_t * model, const synth_voice_profile_capabilities_t & capabilities) {
+    const std::vector<float> pcm =
+        make_tone(capabilities.min_reference_frames_per_clip, capabilities.reference_target_sample_rate);
+
+    for (const char * language_tag : { "en", "zz-ZZ" }) {
+        synth_voice_reference_t reference =
+            make_reference(pcm, capabilities.reference_target_sample_rate, capabilities.reference_target_channel_count);
+        reference.language_tag      = language_tag;
+        reference.language_tag_size = std::strlen(language_tag);
+
+        SeenDiagnostic          diagnostic;
+        synth_diagnostic_sink_t sink;
+        synth_diagnostic_sink_init(&sink, sizeof(sink));
+        sink.emit      = record_diagnostic;
+        sink.user_data = &diagnostic;
+
+        const synth_voice_reference_params_t params  = make_reference_params(&reference, 1, &sink);
+        synth_voice_profile_t *              profile = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(synth_voice_profile_create_from_reference(model, &params, &profile) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(profile == nullptr);
+        SYNTH_TEST_CHECK(diagnostic.seen);
+        SYNTH_TEST_CHECK(diagnostic.status == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(diagnostic.code == "voice_profile.reference_language_unsupported");
+    }
+    return 0;
+}
+
 // Two clips -> INVALID_ARG (max_reference_count is 1). Neither descriptor
 // needs real content: the count is refused before either one is ever read.
 int check_two_reference_clips_refused(synth_model_t * model) {
@@ -396,6 +436,7 @@ int main(int argc, char ** argv) {
 
     SYNTH_TEST_CHECK(check_reference_profile_round_trip(model, capabilities) == 0);
     SYNTH_TEST_CHECK(check_reference_transcript_refused(model, capabilities) == 0);
+    SYNTH_TEST_CHECK(check_reference_language_refused(model, capabilities) == 0);
     SYNTH_TEST_CHECK(check_two_reference_clips_refused(model) == 0);
     SYNTH_TEST_CHECK(check_reference_clip_length_bounds_refused(model, capabilities) == 0);
     SYNTH_TEST_CHECK(check_reference_format_gate_matrix_refused(model, capabilities) == 0);

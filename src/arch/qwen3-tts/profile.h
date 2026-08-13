@@ -8,10 +8,12 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace synth::qwen3tts {
 
+struct CodecEncoderWeights;
 struct HParams;
 struct SpeakerEncoderWeights;
 
@@ -25,7 +27,15 @@ struct SpeakerEncoderWeights;
 // rather than on its schema version (Task 8).
 enum class CloneMode : uint32_t {
     XVector = 0,
-    // Icl -- Plan 3.
+    // Transcript-assisted (in-context learning), landed by Plan 3's Task 8 in
+    // place of the commented-out placeholder that had sat here since Plan 2.
+    // This is the discriminator voice-profile-handle.h's own ProfileFamilyTag
+    // comment defers to ("the payload's own CloneMode discriminates") rather
+    // than adding a second family tag -- see IclProfile below for the layout
+    // rule that makes reading it off a type-erased payload well-defined. The
+    // number itself crosses no boundary: a Serialized Profile discriminates on
+    // the `synthesize.voice_profile.kind` STRING (Task 9), not on this value.
+    Icl     = 1,
 };
 
 // The maximum length, in bytes, of an `XVectorProfile::language_tag` this
@@ -88,14 +98,23 @@ struct XVectorProfile {
 // `model.prepare_x_vector` itself and pass the pieces through) once it wires
 // the public seam -- that plumbing choice belongs to the task that opens it.
 //
-// `transcript` non-empty (including a whitespace-only string) is REJECTED in
-// Plan 2 with "voice_profile.transcript_unsupported": this rung implements
-// the x-vector mode only, and D4 fixes the mode at preparation, so accepting
+// `transcript` non-empty (including a whitespace-only string) is REJECTED
+// with "voice_profile.transcript_unsupported": this function implements the
+// x-vector mode only, and D4 fixes the mode at preparation, so accepting
 // a transcript and silently building the x-vector Profile anyway would hand
 // back a weaker clone than the caller asked for -- the same capability lie
 // the erratum removed from the source flags. Checked FIRST, before the
-// (expensive) encode chain ever runs. Plan 3 is the change that turns this
-// rejection into the mode selector.
+// (expensive) encode chain ever runs.
+//
+// THE REFUSAL SURVIVED PLAN 3 rather than becoming the mode selector, which
+// is what an earlier revision of this sentence predicted. This function takes
+// `HParams`/`SpeakerEncoderWeights` and not a `Model &` precisely so it stays
+// unit-testable -- so it cannot tokenize, and therefore cannot produce the
+// `reference_text_ids` create_icl_profile below requires. The mode SELECTION
+// lives at the one site in the chain that holds a live Model and can reach
+// the BPE tables (src/voice-profile.cpp's dispatch, Task 10); this function
+// keeps refusing a transcript, and Task 8's own unit test pins that refusal
+// directly rather than letting it become an unasserted leftover.
 //
 // Order: reject a non-empty transcript; reject a `language_tag` over
 // `kMaxLanguageTagLength` with "voice_profile.language_tag_too_long" (a
@@ -127,6 +146,151 @@ synth_status_t create_x_vector_profile(const HParams &                         h
                                        std::shared_ptr<const XVectorProfile> & output,
                                        const char *&                           out_diagnostic_code,
                                        const char *&                           out_diagnostic_message);
+
+// The prepared clone payload a transcript-assisted (ICL) Reference Audio
+// Voice Profile carries. D5 (the design's own ruling) tabulates
+// exactly three rows for this mode, and this struct is those three rows: the
+// `[1024]` speaker embedding, which the table marks `yes` in BOTH columns
+// because upstream inserts it regardless of mode; the reference codes; and
+// the reference text token ids. An ICL Profile is an x-vector Profile PLUS
+// two things, not an alternative to one -- which is why `speaker` below is a
+// whole XVectorProfile rather than a re-listing of its fields.
+//
+// THE FIRST MEMBER IS LOAD-BEARING AND MUST STAY FIRST. One
+// ProfileFamilyTag::Qwen3TtsClone covers both of this family's clone modes,
+// and voice-profile-handle.h's own comment says why: "the payload's own
+// CloneMode discriminates". The consumer that acts on that
+// (src/synthesize.cpp:1073-1086) reads the type-erased `shared_ptr<void>`
+// payload back as an `XVectorProfile *` and inspects `.mode` BEFORE it knows
+// which mode it has -- so for an ICL payload that read has to be well-defined
+// rather than merely usually-right. It is: both structs are standard-layout,
+// and a standard-layout object is pointer-interconvertible with its first
+// non-static data member ([basic.compound]/4), so converting `void *` (which
+// holds this object's address) to `const XVectorProfile *` yields `speaker`
+// itself ([expr.static.cast]/13). The static_asserts below hold that property
+// at compile time; move `speaker` off offset 0, or give either struct a base
+// class or a virtual, and the build stops instead of the read going quietly
+// wrong at runtime.
+//
+// WHY THE IDS AND NOT THE STRING, which is a deliberate divergence from the
+// sibling family rather than an oversight. omnivoice::ClonePrompt serializes
+// its canonical `transcript_text` and RE-TOKENIZES on load
+// (arch/omnivoice/profile.h:46-50 and its `transcript_ids` member at :64;
+// arch/omnivoice/profile.cpp:1464-1476), on the reasoning that ids "cost
+// nothing to omit and everything to trust across a package upgrade". D5 rules
+// the other way for this family: the ICL Profile carries reference text token
+// ids and DECLARES them recoverable, because byte-level BPE is invertible and
+// pretending a token stream is not its transcript would be the dishonest half
+// of that trade. Do not "fix" this into consistency with OmniVoice; the two
+// families answered the same question differently, on the record, and this
+// one's answer is the design's.
+struct IclProfile {
+    // MUST BE THE FIRST MEMBER -- see this struct's own header comment.
+    // `speaker.mode` is CloneMode::Icl for every IclProfile that exists at
+    // all; the x-vector, ref_rms and language_tag it carries are the same
+    // three quantities an x-vector Profile carries, prepared the same way by
+    // the same encode_speaker_reference call.
+    XVectorProfile       speaker;
+    // `groups * frames` reference codes in codec-encoder-host.h's settled
+    // GGML `[16, T]` GROUP-FASTEST order -- `ne[0] = groups` is the
+    // quantizer-group index and varies fastest. Stored exactly as
+    // CodecEncoding::codes hands it over: THERE IS NO TRANSPOSE, here or
+    // anywhere downstream (that header's own comment records why the next
+    // reader will want to add one, and why it is wrong).
+    std::vector<int32_t> codes;
+    // `quantizer_count`: 1 semantic + 15 acoustic at the production geometry.
+    // Carried rather than re-derived so `codes` can be indexed without
+    // reaching back into HParams.
+    uint64_t             groups = 0;
+    // `ceil(samples / samples_per_frame)` for the reference clip, from
+    // CodecEncoderGeometry -- 13 for the shortest clip this package accepts
+    // (24,000 samples) and 101 for a 193,920-sample one.
+    uint64_t             frames = 0;
+    // The reference transcript as the ids upstream passes as `ref_id`: the
+    // reference TURN's own markers are already sliced off (bpe.h's
+    // qwen_reference_transcript_ids). Never empty for an IclProfile that
+    // exists at all -- create_icl_profile below refuses the half-present
+    // state.
+    std::vector<int32_t> reference_text_ids;
+};
+
+static_assert(std::is_standard_layout<XVectorProfile>::value,
+              "XVectorProfile must stay standard-layout: IclProfile's first-member cast depends on it");
+static_assert(std::is_standard_layout<IclProfile>::value,
+              "IclProfile must stay standard-layout: src/synthesize.cpp reads an ICL payload's CloneMode back "
+              "through an XVectorProfile pointer, which is only defined for pointer-interconvertible objects");
+static_assert(offsetof(IclProfile, speaker) == 0, "IclProfile::speaker must stay the FIRST member");
+
+// Prepares a transcript-assisted (ICL) Voice Profile from one
+// already-normalized (24 kHz mono), already length-checked Reference Audio
+// clip, its transcript, and that transcript's already-produced token ids.
+//
+// Takes the same two structs create_x_vector_profile takes -- `HParams` and
+// `SpeakerEncoderWeights` -- plus `CodecEncoderWeights`, and NOT a `Model &`,
+// for the reason that function's own header comment above records: a `Model`
+// can only be built from a real 2.5 GB GGUF, and this family has no
+// synthetic-package harness, so a signature naming one would make every test
+// of this function an integration test.
+//
+// `reference_text_ids` ARRIVES ALREADY TOKENIZED, AND THAT IS THE POINT. The
+// BPE tables live on `Model`; tokenizing here would drag that `Model &` in
+// through the back door. Task 6's Model::tokenize_reference_transcript
+// therefore runs at the dispatch site in src/voice-profile.cpp, which already
+// holds a live Model, and passes the ids down. `transcript` is still passed,
+// for two judgements that need no tables: this function decides "blank"
+// itself, at the same point in its own order that create_x_vector_profile
+// makes its own (weaker, "is one present at all") transcript judgement, and it
+// refuses the HALF-PRESENT state (a transcript with no ids, or ids with no
+// transcript) rather than trusting its caller.
+//
+// Order, cheapest refusal first, so nothing pays for a graph pass over
+// reference audio for a request about to be refused:
+//   * a blank `transcript` -- empty OR whitespace-only, which is one state and
+//     one refusal, "voice_profile.transcript_blank" (the design's section 9
+//     error table: "Transcript present but empty or whitespace-only ->
+//     SYNTH_ERR_INVALID_ARG"). An ABSENT transcript names the OTHER clone
+//     mode, and D4 fixes the mode at preparation, so this function refuses it
+//     rather than quietly preparing the x-vector Profile the caller did not
+//     ask for -- the mirror of create_x_vector_profile's own refusal above,
+//     and the same capability lie both are written against. Blankness is
+//     decided by bpe.h's qwen_transcript_is_blank, the SAME predicate
+//     qwen_reference_transcript_ids applies before tokenizing, so this
+//     function and the tokenizer can never disagree about which transcripts
+//     exist;
+//   * a non-blank `transcript` with empty `reference_text_ids`
+//     ("voice_profile.reference_text_ids_missing"): all-or-nothing, the same
+//     rule Task 11 enforces again at the synthesis seam. Half-present ICL
+//     inputs are what produce a plausible-sounding wrong prompt;
+//   * a `language_tag` over `kMaxLanguageTagLength`
+//     ("voice_profile.language_tag_too_long"): the tie that constant's own
+//     header comment documents applies to both kinds or it applies to
+//     neither;
+//   * a package with no speaker encoder -> SYNTH_ERR_UNSUPPORTED_VOICE. One
+//     flag covers both encoders: the catalog resolves `speaker_encoder.*` and
+//     `codec.encoder.*` under `has_speaker_encoder` alike, which is why
+//     Model::prepare_codec_reference guards on that same flag (model.cpp);
+//   * encode_speaker_reference, then encode_codec_reference, whose own
+//     refusals (including the shared "voice_profile.reference_silent"
+//     digitally-silent-reference rejection, which both raise identically on
+//     the same clip) propagate unchanged.
+//
+// `threads` follows encode_speaker_reference's own convention: 0 selects
+// default_synthesis_threads().
+//
+// On any non-OK return `output` is left untouched (reset to null), and
+// `out_diagnostic_code`/`out_diagnostic_message` are set to non-null static
+// strings only for the refusals named above.
+synth_status_t create_icl_profile(const HParams &                     hparams,
+                                  const SpeakerEncoderWeights &       speaker_encoder,
+                                  const CodecEncoderWeights &         codec_encoder,
+                                  const std::vector<float> &          pcm_24k,
+                                  const std::string &                 transcript,
+                                  const std::vector<int32_t> &        reference_text_ids,
+                                  const std::string &                 language_tag,
+                                  int                                 threads,
+                                  std::shared_ptr<const IclProfile> & output,
+                                  const char *&                       out_diagnostic_code,
+                                  const char *&                       out_diagnostic_message);
 
 // ---------------------------------------------------------------------------
 // Task 8: the v1 Serialized Voice Profile envelope (docs/c-interface.md's "v1

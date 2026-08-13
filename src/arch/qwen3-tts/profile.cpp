@@ -1,5 +1,7 @@
 #include "arch/qwen3-tts/profile.h"
 
+#include "arch/qwen3-tts/bpe.h"
+#include "arch/qwen3-tts/codec-encoder-host.h"
 #include "arch/qwen3-tts/speaker-encoder-host.h"
 #include "arch/qwen3-tts/weights.h"
 #include "ggml.h"
@@ -29,22 +31,22 @@ synth_status_t create_x_vector_profile(const HParams &                         h
     out_diagnostic_code    = nullptr;
     out_diagnostic_message = nullptr;
 
-    // D4: the clone mode is fixed when the Profile is created. Plan 2
-    // implements exactly one mode, so a transcript names a mode with no
-    // implementation behind it -- accepting it and silently building the
-    // x-vector Profile anyway would hand back the weaker clone the caller
-    // did not ask for. Checked first, before the encode chain below ever
-    // runs: there is no reason to pay for a graph pass over reference audio
-    // for a request this function is about to refuse anyway. A
-    // whitespace-only transcript is "present" by this check and is refused
-    // the same way -- Plan 3 is what gives "empty" and "whitespace" distinct
-    // meanings (the spec's section 9 error table), and until it lands both
-    // are simply "a transcript was supplied".
+    // D4: the clone mode is fixed when the Profile is created. This function
+    // prepares the x-vector mode, so a transcript names the OTHER mode --
+    // accepting it and silently building the x-vector Profile anyway would
+    // hand back the weaker clone the caller did not ask for. Checked first,
+    // before the encode chain below ever runs: there is no reason to pay for
+    // a graph pass over reference audio for a request this function is about
+    // to refuse anyway. A whitespace-only transcript is "present" by this
+    // check and is refused the same way; create_icl_profile is where "empty"
+    // and "whitespace-only" acquire their own named refusal (the design's
+    // section 9 error table), because that is the function for which they are
+    // a MALFORMED input rather than simply the wrong mode.
     if (!transcript.empty()) {
         out_diagnostic_code = "voice_profile.transcript_unsupported";
         out_diagnostic_message =
-            "this package's Plan 2 runtime implements x-vector cloning only; a reference transcript names the "
-            "transcript-assisted mode, which has no implementation yet";
+            "this function prepares x-vector Voice Profiles only; a reference transcript names the "
+            "transcript-assisted mode, which create_icl_profile prepares";
         return SYNTH_ERR_INVALID_ARG;
     }
 
@@ -88,6 +90,117 @@ synth_status_t create_x_vector_profile(const HParams &                         h
     profile->ref_rms      = encoding.ref_rms;
     profile->language_tag = language_tag;
     output                = std::move(profile);
+    return SYNTH_OK;
+}
+
+synth_status_t create_icl_profile(const HParams &                     hparams,
+                                  const SpeakerEncoderWeights &       speaker_encoder,
+                                  const CodecEncoderWeights &         codec_encoder,
+                                  const std::vector<float> &          pcm_24k,
+                                  const std::string &                 transcript,
+                                  const std::vector<int32_t> &        reference_text_ids,
+                                  const std::string &                 language_tag,
+                                  int                                 threads,
+                                  std::shared_ptr<const IclProfile> & output,
+                                  const char *&                       out_diagnostic_code,
+                                  const char *&                       out_diagnostic_message) {
+    output.reset();
+    out_diagnostic_code    = nullptr;
+    out_diagnostic_message = nullptr;
+
+    // D4, from this side: the transcript is what MAKES a Profile an ICL
+    // Profile, so a blank one names the x-vector mode instead and is refused
+    // rather than silently downgraded to it -- the exact mirror of
+    // create_x_vector_profile's own refusal above. "Blank" is bpe.h's own
+    // qwen_transcript_is_blank, the same predicate qwen_reference_transcript_ids
+    // applies before tokenizing, so the two can never disagree; it covers the
+    // empty string and the whitespace-only one alike, which is one row and one
+    // status in the design's section 9 error table.
+    if (qwen_transcript_is_blank(transcript)) {
+        out_diagnostic_code = "voice_profile.transcript_blank";
+        out_diagnostic_message =
+            "a transcript-assisted Voice Profile needs a reference transcript that names speech; "
+            "this one is empty or whitespace-only";
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // All-or-nothing, not trusted from the caller. The ids are produced one
+    // layer up (Model::tokenize_reference_transcript at the dispatch site, the
+    // only place with the BPE tables), so this function cannot re-derive them
+    // -- but it can refuse the half-present state, and it must: an ICL prompt
+    // assembled from reference codes with no reference text is a
+    // plausible-sounding wrong prompt, not a failure anything downstream would
+    // report. Task 11 enforces the same rule again at the synthesis seam.
+    if (reference_text_ids.empty()) {
+        out_diagnostic_code    = "voice_profile.reference_text_ids_missing";
+        out_diagnostic_message = "the reference transcript produced no token ids for the transcript-assisted prompt";
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // The tie kMaxLanguageTagLength's own header comment (profile.h) records
+    // applies to both kinds or it applies to neither: this family's writer
+    // must never be able to emit an envelope its own reader refuses,
+    // whichever kind it wrote. Checked here, cheaply, before either encode
+    // chain, exactly as create_x_vector_profile checks it.
+    if (language_tag.size() > kMaxLanguageTagLength) {
+        out_diagnostic_code    = "voice_profile.language_tag_too_long";
+        out_diagnostic_message = "the reference language tag exceeds this package's maximum supported length";
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // One flag, both encoders. Model::prepare_x_vector and
+    // Model::prepare_codec_reference (model.cpp) each guard on this same
+    // `has_speaker_encoder`, because the catalog resolves `speaker_encoder.*`
+    // and `codec.encoder.*` under it alike -- a CustomVoice package leaves
+    // BOTH weights structs default-constructed, every pointer null.
+    if (!hparams.has_speaker_encoder) {
+        return SYNTH_ERR_UNSUPPORTED_VOICE;
+    }
+
+    // The speaker half first, so an ICL Profile and an x-vector Profile
+    // prepared from the same clip carry the same embedding and refuse
+    // identically -- and so the cheaper of the two graph passes is the one
+    // that reports a silent reference.
+    XVectorEncoding      speaker_encoding;
+    const synth_status_t speaker_status = encode_speaker_reference(
+        hparams, speaker_encoder, pcm_24k, threads, speaker_encoding, out_diagnostic_code, out_diagnostic_message);
+    if (speaker_status != SYNTH_OK) {
+        return speaker_status;
+    }
+
+    CodecEncoding        codec_encoding;
+    const synth_status_t codec_status = encode_codec_reference(hparams, codec_encoder, pcm_24k, threads, codec_encoding,
+                                                               out_diagnostic_code, out_diagnostic_message);
+    if (codec_status != SYNTH_OK) {
+        // Its own refusals -- a sub-frame clip, a non-finite sample, and the
+        // "voice_profile.reference_silent" rejection it raises identically to
+        // the speaker path above -- already set the diagnostic out-params.
+        return codec_status;
+    }
+
+    // Defensive, and unreachable through any caller: encode_codec_reference's
+    // own postcondition is `groups * frames` codes with both positive, and
+    // codec_encoder_check_waveform has already refused a clip too short to
+    // fill one frame. Restated here because Task 9's writer sizes a tensor
+    // from these two numbers, where a disagreement would stop being a wrong
+    // answer and start being a wrong allocation.
+    if (codec_encoding.groups == 0 || codec_encoding.frames == 0 ||
+        codec_encoding.codes.size() != size_t(codec_encoding.groups) * size_t(codec_encoding.frames)) {
+        return SYNTH_ERR_INTERNAL;
+    }
+
+    auto profile                  = std::make_shared<IclProfile>();
+    profile->speaker.mode         = CloneMode::Icl;
+    profile->speaker.x_vector     = std::move(speaker_encoding.x_vector);
+    profile->speaker.ref_rms      = speaker_encoding.ref_rms;
+    profile->speaker.language_tag = language_tag;
+    // Moved verbatim, in the encoder's own GROUP-FASTEST order. Any transpose
+    // added here is a defect (codec-encoder-host.h's own header comment).
+    profile->codes                = std::move(codec_encoding.codes);
+    profile->groups               = codec_encoding.groups;
+    profile->frames               = codec_encoding.frames;
+    profile->reference_text_ids   = reference_text_ids;
+    output                        = std::move(profile);
     return SYNTH_OK;
 }
 

@@ -4,24 +4,18 @@
 
 namespace synth::qwen3tts {
 
-namespace {
-
-// ASCII whitespace only, deliberately: what this refuses is a transcript that
-// names no speech, and the case that reaches it is an empty or blank string a
-// caller passed through. A transcript made entirely of U+3000 ideographic
-// spaces would pass here and then tokenize to real ids -- it is not the case
-// the design's §9 row is about, and widening this to Unicode whitespace would
-// mean carrying a table for it.
-bool is_blank(const std::string & text) {
-    for (const char byte : text) {
+// Moved out of this file's anonymous namespace and declared in bpe.h when
+// Plan 3's Task 8 gave it a second caller (profile.cpp's create_icl_profile);
+// the rationale for ASCII-only, and for the two callers sharing one
+// predicate, is on the declaration there.
+bool qwen_transcript_is_blank(const std::string & transcript) {
+    for (const char byte : transcript) {
         if (std::isspace(static_cast<unsigned char>(byte)) == 0) {
             return false;
         }
     }
     return true;
 }
-
-}  // namespace
 
 std::string qwen_assistant_turn(const std::string & text) {
     return "<|im_start|>assistant\n" + text + "<|im_end|>\n<|im_start|>assistant\n";
@@ -36,7 +30,7 @@ synth_status_t qwen_reference_transcript_ids(const TextFrontend &   frontend,
                                              uint64_t               max_tokens,
                                              std::vector<int32_t> & token_ids) {
     token_ids.clear();
-    if (is_blank(transcript)) {
+    if (qwen_transcript_is_blank(transcript)) {
         return SYNTH_ERR_INVALID_ARG;
     }
 

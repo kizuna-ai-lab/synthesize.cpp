@@ -15,7 +15,7 @@
 // test harness yet.
 //
 // What this file covers: the two rejections create_x_vector_profile itself
-// names (a transcript Plan 2 cannot honour; a package with no speaker
+// names (a transcript it does not prepare; a package with no speaker
 // encoder), that encode_speaker_reference's own silent-reference refusal
 // propagates unchanged, and that a successful call produces a Profile fixed
 // to CloneMode::XVector carrying the declared enc_dim width and the caller's
@@ -23,8 +23,16 @@
 // rejections (a mismatched mel width, a resolver that dropped a pointer, a
 // non-finite embedding) are already Task 5's own coverage
 // (qwen3_tts_speaker_encoder_host_test.cpp) and are not repeated here.
+//
+// Plan 3's Task 8 adds create_icl_profile's own section below, with a second
+// fixture that carries a codec encoder beside the ECAPA stack; the envelope
+// sections after it are Plan 2's and are unchanged, save for one added check
+// that a Plan 2 x-vector Profile still round-trips now that a second clone
+// mode exists.
 
 #include "arch/qwen3-tts/catalog.h"
+#include "arch/qwen3-tts/codec-encoder-host.h"
+#include "arch/qwen3-tts/codec-encoder.h"
 #include "arch/qwen3-tts/profile.h"
 #include "arch/qwen3-tts/weights.h"
 #include "ggml-backend.h"
@@ -47,8 +55,10 @@
 namespace {
 
 using synth::qwen3tts::CloneMode;
+using synth::qwen3tts::CodecEncoderWeights;
 using synth::qwen3tts::Conv1dWeights;
 using synth::qwen3tts::HParams;
+using synth::qwen3tts::IclProfile;
 using synth::qwen3tts::kPrescanKnownKeyCount;
 using synth::qwen3tts::kPrescanKnownKeys;
 using synth::qwen3tts::kPrescanKvCountXVector;
@@ -90,10 +100,10 @@ class LcgStream {
         return float(state_ >> 40) / 8388608.0f - 1.0f;
     }
 
-    std::vector<float> fill(size_t count, float scale) {
+    std::vector<float> fill(size_t count, float scale, float offset = 0.0f) {
         std::vector<float> values(count);
         for (float & value : values) {
-            value = next() * scale;
+            value = next() * scale + offset;
         }
         return values;
     }
@@ -133,21 +143,60 @@ HParams make_hparams() {
     return hparams;
 }
 
+// One tensor of a fixture's weights and the LCG draw that fills it. `offset`
+// is non-zero only for a LayerNorm gain, which a trained network draws about
+// one rather than about zero.
+struct WeightDraw {
+    ggml_tensor * tensor = nullptr;
+    float         scale  = 0.0f;
+    float         offset = 0.0f;
+};
+
+void fill_weights(uint64_t seed, const std::vector<WeightDraw> & draws) {
+    LcgStream stream(seed);
+    for (const WeightDraw & draw : draws) {
+        const std::vector<float> values = stream.fill(size_t(ggml_nelements(draw.tensor)), draw.scale, draw.offset);
+        ggml_backend_tensor_set(draw.tensor, values.data(), 0, ggml_nbytes(draw.tensor));
+    }
+}
+
 // ggml reports a Conv1d kernel stored as [out, in, kernel] in reverse -- the
 // same layout tests/qwen3_tts_speaker_encoder_test.cpp's own add_conv uses.
-void add_conv(ggml_context *               context,
-              Conv1dWeights &              target,
-              int64_t                      kernel,
-              int64_t                      in,
-              int64_t                      out,
-              std::vector<ggml_tensor *> & order,
-              std::vector<float> &         scale) {
+void add_conv(ggml_context *            context,
+              Conv1dWeights &           target,
+              int64_t                   kernel,
+              int64_t                   in,
+              int64_t                   out,
+              std::vector<WeightDraw> & draws) {
     target.weight = ggml_new_tensor_3d(context, GGML_TYPE_F32, kernel, in, out);
     target.bias   = ggml_new_tensor_1d(context, GGML_TYPE_F32, out);
-    order.push_back(target.weight);
-    scale.push_back(0.5f);
-    order.push_back(target.bias);
-    scale.push_back(0.25f);
+    draws.push_back({ target.weight, 0.5f, 0.0f });
+    draws.push_back({ target.bias, 0.25f, 0.0f });
+}
+
+// The ECAPA-TDNN half of a fixture, on `context`. Extracted from
+// build_fixture below when the ICL fixture needed the same stack beside a
+// codec encoder: the two fixtures must agree on the speaker weights exactly,
+// or an ICL Profile and an x-vector Profile prepared from the same clip would
+// stop being comparable for reasons that have nothing to do with the mode.
+void add_speaker_weights(ggml_context * context, SpeakerEncoderWeights & weights, std::vector<WeightDraw> & draws) {
+    add_conv(context, weights.stem, 5, kMelBins, kChannels, draws);
+    weights.blocks.assign(3, SpeakerEncoderBlockWeights{});
+    for (SpeakerEncoderBlockWeights & block : weights.blocks) {
+        const int64_t width = kChannels / kRes2NetScale;
+        add_conv(context, block.tdnn1, 1, kChannels, kChannels, draws);
+        block.res2net.assign(size_t(kRes2NetScale - 1), Conv1dWeights{});
+        for (Conv1dWeights & split : block.res2net) {
+            add_conv(context, split, 3, width, width, draws);
+        }
+        add_conv(context, block.se1, 1, kChannels, kSeChannels, draws);
+        add_conv(context, block.se2, 1, kSeChannels, kChannels, draws);
+        add_conv(context, block.tdnn2, 1, kChannels, kChannels, draws);
+    }
+    add_conv(context, weights.mfa, 1, kAggregated, kAggregated, draws);
+    add_conv(context, weights.asp_tdnn, 1, 3 * kAggregated, kAttentionChannels, draws);
+    add_conv(context, weights.asp, 1, kAttentionChannels, kAggregated, draws);
+    add_conv(context, weights.fc, 1, 2 * kAggregated, kEncDim, draws);
 }
 
 // Owns the backend and buffer the weights live on -- the same shape
@@ -193,36 +242,23 @@ bool build_fixture(Fixture & fixture) {
         return false;
     }
 
-    std::vector<ggml_tensor *> order;
-    std::vector<float>         scale;
-    add_conv(pctx, fixture.weights.stem, 5, kMelBins, kChannels, order, scale);
-    fixture.weights.blocks.assign(3, SpeakerEncoderBlockWeights{});
-    for (SpeakerEncoderBlockWeights & block : fixture.weights.blocks) {
-        const int64_t width = kChannels / kRes2NetScale;
-        add_conv(pctx, block.tdnn1, 1, kChannels, kChannels, order, scale);
-        block.res2net.assign(size_t(kRes2NetScale - 1), Conv1dWeights{});
-        for (Conv1dWeights & split : block.res2net) {
-            add_conv(pctx, split, 3, width, width, order, scale);
-        }
-        add_conv(pctx, block.se1, 1, kChannels, kSeChannels, order, scale);
-        add_conv(pctx, block.se2, 1, kSeChannels, kChannels, order, scale);
-        add_conv(pctx, block.tdnn2, 1, kChannels, kChannels, order, scale);
-    }
-    add_conv(pctx, fixture.weights.mfa, 1, kAggregated, kAggregated, order, scale);
-    add_conv(pctx, fixture.weights.asp_tdnn, 1, 3 * kAggregated, kAttentionChannels, order, scale);
-    add_conv(pctx, fixture.weights.asp, 1, kAttentionChannels, kAggregated, order, scale);
-    add_conv(pctx, fixture.weights.fc, 1, 2 * kAggregated, kEncDim, order, scale);
+    std::vector<WeightDraw> draws;
+    add_speaker_weights(pctx, fixture.weights, draws);
 
     fixture.buffer = ggml_backend_alloc_ctx_tensors(pctx, fixture.backend);
     if (fixture.buffer == nullptr) {
         return false;
     }
-    LcgStream stream(kSeed);
-    for (size_t index = 0; index < order.size(); ++index) {
-        const std::vector<float> values = stream.fill(size_t(ggml_nelements(order[index])), scale[index]);
-        ggml_backend_tensor_set(order[index], values.data(), 0, ggml_nbytes(order[index]));
-    }
+    fill_weights(kSeed, draws);
     return true;
+}
+
+// `samples` samples of drawn "speech" at this package's own declared 24 kHz
+// Reference Audio rate. Same stream at every length, so a longer clip is the
+// shorter one with samples appended and nothing else changed.
+std::vector<float> speech_of(size_t samples) {
+    LcgStream stream(kSeed + 100);
+    return stream.fill(samples, 0.2f);
 }
 
 // Literally one second at this package's own declared 24 kHz Reference Audio
@@ -230,8 +266,7 @@ bool build_fixture(Fixture & fixture) {
 // count and kSpeakerEncoderDeepestReflection's 4-frame floor, so nothing
 // here exercises either domain edge; those are Task 5's own coverage.
 std::vector<float> one_second_of_speech() {
-    LcgStream stream(kSeed + 100);
-    return stream.fill(size_t(kSampleRate), 0.2f);
+    return speech_of(size_t(kSampleRate));
 }
 
 // D4: a transcript names the transcript-assisted mode, which Plan 2 does not
@@ -351,6 +386,547 @@ int test_a_language_tag_is_stored_verbatim() {
     SYNTH_TEST_CHECK(status == SYNTH_OK);
     SYNTH_TEST_CHECK(profile != nullptr);
     SYNTH_TEST_CHECK(profile->language_tag == "en-US");
+    return 0;
+}
+
+// =============================================================================
+// Plan 3 Task 8: create_icl_profile and the IclProfile payload.
+//
+// The fixture below carries a codec encoder BESIDE the ECAPA stack above, on
+// the same context, because an ICL Profile is prepared from both: D5
+// tabulates three rows for this mode -- the `[1024]` speaker
+// embedding, which that table marks `yes` in BOTH columns, plus the reference
+// codes and the reference text token ids -- and create_icl_profile runs both
+// encode chains to fill them.
+//
+// STILL NO Model, AND STILL NO 2.5 GB PACKAGE. This file is registered as a
+// `unit` test (tests/CMakeLists.txt:180), so it may not depend on one, and
+// synth::qwen3tts::Model has no constructor that avoids one. That is exactly
+// why create_icl_profile takes `(HParams, SpeakerEncoderWeights,
+// CodecEncoderWeights, ...)` rather than a `Model &` (its own header comment),
+// and why `reference_text_ids` arrives already tokenized: the BPE tables live
+// on Model, so tokenizing inside that function would drag one in. The tests
+// below supply ids directly, exactly as Task 10's dispatch site will after
+// running Model::tokenize_reference_transcript.
+//
+// The one assertion that does NOT fit here and moved rather than shrinking is
+// the SELECTOR -- the same public call producing an ICL Profile with a
+// transcript and an x-vector Profile without one. That needs a live Model and
+// lands in tests/qwen3_tts_base_load_real.cpp as part of Task 10. What stays
+// at the `unit` layer is the half that pins D4 at the family seam: each
+// create_* function refuses the input naming the other mode
+// (test_a_transcript_is_rejected_not_ignored above for one direction,
+// test_icl_refuses_a_blank_transcript below for the other).
+//
+// EVERY RULE BELOW WAS INVERTED AND RE-RUN, and each reported at the check it
+// was aimed at. Named by the DIMENSION each perturbation moves, because eight
+// inversions of the same dimension are one inversion:
+//
+//   kind      CloneMode::Icl written as XVector    -> the mode check
+//   kind      `speaker` moved off offset 0          -> the profile.h
+//                                                      static_assert, at COMPILE
+//                                                      time, not this file
+//   kind      the loader labels an x-vector
+//             envelope Icl                          -> the Plan 2 round trip
+//   presence  the blank-transcript check removed    -> the "" case
+//   value     blankness weakened to emptiness       -> the "   " case
+//   presence  the reference_text_ids guard removed  -> the half-present case
+//   presence  the ids not copied into the payload   -> D5's third row
+//   order     a stage-major transpose on the way in -> codes_equal
+//   length    the frame trim as a floor divide      -> 13 frames
+//   length    the language_tag ceiling removed      -> the oversized tag
+//   presence  the has_speaker_encoder guard removed -> UNSUPPORTED_VOICE
+//
+// TWO MASKINGS, recorded rather than left to be rediscovered. The
+// all-three-rows check used to assert the literal frame count as well, so a
+// frame-trim fault reported ITSELF there instead of at the check aimed at it
+// (measured); the literal moved out, and only the self-consistent
+// `codes.size() == groups * frames` stayed. And the loader-mislabels
+// inversion trips test_round_trip_of_a_well_formed_profile first, since that
+// arm has pinned the same field since Plan 2 -- with it commented out, the
+// Plan 2 round trip below reports it, which is how it was confirmed rather
+// than assumed.
+// =============================================================================
+
+// The real Base checkpoint's encode geometry, at a fraction of its width.
+// `upsampling_ratios` is [8, 6, 5, 4] and the encoder walks it REVERSED
+// (modeling_mimi.py:456), so its strides are 4, 5, 6, 8 and its kernels are
+// twice those; the frame downsampler adds one more stride of 2, for
+// 4 * 5 * 6 * 8 * 2 = 1920 samples per frame.
+//
+// THE STRIDES ARE THE PRODUCTION ONES AND THE CHANNEL WIDTHS ARE NOT, on
+// purpose. codec_encoder_geometry reads each convolution's kernel extent and
+// never its channel count, so this narrow stack lands on exactly the frame
+// counts a real reference clip does -- which is what lets the frame-count
+// check below name 13 and 101 rather than two numbers peculiar to a fixture.
+// tests/qwen3_tts_codec_encoder_test.cpp takes the opposite trade (strides
+// 2, 3, 2, 2, so 48 samples per frame) because it runs many more clips
+// through the graph and does not care what a frame is worth.
+constexpr int64_t kCodecStem            = 4;
+constexpr int64_t kCodecStageWidths[]   = { 8, 16, 32, 64 };
+constexpr int64_t kCodecStageKernels[]  = { 8, 10, 12, 16 };
+constexpr int64_t kCodecHidden          = 32;
+constexpr int64_t kCodecIntermediate    = 128;
+constexpr int64_t kCodecLayers          = 8;
+constexpr int64_t kCodecSamplesPerFrame = 1920;
+// `kProjected` is `codebook_dim / 2` exactly as catalog.cpp derives it.
+constexpr int64_t kProjected            = kCodecHidden / 2;
+constexpr int64_t kCodebookSize         = 8;
+constexpr int64_t kGroups               = 16;
+constexpr int64_t kSemanticGroups       = 1;
+
+// The two reference lengths D5's frame arithmetic is stated against: the
+// shortest clip this package accepts, and base-icl-en's own. 24,000 / 1920 is
+// 12.5, so the CEILING divide the frame trim applies makes it 13 -- the one
+// number a floor divide gets wrong.
+constexpr size_t   kShortReferenceSamples = 24000;
+constexpr size_t   kLongReferenceSamples  = 193920;
+constexpr uint64_t kShortReferenceFrames  = 13;
+constexpr uint64_t kLongReferenceFrames   = 101;
+
+// The ids Task 10's dispatch will pass down from
+// Model::tokenize_reference_transcript. Opaque here by construction:
+// create_icl_profile never touches a vocabulary, so nothing below depends on
+// these being real ids for the transcript beside them -- only on them being
+// carried through unchanged.
+std::vector<int32_t> reference_text_ids() {
+    return { 9707, 11, 1879, 13 };
+}
+
+void add_codec_conv(ggml_context *            context,
+                    Conv1dWeights &           target,
+                    int64_t                   kernel,
+                    int64_t                   in,
+                    int64_t                   out,
+                    std::vector<WeightDraw> & draws) {
+    // Scaled down by the fan-in so an eleven-convolution stack neither
+    // saturates nor decays to nothing before the transformer sees it -- the
+    // same scaling tests/qwen3_tts_codec_encoder_test.cpp's own fixture uses.
+    const float scale = 2.0f / float(std::sqrt(double(kernel * in)));
+    target.weight     = ggml_new_tensor_3d(context, GGML_TYPE_F32, kernel, in, out);
+    target.bias       = ggml_new_tensor_1d(context, GGML_TYPE_F32, out);
+    draws.push_back({ target.weight, scale, 0.0f });
+    draws.push_back({ target.bias, 0.05f, 0.0f });
+}
+
+void add_codec_weights(ggml_context * context, CodecEncoderWeights & weights, std::vector<WeightDraw> & draws) {
+    add_codec_conv(context, weights.stem, 7, 1, kCodecStem, draws);
+    weights.stages.assign(4, synth::qwen3tts::CodecEncoderStage{});
+    int64_t width = kCodecStem;
+    for (size_t stage = 0; stage < weights.stages.size(); ++stage) {
+        synth::qwen3tts::CodecEncoderStage & into = weights.stages[stage];
+        add_codec_conv(context, into.bottleneck_in, 3, width, width / 2, draws);
+        add_codec_conv(context, into.bottleneck_out, 1, width / 2, width, draws);
+        add_codec_conv(context, into.stride_conv, kCodecStageKernels[stage], width, kCodecStageWidths[stage], draws);
+        width = kCodecStageWidths[stage];
+    }
+    add_codec_conv(context, weights.tail, 3, width, kCodecHidden, draws);
+    // No bias: the frame downsampler is the one convolution here built with
+    // `bias=False`, which is why the catalog holds it as a bare tensor.
+    weights.downsample = ggml_new_tensor_3d(context, GGML_TYPE_F32, 4, kCodecHidden, kCodecHidden);
+    draws.push_back({ weights.downsample, 0.15f, 0.0f });
+
+    weights.layers.assign(kCodecLayers, synth::qwen3tts::CodecEncoderTransformerLayerWeights{});
+    for (synth::qwen3tts::CodecEncoderTransformerLayerWeights & layer : weights.layers) {
+        // LayerNorm here carries a weight AND a bias, unlike the decoder's
+        // RMSNorm; the gain is drawn about one, which is what a trained one
+        // looks like.
+        layer.input_layernorm.weight = ggml_new_tensor_1d(context, GGML_TYPE_F32, kCodecHidden);
+        draws.push_back({ layer.input_layernorm.weight, 0.1f, 1.0f });
+        layer.input_layernorm.bias = ggml_new_tensor_1d(context, GGML_TYPE_F32, kCodecHidden);
+        draws.push_back({ layer.input_layernorm.bias, 0.05f, 0.0f });
+        layer.q_proj = ggml_new_tensor_2d(context, GGML_TYPE_F32, kCodecHidden, kCodecHidden);
+        draws.push_back({ layer.q_proj, 0.2f, 0.0f });
+        layer.k_proj = ggml_new_tensor_2d(context, GGML_TYPE_F32, kCodecHidden, kCodecHidden);
+        draws.push_back({ layer.k_proj, 0.2f, 0.0f });
+        layer.v_proj = ggml_new_tensor_2d(context, GGML_TYPE_F32, kCodecHidden, kCodecHidden);
+        draws.push_back({ layer.v_proj, 0.2f, 0.0f });
+        layer.o_proj = ggml_new_tensor_2d(context, GGML_TYPE_F32, kCodecHidden, kCodecHidden);
+        draws.push_back({ layer.o_proj, 0.2f, 0.0f });
+        // MimiLayerScale initialises at 0.01 and stays small after training.
+        layer.self_attn_layer_scale = ggml_new_tensor_1d(context, GGML_TYPE_F32, kCodecHidden);
+        draws.push_back({ layer.self_attn_layer_scale, 0.02f, 0.0f });
+        layer.post_attention_layernorm.weight = ggml_new_tensor_1d(context, GGML_TYPE_F32, kCodecHidden);
+        draws.push_back({ layer.post_attention_layernorm.weight, 0.1f, 1.0f });
+        layer.post_attention_layernorm.bias = ggml_new_tensor_1d(context, GGML_TYPE_F32, kCodecHidden);
+        draws.push_back({ layer.post_attention_layernorm.bias, 0.05f, 0.0f });
+        layer.fc1 = ggml_new_tensor_2d(context, GGML_TYPE_F32, kCodecHidden, kCodecIntermediate);
+        draws.push_back({ layer.fc1, 0.2f, 0.0f });
+        layer.fc2 = ggml_new_tensor_2d(context, GGML_TYPE_F32, kCodecIntermediate, kCodecHidden);
+        draws.push_back({ layer.fc2, 0.1f, 0.0f });
+        layer.mlp_layer_scale = ggml_new_tensor_1d(context, GGML_TYPE_F32, kCodecHidden);
+        draws.push_back({ layer.mlp_layer_scale, 0.02f, 0.0f });
+    }
+
+    // `input_proj` is a kernel-one convolution with no bias, so ggml reports
+    // it [1, in, out]; `output_proj` is deliberately left null, because it is
+    // a DECODE-time tensor the encode path must never read.
+    auto add_quantizer = [&](synth::qwen3tts::CodecQuantizerWeights & target, int64_t stages) {
+        target.input_proj = ggml_new_tensor_3d(context, GGML_TYPE_F32, 1, kCodecHidden, kProjected);
+        draws.push_back({ target.input_proj, 0.25f, 0.0f });
+        target.codebooks.assign(size_t(stages), nullptr);
+        for (int64_t stage = 0; stage < stages; ++stage) {
+            target.codebooks[size_t(stage)] = ggml_new_tensor_2d(context, GGML_TYPE_F32, kProjected, kCodebookSize);
+            draws.push_back({ target.codebooks[size_t(stage)], 0.6f, 0.0f });
+        }
+    };
+    add_quantizer(weights.semantic, kSemanticGroups);
+    // Exactly the fifteen the grid reads. The real checkpoint carries
+    // thirty-one, and that a wrapper must take the group count from
+    // `quantizer_count` rather than from the resolved codebook list is Task
+    // 5's own coverage (tests/qwen3_tts_codec_encoder_test.cpp), not this
+    // file's to repeat.
+    add_quantizer(weights.acoustic, kGroups - kSemanticGroups);
+}
+
+struct IclFixture {
+    ggml_backend_t        backend = nullptr;
+    Context               persistent;
+    ggml_backend_buffer_t buffer = nullptr;
+    HParams               hparams;
+    SpeakerEncoderWeights speaker;
+    CodecEncoderWeights   codec;
+
+    IclFixture()                               = default;
+    IclFixture(const IclFixture &)             = delete;
+    IclFixture & operator=(const IclFixture &) = delete;
+
+    ~IclFixture() {
+        if (buffer != nullptr) {
+            ggml_backend_buffer_free(buffer);
+        }
+        if (backend != nullptr) {
+            ggml_backend_free(backend);
+        }
+    }
+};
+
+bool build_icl_fixture(IclFixture & fixture) {
+    ggml_backend_dev_t device = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    if (device == nullptr) {
+        return false;
+    }
+    fixture.backend = ggml_backend_dev_init(device, nullptr);
+    if (fixture.backend == nullptr) {
+        return false;
+    }
+    fixture.hparams                                        = make_hparams();
+    // `codebook_dim` is this port's name for the LATENT width; the projected
+    // space the quantizer decides in is half of it. catalog.cpp derives both
+    // the same way, so the fixture must too.
+    fixture.hparams.codec.decoder.codebook_dim             = uint32_t(kCodecHidden);
+    fixture.hparams.codec.decoder.codebook_size            = uint32_t(kCodebookSize);
+    fixture.hparams.codec.decoder.quantizer_count          = uint32_t(kGroups);
+    fixture.hparams.codec.decoder.semantic_quantizer_count = uint32_t(kSemanticGroups);
+
+    fixture.persistent  = make_context(ggml_tensor_overhead() * 512);
+    ggml_context * pctx = fixture.persistent.get();
+    if (pctx == nullptr) {
+        return false;
+    }
+    std::vector<WeightDraw> draws;
+    add_speaker_weights(pctx, fixture.speaker, draws);
+    add_codec_weights(pctx, fixture.codec, draws);
+
+    fixture.buffer = ggml_backend_alloc_ctx_tensors(pctx, fixture.backend);
+    if (fixture.buffer == nullptr) {
+        return false;
+    }
+    fill_weights(kSeed, draws);
+    return true;
+}
+
+// Prepares an ICL Profile from `pcm` and the fixture's own weights, with the
+// arguments every success-path check below shares.
+synth_status_t prepare_icl(const IclFixture &                  fixture,
+                           const std::vector<float> &          pcm,
+                           std::shared_ptr<const IclProfile> & profile,
+                           const char *&                       code,
+                           const char *&                       message) {
+    return synth::qwen3tts::create_icl_profile(fixture.hparams, fixture.speaker, fixture.codec, pcm,
+                                               /*transcript=*/"hello there", reference_text_ids(),
+                                               /*language_tag=*/"english", /*threads=*/1, profile, code, message);
+}
+
+// --- The mode the Profile names. This is the rule Step 2's inversion targets
+// (make create_icl_profile write CloneMode::XVector and this check is what
+// fails), and it is the whole point of D4: the mode is decided here, at
+// preparation, so a Serialized Profile has one unambiguous meaning.
+int test_an_icl_profile_reports_the_icl_mode() {
+    IclFixture fixture;
+    SYNTH_TEST_CHECK(build_icl_fixture(fixture));
+    const char *                      code    = nullptr;
+    const char *                      message = nullptr;
+    std::shared_ptr<const IclProfile> profile;
+    SYNTH_TEST_CHECK(prepare_icl(fixture, speech_of(kShortReferenceSamples), profile, code, message) == SYNTH_OK);
+    SYNTH_TEST_CHECK(profile != nullptr);
+    SYNTH_TEST_CHECK(code == nullptr);
+    SYNTH_TEST_CHECK(message == nullptr);
+    SYNTH_TEST_CHECK(profile->speaker.mode == CloneMode::Icl);
+    SYNTH_TEST_CHECK(profile->speaker.language_tag == "english");
+    return 0;
+}
+
+// --- The layout contract IclProfile's own header comment states, exercised
+// the exact way src/synthesize.cpp:1073-1086 exercises it: recover the
+// type-erased payload as an XVectorProfile and read `.mode` off it BEFORE
+// knowing which mode it is. One ProfileFamilyTag covers both of this family's
+// clone modes precisely because that read works
+// (voice-profile-handle.h:21-26), so it has to be well-defined for an ICL
+// payload and not merely usually-right.
+//
+// The compile-time half of this rule is the static_assert set in profile.h:
+// move `speaker` off offset 0 and the BUILD fails rather than this check.
+int test_an_icl_payload_reads_back_through_an_x_vector_pointer() {
+    IclFixture fixture;
+    SYNTH_TEST_CHECK(build_icl_fixture(fixture));
+    const char *                      code    = nullptr;
+    const char *                      message = nullptr;
+    std::shared_ptr<const IclProfile> profile;
+    SYNTH_TEST_CHECK(prepare_icl(fixture, speech_of(kShortReferenceSamples), profile, code, message) == SYNTH_OK);
+    SYNTH_TEST_CHECK(profile != nullptr);
+
+    const std::shared_ptr<const void> erased      = profile;
+    const auto *                      as_x_vector = static_cast<const XVectorProfile *>(erased.get());
+    SYNTH_TEST_CHECK(as_x_vector->mode == CloneMode::Icl);
+    SYNTH_TEST_CHECK(as_x_vector->x_vector == profile->speaker.x_vector);
+    SYNTH_TEST_CHECK(as_x_vector->ref_rms == profile->speaker.ref_rms);
+    SYNTH_TEST_CHECK(as_x_vector->language_tag == profile->speaker.language_tag);
+    return 0;
+}
+
+// --- All three of D5's ICL rows are present, INCLUDING the speaker
+// embedding: the design's table marks the `[1024]` embedding `yes` in both
+// columns because upstream inserts it regardless of mode, so an ICL Profile
+// is an x-vector Profile plus two things rather than an alternative to one.
+int test_an_icl_profile_carries_all_three_of_d5s_rows() {
+    IclFixture fixture;
+    SYNTH_TEST_CHECK(build_icl_fixture(fixture));
+    const char *                      code    = nullptr;
+    const char *                      message = nullptr;
+    std::shared_ptr<const IclProfile> profile;
+    SYNTH_TEST_CHECK(prepare_icl(fixture, speech_of(kShortReferenceSamples), profile, code, message) == SYNTH_OK);
+    SYNTH_TEST_CHECK(profile != nullptr);
+
+    // Row 1: the speaker embedding, at the package's own declared width, and
+    // a positive ref_rms behind it.
+    SYNTH_TEST_CHECK(profile->speaker.x_vector.size() == fixture.hparams.speaker_encoder.enc_dim);
+    SYNTH_TEST_CHECK(profile->speaker.ref_rms > 0.0f);
+    // Row 2: the reference codes, `groups * frames` of them, every one inside
+    // the package's own codebook. What `frames` should BE for this clip is
+    // deliberately not asserted here -- that is
+    // test_the_icl_frame_count_follows_the_reference_length's own rule, and
+    // repeating it here would only mean a frame-count fault reported itself
+    // at this check instead of at the one aimed at it (measured: it did).
+    SYNTH_TEST_CHECK(profile->groups == uint64_t(kGroups));
+    SYNTH_TEST_CHECK(profile->frames > 0);
+    SYNTH_TEST_CHECK(profile->codes.size() == size_t(profile->groups) * size_t(profile->frames));
+    for (int32_t value : profile->codes) {
+        SYNTH_TEST_CHECK(value >= 0 && value < int32_t(kCodebookSize));
+    }
+    // Row 3: the reference text token ids, carried through unchanged.
+    SYNTH_TEST_CHECK(profile->reference_text_ids == reference_text_ids());
+    return 0;
+}
+
+// --- The grid the Profile carries is the ENCODER'S grid, element for
+// element, in its own GROUP-FASTEST order. Checked through the production
+// entry point codec-encoder-host.h keeps for exactly this
+// (`codes_equal`, whose header comment names this call site), against a
+// second, independent encode of the same clip -- and against a STAGE-MAJOR
+// permutation of the same numbers, which has the right element count, the
+// right value range and the wrong order. That permutation is the buffer a
+// reader who takes `[16, T]` for a numpy shape would build, and it is what
+// any transpose added between the encoder and this payload would produce.
+int test_the_icl_code_grid_is_the_encoders_own_grid() {
+    IclFixture fixture;
+    SYNTH_TEST_CHECK(build_icl_fixture(fixture));
+    const std::vector<float>          pcm     = speech_of(kShortReferenceSamples);
+    const char *                      code    = nullptr;
+    const char *                      message = nullptr;
+    std::shared_ptr<const IclProfile> profile;
+    SYNTH_TEST_CHECK(prepare_icl(fixture, pcm, profile, code, message) == SYNTH_OK);
+    SYNTH_TEST_CHECK(profile != nullptr);
+
+    synth::qwen3tts::CodecEncoding encoding;
+    const char *                   encode_code    = nullptr;
+    const char *                   encode_message = nullptr;
+    SYNTH_TEST_CHECK(synth::qwen3tts::encode_codec_reference(fixture.hparams, fixture.codec, pcm, 1, encoding,
+                                                             encode_code, encode_message) == SYNTH_OK);
+    SYNTH_TEST_CHECK(encoding.groups == profile->groups);
+    SYNTH_TEST_CHECK(encoding.frames == profile->frames);
+    SYNTH_TEST_CHECK(synth::qwen3tts::codes_equal(encoding, profile->codes.data(), int64_t(profile->frames)));
+
+    // Without a spread the permutation below is the identity and the
+    // inequality that follows would hold for the wrong reason.
+    bool spread = false;
+    for (size_t index = 1; index < profile->codes.size(); ++index) {
+        spread = spread || profile->codes[index] != profile->codes[0];
+    }
+    SYNTH_TEST_CHECK(spread);
+
+    std::vector<int32_t> stage_major(profile->codes.size(), 0);
+    for (uint64_t frame = 0; frame < profile->frames; ++frame) {
+        for (uint64_t group = 0; group < profile->groups; ++group) {
+            stage_major[size_t(group * profile->frames + frame)] =
+                profile->codes[size_t(frame * profile->groups + group)];
+        }
+    }
+    SYNTH_TEST_CHECK(stage_major != profile->codes);
+    SYNTH_TEST_CHECK(!synth::qwen3tts::codes_equal(encoding, stage_major.data(), int64_t(profile->frames)));
+    return 0;
+}
+
+// --- The codes and the reference audio agree on length. Pure geometry, which
+// is why drawn weights serve: codec_encoder_geometry walks the convolutions'
+// own kernel extents and the channel widths never enter the arithmetic, so
+// this narrow fixture lands on the same frame counts a real clip does. 24,000
+// samples is 12.5 frames and becomes 13, which is the number a floor divide
+// gets wrong; 193,920 is a whole 101.
+int test_the_icl_frame_count_follows_the_reference_length() {
+    IclFixture fixture;
+    SYNTH_TEST_CHECK(build_icl_fixture(fixture));
+
+    // The two literals above are anchored to the fixture's own stride product
+    // rather than left as bare numbers: if this ever stops being 1920, the
+    // frame counts below stop meaning what their comment says they mean.
+    synth::qwen3tts::CodecEncoderGeometry geometry;
+    SYNTH_TEST_CHECK(synth::qwen3tts::codec_encoder_geometry(fixture.codec, int64_t(kShortReferenceSamples), geometry));
+    SYNTH_TEST_CHECK(geometry.samples_per_frame == kCodecSamplesPerFrame);
+
+    const struct {
+        size_t   samples;
+        uint64_t frames;
+    } cases[] = {
+        { kShortReferenceSamples, kShortReferenceFrames },
+        { kLongReferenceSamples,  kLongReferenceFrames  },
+    };
+
+    for (const auto & one : cases) {
+        const char *                      code    = nullptr;
+        const char *                      message = nullptr;
+        std::shared_ptr<const IclProfile> profile;
+        SYNTH_TEST_CHECK(prepare_icl(fixture, speech_of(one.samples), profile, code, message) == SYNTH_OK);
+        SYNTH_TEST_CHECK(profile != nullptr);
+        SYNTH_TEST_CHECK(profile->frames == one.frames);
+        SYNTH_TEST_CHECK(profile->codes.size() == size_t(kGroups) * size_t(one.frames));
+        const uint64_t ceiling =
+            (uint64_t(one.samples) + uint64_t(kCodecSamplesPerFrame) - 1) / uint64_t(kCodecSamplesPerFrame);
+        SYNTH_TEST_CHECK(profile->frames == ceiling);
+        std::printf("    icl: %llu samples -> %llu frames x %llu groups\n", (unsigned long long) one.samples,
+                    (unsigned long long) profile->frames, (unsigned long long) profile->groups);
+    }
+    return 0;
+}
+
+// --- D4 from the ICL side: a blank transcript names the OTHER mode, and this
+// function refuses it rather than quietly preparing the weaker Profile the
+// caller did not ask for. "Blank" is empty OR whitespace-only, which the
+// design's section 9 error table gives one row and one status -- the
+// distinction Plan 2's test_a_whitespace_transcript_is_rejected_too was
+// written early to preserve, now landing on the function for which a blank
+// transcript is a malformed input rather than simply the wrong mode.
+//
+// The fourth case is the REVERSE half-present state -- ids supplied with no
+// transcript to have produced them -- which this same check refuses.
+int test_icl_refuses_a_blank_transcript() {
+    IclFixture fixture;
+    SYNTH_TEST_CHECK(build_icl_fixture(fixture));
+
+    const struct {
+        const char *         transcript;
+        std::vector<int32_t> ids;
+    } cases[] = {
+        { "",         reference_text_ids() },
+        { "   ",      reference_text_ids() },
+        { " \t\r\n ", reference_text_ids() },
+        { "",         {}                   },
+    };
+
+    for (const auto & one : cases) {
+        const char *                      code    = nullptr;
+        const char *                      message = nullptr;
+        std::shared_ptr<const IclProfile> profile;
+        const synth_status_t              status = synth::qwen3tts::create_icl_profile(
+            fixture.hparams, fixture.speaker, fixture.codec, speech_of(kShortReferenceSamples), one.transcript, one.ids,
+            "english", 1, profile, code, message);
+        SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(profile == nullptr);
+        SYNTH_TEST_CHECK(code != nullptr && std::strcmp(code, "voice_profile.transcript_blank") == 0);
+        SYNTH_TEST_CHECK(message != nullptr);
+    }
+    return 0;
+}
+
+// --- The half-present state, in the direction only the ids guard catches: a
+// real transcript with no ids behind it. Refused rather than trusted -- an
+// ICL prompt built from reference codes with no reference text is a
+// plausible-sounding wrong prompt, not something anything downstream reports.
+// This is the arm Step 2's second inversion targets (drop the guard and this
+// check is what fails; the blank check above cannot cover it, because the
+// transcript here is not blank).
+int test_icl_refuses_a_transcript_without_its_token_ids() {
+    IclFixture fixture;
+    SYNTH_TEST_CHECK(build_icl_fixture(fixture));
+    const char *                      code    = nullptr;
+    const char *                      message = nullptr;
+    std::shared_ptr<const IclProfile> profile;
+    const synth_status_t              status = synth::qwen3tts::create_icl_profile(
+        fixture.hparams, fixture.speaker, fixture.codec, speech_of(kShortReferenceSamples), "hello there",
+        /*reference_text_ids=*/{}, "english", 1, profile, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(profile == nullptr);
+    SYNTH_TEST_CHECK(code != nullptr && std::strcmp(code, "voice_profile.reference_text_ids_missing") == 0);
+    SYNTH_TEST_CHECK(message != nullptr);
+    return 0;
+}
+
+// --- The tie kMaxLanguageTagLength documents applies to both kinds or it
+// applies to neither. The reviewer-measured defect it closes -- our own
+// writer emitting an envelope our own reader refuses -- does not care which
+// kind wrote the envelope, so the ICL creation path carries the same refusal
+// the x-vector one does (test_language_tag_too_long_is_rejected_at_creation).
+int test_icl_refuses_an_oversized_language_tag() {
+    IclFixture fixture;
+    SYNTH_TEST_CHECK(build_icl_fixture(fixture));
+    const std::string                 oversized(size_t(synth::qwen3tts::kMaxLanguageTagLength) + 8, 'x');
+    const char *                      code    = nullptr;
+    const char *                      message = nullptr;
+    std::shared_ptr<const IclProfile> profile;
+    const synth_status_t              status = synth::qwen3tts::create_icl_profile(
+        fixture.hparams, fixture.speaker, fixture.codec, speech_of(kShortReferenceSamples), "hello there",
+        reference_text_ids(), oversized, 1, profile, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(profile == nullptr);
+    SYNTH_TEST_CHECK(code != nullptr && std::strcmp(code, "voice_profile.language_tag_too_long") == 0);
+    SYNTH_TEST_CHECK(message != nullptr);
+    return 0;
+}
+
+// --- The two refusals this function inherits rather than names: a package
+// with no encoders at all, and a digitally silent reference. Both reach the
+// ICL path exactly as they reach the x-vector one -- `has_speaker_encoder` is
+// the single flag the catalog resolves BOTH `speaker_encoder.*` and
+// `codec.encoder.*` under (Model::prepare_codec_reference's own guard), and
+// the silent-reference rejection is raised by name by both encode chains.
+int test_icl_inherits_the_shared_refusals() {
+    IclFixture fixture;
+    SYNTH_TEST_CHECK(build_icl_fixture(fixture));
+
+    IclFixture no_encoder;
+    SYNTH_TEST_CHECK(build_icl_fixture(no_encoder));
+    no_encoder.hparams.has_speaker_encoder    = false;
+    const char *                      code    = nullptr;
+    const char *                      message = nullptr;
+    std::shared_ptr<const IclProfile> profile;
+    SYNTH_TEST_CHECK(prepare_icl(no_encoder, speech_of(kShortReferenceSamples), profile, code, message) ==
+                     SYNTH_ERR_UNSUPPORTED_VOICE);
+    SYNTH_TEST_CHECK(profile == nullptr);
+
+    const std::vector<float> silence(kShortReferenceSamples, 0.0f);
+    SYNTH_TEST_CHECK(prepare_icl(fixture, silence, profile, code, message) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(profile == nullptr);
+    SYNTH_TEST_CHECK(code != nullptr && std::strcmp(code, "voice_profile.reference_silent") == 0);
     return 0;
 }
 
@@ -1355,6 +1931,62 @@ int test_all_zero_x_vector_is_rejected_by_the_reader() {
     return 0;
 }
 
+// =============================================================================
+// Plan 3 Task 8, the claim that has to be ASSERTED rather than assumed: adding
+// a second clone mode did not disturb the first one.
+//
+// The Profile Schema does not change identity or version for this -- it stays
+// "qwen3-tts-voice-clone" at version 1, and the in-envelope
+// `synthesize.voice_profile.kind` gains a second value instead. Discriminating
+// on `kind` rather than on `schema_version` is the entire point of that field
+// (profile.h's own header comment on the envelope section), and what it BUYS
+// is exactly this: an x-vector Profile written before ICL existed still loads,
+// with no package re-cut. So the claim is checked here, in the commit that
+// lands the second mode, rather than left to Task 9's own round trip.
+//
+// Distinct from test_round_trip_of_a_well_formed_profile above, which starts
+// from a HAND-BUILT XVectorProfile: this one starts from the real
+// create_x_vector_profile, so the whole Plan 2 path -- prepare, serialize,
+// load -- is what is asserted still intact.
+// =============================================================================
+
+int test_a_plan_2_x_vector_profile_still_round_trips() {
+    Fixture fixture;
+    SYNTH_TEST_CHECK(build_fixture(fixture));
+    const char *                          code    = nullptr;
+    const char *                          message = nullptr;
+    std::shared_ptr<const XVectorProfile> prepared;
+    SYNTH_TEST_CHECK(synth::qwen3tts::create_x_vector_profile(fixture.hparams, fixture.weights, one_second_of_speech(),
+                                                              /*transcript=*/"", /*language_tag=*/"english", 1,
+                                                              prepared, code, message) == SYNTH_OK);
+    SYNTH_TEST_CHECK(prepared != nullptr);
+    SYNTH_TEST_CHECK(prepared->mode == CloneMode::XVector);
+
+    uint8_t compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    std::vector<uint8_t> bytes;
+    SYNTH_TEST_CHECK(synth::qwen3tts::serialize_x_vector_profile(*prepared, compatibility_id, bytes) == SYNTH_OK);
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> payload;
+    const char *                load_code    = nullptr;
+    const char *                load_message = nullptr;
+    SYNTH_TEST_CHECK(synth::qwen3tts::load_profile_from_memory(fixture.hparams.speaker_encoder.enc_dim, bytes.data(),
+                                                               bytes.size(), compatibility_id, family_tag, payload,
+                                                               load_code, load_message) == SYNTH_OK);
+    SYNTH_TEST_CHECK(family_tag == synth::ProfileFamilyTag::Qwen3TtsClone);
+    SYNTH_TEST_CHECK(payload != nullptr);
+
+    const auto * reloaded = static_cast<const XVectorProfile *>(payload.get());
+    // Still the FIRST mode, not the new one: a Plan 2 Profile read under a
+    // build that knows about `icl` must not come back meaning `icl`.
+    SYNTH_TEST_CHECK(reloaded->mode == CloneMode::XVector);
+    SYNTH_TEST_CHECK(reloaded->x_vector == prepared->x_vector);
+    SYNTH_TEST_CHECK(reloaded->ref_rms == prepared->ref_rms);
+    SYNTH_TEST_CHECK(reloaded->language_tag == "english");
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -1364,6 +1996,16 @@ int main() {
     SYNTH_TEST_CHECK(test_a_package_with_no_speaker_encoder_is_refused() == 0);
     SYNTH_TEST_CHECK(test_a_prepared_profile_carries_the_declared_width() == 0);
     SYNTH_TEST_CHECK(test_a_language_tag_is_stored_verbatim() == 0);
+
+    SYNTH_TEST_CHECK(test_an_icl_profile_reports_the_icl_mode() == 0);
+    SYNTH_TEST_CHECK(test_an_icl_payload_reads_back_through_an_x_vector_pointer() == 0);
+    SYNTH_TEST_CHECK(test_an_icl_profile_carries_all_three_of_d5s_rows() == 0);
+    SYNTH_TEST_CHECK(test_the_icl_code_grid_is_the_encoders_own_grid() == 0);
+    SYNTH_TEST_CHECK(test_the_icl_frame_count_follows_the_reference_length() == 0);
+    SYNTH_TEST_CHECK(test_icl_refuses_a_blank_transcript() == 0);
+    SYNTH_TEST_CHECK(test_icl_refuses_a_transcript_without_its_token_ids() == 0);
+    SYNTH_TEST_CHECK(test_icl_refuses_an_oversized_language_tag() == 0);
+    SYNTH_TEST_CHECK(test_icl_inherits_the_shared_refusals() == 0);
 
     SYNTH_TEST_CHECK(test_round_trip_of_a_well_formed_profile() == 0);
     SYNTH_TEST_CHECK(test_serialize_is_deterministic() == 0);
@@ -1392,6 +2034,8 @@ int main() {
     SYNTH_TEST_CHECK(test_infinite_ref_rms_is_rejected_by_the_reader() == 0);
     SYNTH_TEST_CHECK(test_nan_ref_rms_is_rejected_by_the_reader() == 0);
     SYNTH_TEST_CHECK(test_all_zero_x_vector_is_rejected_by_the_reader() == 0);
+
+    SYNTH_TEST_CHECK(test_a_plan_2_x_vector_profile_still_round_trips() == 0);
 
     std::printf("qwen3-tts-profile: all checks passed\n");
     return 0;

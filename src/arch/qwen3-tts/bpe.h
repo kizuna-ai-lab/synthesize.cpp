@@ -49,6 +49,26 @@ constexpr size_t kAssistantSuffixTokens     = 5;
 // call site, modeling_qwen3_tts.py:2190-2191.
 constexpr size_t kReferenceSuffixTokens = 2;
 
+// Whether `transcript` names no speech: empty, or nothing but ASCII
+// whitespace. The design's section 9 error table gives those two
+// states one row and one status, so this predicate gives them one name.
+//
+// ASCII whitespace only, deliberately: what this refuses is a transcript a
+// caller passed through without content. A transcript made entirely of U+3000
+// ideographic spaces passes here and then tokenizes to real ids -- it is not
+// the case that row is about, and widening this to Unicode whitespace would
+// mean carrying a table for it.
+//
+// EXPORTED WITH TWO CALLERS ON PURPOSE, rather than kept file-local to
+// bpe.cpp where it started: qwen_reference_transcript_ids below applies it
+// before tokenizing, and profile.cpp's create_icl_profile applies it before
+// preparing an ICL Voice Profile -- and those two must never disagree about
+// which transcripts exist. A second, independently-written "is it blank?"
+// test in profile.cpp would be free to drift, and the drift would show up as
+// a Profile that this file's own tokenizer had already refused to make ids
+// for (or the reverse).
+bool qwen_transcript_is_blank(const std::string & transcript);
+
 // A reference transcript to the ids upstream passes as `ref_id`: wrap it in the
 // reference turn, tokenize the whole string, then cut the role prefix and the
 // closing markers back off (qwen3_tts_model.py:598, then the slice at

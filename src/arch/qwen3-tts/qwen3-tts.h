@@ -1,5 +1,6 @@
 #pragma once
 
+#include "codec-encoder-host.h"
 #include "model-info.h"
 #include "speaker-encoder-host.h"
 #include "synthesize.h"
@@ -14,12 +15,11 @@ struct ggml_backend_device;
 
 namespace synth::qwen3tts {
 
-// SpeakerEncoderWeights is already forward-declared by speaker-encoder-host.h
-// above; HParams needs its own declaration for Model::hparams() below, and
-// CodecEncoderWeights for codec_encoder_weights(). Declared rather than
-// included: catalog.h pulls in ggml types this header keeps out of its callers.
+// SpeakerEncoderWeights and CodecEncoderWeights are already forward-declared by
+// speaker-encoder-host.h and codec-encoder-host.h above; HParams needs its own
+// declaration for Model::hparams() below. Declared rather than included:
+// catalog.h pulls in ggml types this header keeps out of its callers.
 struct HParams;
-struct CodecEncoderWeights;
 
 struct ModelInfo {
     std::string family = "qwen3-tts";
@@ -204,6 +204,17 @@ class Model {
                                     XVectorEncoding &          output,
                                     const char *&              out_diagnostic_code,
                                     const char *&              out_diagnostic_message) const;
+
+    // Reference audio to the [16, T] reference code grid, for the ICL path.
+    // Split out from Voice Profile preparation on exactly the reasoning
+    // prepare_x_vector's own comment gives: this half is deterministic and is
+    // compared against the oracle on its own. The two are siblings and not
+    // alternatives -- an ICL Profile carries both an x-vector and a code grid.
+    synth_status_t prepare_codec_reference(const std::vector<float> & pcm_24k,
+                                           int                        threads,
+                                           CodecEncoding &            output,
+                                           const char *&              out_diagnostic_code,
+                                           const char *&              out_diagnostic_message) const;
 
     // What arch/qwen3-tts/profile.h's create_x_vector_profile needs from a
     // live Model, exposed as two small accessors rather than that function

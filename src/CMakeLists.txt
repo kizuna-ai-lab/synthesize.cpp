@@ -17,6 +17,7 @@ add_library(synthesize
     arch/qwen3-tts/catalog.cpp
     arch/qwen3-tts/codec.cpp
     arch/qwen3-tts/codec-encoder.cpp
+    arch/qwen3-tts/codec-encoder-host.cpp
     arch/qwen3-tts/code-predictor.cpp
     arch/qwen3-tts/code-predictor-host.cpp
     arch/qwen3-tts/mel.cpp

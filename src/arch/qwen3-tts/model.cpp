@@ -765,6 +765,30 @@ synth_status_t Model::prepare_x_vector(const std::vector<float> & pcm_24k,
                                     out_diagnostic_code, out_diagnostic_message);
 }
 
+synth_status_t Model::prepare_codec_reference(const std::vector<float> & pcm_24k,
+                                              int                        threads,
+                                              CodecEncoding &            output,
+                                              const char *&              out_diagnostic_code,
+                                              const char *&              out_diagnostic_message) const {
+    output                  = CodecEncoding{};
+    out_diagnostic_code     = nullptr;
+    out_diagnostic_message  = nullptr;
+    const Impl &    impl    = *implementation_;
+    const HParams & hparams = impl.hparams;
+    // A CustomVoice package resolves no CodecEncoderWeights at all
+    // (build_model_weights leaves weights.codec_encoder default-constructed for
+    // it), so this refuses before encode_codec_reference ever sees a weights
+    // struct with every pointer null -- the same guard, on the same flag, that
+    // prepare_x_vector above uses. `has_speaker_encoder` covers both halves:
+    // the catalog resolves `speaker_encoder.*` and `codec.encoder.*` under that
+    // one flag, and a package carrying either uncatalogued is refused at load.
+    if (!hparams.has_speaker_encoder) {
+        return SYNTH_ERR_UNSUPPORTED_VOICE;
+    }
+    return encode_codec_reference(hparams, impl.weights.codec_encoder, pcm_24k, threads, output, out_diagnostic_code,
+                                  out_diagnostic_message);
+}
+
 synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisOutput & output) const {
     output                  = SynthesisOutput{};
     const Impl &    impl    = *implementation_;

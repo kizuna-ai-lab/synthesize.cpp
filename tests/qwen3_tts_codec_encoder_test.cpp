@@ -19,7 +19,9 @@
 // a different encoder, and produces finite latents that decode to plausible
 // audio.
 
+#include "arch/qwen3-tts/codec-encoder-host.h"
 #include "arch/qwen3-tts/codec-encoder.h"
+#include "arch/qwen3-tts/weights.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml.h"
@@ -30,6 +32,7 @@
 #include <cstdio>
 #include <limits>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace {
@@ -53,6 +56,23 @@ constexpr int64_t  kLayers          = 8;
 constexpr int64_t  kSamplesPerFrame = 48;
 constexpr size_t   kNodeBudget      = 8192;
 constexpr uint64_t kSeed            = 20260813u;
+
+// The quantizer half's widths. `kProjected` is `codebook_dim / 2` exactly as
+// catalog.cpp derives it, and every number here is small and mutually prime
+// with the others so a swapped extent cannot line up by coincidence.
+constexpr int64_t kProjected     = kHidden / 2;  // 16
+constexpr int64_t kCodebookSize  = 8;
+constexpr int64_t kGroups        = 16;
+constexpr int64_t kSemanticGroup = 1;
+
+// The fixture carries all THIRTY-ONE acoustic codebooks, not the fifteen it
+// reads. That is what the real checkpoint carries (catalog.cpp's
+// kCodecEncoderAcousticQuantizerCount) and it is load-bearing here rather than
+// decorative: an implementation that took the code-group count from the
+// resolved codebook list instead of from `quantizer_count` would emit 32 groups
+// on this fixture, and a fixture holding exactly fifteen could not tell the two
+// apart.
+constexpr int64_t kAcousticAvailable = 31;
 
 // The graph this fixture builds, exactly. Pinned because a budget of 8192
 // against 445 catches nothing: a stray ggml_cont per layer, a convolution that
@@ -240,6 +260,22 @@ bool build_fixture(ggml_backend_dev_t device, Fixture & fixture) {
         layer.fc2             = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kIntermediate, kHidden), 0.1f);
         layer.mlp_layer_scale = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.02f);
     }
+
+    // The two quantizer cascades. `input_proj` is a kernel-one convolution with
+    // no bias, so ggml reports it [1, in, out]; `output_proj` is deliberately
+    // left null, because it is a DECODE-time tensor and the encode path must
+    // never read it. A wrapper that did would fail here rather than quietly
+    // reconstructing in the wrong space.
+    auto add_quantizer = [&](synth::qwen3tts::CodecQuantizerWeights & target, int64_t stages) {
+        target.input_proj = add(ggml_new_tensor_3d(pctx, GGML_TYPE_F32, 1, kHidden, kProjected), 0.25f);
+        target.codebooks.assign(size_t(stages), nullptr);
+        for (int64_t stage = 0; stage < stages; ++stage) {
+            target.codebooks[size_t(stage)] =
+                add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kProjected, kCodebookSize), 0.6f);
+        }
+    };
+    add_quantizer(fixture.weights.semantic, kSemanticGroup);
+    add_quantizer(fixture.weights.acoustic, kAcousticAvailable);
 
     fixture.buffer = ggml_backend_alloc_ctx_tensors(pctx, fixture.backend);
     if (fixture.buffer == nullptr) {
@@ -666,6 +702,287 @@ bool check_attention_is_unwindowed(const Fixture & fixture, double & change) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// The host wrapper and the split residual vector quantizer.
+//
+// These run on the CPU only, and once rather than once per device, because
+// encode_codec_reference builds its OWN CPU-only BackendPlan -- that is its
+// documented placement, not an accident of this test -- so a fixture whose
+// weights live on an accelerator has nothing for it to read.
+//
+// None of them is masked by the node pin above: the quantizer is host code and
+// changes no graph. The three faults the pin swallows are all graph faults.
+//
+// Every rule below was inverted and re-run, and each reported at the assertion
+// it was aimed at:
+//
+//   `<` -> `<=` in the argmin scan              -> `code == 1` (the tie check)
+//   acoustic codes leading the grid             -> `codes[0] == semantic_frame0`
+//   the grid stored stage-major                 -> the per-frame semantic check
+//   codes_equal blind to element order          -> the stage-major inequality
+//   groups from the codebook list (32, not 16)  -> `groups == kGroups`
+//   a stage-local code written as a global one  -> the range check
+//   the frame trim as a floor divide            -> `ragged.frames == 9`
+//   the silent-reference gate removed           -> the INVALID_ARG refusal
+//
+// ONE MASKING, recorded rather than fixed, in the spirit of the node-pin
+// comment above. Storing the grid stage-major trips the per-frame semantic
+// check first, so the `codes_equal` stage-major assertion below it is never
+// reached on that fault -- which is why `codes_equal` is inverted separately,
+// on its own, rather than being assumed to be covered by the layout fault.
+// ---------------------------------------------------------------------------
+
+synth::qwen3tts::HParams make_hparams() {
+    synth::qwen3tts::HParams hparams;
+    // `codebook_dim` is this port's name for the LATENT width (512 in the real
+    // package); the projected space the quantizer decides in is half of it.
+    // catalog.cpp derives both the same way, so the fixture must too.
+    hparams.codec.decoder.codebook_dim             = uint32_t(kHidden);
+    hparams.codec.decoder.codebook_size            = uint32_t(kCodebookSize);
+    hparams.codec.decoder.quantizer_count          = uint32_t(kGroups);
+    hparams.codec.decoder.semantic_quantizer_count = uint32_t(kSemanticGroup);
+    return hparams;
+}
+
+synth_status_t run_encode(const Fixture &                  fixture,
+                          const synth::qwen3tts::HParams & hparams,
+                          int64_t                          samples,
+                          synth::qwen3tts::CodecEncoding & encoding,
+                          const char *&                    diagnostic_code) {
+    const char *             message = nullptr;
+    const std::vector<float> pcm     = lcg_clip(samples, 0.0f);
+    return synth::qwen3tts::encode_codec_reference(hparams, fixture.weights, pcm, 1, encoding, diagnostic_code,
+                                                   message);
+}
+
+// The stage-0 code one branch WOULD choose, recomputed here from the fixture's
+// own tensors and the encoding's latents.
+//
+// Deliberately not read out of `encoding.residuals`: that buffer is produced by
+// the code under test, so an argmin over it would agree with a wrapper that had
+// swapped the two branches. This projects the latents with the branch's own
+// `input_proj` and scans the branch's own codebook, which is the "directly
+// computed argmin" the rule is about.
+//
+// In double, and it also reports the winning margin, so the caller can assert
+// the decision is not close enough for float32 ordering to be what separated
+// the two answers.
+bool independent_stage0_code(const synth::qwen3tts::CodecQuantizerWeights & quantizer,
+                             const std::vector<float> &                     latents,
+                             int64_t                                        frame,
+                             int32_t &                                      code,
+                             double &                                       margin) {
+    if (quantizer.input_proj == nullptr || quantizer.codebooks.empty() ||
+        latents.size() < size_t((frame + 1) * kHidden)) {
+        return false;
+    }
+    std::vector<float> projection(size_t(ggml_nelements(quantizer.input_proj)));
+    std::vector<float> codebook(size_t(ggml_nelements(quantizer.codebooks[0])));
+    ggml_backend_tensor_get(quantizer.input_proj, projection.data(), 0, ggml_nbytes(quantizer.input_proj));
+    ggml_backend_tensor_get(quantizer.codebooks[0], codebook.data(), 0, ggml_nbytes(quantizer.codebooks[0]));
+
+    const float *       latent = latents.data() + size_t(frame * kHidden);
+    std::vector<double> z(size_t(kProjected), 0.0);
+    for (int64_t out = 0; out < kProjected; ++out) {
+        double accumulator = 0.0;
+        for (int64_t in = 0; in < kHidden; ++in) {
+            accumulator += double(projection[size_t(out * kHidden + in)]) * double(latent[in]);
+        }
+        z[size_t(out)] = accumulator;
+    }
+
+    double best   = std::numeric_limits<double>::infinity();
+    double second = std::numeric_limits<double>::infinity();
+    code          = -1;
+    for (int64_t row = 0; row < kCodebookSize; ++row) {
+        double distance = 0.0;
+        for (int64_t index = 0; index < kProjected; ++index) {
+            const double difference = z[size_t(index)] - double(codebook[size_t(row * kProjected + index)]);
+            distance += difference * difference;
+        }
+        if (distance < best) {
+            second = best;
+            best   = distance;
+            code   = int32_t(row);
+        } else if (distance < second) {
+            second = distance;
+        }
+    }
+    margin = second - best;
+    return code >= 0;
+}
+
+// Rules 1, 2, 3, 5 and 6: the grid's width, its value range, which branch leads
+// it, how it is laid out, and the frame trim.
+int check_reference_encoding(const Fixture & fixture) {
+    const synth::qwen3tts::HParams hparams = make_hparams();
+
+    // Sixteen frames exactly, because the layout check below needs the one
+    // size where a 16x16 grid has the SAME dimensions under either reading and
+    // a shape check alone would pass a stage-major buffer.
+    synth::qwen3tts::CodecEncoding encoding;
+    const char *                   diagnostic = nullptr;
+    SYNTH_TEST_CHECK(run_encode(fixture, hparams, kSamplesPerFrame * 16, encoding, diagnostic) == SYNTH_OK);
+    SYNTH_TEST_CHECK(diagnostic == nullptr);
+
+    // Rule 1: sixteen groups, from `quantizer_count`. NOT the 32 the fixture's
+    // codebook lists could supply, and not the 31 the acoustic cascade carries.
+    SYNTH_TEST_CHECK(encoding.groups == uint64_t(kGroups));
+    SYNTH_TEST_CHECK(encoding.frames == 16);
+    SYNTH_TEST_CHECK(encoding.codes.size() == size_t(kGroups * 16));
+    SYNTH_TEST_CHECK(encoding.projected == uint64_t(kProjected));
+    SYNTH_TEST_CHECK(encoding.latent_width == uint64_t(kHidden));
+    SYNTH_TEST_CHECK(encoding.residuals.size() == size_t(kGroups * 16 * kProjected));
+    SYNTH_TEST_CHECK(encoding.reconstruction.size() == size_t(2 * 16 * kProjected));
+
+    // Rule 2: a RANGE check over every code, not a spot check.
+    for (int32_t code : encoding.codes) {
+        SYNTH_TEST_CHECK(code >= 0 && code < int32_t(kCodebookSize));
+    }
+
+    // The fixture has to be able to discriminate at all: a codebook that every
+    // frame resolves to the same row would make the layout check below vacuous.
+    bool spread = false;
+    for (size_t index = 1; index < encoding.codes.size(); ++index) {
+        spread = spread || encoding.codes[index] != encoding.codes[0];
+    }
+    SYNTH_TEST_CHECK(spread);
+
+    // Rule 3: THE SEMANTIC STAGE LEADS. Swapping the two branches produces
+    // sixteen valid-looking codes and a different voice, and nothing about the
+    // grid's shape or range would notice.
+    int32_t semantic_frame0 = -1;
+    int32_t acoustic_frame0 = -1;
+    int32_t semantic_frame1 = -1;
+    double  margin          = 0.0;
+    SYNTH_TEST_CHECK(independent_stage0_code(fixture.weights.semantic, encoding.latents, 0, semantic_frame0, margin));
+    SYNTH_TEST_CHECK(margin > 1e-6);
+    SYNTH_TEST_CHECK(encoding.codes[0] == semantic_frame0);
+    for (int64_t frame = 0; frame < 16; ++frame) {
+        int32_t expected = -1;
+        SYNTH_TEST_CHECK(independent_stage0_code(fixture.weights.semantic, encoding.latents, frame, expected, margin));
+        SYNTH_TEST_CHECK(margin > 1e-6);
+        SYNTH_TEST_CHECK(encoding.codes[size_t(frame * kGroups)] == expected);
+    }
+
+    // Rule 5: THE LAYOUT IS GROUP-FASTEST. Element 1 of the flat buffer is
+    // frame 0's group 1 -- the acoustic branch's first stage -- and NOT frame
+    // 1's group 0, which is what a stage-major buffer would put there.
+    SYNTH_TEST_CHECK(independent_stage0_code(fixture.weights.acoustic, encoding.latents, 0, acoustic_frame0, margin));
+    SYNTH_TEST_CHECK(margin > 1e-6);
+    SYNTH_TEST_CHECK(independent_stage0_code(fixture.weights.semantic, encoding.latents, 1, semantic_frame1, margin));
+    SYNTH_TEST_CHECK(margin > 1e-6);
+    // Without this the previous two cannot tell the layouts apart, and the
+    // assertion below would hold under both of them.
+    SYNTH_TEST_CHECK(acoustic_frame0 != semantic_frame1);
+    SYNTH_TEST_CHECK(encoding.codes[1] == acoustic_frame0);
+
+    // ... and the same rule stated through the production comparison, which is
+    // what Task 9's round trip and Task 13's re-preparation identity also
+    // drive. A stage-major grid of the same dimensions is NOT accepted as
+    // equal.
+    SYNTH_TEST_CHECK(synth::qwen3tts::codes_equal(encoding, encoding.codes.data(), 16));
+    std::vector<int32_t> stage_major(encoding.codes.size(), 0);
+    for (int64_t frame = 0; frame < 16; ++frame) {
+        for (int64_t group = 0; group < kGroups; ++group) {
+            stage_major[size_t(group * 16 + frame)] = encoding.codes[size_t(frame * kGroups + group)];
+        }
+    }
+    SYNTH_TEST_CHECK(stage_major != encoding.codes);
+    SYNTH_TEST_CHECK(!synth::qwen3tts::codes_equal(encoding, stage_major.data(), 16));
+    // The frame count is part of the comparison, not just the buffer.
+    SYNTH_TEST_CHECK(!synth::qwen3tts::codes_equal(encoding, encoding.codes.data(), 15));
+    SYNTH_TEST_CHECK(!synth::qwen3tts::codes_equal(encoding, nullptr, 16));
+
+    // Rule 6: the frame trim is the CEILING divide, applied after the graph. A
+    // clip of 8 whole frames plus 17 samples is nine frames, not eight.
+    synth::qwen3tts::CodecEncoding ragged;
+    SYNTH_TEST_CHECK(run_encode(fixture, hparams, kSamplesPerFrame * 8 + 17, ragged, diagnostic) == SYNTH_OK);
+    SYNTH_TEST_CHECK(ragged.frames == 9);
+    SYNTH_TEST_CHECK(ragged.codes.size() == size_t(kGroups * 9));
+    SYNTH_TEST_CHECK(ragged.latents.size() == size_t(kHidden * 9));
+
+    std::printf("    encoding: %llu frames x %llu groups, ref_rms %.4g, narrowest gap %.4g\n",
+                (unsigned long long) encoding.frames, (unsigned long long) encoding.groups, double(encoding.ref_rms),
+                double(encoding.narrowest_gap));
+    return 0;
+}
+
+// Rule 4: TIES RESOLVE TO THE LOWEST ID.
+//
+// The fixture's codebooks are overwritten so that rows 1 and 2 are both
+// all-zero -- byte-identical, so their squared distances are equal bit for bit,
+// not merely close -- while every other row sits a million away in each of the
+// sixteen projected dimensions and can never win. Whatever the residual, the
+// argmin is a genuine exact tie between 1 and 2, and every one of the sixteen
+// stages must choose 1.
+//
+// Subtracting an all-zero row leaves the residual untouched, so the tie recurs
+// at every stage rather than only the first, and the expected grid is every
+// code equal to 1 -- which an inverted rule turns into every code equal to 2.
+int check_tie_resolves_to_lowest_id(Fixture & fixture) {
+    const int64_t      rows = kCodebookSize;
+    std::vector<float> pattern(size_t(rows * kProjected), 0.0f);
+    for (int64_t row = 0; row < rows; ++row) {
+        if (row == 1 || row == 2) {
+            continue;
+        }
+        const float far = (row % 2 == 0 ? 1.0f : -1.0f) * 1.0e6f;
+        for (int64_t index = 0; index < kProjected; ++index) {
+            pattern[size_t(row * kProjected + index)] = far;
+        }
+    }
+    auto overwrite = [&](synth::qwen3tts::CodecQuantizerWeights & quantizer) {
+        for (ggml_tensor * codebook : quantizer.codebooks) {
+            ggml_backend_tensor_set(codebook, pattern.data(), 0, ggml_nbytes(codebook));
+        }
+    };
+    overwrite(fixture.weights.semantic);
+    overwrite(fixture.weights.acoustic);
+
+    const synth::qwen3tts::HParams hparams = make_hparams();
+    synth::qwen3tts::CodecEncoding encoding;
+    const char *                   diagnostic = nullptr;
+    SYNTH_TEST_CHECK(run_encode(fixture, hparams, kSamplesPerFrame * 4, encoding, diagnostic) == SYNTH_OK);
+    SYNTH_TEST_CHECK(encoding.codes.size() == size_t(kGroups * 4));
+    for (int32_t code : encoding.codes) {
+        SYNTH_TEST_CHECK(code == 1);
+    }
+    // The tie is exact, so the reported gap between best and second best is
+    // exactly zero -- which is also what proves the two candidates really were
+    // equal rather than merely close.
+    SYNTH_TEST_CHECK(encoding.narrowest_gap == 0.0f);
+    return 0;
+}
+
+// Rule 7: a digitally silent reference is refused BY NAME, in the shape
+// encode_speaker_reference already uses.
+int check_silent_reference_is_refused(const Fixture & fixture) {
+    const synth::qwen3tts::HParams hparams = make_hparams();
+    const std::vector<float>       silent(size_t(kSamplesPerFrame * 4), 0.0f);
+    synth::qwen3tts::CodecEncoding encoding;
+    const char *                   diagnostic = nullptr;
+    const char *                   message    = nullptr;
+    SYNTH_TEST_CHECK(synth::qwen3tts::encode_codec_reference(hparams, fixture.weights, silent, 1, encoding, diagnostic,
+                                                             message) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(diagnostic != nullptr);
+    SYNTH_TEST_CHECK(std::string(diagnostic) == "voice_profile.reference_silent");
+    SYNTH_TEST_CHECK(message != nullptr);
+    SYNTH_TEST_CHECK(encoding.codes.empty());
+
+    // An empty clip and a sub-frame clip are refused too, and NOT as silence:
+    // they are a different mistake and get a different answer.
+    const std::vector<float> empty;
+    SYNTH_TEST_CHECK(synth::qwen3tts::encode_codec_reference(hparams, fixture.weights, empty, 1, encoding, diagnostic,
+                                                             message) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(diagnostic == nullptr);
+    const std::vector<float> stub = lcg_clip(kSamplesPerFrame - 1, 0.0f);
+    SYNTH_TEST_CHECK(synth::qwen3tts::encode_codec_reference(hparams, fixture.weights, stub, 1, encoding, diagnostic,
+                                                             message) != SYNTH_OK);
+    SYNTH_TEST_CHECK(diagnostic == nullptr);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -800,5 +1117,25 @@ int main() {
         ++exercised;
     }
     SYNTH_TEST_CHECK(exercised > 0);
+
+    // The host wrapper and the quantizer, once and on the CPU -- see their own
+    // section comment for why they are not inside the device loop.
+    ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    SYNTH_TEST_CHECK(cpu != nullptr);
+    std::printf("qwen3-tts-codec-encoder-host: %s\n", ggml_backend_dev_name(cpu));
+    {
+        Fixture fixture;
+        SYNTH_TEST_CHECK(build_fixture(cpu, fixture));
+        SYNTH_TEST_CHECK(check_reference_encoding(fixture) == 0);
+        SYNTH_TEST_CHECK(check_silent_reference_is_refused(fixture) == 0);
+    }
+    {
+        // Its own fixture: check_tie_resolves_to_lowest_id overwrites every
+        // codebook, and a later check reading those would be looking at the tie
+        // pattern rather than at the drawn one.
+        Fixture fixture;
+        SYNTH_TEST_CHECK(build_fixture(cpu, fixture));
+        SYNTH_TEST_CHECK(check_tie_resolves_to_lowest_id(fixture) == 0);
+    }
     return 0;
 }

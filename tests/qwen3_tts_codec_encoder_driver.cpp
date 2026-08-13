@@ -1,6 +1,18 @@
-// Thin adapter that runs the codec encoder graph against a real package and
-// writes every stage tap as a raw binary file, in the oracle's own on-disk
-// layout, so Task 1's `codec_encoder/*.f32` dumps can be diffed against them.
+// Thin adapter that runs the codec encoder against a real package and writes
+// every stage tap, every RVQ intermediate and the reference codes as raw binary
+// files, in the oracle's own on-disk layout, so Task 1's `codec_encoder/*.f32`
+// dumps can be diffed against them.
+//
+// IT RUNS THE GRAPH TWICE, deliberately. The stage taps come from a graph this
+// file builds itself, because a tap is an intermediate `ggml_tensor` that dies
+// with its context and cannot be handed back through a value type; the codes
+// and every RVQ quantity come from the REAL production entry point
+// (`Model::prepare_codec_reference`), because an adapter that reimplemented the
+// quantizer would measure the adapter. The two runs are compared for BIT
+// equality on the latents before anything is written -- same input, same
+// deterministic CPU F32 graph -- so a divergence between what the stage
+// artifacts describe and what the codes were computed from is reported here
+// rather than absorbed into a tolerance.
 //
 // It is shared by manual diagnostics and by whatever validator Task 12 settles
 // on, and is deliberately not itself a test -- the same role
@@ -36,6 +48,7 @@
 // model.cpp's twin pass) and the intermediates are all this allocator owns.
 
 #include "arch/qwen3-tts/catalog.h"
+#include "arch/qwen3-tts/codec-encoder-host.h"
 #include "arch/qwen3-tts/codec-encoder.h"
 #include "arch/qwen3-tts/qwen3-tts.h"
 #include "ggml-alloc.h"
@@ -118,6 +131,31 @@ bool write_tap(const std::filesystem::path & path, ggml_tensor * tensor, bool or
     }
     std::printf("  %-18s [%lld, %lld]\n", path.filename().string().c_str(), (long long) channels, (long long) length);
     return true;
+}
+
+// A buffer already in the oracle's own element order, written verbatim.
+template <typename Element>
+bool write_raw(const std::filesystem::path & path, const std::vector<Element> & values, const char * shape) {
+    std::ofstream output(path, std::ios::binary);
+    output.write(reinterpret_cast<const char *>(values.data()), std::streamsize(values.size() * sizeof(Element)));
+    if (!output) {
+        return false;
+    }
+    std::printf("  %-24s %s\n", path.filename().string().c_str(), shape);
+    return true;
+}
+
+// `[fast, slow]` in GGML index order to `[slow, fast]` in numpy's, which is the
+// same transpose write_tap performs and is spelled separately because these
+// buffers arrive as plain vectors rather than as tensors.
+std::vector<float> transposed(const std::vector<float> & values, int64_t fast, int64_t slow) {
+    std::vector<float> ordered(values.size());
+    for (int64_t outer = 0; outer < slow; ++outer) {
+        for (int64_t inner = 0; inner < fast; ++inner) {
+            ordered[size_t(inner * slow + outer)] = values[size_t(outer * fast + inner)];
+        }
+    }
+    return ordered;
 }
 
 }  // namespace
@@ -224,21 +262,97 @@ int main(int argc, char ** argv) {
     // `latents.f32` is byte-identical to `downsample.f32` upstream -- the
     // quantizer is handed the downsampler's output with nothing in between
     // (modeling_mimi.py:1467-1469), asserted per case by the oracle's dumper.
-    // Only one file is written here; a comparison may diff it against either.
     ok = write_tap(out_dir / "downsample.f32", latents, false) && ok;
+
+    // The second run: the real production entry point, which is what the codes
+    // and every RVQ quantity must come from.
+    synth::qwen3tts::CodecEncoding encoding;
+    const char *                   diagnostic_code    = nullptr;
+    const char *                   diagnostic_message = nullptr;
+    status = model->prepare_codec_reference(pcm, 0, encoding, diagnostic_code, diagnostic_message);
+    if (status != SYNTH_OK) {
+        std::fprintf(stderr, "prepare_codec_reference -> %d (%s: %s)\n", int(status),
+                     diagnostic_code != nullptr ? diagnostic_code : "-",
+                     diagnostic_message != nullptr ? diagnostic_message : "-");
+        return 1;
+    }
+
+    // Bit equality, not a tolerance: the same clip through the same
+    // deterministic CPU F32 graph twice. Anything else means the stage
+    // artifacts above and the codes below describe different runs, and a
+    // stage-wise comparison built on them would be comparing across a seam it
+    // could not see.
+    std::vector<float> tap_latents(size_t(ggml_nelements(latents)));
+    ggml_backend_tensor_get(latents, tap_latents.data(), 0, ggml_nbytes(latents));
+    if (tap_latents.size() != encoding.latents.size()) {
+        std::fprintf(stderr, "latent element count %zu from the tap run, %zu from prepare_codec_reference\n",
+                     tap_latents.size(), encoding.latents.size());
+        return 1;
+    }
+    for (size_t index = 0; index < tap_latents.size(); ++index) {
+        if (tap_latents[index] != encoding.latents[index]) {
+            std::fprintf(stderr, "the two runs disagree on latent %zu: %.9g vs %.9g\n", index, tap_latents[index],
+                         encoding.latents[index]);
+            return 1;
+        }
+    }
+
+    const int64_t frames    = int64_t(encoding.frames);
+    const int64_t groups    = int64_t(encoding.groups);
+    const int64_t projected = int64_t(encoding.projected);
+    char          shape[128];
+
+    // `latents.f32`: the oracle's is C-order [channels, frames], the port's is
+    // GGML [channels, frames] with channels fastest, so this one transposes.
+    std::snprintf(shape, sizeof(shape), "[%lld, %lld]", (long long) encoding.latent_width, (long long) frames);
+    ok = write_raw(out_dir / "latents.f32", transposed(encoding.latents, int64_t(encoding.latent_width), frames),
+                   shape) &&
+         ok;
+
+    // `rvq_residual_sNN.f32`: [frames, projected] each, already the oracle's
+    // own order slice for slice -- no transpose.
+    for (int64_t group = 0; group < groups; ++group) {
+        char name[64];
+        std::snprintf(name, sizeof(name), "rvq_residual_s%02lld.f32", (long long) group);
+        const size_t       stride = size_t(frames) * size_t(projected);
+        std::vector<float> slice(encoding.residuals.begin() + std::ptrdiff_t(size_t(group) * stride),
+                                 encoding.residuals.begin() + std::ptrdiff_t(size_t(group + 1) * stride));
+        std::snprintf(shape, sizeof(shape), "[%lld, %lld]", (long long) frames, (long long) projected);
+        ok = write_raw(out_dir / name, slice, shape) && ok;
+    }
+
+    // `rvq_reconstruction.f32`: [2, frames, projected], semantic branch first,
+    // already the oracle's order.
+    std::snprintf(shape, sizeof(shape), "[2, %lld, %lld]", (long long) frames, (long long) projected);
+    ok = write_raw(out_dir / "rvq_reconstruction.f32", encoding.reconstruction, shape) && ok;
+
+    // `rvq_distance_margin.f32`: the oracle's is C-order [groups, frames], i.e.
+    // STAGE-major; the port's gap grid shares the codes' group-fastest layout.
+    // So this one transposes and the codes below do not -- see
+    // codec-encoder-host.h, which states that asymmetry because a reader would
+    // otherwise assume it away.
+    std::snprintf(shape, sizeof(shape), "[%lld, %lld]", (long long) groups, (long long) frames);
+    ok = write_raw(out_dir / "rvq_distance_margin.f32", transposed(encoding.gaps, groups, frames), shape) && ok;
+
+    // `codes.i32`: GGML [16, T] with ne[0] = 16 IS the oracle's C-order
+    // [frames, 16], byte for byte. Written verbatim. A transpose here is the
+    // one mistake this artifact invites.
+    std::snprintf(shape, sizeof(shape), "[%lld, %lld]", (long long) frames, (long long) groups);
+    ok = write_raw(out_dir / "codes.i32", encoding.codes, shape) && ok;
 
     ggml_gallocr_free(allocator);
     ggml_backend_buffer_free(input_buffer);
     ggml_backend_free(backend);
     if (!ok) {
-        std::fprintf(stderr, "a stage could not be written\n");
+        std::fprintf(stderr, "an artifact could not be written\n");
         return 1;
     }
 
     std::printf(
         "{\"samples\": %lld, \"samples_per_frame\": %lld, \"transformer_positions\": %lld, \"frames\": %lld, "
-        "\"nodes\": %d}\n",
+        "\"nodes\": %d, \"groups\": %lld, \"projected\": %lld, \"ref_rms\": %.9g, \"narrowest_gap\": %.9g}\n",
         (long long) geometry.samples, (long long) geometry.samples_per_frame,
-        (long long) geometry.transformer_positions, (long long) geometry.frames, ggml_graph_n_nodes(graph));
+        (long long) geometry.transformer_positions, (long long) geometry.frames, ggml_graph_n_nodes(graph),
+        (long long) groups, (long long) projected, double(encoding.ref_rms), double(encoding.narrowest_gap));
     return 0;
 }

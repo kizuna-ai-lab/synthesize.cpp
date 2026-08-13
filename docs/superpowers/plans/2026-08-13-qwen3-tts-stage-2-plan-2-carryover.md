@@ -136,8 +136,24 @@ checked by deleting the guard and confirming it fails. Not before.
 ### 2.1 ICL cloning needs the codec encoder, which does not exist yet
 
 Plan 2 implements `x_vector_only_mode` alone. Transcript-assisted cloning needs
-the codec encoder's 225-tensor graph and the two-track prompt, neither of which
-Plan 2 built or catalogued.
+a codec encoder graph and the two-track prompt, neither of which Plan 2 built.
+
+**On the tensor count, since two numbers are both correct and get confused:**
+225 is the codec encoder's *raw* safetensors count; **161 is what the converter
+emits** (225 − 32 collapsed EMA-accumulator pairs − 32 `.initialized` shape-(1,)
+flags). A graph is built from the emitted set, so 161 is the number that matters
+to Plan 3. The family record's 225 appears in the raw-tensor accounting and is
+right there.
+
+Plan 1 catalogued those tensors but deliberately went no further:
+`resolve_codec_encoder` discards every pointer into a `Conv1dWeights` scratch,
+there is no `CodecEncoderWeights` type, and no graph exists. Cataloguing is not
+a head start on the graph — it only proves the tensors are present and named.
+
+One more thing Plan 3 must not discover late: the codec encoder's reference
+implementation is `transformers`' `MimiModel`, not a Qwen source file. That is a
+**third** provenance, after the Qwen source and the checkpoint, and no prior
+stage of this port has read it.
 
 ### 2.2 The 9-frame anomaly belongs to Plan 3
 

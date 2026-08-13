@@ -119,6 +119,43 @@ class GoldenManifestSchemaTest(unittest.TestCase):
                     duplicates, f"source artifacts repeat a locator: {sorted(duplicates)}"
                 )
 
+    def test_schema_refuses_a_reference_count_the_loader_would_reject(self):
+        """The schema may not permit a manifest that converts into an unloadable package.
+
+        Both loaders' read_profile_contract have required
+        `max_reference_count == 1` since 2026-08-13, because every family that
+        declares a `profile.reference` block reads `references[0]` and nothing
+        else. The schema said `minimum: 1` until the same date, so a manifest
+        declaring 2 was schema-valid, converted without complaint, and produced
+        a GGUF that failed at load -- the documented contract and the enforced
+        rule disagreeing, which this project treats as a defect in the
+        contract.
+
+        Asserted against a real committed manifest with only that one field
+        mutated, so nothing else in the schema can be what rejects it: the
+        unmutated copy is asserted valid first, in the same test. Relaxing the
+        schema back to `minimum: 1` makes the second half of this fail.
+        """
+        validator = jsonschema.Draft202012Validator(self.schema)
+        checked = 0
+        for path, manifest in self.manifests:
+            reference = manifest.get("package_contract", {}).get("profile", {}).get("reference")
+            if reference is None:
+                continue
+            checked += 1
+            with self.subTest(manifest=path.name):
+                self.assertEqual(
+                    [], sorted(validator.iter_errors(manifest), key=lambda e: list(e.path))
+                )
+                mutated = json.loads(json.dumps(manifest))
+                mutated["package_contract"]["profile"]["reference"]["max_reference_count"] = 2
+                self.assertTrue(
+                    list(validator.iter_errors(mutated)),
+                    f"{path.relative_to(REPO_ROOT)}: the schema accepts max_reference_count 2, "
+                    "which read_profile_contract refuses at load",
+                )
+        self.assertTrue(checked, "no manifest declares a profile.reference block to check")
+
     def test_tolerance_file_is_committed(self):
         for path, manifest in self.manifests:
             with self.subTest(manifest=path.name):

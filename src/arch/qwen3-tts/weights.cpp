@@ -535,9 +535,34 @@ bool read_profile_contract(const GgufMetadata & meta, HParams & hparams) {
                      static_cast<unsigned long long>(profile.max_frames_per_clip));
         return false;
     }
-    if (profile.max_total_frames < profile.max_frames_per_clip || profile.max_reference_count == 0) {
-        std::fprintf(stderr, "qwen3-tts: a budget of %llu frames over %llu references admits no clip\n",
+    if (profile.max_total_frames < profile.max_frames_per_clip) {
+        std::fprintf(stderr, "qwen3-tts: a budget of %llu frames admits no %llu-frame clip\n",
                      static_cast<unsigned long long>(profile.max_total_frames),
+                     static_cast<unsigned long long>(profile.max_frames_per_clip));
+        return false;
+    }
+    // Exactly one, not merely "at least one". This value is published
+    // verbatim as `synth_voice_profile_capabilities_t::max_reference_count`,
+    // so it is a promise to the caller about how many Reference Audio clips
+    // a Voice Profile may be built from -- and this runtime reads
+    // `references[0]` and nothing else (src/voice-profile.cpp's
+    // create_qwen3_tts_profile_from_reference, whose own `reference_count !=
+    // 1` refusal names that limitation in the code). A package declaring a
+    // higher ceiling would advertise a capability every such call is then
+    // refused for. Accepting only what the code implements keeps the two
+    // sides one statement, and the refusal happens where a wrong package can
+    // still be re-cut rather than at the caller's first attempt.
+    //
+    // It also removes the arithmetic hazard underneath: this field is
+    // uint64_t here and in the public struct, and every published package
+    // declares 1 (scripts/convert-qwen3-tts.py writes the manifest's own
+    // `reference.max_reference_count`; the Base package's Golden Manifest
+    // pins 1), so no package that exists is narrowed by anything on the way
+    // out.
+    if (profile.max_reference_count != 1) {
+        std::fprintf(stderr,
+                     "qwen3-tts: this runtime builds a Voice Profile from exactly one Reference Audio clip, but the "
+                     "package declares %llu\n",
                      static_cast<unsigned long long>(profile.max_reference_count));
         return false;
     }
@@ -768,7 +793,7 @@ void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & i
     info.min_frames_per_clip          = hparams.profile.min_frames_per_clip;
     info.max_frames_per_clip          = hparams.profile.max_frames_per_clip;
     info.max_total_frames             = hparams.profile.max_total_frames;
-    info.max_reference_count          = uint32_t(hparams.profile.max_reference_count);
+    info.max_reference_count          = hparams.profile.max_reference_count;
     info.schema                       = hparams.profile.schema;
     info.schema_version               = hparams.profile.schema_version;
     decode_profile_compatibility_id(hparams.profile.compatibility_id_hex, info.compatibility_id);

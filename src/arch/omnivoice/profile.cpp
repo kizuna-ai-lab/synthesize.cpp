@@ -839,7 +839,11 @@ bool prescan_skip_value(const uint8_t * data, size_t size, size_t & offset, gguf
     }
     size_t element_size = 0;
     if (!prescan_fixed_type_size(type, element_size)) {
-        return false;  // GGUF_TYPE_ARRAY-of-ARRAY or any other unrecognized type tag
+        // Defensive: prescan_buffer only ever passes a kPrescanKnownKeys
+        // entry's own type here, so every tag reaching this switch is one of
+        // the cases above. A caller that skipped that check would land here
+        // rather than skipping an unknown width.
+        return false;
     }
     if (count > SIZE_MAX / element_size) {
         return false;  // overflow guard on count * element_size
@@ -898,20 +902,30 @@ bool prescan_buffer(const uint8_t * data, size_t size) {
         const std::string key(reinterpret_cast<const char *>(data + offset), size_t(key_length));
         offset += size_t(key_length);
 
+        // The declared type tag stays an int32_t for the whole walk and is
+        // only ever COMPARED against a known enumerator -- it is never
+        // converted to `gguf_type`. That enum has no fixed underlying type,
+        // so converting a value outside its range (anything negative, or 16
+        // and up) is undefined behaviour, and every byte here is
+        // caller-supplied. The tensor type tag further down already reads
+        // this way (`tensor_type_raw != int32_t(GGML_TYPE_I32)`), so this
+        // matches the shape the same function already uses rather than
+        // adding a range test against GGUF_TYPE_COUNT -- which would be a
+        // blacklist against ggml's own enum extent, exactly the shape this
+        // pre-scan deleted (see this section's header comment).
         int32_t type_raw = 0;
         if (!prescan_read(data, size, offset, type_raw)) {
             return false;
         }
-        gguf_type type     = gguf_type(type_raw);
-        bool      is_array = false;
-        uint64_t  count    = 1;
-        if (type == GGUF_TYPE_ARRAY) {
+        bool     is_array = false;
+        uint64_t count    = 1;
+        if (type_raw == int32_t(GGUF_TYPE_ARRAY)) {
             is_array                 = true;
             int32_t element_type_raw = 0;
             if (!prescan_read(data, size, offset, element_type_raw)) {
                 return false;
             }
-            type = gguf_type(element_type_raw);
+            type_raw = element_type_raw;
             if (!prescan_read(data, size, offset, count)) {
                 return false;
             }
@@ -941,11 +955,15 @@ bool prescan_buffer(const uint8_t * data, size_t size) {
         seen[spec_index] = true;
 
         const PrescanKeySpec & spec = kPrescanKnownKeys[spec_index];
-        if (type != spec.type || is_array != spec.is_array || (is_array && count != spec.count)) {
+        if (type_raw != int32_t(spec.type) || is_array != spec.is_array || (is_array && count != spec.count)) {
             return false;
         }
 
-        if (!prescan_skip_value(data, size, offset, type, count)) {
+        // `spec.type` rather than the buffer's own tag: the two are equal by
+        // the comparison just above, and the spec's copy is a real
+        // enumerator by construction, so no value the enum cannot hold ever
+        // reaches the switch in prescan_fixed_type_size.
+        if (!prescan_skip_value(data, size, offset, spec.type, count)) {
             return false;
         }
     }

@@ -84,10 +84,21 @@ namespace {
 // format rather than silently reinterpreting it, the same contract that
 // reader states for its own (narrower) shape.
 bool read_wav_mono(const std::string & path, std::vector<float> & pcm, uint32_t & sample_rate) {
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file) {
         return false;
     }
+    // Every chunk_size in the loop below is an untrusted 32-bit field: it can
+    // claim up to 4 GiB no matter how many bytes the file actually holds. The
+    // file's own length is the only honest bound to size an allocation
+    // against, so it is measured once, here, rather than trusted per chunk --
+    // the same shape qwen3_tts_mel_driver.cpp's own copy carries.
+    const std::streamoff file_size = file.tellg();
+    file.seekg(0, std::ios::beg);
+    if (file_size < 0 || !file) {
+        return false;
+    }
+
     char riff_id[4];
     file.read(riff_id, 4);
     uint32_t riff_size = 0;
@@ -112,7 +123,35 @@ bool read_wav_mono(const std::string & path, std::vector<float> & pcm, uint32_t 
         if (!file) {
             break;
         }
+        // Before anything is sized from it: a chunk cannot be longer than
+        // what is left of the file. Without this the data_bytes.resize below
+        // is sized from the claim alone, and the short read that follows
+        // leaves the tail zero-filled -- fabricated samples a caller cannot
+        // tell from real ones, on top of a 4 GiB allocation from a 4-byte
+        // field.
+        //
+        // The span is the chunk PLUS its pad byte: RIFF keeps chunks
+        // word-aligned, so an odd-sized chunk is followed by one padding byte
+        // that this loop skips at the bottom. Counting it here is what makes
+        // that skip safe -- an odd final chunk whose pad is missing would
+        // otherwise be accepted and then seek past the end. The addition is
+        // done in uint64_t: at chunk_size 0xFFFFFFFF a 32-bit +1 wraps to 0
+        // and would admit the single largest claim there is.
+        const uint64_t       chunk_span = uint64_t(chunk_size) + (chunk_size & 1u);
+        const std::streamoff position   = file.tellg();
+        if (position < 0 || chunk_span > uint64_t(file_size - position)) {
+            return false;
+        }
+        constexpr uint32_t kConsumed = 16;
         if (std::memcmp(chunk_id, "fmt ", 4) == 0) {
+            // The floor BEFORE the fixed reads, not after them. Those 16
+            // bytes are read unconditionally, so a `fmt ` declaring fewer
+            // consumes bytes belonging to the next chunk and leaves the walk
+            // one chunk out of step -- and the compensating seekg below only
+            // runs when chunk_size is LARGER than 16, so nothing puts it back.
+            if (chunk_size < kConsumed) {
+                return false;
+            }
             uint32_t rate        = 0;
             uint32_t byte_rate   = 0;
             uint16_t block_align = 0;
@@ -122,8 +161,7 @@ bool read_wav_mono(const std::string & path, std::vector<float> & pcm, uint32_t 
             file.read(reinterpret_cast<char *>(&byte_rate), 4);
             file.read(reinterpret_cast<char *>(&block_align), 2);
             file.read(reinterpret_cast<char *>(&bits_per_sample), 2);
-            sample_rate                  = rate;
-            constexpr uint32_t kConsumed = 16;
+            sample_rate = rate;
             if (chunk_size > kConsumed) {
                 file.seekg(chunk_size - kConsumed, std::ios::cur);
             }

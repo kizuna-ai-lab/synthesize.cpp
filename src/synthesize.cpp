@@ -385,7 +385,7 @@ synth::ModelInfo shared_info(const synth::omnivoice::ModelInfo &        info,
     profile.min_frames_per_clip          = info.profile.min_frames_per_clip;
     profile.max_frames_per_clip          = info.profile.max_frames_per_clip;
     profile.max_total_frames             = info.profile.max_total_frames;
-    profile.max_reference_count          = static_cast<uint32_t>(info.profile.max_reference_count);
+    profile.max_reference_count          = info.profile.max_reference_count;
     // Best-effort: HParams::profile is already validated at load time
     // (weights.cpp's read_profile_contract, is_sha256_hex), so this should
     // never fail for a package that made it this far; a defect that slipped

@@ -2240,11 +2240,15 @@ int test_all_zero_x_vector_is_rejected_by_the_reader() {
 //                                                           MEASURED at status=0. Re-bind
 //                                                           the prescan loop to the
 //                                                           buffer's own n_tensors as well
-//                                                           and the SANITIZER reports an
-//                                                           out-of-bounds read of
-//                                                           ExpectedTensor while the status
-//                                                           stays INVALID_ARG -- a status
-//                                                           assertion cannot see that one
+//                                                           and there is no status left to
+//                                                           assert on: Release SEGFAULTS
+//                                                           (exit 139), the sanitizer
+//                                                           reports an out-of-bounds
+//                                                           ExpectedTensor read and exits 1.
+//                                                           Undefined behaviour, so the
+//                                                           symptom is build-dependent and
+//                                                           the build is named -- see
+//                                                           prescan_buffer's own comment
 //   value     the reader's groups-vs-package rule (and
 //             the writer's copy of it)                   -> the package-grid arm; the
 //                                                           product rule alone leaves it
@@ -3029,20 +3033,32 @@ int test_the_reader_refuses_a_grid_the_package_cannot_hold() {
 
 // --- A DECLARED COUNT IS NOT A BUDGET (Task 9 review, Critical 1). Both I32
 // streams used to be sized from the buffer's own declared element counts and
-// only afterwards asked whether those ranges fit; a reviewer measured a 1 KiB
-// Serialized Profile driving a **1.53 GiB** zero-filled resident allocation
-// before the load was refused, with the id stream's reachable ceiling around
-// 2^62 elements. Nothing upstream closes it: `gguf_init_from_buffer` is called
-// with `ctx == nullptr` so it never looks at the data section, and the
-// pre-scan stops at the tensor-INFO section.
+// only afterwards asked whether those ranges fit; a 1 KiB Serialized Profile
+// drove a **~1,550,000 KiB (1.48 GiB)** zero-filled resident allocation before
+// the load was refused, with the id stream's reachable ceiling around 2^62
+// elements. Nothing upstream closes it: `gguf_init_from_buffer` is called with
+// `ctx == nullptr` so it never looks at the data section, and the pre-scan
+// stops at the tensor-INFO section.
+//
+// TWO FIGURES, AND THEY ARE NOT THE SAME QUANTITY, which is where an earlier
+// draft of this comment went wrong -- it rounded both to a single "1.53 GiB"
+// that matched neither. What the buffer REQUESTS is 400,000,000 x 4 bytes =
+// 1.6 GB, which is 1.49 GiB. What was MEASURED as the peak-RSS delta is
+// 1,550,024 KiB = 1.48 GiB, a little under the request because RSS counts
+// resident pages rather than the requested extent. Quote the KiB figure when
+// quoting the measurement; it is the one this file's inversion table records.
+// THE LAST FEW DIGITS ARE NOISE, not a reproducible constant: three runs of
+// the same mutation gave 1,550,024, 1,550,020 (an independent reviewer's) and
+// 1,549,836 KiB. 1.48 GiB is the figure that reproduces; treat the KiB value
+// as "about 1,550,000".
 //
 // THIS ARM ASSERTS THE ALLOCATION, NOT ONLY THE STATUS, because the status was
 // already correct while the defect was live -- both buffers below were refused
 // before the fix, just not before the allocation. Peak RSS is monotone, so the
 // delta across the two calls is 0 for a loader that sizes nothing from an
-// unchecked count and about 1.5 GiB for one that does. The threshold is
-// generous by a factor of six against the measured figure; a correct loader
-// moves it by nothing at all.
+// unchecked count and about 1.48 GiB for one that does. The threshold is
+// generous by a factor of nearly six against the measured figure; a correct
+// loader moves it by nothing at all.
 //
 // Dimension: value (the declared element count, against the buffer's actual
 // extent). Inverted by moving the `tensor_range_fits` call in
@@ -3055,10 +3071,10 @@ int test_a_declared_count_larger_than_the_buffer_allocates_nothing() {
     const HParams            hparams  = envelope_hparams(kProfileEncDim);
     const std::vector<float> x_vector = make_serializable_profile(kProfileEncDim, 0.5f, "en-US")->x_vector;
 
-    // 400,000,000 int32s is 1.53 GiB -- the reviewer's own measured figure,
-    // reused so the number in this test and the number in the finding are the
-    // same number. `frames` is chosen to keep `groups * frames` equal to it,
-    // so the grid's consistency rule cannot turn the codes arm away early.
+    // 400,000,000 int32s is 1.6 GB (1.49 GiB) requested -- the same count the
+    // reviewer's own probe used, so this test and the finding describe one
+    // event. `frames` is chosen to keep `groups * frames` equal to it, so the
+    // grid's consistency rule cannot turn the codes arm away early.
     constexpr int64_t kHostileCodes  = 400000000;
     const uint32_t    hostile_frames = uint32_t(kHostileCodes / int64_t(kEnvelopeGroups));
 
@@ -3101,7 +3117,7 @@ int test_a_declared_count_larger_than_the_buffer_allocates_nothing() {
         std::printf("    hostile %s: %zu-byte profile declaring %lld elements -> peak RSS +%llu KiB\n", one.what,
                     bytes.size(), (long long) (one.what[0] == 'c' ? one.codes : one.ids),
                     (unsigned long long) growth_kib);
-        SYNTH_TEST_CHECK(growth_kib < 256u * 1024u);  // 256 MiB, against a measured 1.53 GiB
+        SYNTH_TEST_CHECK(growth_kib < 256u * 1024u);  // 256 MiB, against a measured ~1,550,000 KiB
     }
     return 0;
 }

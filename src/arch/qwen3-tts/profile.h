@@ -645,7 +645,8 @@ synth_status_t serialize_icl_profile(const HParams &    hparams,
 // is worth more than the claim. Task 9's original ICL path sized both I32
 // vectors from the buffer's own declared element counts and only afterwards
 // asked whether those ranges fit -- so a reviewer measured a 1 KiB Serialized
-// Profile driving a 1.53 GiB zero-filled resident allocation before the load
+// Profile driving a ~1,550,000 KiB (1.48 GiB) zero-filled resident
+// allocation before the load
 // was refused, with the id stream reaching roughly 2^62 declared elements.
 // Neither `gguf_init_from_buffer` (called with `ctx == nullptr`, so it never
 // looks at the data section: ggml/src/gguf.cpp:761-782 only accumulates padded

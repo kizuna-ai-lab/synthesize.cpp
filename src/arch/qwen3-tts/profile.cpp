@@ -150,6 +150,15 @@ synth_status_t create_icl_profile(const HParams &                     hparams,
     // where an out-of-range id is a `ggml_get_rows` abort rather than a status.
     // Checked here, before the encode chains, for the same reason the
     // transcript and language_tag checks above are.
+    // The `<= 0` half is defence in depth and cannot fire for any package this
+    // port loads: weights.cpp:347-352 refuses a package whose
+    // `talker.text_vocab_size` is zero (`bound.limit == 0`), and read_tokens
+    // sits unconditionally in read_hparams' own `&&` chain. It is kept because
+    // this function takes `HParams` by reference rather than a loaded Model,
+    // so a caller can hand it a synthetic struct -- and without it the
+    // comparison below would admit every id against a zero bound. Labelled
+    // rather than dropped, the same way the `groups`/`frames == 0` clauses in
+    // load_profile_from_memory are.
     const int64_t text_vocab_size = int64_t(hparams.talker.text_vocab_size);
     for (int32_t id : reference_text_ids) {
         if (text_vocab_size <= 0 || id < 0 || int64_t(id) >= text_vocab_size) {
@@ -507,7 +516,8 @@ bool read_u8_32_array(const gguf_context * ctx, const char * key, uint8_t (&out)
 // THAT ORDER IS THE WHOLE POINT, and getting it wrong shipped here once. The
 // first version of this task sized `std::vector<int32_t>` from a declared
 // element count and only then called copy_tensor_bytes; a reviewer measured a
-// 1 KiB Serialized Profile driving a 1.53 GiB zero-filled resident allocation
+// 1 KiB Serialized Profile driving a ~1,550,000 KiB (1.48 GiB) zero-filled
+// resident allocation
 // before the load was refused, with the reachable ceiling around 2^62 elements
 // for the id stream. `gguf_init_from_buffer` does NOT close this: called with
 // `params.ctx == nullptr` it never reads the tensor data at all, and its own
@@ -578,9 +588,9 @@ bool copy_tensor_bytes(const gguf_context * g,
 // THE RANGE CHECK IS PART OF THIS FUNCTION AND NOT OF ITS CALLER, deliberately
 // and as a fix: this is the function that hands a count to code that will size
 // an allocation from it, so no count leaves here until the bytes behind it are
-// known to exist. Doing it at the call site instead is what shipped the 1.53
-// GiB allocation tensor_range_fits' own header comment records -- the caller
-// had the check, one line too late.
+// known to exist. Doing it at the call site instead is what shipped the
+// ~1,550,000 KiB allocation tensor_range_fits' own header comment records --
+// the caller had the check, one line too late.
 bool i32_tensor_elements(const gguf_context * g,
                          size_t               data_size,
                          const char *         name,
@@ -1000,18 +1010,45 @@ bool prescan_buffer(const uint8_t * data, size_t size) {
     // safety property, not a tidiness one. The header disjunction alone only
     // narrows `n_tensors` to {1, 3}, so an "x-vector" envelope declaring 3
     // would walk a ONE-element expectation array three times and read
-    // `x_vector_only[1]` and `[2]` past its end, on untrusted input. MEASURED
-    // (Task 9 review, Important 1): with the per-kind count removed and the
-    // loop re-bound to `n_tensors`, the sanitizer build reports
-    // "load of address ... with insufficient space for an object of type
-    // 'const struct ExpectedTensor'" on exactly that buffer -- while the
-    // status stays SYNTH_ERR_INVALID_ARG, because the garbage it reads happens
-    // not to match a tensor name. A status assertion cannot see this; only the
-    // sanitizer gate or the structural bound can.
+    // `x_vector_only[1]` and `[2]` past its end, on untrusted input.
     //
-    // So the count and the bound are derived from one `std::size`, and an
-    // earlier hand-written `(is_icl ? 3 : 1)` copy of the same predicate was
-    // deleted rather than left to drift from the array it describes.
+    // MEASURED (Task 9 review, Important 1), AND THE OUTCOME DEPENDS ON THE
+    // BUILD -- which is why the build is named here, the same rule this
+    // project already applies to performance numbers. Mutation: this per-kind
+    // count removed and the loop below re-bound to the buffer's own
+    // `n_tensors`, with load_profile_from_memory's own tensor-count check left
+    // in place. Against the three-tensors arm in
+    // tests/qwen3_tts_profile_test.cpp:
+    //   * Release (2026-08-14, gcc 13.3, x86_64): the test binary SEGFAULTS,
+    //     exit 139, inside this walk -- the garbage `const char *` is
+    //     dereferenced by the std::string comparison below;
+    //   * SYNTH_SANITIZE=ON / RelWithDebInfo: UBSan reports "load of address
+    //     ... with insufficient space for an object of type 'const struct
+    //     ExpectedTensor'" at the `expected[index]` read, and the process exits
+    //     1 without finishing the suite.
+    // It is undefined behaviour, so neither symptom is THE outcome; what holds
+    // across both is that no status is ever returned to assert on. A status
+    // assertion cannot see this. Only the sanitizer gate, or this structural
+    // bound, can.
+    //
+    // (An earlier draft of this comment said the sanitizer build "still
+    // returns SYNTH_ERR_INVALID_ARG, because the garbage it reads happens not
+    // to match a tensor name". That was measured against a WEAKER version of
+    // the test arm, whose buffer carried only one tensor-info entry -- so the
+    // walk read padding rather than a valid entry and the names mismatched
+    // harmlessly. Once the arm was strengthened to carry three well-formed
+    // entries, the claim stopped being true and is corrected here rather than
+    // quietly dropped.)
+    //
+    // So the count and the bound are derived from one `std::size`, and THE
+    // PRESCAN'S OWN earlier hand-written `(is_icl ? 3 : 1)` copy of this
+    // predicate was deleted rather than left to drift from the array it
+    // describes. Its twin in load_profile_from_memory is still hand-written
+    // and is NOT derived from these arrays, which are local to this function:
+    // if a fourth ICL tensor were ever added, this check would follow the
+    // array automatically and that one would not, and the two would disagree
+    // in the fail-closed direction (the loader refuses a count it did not
+    // expect). Worth knowing before adding one.
     //
     // Masked by load_profile_from_memory's own `gguf_get_n_tensors` comparison
     // (see prescan_buffer's "MUTUAL MASKING" comment) -- but not redundant
@@ -1169,6 +1206,12 @@ synth_status_t serialize_icl_profile(const HParams &    hparams,
             return SYNTH_ERR_INVALID_ARG;
         }
     }
+    // Defence in depth, and it cannot fire for a package this port loads:
+    // weights.cpp:347-352 refuses one whose `talker.text_vocab_size` is zero,
+    // and read_tokens is unconditional in read_hparams' `&&` chain. Kept
+    // because this function takes `HParams` rather than a loaded Model, so a
+    // synthetic struct can reach it -- and a zero bound would otherwise admit
+    // every id. Same labelling as the `groups`/`frames == 0` clauses nearby.
     const int64_t text_vocab_size = int64_t(hparams.talker.text_vocab_size);
     if (text_vocab_size <= 0) {
         return SYNTH_ERR_INVALID_ARG;
@@ -1529,6 +1572,12 @@ synth_status_t load_profile_from_memory(const HParams & hparams,
             return SYNTH_ERR_INVALID_ARG;
         }
     }
+    // Defence in depth, and it cannot fire for a package this port loads:
+    // weights.cpp:347-352 refuses one whose `talker.text_vocab_size` is zero,
+    // and read_tokens is unconditional in read_hparams' `&&` chain. Kept
+    // because this function takes `HParams` rather than a loaded Model, so a
+    // synthetic struct can reach it -- and a zero bound would otherwise admit
+    // every id. Same labelling as the `groups`/`frames == 0` clauses nearby.
     const int64_t text_vocab_size = int64_t(hparams.talker.text_vocab_size);
     if (text_vocab_size <= 0) {
         return SYNTH_ERR_INVALID_ARG;

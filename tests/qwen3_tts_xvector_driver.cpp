@@ -103,8 +103,17 @@ bool read_wav(const std::string & path, WavAudio & out, std::string & error) {
         // leaves the tail zero-filled -- fabricated samples a caller cannot
         // tell from real ones, on top of a 4 GiB allocation from a 4-byte
         // field.
-        const std::streamoff position = input.tellg();
-        if (position < 0 || uint64_t(chunk_size) > uint64_t(file_size - position)) {
+        //
+        // The span is the chunk PLUS its pad byte: RIFF keeps chunks
+        // word-aligned, so an odd-sized chunk is followed by one padding byte
+        // that this loop skips at the bottom. Counting it here is what makes
+        // that skip safe -- an odd final chunk whose pad is missing would
+        // otherwise be accepted and then seek past the end. The addition is
+        // done in uint64_t: at chunk_size 0xFFFFFFFF a 32-bit +1 wraps to 0
+        // and would admit the single largest claim there is.
+        const uint64_t       chunk_span = uint64_t(chunk_size) + (chunk_size & 1u);
+        const std::streamoff position   = input.tellg();
+        if (position < 0 || chunk_span > uint64_t(file_size - position)) {
             error = path + " declares a chunk larger than the file holds";
             return false;
         }

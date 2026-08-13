@@ -149,6 +149,33 @@ if(SYNTH_BUILD_PYTHON_TESTS)
         LABELS "unit;python;golden"
         TIMEOUT 120
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    # Family-independent cross-check that every committed tolerance grid is full
+    # and that every validator script has a measurement behind it.
+    #
+    # THIS WAS NOT REGISTERED UNTIL 2026-08-14, and the omission is the whole
+    # reason it is here. tests/python/test_tolerance_coverage.py existed and was
+    # correct, but nothing ran it: a validator committed under a name matching no
+    # measured stage (scripts/validate-qwen3-tts-codec-encoder.py, hyphen where
+    # the stage is codec_encoder) left it failing for BOTH qwen3-tts variants
+    # across six tasks, and it surfaced only when a task happened to invoke it by
+    # hand. A check that guards against unmeasured claims is worth exactly as
+    # much as its registration.
+    #
+    # Same environment reasoning as the manifest contract above: the VITS
+    # environment owns the repository's locked Python tooling, and neither test
+    # is VITS-specific. It reads tests/tolerances/*.json and globs scripts/, so
+    # it needs no model, no build artifact and no network -- hence `unit`.
+    add_test(
+        NAME synthesize-tolerance-coverage
+        COMMAND ${SYNTH_UV_EXECUTABLE} run
+            --project ${CMAKE_SOURCE_DIR}/scripts/envs/vits
+            --locked python -m unittest
+            tests.python.test_tolerance_coverage
+            tests.python.test_tolerance_coverage_inversion)
+    set_tests_properties(synthesize-tolerance-coverage PROPERTIES
+        LABELS "unit;python;golden"
+        TIMEOUT 120
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 if(SYNTH_BUILD_SHARED AND UNIX AND NOT APPLE)
     add_test(NAME synthesize-shared-exports

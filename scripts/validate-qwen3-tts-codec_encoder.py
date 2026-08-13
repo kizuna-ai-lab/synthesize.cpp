@@ -42,10 +42,20 @@ chain, where the worst stage sits 42x below a single bf16 rounding across an
 eleven-convolution SEANet stack, an eight-layer transformer, a downsampler and
 sixteen RVQ residual stages. Quote that, not the zero.
 
+THE UNDERSCORE IN THIS FILENAME IS LOAD-BEARING, and it cost six tasks to learn.
+tests/python/test_tolerance_coverage.py globs ``scripts/validate-qwen3-tts-*.py``
+and matches each stem, minus the family prefix, against the measured stage names
+in tests/tolerances/qwen3-tts.json. The stage is ``codec_encoder``, so the file
+must be ``validate-qwen3-tts-codec_encoder.py``. It first landed (6279830) as
+``...-codec-encoder.py``, whose stem ``codec-encoder`` matched no stage and left
+that check red for BOTH variants until 2026-08-14 -- unnoticed because the check
+was not registered with CTest. It is registered now (synthesize-tolerance-
+coverage), so a future separator slip fails in the standard unit gate instead.
+
 Usage:
 
     scripts/envs/qwen3-tts/.venv/bin/python \\
-        scripts/validate-qwen3-tts-codec-encoder.py \\
+        scripts/validate-qwen3-tts-codec_encoder.py \\
         --port <driver output root> --upstream-f32 <f32 dump root> \\
         --oracle build/goldens/qwen3-tts/qwen3-tts-12hz-0-6b-base \\
         --case base-icl-en --case base-ref-min --case base-text-short

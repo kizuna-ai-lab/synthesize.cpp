@@ -325,8 +325,8 @@
     "qwen3-tts-12hz-0-6b-base": {
       "case_count": 12,
       "suite_version": 1,
-      "status": "partial-measurement-speaker-path-only",
-      "note": "case_count (12) tracks this variant's manifest (tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json), not a measurement. `public` is still an honest empty placeholder (see its own `description`): `checks: 0` / `all_passed: null`, because no public-seam run exists yet for this variant (Tasks 7 through 10 build what that would exercise). `replay` is no longer entirely a placeholder as of 2026-08-12: its `speaker.x_vector` probe is a real measurement, over the two cases (base-xvector-en, base-xvector-zh) whose oracle dump and C++ port both exist -- see that probe's own `note`. The deep talker/audio probes customvoice's `replay` carries (`talker.hidden_l*`, `talker.final`, `talker.logits`, `audio.pcm`) are still unmeasured here: this variant has no autoregressive replay yet, only the deterministic conditioning half (reference audio to mel to ECAPA to x-vector). Both stages' checked *set* still equals scripts/validate-qwen3-tts-*.py's family-wide validator set ({public, replay}), which is what tests/python/test_tolerance_coverage.py's test_every_registered_validator_has_a_measured_stage enforces (equality, not a superset) -- the completeness of what is measured *inside* the replay stage is a different question from whether the stage itself exists, and this file makes no claim about the former beyond what `speaker.x_vector`'s own note says. `provisional_variants.qwen3-tts-12hz-0-6b-base` (a sibling of `variants`, not read by measured_variants() or either coverage check) is where `codec_encoder` still lives; `speaker_encoder` was retired from there on 2026-08-12 -- a real cell now exists above instead of a copied placeholder, so keeping both would have described the same measurement twice, once honestly and once as a stale copy of a different model's talker probes.",
+      "status": "partial-measurement-conditioning-path-only",
+      "note": "case_count (12) tracks this variant's manifest (tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json), not a measurement.\n\n`public` is still an honest empty placeholder (see its own `description`): `checks: 0` / `all_passed: null`, because no public-seam run exists yet for this variant.\n\n`replay` carries exactly one real probe, `speaker.x_vector`, over the two cases (base-xvector-en, base-xvector-zh) whose oracle dump and C++ port both exist -- see that probe's own `note`. The deep talker/audio probes customvoice's `replay` carries (`talker.hidden_l*`, `talker.final`, `talker.logits`, `audio.pcm`) are still unmeasured here: this variant has no autoregressive replay in the grid yet, so `replay.cases` stays at 2 and this status stays partial.\n\n`codec_encoder` became a real measured stage on 2026-08-14. It replaces `provisional_variants.qwen3-tts-12hz-0-6b-base`, a sibling container this file carried until that date, whose `codec_encoder` held eight probes copied verbatim from customvoice's BF16 `replay` stage -- a different model's talker prefill probes, not this stage's own tensors, as that entry's own description said plainly. `speaker_encoder` had lived beside it under the identical caveat with the identical copied numbers, and was retired on 2026-08-12 the day a real speaker cell existed. `codec_encoder` is retired the same way and for the same reason: keeping both would describe one subsystem twice, once as an honest placeholder and once as an actual measurement, and the placeholder is the one with nothing left to say. The container is gone entirely, because that entry was its last occupant.\n\nThe stage/validator relation changed shape on 2026-08-14, and the sentence that used to stand here was wrong for six tasks -- it claimed this variant's checked stage set equals the family-wide validator set {public, replay}, which stopped being true the moment scripts/validate-qwen3-tts-codec_encoder.py was committed and left tests/python/test_tolerance_coverage.py red for BOTH variants, unnoticed because that test was not registered with CTest. It is registered now (synthesize-tolerance-coverage). The rule it enforces is no longer per-variant exact equality: every validator must have a measurement in at least ONE variant, and every measured stage must have a validator. This variant measures {codec_encoder, public, replay}; qwen3-tts-12hz-0-6b-customvoice measures {public, replay} and correctly does not carry codec_encoder, because its package does not contain a codec encoder at all -- 657 tensors against this variant's 894, the 237-tensor difference being exactly 76 speaker_encoder + 161 codec encoder (see the family record's tensor census and its 'The codec encoder is not carried' section). Under the old rule, measuring the codec encoder on the variant that HAS one would have forced five fabricated codec_encoder cells into customvoice's BF16/F16/Q8_MIXED grids and their CUDA sub-grids.",
       "profiles": {
         "BF16": {
           "stages": {
@@ -349,66 +349,37 @@
               },
               "backend": "CPU",
               "note": "Measured 2026-08-12 on CPU (build/, CMAKE_BUILD_TYPE=Release) over base-xvector-en and base-xvector-zh, via scripts/validate-qwen3-tts-replay.py --compare-x-vector against the real qwen3-tts-12hz-0-6b-base-BF16.gguf and models/qwen3-tts-reference-audio/clone.wav. The gate is 5x the measured deviation in (1 - cosine), the rule this file's own top-level note states for every other probe here. max_abs is recorded but does not gate: an x-vector is a direction consumed by a dot product against the prompt, so cosine is the quantity that matters, the same reasoning that leaves max_abs ungated on the talker probes above and gating only on audio.pcm.\n\nOnly one independent measurement, not two: both cases point at the identical reference clip with no trim, and every file under speaker/ is byte-identical between them (conventions.json's own measurement_coverage note) -- only the synthesis text and language differ, which the speaker path never reads. Running both is what shows the whole pipeline (load, resample, encode, mel, ECAPA, x-vector) is deterministic case to case, not a second data point on the residual.\n\nThe residual is bfloat16 quantization of the *oracle*, not a port defect. The oracle's own speaker_encoder weights run in torch.bfloat16 and its dumped tensors round-trip through bfloat16 exactly for seven of the eight speaker/*.f32 files -- verified directly, max abs diff 0.0 -- everything except mel.f32, whose bf16 round-trip differs by up to ~0.031 (conventions.json's own artifact_dtypes note). At the x-vector's own largest element (|ref| = 7.28), 0.02111 is 0.68 of one bfloat16 ulp; recomputing the oracle's own final ASP/FC layer directly in float64 disagrees with the oracle's recorded x_vector by more (0.022367) than this port does. A tolerance whose story was 'the filterbank rounds differently' would be wrong: the mel front end that feeds this graph is essentially exact on its own (max_abs 3.31e-4 against the oracle, and against a float64 truth the port's own mel is *closer* -- 1.14e-4 against the oracle's 2.21e-4). The budget spent here is almost entirely the ECAPA graph's bf16-quantized-weights arithmetic across 38 convolutions, not the mel stage -- the mel comparison above was run specifically to rule the mel stage out before this number was committed, not merely alongside it."
-            }
-          }
-        }
-      }
-    }
-  },
-  "provisional_variants": {
-    "qwen3-tts-12hz-0-6b-base": {
-      "note": "Deliberately outside `variants`/`profiles`: tests/python/test_tolerance_coverage.py's measured_variants() only reads those two top-level keys, and this file's coverage/validator checks would otherwise have to treat `codec_encoder` as a measured stage needing its own validator script -- which does not exist yet (scripts/validate-qwen3-tts-codec_encoder.py is not written; Plan 3 gives the Base converter the codec encoder graph that would make it meaningful, and measures it for real). This is not a temporary parking spot pending promotion into `variants` on some later date -- it moves there only once a validator exists to check it, the same rule every other stage in this file already follows. Until then, `codec_encoder`'s own `description` says plainly that its numbers are a copy of qwen3-tts-12hz-0-6b-customvoice's BF16 `replay` stage, not a measurement of a codec encoder.\n\n`speaker_encoder` lived here beside `codec_encoder` until 2026-08-12, with the identical caveat and the identical copied numbers. It was retired the day Task 6 gave the speaker path a real cell (`variants.qwen3-tts-12hz-0-6b-base.profiles.BF16.stages.replay.probes.speaker.x_vector`): keeping both would have described the same subsystem twice, once as an honest placeholder and once as an actual measurement, and the placeholder is the one with nothing left to say.",
-      "profiles": {
-        "BF16": {
-          "stages": {
+            },
             "codec_encoder": {
               "phase": "oracle_replay",
-              "description": "PROVISIONAL placeholder, not yet measured. Probe numbers are copied verbatim from this file's qwen3-tts-12hz-0-6b-customvoice BF16 replay stage above so the key exists ahead of Task 5's codec encoder graph and Plans 2/3's real measurement against it. Do not read these as validated tolerances for the codec encoder: they describe a different model's talker prefill probes, not this stage's own tensors.",
-              "cases": 0,
+              "description": "The Base variant's reference-audio codec encoder, compared stage by stage: waveform through the eleven-convolution SEANet stack, the frame downsampler, the eight-layer transformer and the sixteen-stage split RVQ. Three artifact sets in the same on-disk element order -- this port (F32), an upstream float32 re-run (scripts/dump_reference_qwen3_tts_codec_encoder_float32.py) and the committed bfloat16 oracle dump -- so port vs upstream-f32 isolates this port's own arithmetic while port vs oracle carries the oracle's bf16 rounding. Gated by scripts/validate-qwen3-tts-codec_encoder.py.",
+              "cases": 3,
+              "backend": "CPU",
               "probes": {
-                "talker.hidden_l0": {
-                  "min_cosine": 0.99996,
-                  "observed_min_cosine": 0.999992,
-                  "observed_max_abs": 0.0837879
+                "codec.chain": {
+                  "rel_absmax": 0.001,
+                  "observed_rel_absmax": 9.303e-05,
+                  "observed_worst_stage": "transformer_l7",
+                  "headroom": 10.8,
+                  "fault_injection_rel_absmax": 1.649,
+                  "note": "THE PRIMARY GATE, and the only one of the three independent of the codebook table being shared by construction. One threshold enforced PER STAGE across all 33 taps (waveform, seanet_stage0-3, seanet_tail, transformer_l0-7, downsample, latents, rvq_residual_s00-15, rvq_reconstruction) by scripts/validate-qwen3-tts-codec_encoder.py, which prints every stage's own figure -- so a drifting stage is LOCATED in the validator's output, and this cell records the gate plus the worst stage that cleared it. Rolling the taps into one summary number is what the eleven-plus taps exist to avoid; one threshold applied to each of them is not that, it is how the validator is written.\n\n`rel_absmax` is max|a-b| divided by the REFERENCE tensor's own absolute maximum -- one scalar scale for the whole tensor, not a per-element |d|/|x|. Quoting it against a `rel_rms` threshold is a review round the validator's own header exists to avoid repeating.\n\nThe comparison gated here is port vs upstream-f32, BOTH float32, where a defect in this port would live. Port vs the bfloat16 oracle is a different quantity that is expected to sit at bf16 scale and is not gated by this number. 1.0e-3 is still a quarter of one bf16 unit (2^-8), so it cannot be passed by a port that merely rounds like bf16 -- it demands float32 agreement with upstream. The injected fault is upstream's own symmetric (non-causal) MimiConv1d padding split, which builds the same shapes from the same weights and a different encoder: it reads 1.649, a 1650x discrimination."
                 },
-                "talker.hidden_l7": {
-                  "min_cosine": 0.99993,
-                  "observed_min_cosine": 0.999986,
-                  "observed_max_abs": 4.5256
+                "codec.rvq_reconstruction.semantic": {
+                  "p95_relative_l2": 0.02,
+                  "observed_p95_relative_l2": 0.004103,
+                  "headroom": 4.9,
+                  "fault_injection_p95_relative_l2": 1.601,
+                  "note": "A PERCENTILE, NEVER A MAXIMUM, and that is measured rather than predicted. One flipped code displaces the reconstruction by about a full codebook-row separation (median |dRecon|/||e_i-e_j|| = 1.21), so this branch's per-frame maximum is 235.8 absolute against a median of 0.55, with 4 of 101 frames flipping. No bf16-scale maximum survives that, and widening one until it fit would destroy the gate. The statistic is the 95th percentile of the per-frame L2 deviation, relative to the reference frame's own L2 norm.\n\n2.0e-2 is 5x one bf16 unit, where the design says this branch's median belongs; it flips on only 4 of 101 frames so the tail stays contained. Injected fault p95 1.601, a 78x discrimination.\n\nThe two branches get separate keys and are NEVER averaged: they are an order of magnitude apart in rms (13.5 against 3.11) and, more to the point, differ sharply in dynamic range -- this branch moves 0.004 -> 1.20 under the fault (300x) while the acoustic branch moves only 0.25 -> 1.15 (4.6x). Averaging would blunt the sharper instrument with the duller one."
                 },
-                "talker.hidden_l14": {
-                  "min_cosine": 0.999855,
-                  "observed_min_cosine": 0.999971,
-                  "observed_max_abs": 7.62683
-                },
-                "talker.hidden_l21": {
-                  "min_cosine": 0.99971,
-                  "observed_min_cosine": 0.999942,
-                  "observed_max_abs": 12.0525
-                },
-                "talker.hidden_l27": {
-                  "min_cosine": 0.999575,
-                  "observed_min_cosine": 0.999915,
-                  "observed_max_abs": 17.3939
-                },
-                "talker.final": {
-                  "min_cosine": 0.99726,
-                  "observed_min_cosine": 0.999452,
-                  "observed_max_abs": 3.83554
-                },
-                "talker.logits": {
-                  "min_cosine": 0.99761,
-                  "observed_min_cosine": 0.999522,
-                  "observed_max_abs": 1.44078
-                },
-                "audio.pcm": {
-                  "min_cosine": 0.997135,
-                  "max_abs": 0.5,
-                  "observed_min_cosine": 0.999427,
-                  "observed_max_abs": 0.154108
+                "codec.rvq_reconstruction.acoustic": {
+                  "p95_relative_l2": 0.5,
+                  "observed_p95_relative_l2": 0.2491,
+                  "headroom": 2.0,
+                  "fault_injection_p95_relative_l2": 1.741,
+                  "note": "Same percentile statistic and same never-averaged rule as the semantic branch; see its note for why a maximum is unsatisfiable here.\n\nNOT at bf16 scale, and it cannot be. This branch aggregates fifteen stages and disagreement with the bf16 oracle grows monotonically down the cascade (4, 6, 20, 34, ... 74 of 101 frames), so almost every frame carries at least one flip and the branch sits in the flip tail at the MEDIAN (0.1317), not only at its p95. The design's predicted 0.18 absolute L2 for this branch is 39x too small against a measured median of 7.014 absolute and must not be used.\n\nHEADROOM IS ~2x HERE AND IT IS DRAWN FROM ONE RECORDING. base-ref-min is a byte-exact prefix of base-icl-en and base-text-short is that same clip again at full length: three cases, one speaker, one microphone. A second speaker would be independent corroboration and there is not one, so this figure and the semantic one should be revisited the first time a second reference clip exists, rather than treated as settled by three passing cases. Injected fault p95 1.741, a 3.5x discrimination -- the narrowest of the three gates."
                 }
               },
-              "backend": "CPU"
+              "note": "Measured by Task 5 of the ICL plan and committed with the validator that reproduces it; promoted out of `provisional_variants` into this grid on 2026-08-14, which is what retired the copied placeholder described in this variant's own note. The thresholds and every observed figure below are transcribed from scripts/validate-qwen3-tts-codec_encoder.py, which states each one beside the measurement it clears and the injected fault it still catches; they are not re-derived here.\n\nTHE CODES ARE NOT THE GATE. The design's fourth erratum (2026-08-13) dropped plain equality on codes/reference.i32: the oracle's RVQ codebook is bfloat16 and the converter's is float32, the two tables disagree on 4.04% of frame-stage decisions (95.96% agreement), and upstream disagrees with ITSELF depending on whether `dtype` is passed at load -- so an equality gate would test a load-time keyword argument rather than this port. That agreement rate is recorded here as an observation and gates nothing, which is exactly why a note is the right carrier for it. For the same reason this stage records no `codec.reference_codes` probe and the manifest carries no `alternate_grids`: enumerating admissible grids would mean committing a second oracle's output for every case.\n\nWhat the reconstruction's exact zero does and does not say: port vs upstream-f32 on rvq_reconstruction measures 0 exactly, and under an injected fault it reads 1.115, so it is a comparison that CAN fail. But it decomposes into three conjuncts at once -- the codes agree, the two float32 codebook tables are bit-identical BY CONSTRUCTION, and the accumulation order matches -- so it is a consistency check, not independent evidence about the codebook conversion. The load-bearing independent evidence is `codec.chain`.\n\nThree cases (base-icl-en, base-ref-min, base-text-short), CPU, float32 port against the committed bfloat16 oracle dump and an upstream float32 re-run of the same taps. They are one recording at three lengths, not three independent recordings -- see the acoustic probe's note."
             }
           }
         }

@@ -74,6 +74,37 @@ def measured_variants(document: dict) -> dict[str, dict]:
     return {}
 
 
+def validator_coverage_failures(
+    validators: set[str], measured_by_variant: dict[str, set[str]]
+) -> list[str]:
+    """The validator/stage rule, as a pure function over already-loaded sets.
+
+    Extracted from the test method so that
+    tests/python/test_tolerance_coverage_inversion.py can drive the SHIPPED rule
+    with constructed inputs rather than reimplementing it. An inversion test that
+    restates the rule proves only that the restatement fails.
+
+    Returns one message per violation, empty when the grid is sound.
+    """
+    failures: list[str] = []
+    measured_anywhere: set[str] = set().union(*measured_by_variant.values()) if measured_by_variant else set()
+
+    # A validator nobody measures has never been run -- the Kokoro-decoder hole.
+    orphan_validators = sorted(validators - measured_anywhere)
+    if orphan_validators:
+        failures.append(
+            f"validators {orphan_validators} have no recorded measurement in ANY variant"
+        )
+
+    # A measured stage with no validator is a number nothing can reproduce.
+    for variant in sorted(measured_by_variant):
+        orphan_stages = sorted(measured_by_variant[variant] - validators)
+        if orphan_stages:
+            failures.append(f"{variant}: stages {orphan_stages} have no validator")
+
+    return failures
+
+
 class ToleranceCoverageTests(unittest.TestCase):
     def test_every_tolerance_file_is_well_formed(self) -> None:
         files = load_tolerances()
@@ -127,7 +158,38 @@ class ToleranceCoverageTests(unittest.TestCase):
                             )
 
     def test_every_registered_validator_has_a_measured_stage(self) -> None:
-        """A stage with a validator but no measurement has never been run."""
+        """A validator with no measurement has never been run, and vice versa.
+
+        Two directions, deliberately asymmetric in scope, because a capability
+        can be specific to one Model Variant:
+
+          - every validator is exercised by at least ONE variant (family-wide);
+          - every measured stage has a validator (per variant).
+
+        This was one assertion of exact per-variant set equality until
+        2026-08-14, which is a stronger rule than the intent and became
+        unsatisfiable the moment a variant-specific capability arrived.
+        qwen3-tts-12hz-0-6b-base carries a codec encoder and an ECAPA speaker
+        encoder; qwen3-tts-12hz-0-6b-customvoice carries neither -- 894 emitted
+        tensors against 657, and the difference is exactly 76 speaker_encoder +
+        161 codec encoder (docs/porting/families/qwen3-tts.md's tensor census
+        and its "The codec encoder is not carried" section). Under exact
+        equality, measuring the codec encoder on the variant that HAS one forced
+        a codec_encoder cell into CustomVoice's BF16/F16/Q8_MIXED grids and
+        their CUDA sub-grids too -- five cells describing a subsystem that
+        package does not contain, which is precisely the fabricated-placeholder
+        disease tests/tolerances/qwen3-tts.json spent two plans removing.
+
+        For a single-variant family the two formulations are identical, so
+        nothing is relaxed for the families this already covered. What is given
+        up is only the claim that every variant measures every stage, which was
+        never true of a family whose variants differ in capability.
+
+        Both directions still bite; see
+        tests/python/test_tolerance_coverage_inversion.py, which constructs a
+        validator with no measurement anywhere and a stage with no validator and
+        asserts this test rejects each.
+        """
         for family, document in load_tolerances().items():
             variants = measured_variants(document)
             if not variants:
@@ -138,15 +200,17 @@ class ToleranceCoverageTests(unittest.TestCase):
             }
             if not validators:
                 continue
-            for variant, profiles in variants.items():
-                with self.subTest(family=family, variant=variant):
-                    measured = set(profiles[reference_profile(document)]["stages"])
-                    self.assertEqual(
-                        validators,
-                        measured,
-                        f"{family}/{variant}: validators {sorted(validators - measured)} have no "
-                        f"recorded measurement; stages {sorted(measured - validators)} have no validator",
-                    )
+            reference = reference_profile(document)
+            measured_by_variant = {
+                variant: set(profiles[reference]["stages"])
+                for variant, profiles in variants.items()
+            }
+            with self.subTest(family=family):
+                self.assertEqual(
+                    validator_coverage_failures(validators, measured_by_variant),
+                    [],
+                    f"{family}: validator/stage coverage is incomplete",
+                )
 
 
 if __name__ == "__main__":

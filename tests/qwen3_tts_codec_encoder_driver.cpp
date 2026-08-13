@@ -18,6 +18,18 @@
 // starts, and it swamps what the comparison is trying to see. There is
 // therefore no WAV reader here, unlike every other driver in this directory.
 //
+// WHAT THE TWO ORACLE CASES ACTUALLY COVER, recorded here because this is the
+// tool a coverage claim will be made from. `base-ref-min`'s waveform.f32 is a
+// BYTE-EXACT PREFIX of `base-icl-en`'s -- the first 24,000 of its 193,920
+// samples, checked on the bytes -- and `base-text-short` is the same clip again
+// at full length, differing only in synthesis text the encoder never reads. So
+// the manifest's three cases are ONE RECORDING AT TWO LENGTHS: one speaker, one
+// microphone, one sample rate. Running the driver on both is a real check of
+// the length-dependent geometry (the shorter one is the only case where the
+// frame downsampler's right-hand extra_padding is non-zero) and is NOT
+// independent corroboration of a per-stage tolerance. A second speaker would
+// be; there is not one.
+//
 // Weights come from a real Loaded Model; the graph runs on a plain CPU backend
 // of this file's own, because the encoder's tensors are CPU-resident (they are
 // bound against the package context, never a twin -- see catalog.cpp and

@@ -111,7 +111,8 @@ struct CodecEncoderAttentionShape {
 // into the graph with ggml_build_forward_expand is NOT enough; only the output
 // flag pins the memory. This cost the first run of the stage-wise comparison,
 // which reported every stage disagreeing with the oracle by 15-70x when the
-// graph was already correct to 1e-5, and it was a comment telling callers to do
+// graph's worst stage was already within 9.3e-05 of upstream's own float32 run
+// (relative to that stage's absmax), and it was a comment telling callers to do
 // it themselves until a review pointed out that a comment is not a mechanism.
 // Asking for a tap is asking for a readable tensor; the flag is not separately
 // requestable and there is nothing left to forget.
@@ -178,9 +179,10 @@ ggml_tensor * build_codec_encoder_seanet(ggml_context *              context,
 // One encoder transformer layer over [hidden, positions].
 //
 // `position_ids` is an I32 [positions] that rope consumes. The causal mask is
-// built inside, with ggml_diag_mask_inf, rather than taken from the caller: it
-// is fully determined by the sequence length and there is nothing for a caller
-// to decide.
+// built inside, with ggml_diag_mask_inf_inplace, rather than taken from the
+// caller: it is fully determined by the sequence length and there is nothing
+// for a caller to decide. Inplace because the scores have exactly one reader,
+// and a second copy of them costs 18 MB per layer at 375 frames.
 //
 // THERE IS NO SLIDING WINDOW. `encoder_config.sliding_window` is 250 and
 // MimiAttention stores it (modeling_mimi.py:644), but the only forward pass

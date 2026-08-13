@@ -78,6 +78,36 @@ constexpr uint64_t kSeed            = 20260813u;
 constexpr int kNodesWholeFrames = 445;
 constexpr int kNodesRaggedTail  = 449;
 
+// READ THIS BEFORE INJECTING A FAULT INTO THIS FILE'S SUBJECT, and before
+// adding an assertion above the two node checks.
+//
+// These two are the strongest assertions here, and they fire FIRST for any
+// fault that changes the graph's size -- which swallows the failure signal of
+// every weaker assertion below them. That is correct behaviour for a tighter
+// check and it is not silent (the suite still fails), but it means a
+// rule-deletion run reports the node count rather than the rule it was aimed
+// at. Enumerated, from the runs that produced them:
+//
+//   MASKED by the node pin, and what each reports once it is relaxed:
+//     symmetric (non-causal) convolution padding  -> `causal_diff`, at ~1.7
+//     latents scaled to zero                      -> `magnitude > 1e-6`
+//     ANY injected sliding window                 -> the liveness check, then
+//                                                    `window_change > 1e-6`
+//   NOT masked, because they change no shape:
+//     record_tap without ggml_set_output          -> `tap_diff == 0`, at ~3.79
+//     a tap list not cleared on entry             -> the taps-as-declared check
+//     ceil -> floor divide                        -> the frame count
+//     latents returned transposed                 -> rule 3's shape check
+//
+// To isolate one of the masked three, comment out the three
+// `nodes == kNodes*` assertions and the pair inside check_causality, then
+// re-run. Do not weaken the pin to make an inversion legible.
+//
+// A consequence worth knowing rather than fixing: a real windowing regression
+// would trip the node pin and the liveness check before reaching
+// check_attention_is_unwindowed, so that probe is insurance, not the assertion
+// that would report the fault.
+
 class LcgStream {
   public:
     explicit LcgStream(uint64_t seed) : state_(seed) {}
@@ -501,6 +531,13 @@ bool check_taps_survive_allocation(const Fixture & fixture, float & max_diff) {
     if (!run_encoder(fixture, kSamplesPerFrame * 8, 0.0f, latents, frames, nodes, &tapped)) {
         return false;
     }
+    // A whole number of frames, so the same graph as everywhere else. Asserted
+    // here as well as in main(): asking for taps is the one thing that changes
+    // what the builder does, and this is the only run that asks.
+    if (nodes != kNodesWholeFrames) {
+        std::printf("    taps run built %d nodes, expected %d\n", nodes, kNodesWholeFrames);
+        return false;
+    }
 
     // The same stack, built so that the tail IS the graph's output.
     synth::qwen3tts::CodecEncoderGeometry geometry;
@@ -572,8 +609,6 @@ bool check_attention_is_unwindowed(const Fixture & fixture, double & change) {
     if (input_buffer == nullptr) {
         return false;
     }
-    // Braced, not parenthesised: `size_t(kProbePositions)` on a constexpr name
-    // parses as a parameter declaration, not a size.
     std::vector<int32_t> sequential(static_cast<size_t>(kProbePositions), 0);
     for (int64_t index = 0; index < kProbePositions; ++index) {
         sequential[size_t(index)] = int32_t(index);
@@ -692,16 +727,24 @@ int main() {
         }
         std::printf("    ragged clip: %lld frames, %d nodes\n", (long long) ragged_frames, ragged_nodes);
 
-        // End-to-end liveness: sample 0 must reach the last frame at all. This
-        // is NOT a check on the sliding window -- at eight layers the last
-        // position depends on the first under a window as well as without one,
-        // which is exactly the mistake check_attention_is_unwindowed exists to
-        // correct. What it does catch is a stack that has stopped propagating:
-        // a severed residual, a mask that blocks everything, an attention that
-        // reads only the diagonal.
+        // End-to-end liveness: sample 0 must reach the last frame at all.
+        //
+        // What it detects is a stack that has stopped propagating -- a severed
+        // residual, a mask that blocks everything, an attention that reads only
+        // the diagonal. What it is NOT is a reliable window detector, and it is
+        // stated that way because both stronger readings have been wrong here.
+        // It is not blind to a window: injected windows at this geometry read
+        // 1.19e-07 (w=16) and 5.96e-08 (w=15), both of which fail the bound
+        // below. But it has no threshold -- it decays smoothly into float32
+        // noise, non-monotonically (5.3e-06 at w=32, which passes; 0 at w=16),
+        // so what it reports is attenuation and not structure. At the real
+        // geometry, where the declared window is 250 over 202 positions, it
+        // would detect nothing at all. check_attention_is_unwindowed is the
+        // check with an exact threshold; this one is liveness.
         std::vector<float> bumped;
         int64_t            bumped_frames = 0;
         SYNTH_TEST_CHECK(run_encoder(fixture, kSamplesPerFrame * 30, 4.0f, bumped, bumped_frames, nodes));
+        SYNTH_TEST_CHECK(nodes == kNodesWholeFrames);
         double last_frame_change = 0.0;
         for (int64_t channel = 0; channel < kHidden; ++channel) {
             const size_t at   = size_t((30 - 1) * kHidden + channel);
@@ -731,16 +774,26 @@ int main() {
         // inputs in the same order whatever follows it.
         //
         // NOT exactly 0 on an accelerator, and that is arithmetic rather than a
-        // broken prefix: CUDA tiles a matrix multiply by its column count, so
-        // the 8-frame and 12-frame runs accumulate the shared columns in
-        // different orders. Measured on a GB10 (sm_121a): 0.003435, stable to
-        // every digit across repeated runs, against a signal whose peak is
-        // 3.001 -- one part in 900. The same split the sibling codec test makes
-        // for the same reason (qwen3_tts_codec_test.cpp's own 1e-4 / 2e-2).
+        // broken prefix. The dominant term is reduced-mantissa tensor-core F32
+        // -- CUDA runs an F32 matmul through TF32, which this project has
+        // already recorded as unconditional (docs/backends.md) -- with tiling
+        // by column count on top of it, so the 8-frame and 12-frame runs do not
+        // reduce the shared columns identically. Accumulation order alone does
+        // not produce ~1e-3 relative on a graph this shallow. Same mechanism,
+        // same split, as qwen3_tts_codec_test.cpp's own 1e-4 / 2e-2.
+        //
+        // Measured on a GB10 (sm_121a): 0.003435, stable to every digit across
+        // repeated runs, against a signal whose peak is 3.001. That it is
+        // arithmetic and not a broken prefix is measurable rather than
+        // asserted: the SAME clip encoded on the two backends disagrees by
+        // 5.20e-03, MORE than the 3.44e-03 this check sees between two CUDA
+        // runs -- so there is no residue left over for a real prefix fault to
+        // hide in. A widened tolerance covering a genuine difference would look
+        // the opposite way round.
         //
         // Both bounds stay far under the fault they exist to catch: a symmetric
-        // pad moves this to 1.729, which is 17,000x the CPU bound and 86x the
-        // accelerator one.
+        // pad moves this to ~1.7 on both backends, 17,000x the CPU bound and
+        // 86x the accelerator one.
         const float causal_tolerance = type == GGML_BACKEND_DEVICE_TYPE_CPU ? 1e-4f : 2e-2f;
         SYNTH_TEST_CHECK(causal_diff < causal_tolerance);
 

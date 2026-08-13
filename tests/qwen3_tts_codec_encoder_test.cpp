@@ -857,6 +857,14 @@ int check_reference_encoding(const Fixture & fixture) {
     double  margin          = 0.0;
     SYNTH_TEST_CHECK(independent_stage0_code(fixture.weights.semantic, encoding.latents, 0, semantic_frame0, margin));
     SYNTH_TEST_CHECK(margin > 1e-6);
+    SYNTH_TEST_CHECK(independent_stage0_code(fixture.weights.acoustic, encoding.latents, 0, acoustic_frame0, margin));
+    SYNTH_TEST_CHECK(margin > 1e-6);
+    // The precondition that makes the NEXT line able to fail under a swapped
+    // pair of branches. Without it, `codes[0] == semantic_frame0` would hold
+    // under both orders whenever the two branches happen to agree at frame 0,
+    // and the assertion the branch-swap inversion is aimed at would be passing
+    // on fixture luck rather than on the rule.
+    SYNTH_TEST_CHECK(acoustic_frame0 != semantic_frame0);
     SYNTH_TEST_CHECK(encoding.codes[0] == semantic_frame0);
     for (int64_t frame = 0; frame < 16; ++frame) {
         int32_t expected = -1;
@@ -868,8 +876,6 @@ int check_reference_encoding(const Fixture & fixture) {
     // Rule 5: THE LAYOUT IS GROUP-FASTEST. Element 1 of the flat buffer is
     // frame 0's group 1 -- the acoustic branch's first stage -- and NOT frame
     // 1's group 0, which is what a stage-major buffer would put there.
-    SYNTH_TEST_CHECK(independent_stage0_code(fixture.weights.acoustic, encoding.latents, 0, acoustic_frame0, margin));
-    SYNTH_TEST_CHECK(margin > 1e-6);
     SYNTH_TEST_CHECK(independent_stage0_code(fixture.weights.semantic, encoding.latents, 1, semantic_frame1, margin));
     SYNTH_TEST_CHECK(margin > 1e-6);
     // Without this the previous two cannot tell the layouts apart, and the
@@ -893,6 +899,30 @@ int check_reference_encoding(const Fixture & fixture) {
     // The frame count is part of the comparison, not just the buffer.
     SYNTH_TEST_CHECK(!synth::qwen3tts::codes_equal(encoding, encoding.codes.data(), 15));
     SYNTH_TEST_CHECK(!synth::qwen3tts::codes_equal(encoding, nullptr, 16));
+
+    // The gap grid: same size and same GROUP-FASTEST layout as the codes, so
+    // the two index alike. Pinned by value at group 0, against the margin
+    // `independent_stage0_code` computes in double from the direct (z-e)^2
+    // form -- which is both a value check and a layout check, since a
+    // stage-major gap grid would put frame 1's group 0 at index 1.
+    SYNTH_TEST_CHECK(encoding.gaps.size() == encoding.codes.size());
+    float smallest = std::numeric_limits<float>::infinity();
+    for (float gap : encoding.gaps) {
+        // Non-negative by construction: the second best is never nearer than
+        // the best. Strictly positive here because the drawn fixture produces
+        // no exact ties -- which is what makes the tie fixture's all-zero grid
+        // a distinguishable state rather than the default one.
+        SYNTH_TEST_CHECK(std::isfinite(gap) && gap > 0.0f);
+        smallest = std::fmin(smallest, gap);
+    }
+    SYNTH_TEST_CHECK(encoding.narrowest_gap == smallest);
+    for (int64_t frame = 0; frame < 16; ++frame) {
+        int32_t ignored  = -1;
+        double  expected = 0.0;
+        SYNTH_TEST_CHECK(independent_stage0_code(fixture.weights.semantic, encoding.latents, frame, ignored, expected));
+        const double observed = double(encoding.gaps[size_t(frame * kGroups)]);
+        SYNTH_TEST_CHECK(std::fabs(observed - expected) <= 1e-3 * expected);
+    }
 
     // Rule 6: the frame trim is the CEILING divide, applied after the graph. A
     // clip of 8 whole frames plus 17 samples is nine frames, not eight.
@@ -950,8 +980,265 @@ int check_tie_resolves_to_lowest_id(Fixture & fixture) {
     }
     // The tie is exact, so the reported gap between best and second best is
     // exactly zero -- which is also what proves the two candidates really were
-    // equal rather than merely close.
+    // equal rather than merely close. EVERY entry, not just the minimum: the
+    // tie recurs at all sixteen stages, so a single zero somewhere would be a
+    // much weaker statement than the whole grid being zero.
     SYNTH_TEST_CHECK(encoding.narrowest_gap == 0.0f);
+    SYNTH_TEST_CHECK(encoding.gaps.size() == encoding.codes.size());
+    for (float gap : encoding.gaps) {
+        SYNTH_TEST_CHECK(gap == 0.0f);
+    }
+    return 0;
+}
+
+// The refusal surface: every shape and hyper-parameter this wrapper checks
+// before it touches a tensor.
+//
+// CLAUDE.md's testing policy asks for the malformed-input and error-mapping
+// half of each slice, and a refusal nothing drives is a refusal nobody checked
+// -- the same reasoning the catalog's own resolver tests use. Each case mutates
+// exactly one thing away from a pair that is asserted to be ACCEPTED first, so
+// a refusal can only be attributed to the mutation.
+int check_refusals(const Fixture & fixture, ggml_backend_t backend) {
+    using Weights                       = synth::qwen3tts::CodecEncoderWeights;
+    const synth::qwen3tts::HParams base = make_hparams();
+    const std::vector<float>       pcm  = lcg_clip(kSamplesPerFrame * 3, 0.0f);
+    synth::qwen3tts::CodecEncoding encoding;
+    const char *                   code    = nullptr;
+    const char *                   message = nullptr;
+
+    // Without this every refusal below is unattributable.
+    SYNTH_TEST_CHECK(synth::qwen3tts::encode_codec_reference(base, fixture.weights, pcm, 1, encoding, code, message) ==
+                     SYNTH_OK);
+
+    auto refused = [&](const synth::qwen3tts::HParams & hparams, const Weights & weights) {
+        const synth_status_t status =
+            synth::qwen3tts::encode_codec_reference(hparams, weights, pcm, 1, encoding, code, message);
+        // INVALID_ARG and not INTERNAL: a package whose metadata and tensors
+        // disagree is a bad argument to this function, not a bug inside it.
+        // Nothing is left behind, and no diagnostic name is claimed -- only the
+        // silent-reference refusal names itself.
+        return status == SYNTH_ERR_INVALID_ARG && encoding.codes.empty() && code == nullptr;
+    };
+
+    // The hyper-parameter surface.
+    //
+    // MEASURED, NOT ASSUMED: with the whole `groups <= 0 || semantic <= 0 ||
+    // semantic >= groups || ...` gate deleted, every case in this block below
+    // the last one STILL refuses, because `branch_shapes_agree` catches the
+    // same configurations one step later -- a zero or negative stage count, an
+    // `input_proj` whose middle extent is not the declared latent width, a
+    // codebook whose row count is not the declared size. That gate is
+    // defence-in-depth: it refuses earlier and more cheaply, and it is not
+    // independently observable through this seam.
+    //
+    // So what this block pins is THE CONTRACT -- every one of these
+    // configurations is refused, as INVALID_ARG, leaving nothing behind and
+    // claiming no diagnostic name -- rather than any single line of it. Said
+    // here because a rule-deletion run on that gate alone comes back green, and
+    // a reader who did not know why would take the tests for decoration.
+    //
+    // The LAST case is the exception and is the one that isolates the gate: it
+    // supplies tensors that agree with each other at an ODD latent width, which
+    // `branch_shapes_agree` accepts and only the `latent_width % 2` rule
+    // rejects. With the gate gone it reaches the graph and comes back
+    // SYNTH_ERR_INTERNAL instead, so `refused` fails.
+    {
+        synth::qwen3tts::HParams h      = base;
+        h.codec.decoder.quantizer_count = 0;
+        SYNTH_TEST_CHECK(refused(h, fixture.weights));
+        h                                        = base;
+        h.codec.decoder.semantic_quantizer_count = 0;
+        SYNTH_TEST_CHECK(refused(h, fixture.weights));
+        // Semantic must be a strict prefix: equal leaves the acoustic branch
+        // nothing to do and would silently emit a semantic-only grid.
+        h                                        = base;
+        h.codec.decoder.semantic_quantizer_count = uint32_t(kGroups);
+        SYNTH_TEST_CHECK(refused(h, fixture.weights));
+        h                            = base;
+        h.codec.decoder.codebook_dim = 0;
+        SYNTH_TEST_CHECK(refused(h, fixture.weights));
+        // Odd: the projected width is codebook_dim / 2, and a half that is not
+        // exact means the two are not the pair this cascade was built from.
+        h                            = base;
+        h.codec.decoder.codebook_dim = uint32_t(kHidden) + 1;
+        SYNTH_TEST_CHECK(refused(h, fixture.weights));
+        h                             = base;
+        h.codec.decoder.codebook_size = 1;
+        SYNTH_TEST_CHECK(refused(h, fixture.weights));
+        // Declared wider than the tensors: caught by the shape agreement, not
+        // by the range sweep at the end, and so before anything is computed.
+        h                             = base;
+        h.codec.decoder.codebook_size = uint32_t(kCodebookSize) + 1;
+        SYNTH_TEST_CHECK(refused(h, fixture.weights));
+        // More acoustic stages than the cascade carries.
+        h                               = base;
+        h.codec.decoder.quantizer_count = uint32_t(kAcousticAvailable) + 2;
+        SYNTH_TEST_CHECK(refused(h, fixture.weights));
+    }
+
+    // An ODD latent width whose tensors agree with it, which is the one
+    // configuration `branch_shapes_agree` cannot see -- see the note above.
+    {
+        constexpr int64_t     kOdd    = kHidden + 1;  // 33
+        constexpr int64_t     kHalf   = kOdd / 2;     // 16, the same projected width
+        Context               scratch = make_context(ggml_tensor_overhead() * 8);
+        ggml_context *        sctx    = scratch.get();
+        ggml_tensor *         odd     = ggml_new_tensor_3d(sctx, GGML_TYPE_F32, 1, kOdd, kHalf);
+        ggml_backend_buffer_t buffer  = ggml_backend_alloc_ctx_tensors(sctx, backend);
+        SYNTH_TEST_CHECK(buffer != nullptr);
+        SYNTH_TEST_CHECK(kHalf == kProjected);  // or the codebooks would disagree too
+
+        synth::qwen3tts::HParams h   = base;
+        h.codec.decoder.codebook_dim = uint32_t(kOdd);
+        Weights weights              = fixture.weights;
+        weights.semantic.input_proj  = odd;
+        weights.acoustic.input_proj  = odd;
+        SYNTH_TEST_CHECK(refused(h, weights));
+
+        ggml_backend_buffer_free(buffer);
+    }
+
+    // The resolved-pointer surface.
+    {
+        Weights weights             = fixture.weights;
+        weights.semantic.input_proj = nullptr;
+        SYNTH_TEST_CHECK(refused(base, weights));
+        weights                     = fixture.weights;
+        weights.acoustic.input_proj = nullptr;
+        SYNTH_TEST_CHECK(refused(base, weights));
+        weights                       = fixture.weights;
+        weights.semantic.codebooks[0] = nullptr;
+        SYNTH_TEST_CHECK(refused(base, weights));
+        weights                        = fixture.weights;
+        weights.acoustic.codebooks[14] = nullptr;  // the last stage that is READ
+        SYNTH_TEST_CHECK(refused(base, weights));
+        weights = fixture.weights;
+        weights.semantic.codebooks.clear();
+        SYNTH_TEST_CHECK(refused(base, weights));
+        // A CustomVoice package resolves nothing at all.
+        SYNTH_TEST_CHECK(refused(base, Weights{}));
+    }
+
+    // The shape surface. Wrong extents in each of the three positions, and a
+    // NON-CONTIGUOUS tensor with otherwise correct extents -- a view with a row
+    // stride twice its own width, which is what a future twin or a sliced
+    // package would hand over and which the host copy below cannot read.
+    {
+        Context               scratch    = make_context(ggml_tensor_overhead() * 16);
+        ggml_context *        sctx       = scratch.get();
+        ggml_tensor *         narrow     = ggml_new_tensor_3d(sctx, GGML_TYPE_F32, 1, kHidden - 2, kProjected);
+        ggml_tensor *         thick      = ggml_new_tensor_3d(sctx, GGML_TYPE_F32, 2, kHidden, kProjected);
+        ggml_tensor *         shallow    = ggml_new_tensor_3d(sctx, GGML_TYPE_F32, 1, kHidden, kProjected - 1);
+        ggml_tensor *         short_book = ggml_new_tensor_2d(sctx, GGML_TYPE_F32, kProjected - 1, kCodebookSize);
+        ggml_tensor *         tall_book  = ggml_new_tensor_2d(sctx, GGML_TYPE_F32, kProjected, kCodebookSize + 1);
+        ggml_backend_buffer_t buffer     = ggml_backend_alloc_ctx_tensors(sctx, backend);
+        SYNTH_TEST_CHECK(buffer != nullptr);
+        // Created after the allocation: a view is not allocated, it borrows.
+        ggml_tensor * strided = ggml_view_3d(sctx, thick, 1, kHidden, kProjected, thick->nb[1], thick->nb[2], 0);
+        SYNTH_TEST_CHECK(strided->ne[0] == 1 && strided->ne[1] == kHidden && strided->ne[2] == kProjected);
+        SYNTH_TEST_CHECK(!ggml_is_contiguous(strided));
+
+        Weights weights             = fixture.weights;
+        weights.semantic.input_proj = narrow;
+        SYNTH_TEST_CHECK(refused(base, weights));
+        weights.semantic.input_proj = thick;
+        SYNTH_TEST_CHECK(refused(base, weights));
+        weights.semantic.input_proj = shallow;
+        SYNTH_TEST_CHECK(refused(base, weights));
+        weights.semantic.input_proj = strided;
+        SYNTH_TEST_CHECK(refused(base, weights));
+
+        weights                       = fixture.weights;
+        weights.acoustic.codebooks[3] = short_book;
+        SYNTH_TEST_CHECK(refused(base, weights));
+        weights.acoustic.codebooks[3] = tall_book;
+        SYNTH_TEST_CHECK(refused(base, weights));
+
+        ggml_backend_buffer_free(buffer);
+    }
+    return 0;
+}
+
+// A BF16 codebook is CONVERTED, not reinterpreted.
+//
+// The header argues at length that this path exists because the graph half
+// already widens with `as_f32`, so a package storing this half at BF16 would
+// run the convolutions fine and then have its codebook bytes read as float. The
+// argument is worth nothing until something drives it, and the fixture is
+// all-F32.
+//
+// The comparison is against an F32 run whose codebooks hold the SAME values
+// after a bf16 round trip, so the two differ only in storage. Reinterpreting
+// the bytes instead of converting them cannot land on the same codes: a bf16
+// bit pattern read as the top half of a float is a different number entirely.
+int check_bf16_codebook_is_converted(ggml_backend_t backend) {
+    const synth::qwen3tts::HParams hparams = make_hparams();
+    const std::vector<float>       pcm     = lcg_clip(kSamplesPerFrame * 5, 0.0f);
+
+    Fixture fixture;
+    SYNTH_TEST_CHECK(build_fixture(backend != nullptr ? ggml_backend_get_device(backend) : nullptr, fixture));
+
+    // Every codebook the two branches carry, in one list, so the F32 fixture
+    // and the BF16 twin are filled from the identical values.
+    std::vector<ggml_tensor *> books;
+    for (ggml_tensor * book : fixture.weights.semantic.codebooks) {
+        books.push_back(book);
+    }
+    for (ggml_tensor * book : fixture.weights.acoustic.codebooks) {
+        books.push_back(book);
+    }
+
+    Context                    scratch = make_context(ggml_tensor_overhead() * (books.size() + 8));
+    ggml_context *             sctx    = scratch.get();
+    std::vector<ggml_tensor *> twins;
+    for (size_t index = 0; index < books.size(); ++index) {
+        twins.push_back(ggml_new_tensor_2d(sctx, GGML_TYPE_BF16, kProjected, kCodebookSize));
+    }
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(sctx, fixture.backend);
+    SYNTH_TEST_CHECK(buffer != nullptr);
+
+    const size_t             count = size_t(kProjected * kCodebookSize);
+    std::vector<float>       values(count);
+    std::vector<ggml_bf16_t> packed(count);
+    std::vector<float>       rounded(count);
+    for (size_t index = 0; index < books.size(); ++index) {
+        ggml_backend_tensor_get(books[index], values.data(), 0, ggml_nbytes(books[index]));
+        ggml_fp32_to_bf16_row(values.data(), packed.data(), int64_t(count));
+        ggml_bf16_to_fp32_row(packed.data(), rounded.data(), int64_t(count));
+        // The F32 fixture now holds bf16-representable values ...
+        ggml_backend_tensor_set(books[index], rounded.data(), 0, ggml_nbytes(books[index]));
+        // ... and the twin holds the same values in bf16 storage.
+        ggml_backend_tensor_set(twins[index], packed.data(), 0, ggml_nbytes(twins[index]));
+    }
+
+    synth::qwen3tts::CodecEncoding f32_encoding;
+    const char *                   code    = nullptr;
+    const char *                   message = nullptr;
+    SYNTH_TEST_CHECK(synth::qwen3tts::encode_codec_reference(hparams, fixture.weights, pcm, 1, f32_encoding, code,
+                                                             message) == SYNTH_OK);
+
+    synth::qwen3tts::CodecEncoderWeights bf16 = fixture.weights;
+    size_t                               next = 0;
+    for (ggml_tensor *& book : bf16.semantic.codebooks) {
+        book = twins[next++];
+    }
+    for (ggml_tensor *& book : bf16.acoustic.codebooks) {
+        book = twins[next++];
+    }
+    synth::qwen3tts::CodecEncoding bf16_encoding;
+    SYNTH_TEST_CHECK(synth::qwen3tts::encode_codec_reference(hparams, bf16, pcm, 1, bf16_encoding, code, message) ==
+                     SYNTH_OK);
+
+    SYNTH_TEST_CHECK(bf16_encoding.frames == f32_encoding.frames);
+    SYNTH_TEST_CHECK(
+        synth::qwen3tts::codes_equal(bf16_encoding, f32_encoding.codes.data(), int64_t(f32_encoding.frames)));
+    // The reconstruction too, exactly: the selected rows are the same values,
+    // so their sums are the same floats. This is what separates "converted" from
+    // "converted to something plausible".
+    SYNTH_TEST_CHECK(bf16_encoding.reconstruction == f32_encoding.reconstruction);
+
+    ggml_backend_buffer_free(buffer);
     return 0;
 }
 
@@ -1128,6 +1415,13 @@ int main() {
         SYNTH_TEST_CHECK(build_fixture(cpu, fixture));
         SYNTH_TEST_CHECK(check_reference_encoding(fixture) == 0);
         SYNTH_TEST_CHECK(check_silent_reference_is_refused(fixture) == 0);
+        SYNTH_TEST_CHECK(check_refusals(fixture, fixture.backend) == 0);
+    }
+    {
+        // Its own fixture: the bf16 check rewrites every codebook in place.
+        Fixture host;
+        SYNTH_TEST_CHECK(build_fixture(cpu, host));
+        SYNTH_TEST_CHECK(check_bf16_codebook_is_converted(host.backend) == 0);
     }
     {
         // Its own fixture: check_tie_resolves_to_lowest_id overwrites every

@@ -444,7 +444,13 @@ synth_status_t encode_codec_reference(const HParams &             hparams,
     const int64_t graph_frames = latents->ne[1];
     const int64_t trim_target  = (geometry.samples + geometry.samples_per_frame - 1) / geometry.samples_per_frame;
     const int64_t frames       = std::min(graph_frames, trim_target);
-    if (frames <= 0 || graph_frames < frames) {
+    // `frames > graph_frames` is impossible by the `min` above, so testing for
+    // it would be dead. `trim_target > graph_frames` is NOT: it says the graph
+    // produced fewer frames than the ceiling divide demands, which the
+    // composition-of-ceilings identity forbids and which the `min` would
+    // otherwise absorb into a silently short grid. It rests on an invariant this
+    // function does not itself establish, so it is checked rather than assumed.
+    if (frames <= 0 || trim_target > graph_frames) {
         return SYNTH_ERR_INTERNAL;
     }
 

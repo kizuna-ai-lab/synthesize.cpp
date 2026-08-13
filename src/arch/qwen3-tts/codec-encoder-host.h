@@ -162,7 +162,20 @@ bool codes_equal(const CodecEncoding & encoding, const int32_t * flat, int64_t f
 // rather than a different quantity that happens to order the same way.
 //
 // `threads` follows encode_speaker_reference's convention: 0 selects
-// default_synthesis_threads(). On any non-OK return `output` is left cleared.
+// default_synthesis_threads() -- AND IT REACHES THE GRAPH HALF ONLY. The
+// quantizer is a single-threaded host loop, about `frames * 16 * codebook_size
+// * projected` fused multiply-adds (0.85 GFLOP for a 101-frame clip), growing
+// linearly with the reference length. Named here rather than silently implied,
+// because the parameter would otherwise over-promise; one-time Voice Profile
+// preparation is what makes it acceptable, not the cost being small.
+//
+// On any non-OK return `output` carries no codes and no derived buffers.
+// `ref_rms` is the ONE exception and it is deliberate: it is a real measurement
+// of what the caller passed in, taken before the refusals below it, and the
+// silent-reference refusal is reported by leaving it at zero. The sibling
+// speaker path does the same (speaker-encoder-host.cpp), and an earlier
+// revision of this sentence claimed the clearing was absolute, which it is not.
+//
 // A digitally silent clip is refused by name with
 // "voice_profile.reference_silent", the same code and the same reasoning the
 // speaker path already uses.

@@ -35,17 +35,30 @@ design's file list reads the other way round; the order above is the one
 ``_encode_frame`` actually walks, and it is what the artifacts follow.
 
 The RVQ gets more than a hook. For each of the 16 stages whose codes survive
-Qwen's slice, this dumps the residual *entering* the stage and, per frame, the
-gap between the best and second-best codebook distance -- the tie margin the
-design's section 6 requires MEASURED before the equality gate's final form is
-chosen.
+Qwen's slice, this dumps the residual *entering* the stage, the per-frame gap
+between the best and second-best codebook distance, and the dequantized row the
+stage selected -- summed per branch into ``rvq_reconstruction.f32``.
+
+That reconstruction is part of the gate, per the erratum of 2026-08-13 in the
+design spec's section 6: **the discrete code indices no longer gate anything.**
+The oracle's codebook is bfloat16 and the converter's is float32; they disagree
+on 4.04% of emitted codes, and upstream disagrees with *itself* on 49% of them
+depending on whether ``dtype`` is passed at load -- so equality was testing a
+load-time keyword argument, not a port. What gates instead is this script's
+continuous artifacts at a bf16-derived tolerance, together with the
+reconstruction. The codes are still emitted and still compared against the Base
+oracle, and that comparison still gates THIS SCRIPT (it is what proves the taps
+did not perturb the forward, bf16 against bf16) -- but it is not the port's
+gate. The tie margin stays an artifact because it bounds how far a flip can move
+the reconstruction.
 
 **No seed is needed.** The codec encoder is deterministic: fixed convolutions,
 a fixed transformer, and an argmin over fixed codebooks. The seeded-sampling
 rule applies only to scripts that run the talker, and this one does not.
 
 Every case is gated on reproducing the Base oracle's own ``codes/reference.i32``
-byte for byte, and that check -- like every other check here -- runs *before*
+byte for byte -- a determinism check on this script, not a correctness gate on
+any port; see above -- and that check, like every other check here, runs *before*
 anything reaches disk, because Tasks 3/4/5/12 read the ``.f32`` files rather
 than ``result.json``: a failed run must leave nothing consumable behind, not
 merely nothing announced. A case with no Base artifacts to check against is a
@@ -373,6 +386,13 @@ def install_rvq_probes(mimi_model, captured: dict) -> list:
                 # Only the stages Qwen keeps are dumped; upstream evaluates all
                 # 32 regardless (see conventions.json, quantizers_evaluated).
                 position = _stage if _branch == "semantic" else _stage + 1
+                # One position past the last kept stage, captured for its
+                # residual alone (no distances -- they are the expensive part and
+                # nothing reads them here). It is the acoustic branch's residual
+                # AFTER the last kept stage, which is what closes the
+                # reconstruction identity in check_reconstruction.
+                if position == KEPT_QUANTIZER_COUNT:
+                    captured["residual_after_last_kept"] = to_numpy(hidden_states, torch.float32)
                 if position < KEPT_QUANTIZER_COUNT:
                     # The same expression upstream uses at modeling_mimi.py:1207,
                     # recomputed because the original returns only the argmin.
@@ -399,7 +419,144 @@ def install_rvq_probes(mimi_model, captured: dict) -> list:
 
             codebook.quantize = wrapper
             restores.append(lambda cb=codebook: cb.__dict__.pop("quantize", None))
+
+            # The dequantized rows, taken where upstream produces them. The
+            # residual loop is `indices = layer.encode(residual)` then
+            # `quantized = layer.decode(indices)` then `residual = residual -
+            # quantized` (modeling_mimi.py:1282-1284); `layer.decode` is
+            # MimiVectorQuantization.decode (:1243-1246), a codebook lookup
+            # (:1223-1225) followed by a permute back to [B, C, T]. That
+            # `quantized` IS the selected codebook row for this stage, in the
+            # 256-wide projected space, and the erratum's reconstruction is its
+            # per-branch sum. Capturing it here rather than re-looking-up
+            # embed[indices] keeps the artifact something upstream computed on
+            # the encode path, not something this script derived beside it.
+            original_decode = layer.decode
+
+            def decode_wrapper(embed_ind, _original=original_decode, _branch=branch,
+                               _stage=stage):
+                quantized = _original(embed_ind)
+                position = _stage if _branch == "semantic" else _stage + 1
+                if position < KEPT_QUANTIZER_COUNT:
+                    captured["rvq"][position]["quantized"] = to_numpy(quantized, torch.float32)
+                return quantized
+
+            layer.decode = decode_wrapper
+            restores.append(lambda ly=layer: ly.__dict__.pop("decode", None))
     return restores
+
+
+def build_reconstruction(sink: dict, semantic_count: int) -> tuple[np.ndarray, dict]:
+    """Sum each branch's selected codebook rows, and check the sum against the residual chain.
+
+    The erratum (design spec section 6, 2026-08-13) gates on "the dequantized
+    RVQ reconstruction: the sum of the selected codebook rows in the 256-wide
+    projected space". There are TWO such spaces, not one: the semantic and
+    acoustic branches each own an input_proj and each sum their own rows before
+    either is projected back to 512 and the two are added
+    (modeling_mimi.py:1289-1300 sums within a branch and applies that branch's
+    output_proj; :1347-1356 adds the branches only afterwards, in the 512-wide
+    space). So the artifact carries both, stacked -- adding them here would mix
+    two different projections, which upstream never does at this width.
+
+    The acoustic sum is checked against upstream's own residual chain: summing
+    stages 0..14 must equal the residual entering stage 0 minus the residual
+    entering stage 15, because that is what `residual = residual - quantized`
+    accumulates. The check has content -- it ties the artifact to the chain that
+    produced the codes, so a mis-ordered or double-counted stage fails rather
+    than being published.
+    """
+    frames = sink["rvq"][0]["quantized"].shape[-1]
+    width = sink["rvq"][0]["quantized"].shape[1]
+    reconstruction = np.zeros((2, frames, width), dtype=np.float32)
+    for position in range(KEPT_QUANTIZER_COUNT):
+        probe = sink["rvq"][position]
+        branch_index = 0 if probe["branch"] == "semantic" else 1
+        # [B, C, T] -> [T, C], matching rvq_residual_s*'s own [frames, 256].
+        reconstruction[branch_index] += probe["quantized"][0].T
+
+    acoustic_entry = sink["rvq"][semantic_count]["residual"]
+    acoustic_exit = sink["residual_after_last_kept"]
+    telescoped = acoustic_entry - acoustic_exit
+    deviation = float(np.abs(reconstruction[1] - telescoped).max())
+    scale = float(np.abs(telescoped).max())
+    # bf16 carries ~2^-8 relative precision and this is a 15-term sum of bf16
+    # values accumulated in a different order than upstream's running
+    # subtraction, so exact equality is not the right bar; a deviation at the
+    # scale of the reconstruction itself is.
+    if not (deviation <= 1e-2 * max(scale, 1.0)):
+        raise SystemExit(
+            "the acoustic reconstruction does not telescope: summing the 15 kept "
+            f"dequantized rows deviates from (residual entering stage 0 - residual "
+            f"entering stage 15) by {deviation:.6g} against a scale of {scale:.6g}. "
+            "The rows captured are not the ones the residual chain subtracted."
+        )
+    return reconstruction, {
+        "telescoping_max_abs_deviation": deviation,
+        "telescoping_scale": scale,
+        "telescoping_relative": deviation / scale if scale > 0 else None,
+    }
+
+
+def describe_reconstruction(reconstruction: np.ndarray, sink: dict, semantic_count: int,
+                            telescoping: dict) -> dict:
+    """The reconstruction's numerical scale, so a tolerance can be set against something.
+
+    A bf16-derived tolerance is a RELATIVE quantity; turning it into an absolute
+    one needs the magnitude it multiplies, and nothing had measured that. This
+    reports a distribution rather than a single number because the two branches
+    differ by an order of magnitude and the per-frame spread is wide -- a
+    tolerance set off the mean would be loose for the semantic branch and tight
+    for the acoustic one.
+    """
+    percentiles = [0, 1, 5, 25, 50, 75, 95, 99, 100]
+
+    def describe(values: np.ndarray) -> dict:
+        flat = np.abs(values.astype(np.float64)).reshape(-1)
+        norms = np.linalg.norm(values.astype(np.float64), axis=-1)
+        return {
+            "abs_element_percentiles": {
+                str(p): float(v) for p, v in zip(percentiles, np.percentile(flat, percentiles))
+            },
+            "abs_element_mean": float(flat.mean()),
+            "rms": float(np.sqrt((flat ** 2).mean())),
+            "per_frame_l2_norm_percentiles": {
+                str(p): float(v) for p, v in zip(percentiles, np.percentile(norms, percentiles))
+            },
+        }
+
+    branches = {
+        "semantic": describe(reconstruction[0]),
+        "acoustic": describe(reconstruction[1]),
+    }
+
+    # How much of the projected latent the reconstruction actually accounts for.
+    # This is what says whether a difference in the reconstruction is a large or
+    # a small fraction of the thing being reconstructed.
+    for index, (name, entry_position) in enumerate((("semantic", 0), ("acoustic", semantic_count))):
+        target = sink["rvq"][entry_position]["residual"].astype(np.float64)
+        recon = reconstruction[index].astype(np.float64)
+        residual_norm = np.linalg.norm(target - recon, axis=-1)
+        target_norm = np.linalg.norm(target, axis=-1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.where(target_norm > 0, residual_norm / target_norm, np.nan)
+        branches[name]["explains_target"] = {
+            "target": "the branch's input_proj'ed latent, i.e. rvq_residual_s00 / s01",
+            "target_per_frame_l2_median": float(np.median(target_norm)),
+            "unexplained_residual_per_frame_l2_median": float(np.median(residual_norm)),
+            "unexplained_fraction_of_target_norm_median": float(np.nanmedian(ratio)),
+            "unexplained_fraction_of_target_norm_max": float(np.nanmax(ratio)),
+        }
+
+    return {
+        "note": (
+            "Measured on the bytes written to rvq_reconstruction.f32, read back from "
+            "disk. Reported as a distribution because the two branches are an order of "
+            "magnitude apart: a single scalar scale would be wrong for one of them."
+        ),
+        "branches": branches,
+        "telescoping_check": telescoping,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -997,17 +1154,24 @@ def build_conventions(observed: dict) -> dict:
                 "that basis."
             ),
             "interpretation": (
-                "NOT a conclusion, a measurement -- the gate is Task 12's decision. What "
-                "the numbers say: no exact tie occurs, but the smallest margin is very "
-                "tight in relative terms (min_relative_margin ~8.5e-6 of the winning "
-                "squared distance), and it is tight in the ACOUSTIC stages -- the "
-                "semantic stage's smallest margin is four orders of magnitude larger. "
-                "Weigh that against codebook_precision_divergence above: the port's "
-                "float32 codebook is not the same table as this oracle's bfloat16 one, "
-                "and that difference is not obviously smaller than the margin it has to "
-                "clear. Plain equality may well hold on these two measurements -- one "
-                "recording at two lengths, see measurement_coverage -- and not on a "
-                "different speaker."
+                "SETTLED, 2026-08-13, and not by these numbers. This script's minima are "
+                "extreme-tail order statistics over ~1,600 draws from one recording; the "
+                "question 'do flips occur' was answered by instantiating the converter's "
+                "f32 table and running it -- 792,112 frame-stage decisions, 0.624% "
+                "first-order flips, 4.04% of emitted codes. They occur, at every stage, "
+                "on 136 of 146 clips. The plain-equality gate on reference codes is "
+                "dropped (design spec section 6, erratum 2026-08-13); the gate is this "
+                "script's continuous artifacts at a bf16-derived tolerance plus "
+                "rvq_reconstruction.f32. The margin remains an artifact for a different "
+                "reason than it was collected: it bounds how far a near-tie flip can "
+                "move the reconstruction, which is what lets the continuous gate "
+                "separate a flip from a wrong stride."
+            ),
+            "superseded_note": (
+                "min_distance_margin and min_relative_margin are still measured and "
+                "published, but do NOT set a threshold from them. They describe one "
+                "recording at two lengths and they bound nothing about the port's own "
+                "arithmetic; the sweep cited above is the record."
             ),
         },
         # ------------------------------------------------------------------
@@ -1056,6 +1220,109 @@ def build_conventions(observed: dict) -> dict:
                 "same latents, which is why they differ."
             ),
             "rvq_distance_margin.f32": ["16 stages", "frames"],
+            "rvq_reconstruction.f32": ["2 branches", "frames", "256 projected"],
+            "rvq_reconstruction_note": (
+                "THE ARTIFACT THE 2026-08-13 ERRATUM ADDED TO THE GATE (design spec "
+                "section 6): the dequantized RVQ reconstruction, the sum of the selected "
+                "codebook rows in the 256-wide projected space. Index 0 is the semantic "
+                "branch (its one kept stage), index 1 the acoustic branch (its 15 kept "
+                "stages summed). They are stacked, NOT added: the two branches live in "
+                "different 256-wide projections and upstream never adds them at this "
+                "width -- each sums its own rows, applies its OWN output_proj to reach "
+                "512, and only then are the two added "
+                "(modeling_mimi.py:1289-1300 within a branch, :1347-1356 across them). "
+                "Adding them here would produce a vector no part of the reference "
+                "implementation computes. Frame-major within each branch, matching "
+                "rvq_residual_s*."
+            ),
+            "rvq_reconstruction_source": (
+                f"{MIMI_FILE}:1282-1284 -- the residual loop is `indices = "
+                "layer.encode(residual)`, `quantized = layer.decode(indices)`, `residual "
+                "= residual - quantized`. That `quantized` is the artifact's per-stage "
+                "term, captured where upstream produces it rather than re-derived from "
+                "embed[indices] beside it. layer.decode is "
+                "MimiVectorQuantization.decode (:1243-1246), which is the codebook "
+                "lookup at :1223-1225 (nn.functional.embedding over the same derived "
+                "`embed` table the argmin used) followed by a permute back to [B, C, T]. "
+                "No output_proj is involved: that applies only on the decode path "
+                "(:1298-1299), which the encoder half never runs."
+            ),
+            "rvq_reconstruction_scale": observed["reconstruction_scale"],
+            "rvq_reconstruction_flip_sensitivity": {
+                "measured": "2026-08-13, throwaway probe under the ignored build/, both "
+                            "materialized cases, arms A/C/B of the codebook-dtype design "
+                            "(_embed swapped for the converter's f32 table).",
+                "headline": (
+                    "READ THIS BEFORE SETTING A TOLERANCE ON rvq_reconstruction.f32. The "
+                    "erratum's premise -- 'a near-tie flip moves that vector by "
+                    "approximately the tie margin, small' -- does NOT hold for the "
+                    "reconstruction VECTOR. It holds for the residual NORM. A flip moves "
+                    "the vector by roughly the full distance between the two competing "
+                    "codebook rows, because the later RVQ stages do not absorb it."
+                ),
+                "vector_movement_on_flip_frames": {
+                    "definition": "|recon_C - recon_A| / |recon_A|, per frame, acoustic branch",
+                    "base_icl_en": {"frames_with_a_flip": 7, "of": 101,
+                                    "median": 1.290e-1, "max": 3.279e-1},
+                    "base_ref_min": {"frames_with_a_flip": 1, "of": 13,
+                                     "median": 9.074e-2, "max": 9.074e-2},
+                    "vs_codebook_row_separation": (
+                        "|dRecon| / |e_i - e_j| at the first flipped stage: median 1.21, "
+                        "range 0.57-1.60. The reconstruction moves by about ONE full row "
+                        "separation -- the deeper stages re-quantize but do not cancel it."
+                    ),
+                    "frames_with_no_flip": (
+                        "exactly 0.0 movement under arm C, on every such frame in both "
+                        "cases -- the residual chain is bit-identical wherever the codes "
+                        "agree, which is what makes the flip frames the whole story."
+                    ),
+                },
+                "norm_stability_on_flip_frames": {
+                    "definition": "relative change in ||target - recon||, the RVQ's own "
+                                  "reconstruction error, acoustic branch",
+                    "base_icl_en": {"median": 2.418e-2, "max": 5.482e-2},
+                    "base_ref_min": {"median": 7.479e-2, "max": 7.479e-2},
+                    "note": (
+                        "This is the quantity the tie margin actually bounds: at a "
+                        "near-tie the two candidates are nearly equidistant, so the error "
+                        "norm barely moves even though the vector does. Still 6-14x the "
+                        "bf16 scale, so it is not a bf16-tolerance quantity either -- but "
+                        "it is two orders of magnitude better behaved than the vector."
+                    ),
+                },
+                "compound_arm_B": {
+                    "definition": "f32 table throughout -- the closest available proxy for "
+                                  "a port's own table, on base-icl-en",
+                    "acoustic_relative": {"median": 3.178e-3, "p95": 1.923e-1, "max": 3.308e-1},
+                    "semantic_relative": {"median": 2.671e-3, "p95": 3.576e-3, "max": 4.776e-3},
+                    "shape": (
+                        "BIMODAL. The median frame sits at 3.2e-3, essentially bf16's own "
+                        "~3.9e-3 relative precision -- exactly what a bf16-derived "
+                        "tolerance expects. The flip frames sit ~100x above it. A "
+                        "max-deviation gate at bf16 scale is therefore NOT satisfiable by "
+                        "a correct port; a flip-aware one (compare where the codes agree, "
+                        "and record the flip frames and their deviation separately) or a "
+                        "percentile-based one is. Which of those to adopt is Task 12's "
+                        "call, not this script's."
+                    ),
+                    "semantic_branch_is_clean": (
+                        "The semantic branch flipped on 0 of 114 frames across both cases, "
+                        "and its arm-B deviation stays under 4.8e-3 everywhere -- inside "
+                        "bf16 scale. It is one stage over a wide-margin codebook. That "
+                        "makes it a usable strict gate on these clips, but the sweep "
+                        "behind the erratum measured it flipping at 0.382% over 49,507 "
+                        "frames, so it is not immune -- only rarer."
+                    ),
+                },
+                "this_is_a_floor": (
+                    "These numbers isolate the CODEBOOK. A real port also runs the SEANet "
+                    "stack and the encoder transformer in f32, which the erratum's own "
+                    "measurement shows is the larger contributor (794 vs 278 differing "
+                    "codes on base-icl-en). Expect more flip frames than the 7-of-101 "
+                    "here, and a non-zero baseline on the frames that do not flip. Do not "
+                    "treat any number above as a budget."
+                ),
+            },
             "codes.i32": ["frames", "16 quantizers"],
             "codes_note": (
                 "Post-slice and post-trim -- the same tensor "
@@ -1163,6 +1430,20 @@ def build_conventions(observed: dict) -> dict:
                 "--allow-unverified is passed -- in which case this flag is false and "
                 "result.json's status is 'unverified' rather than 'ok'. A check that is "
                 "skipped must not read like a check that passed."
+            ),
+            "rvq_reconstruction": (
+                "Captured from upstream's own dequantization inside the residual loop, "
+                "not re-derived from the codes afterwards, and then checked against the "
+                "chain that consumed it: summing the acoustic branch's 15 kept rows must "
+                "reproduce (residual entering acoustic stage 0 - residual entering "
+                "acoustic stage 15), because that difference is exactly what `residual = "
+                "residual - quantized` accumulates over those stages. Deviation and "
+                "scale are published in rvq_reconstruction_scale.telescoping_check; a "
+                "deviation above 1% of the reconstruction's own scale aborts the run "
+                "before any write. Exact equality is not the bar because the artifact "
+                "sums 15 bf16 terms in a different order than upstream's running "
+                "subtraction. The scale statistics themselves are re-derived from the "
+                "bytes read back off disk, not from the array they were written from."
             ),
         },
     }
@@ -1498,6 +1779,19 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
             f"{case.id}: RVQ stages {missing_stages} never fired -- the quantizer's "
             "structure changed"
         )
+    undecoded = [i for i in range(KEPT_QUANTIZER_COUNT) if "quantized" not in sink["rvq"][i]]
+    if undecoded:
+        raise SystemExit(
+            f"{case.id}: RVQ stages {undecoded} were quantized but never dequantized -- "
+            "the residual loop no longer calls layer.decode, and the reconstruction the "
+            "gate compares cannot be built from what upstream computed"
+        )
+    if "residual_after_last_kept" not in sink:
+        raise SystemExit(
+            f"{case.id}: the acoustic branch stopped before position "
+            f"{KEPT_QUANTIZER_COUNT}, so the reconstruction cannot be checked against "
+            "the residual chain"
+        )
 
     # The published padding arithmetic, run against upstream's own functions at
     # this case's real input lengths. Before any write: a padding convention
@@ -1551,6 +1845,11 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
                 f"{probe['branch']} stage {probe['stage']} -- the concatenated stage "
                 "order is not what this script recorded"
             )
+
+    # The dequantized reconstruction the erratum gates on, built from the rows
+    # upstream itself dequantized and checked against upstream's own residual
+    # chain -- before any write, like every other check here.
+    reconstruction, telescoping = build_reconstruction(sink, semantic_count)
 
     # Byte-identity of latents and downsample. Upstream hands the downsample
     # output straight to the quantizer (modeling_mimi.py:1467-1469), and
@@ -1659,7 +1958,22 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
     artifacts["rvq_distance_margin"] = write_f32(
         case_dir / "codec_encoder" / "rvq_distance_margin.f32", margins
     )
+    artifacts["rvq_reconstruction"] = write_f32(
+        case_dir / "codec_encoder" / "rvq_reconstruction.f32", reconstruction
+    )
     artifacts["codes"] = write_i32(case_dir / "codec_encoder" / "codes.i32", codes)
+
+    # Whatever is claimed about the new artifact is claimed about the bytes on
+    # disk, not about the array they were built from: read the file back and
+    # re-derive the published statistics from it.
+    written = np.fromfile(
+        case_dir / "codec_encoder" / "rvq_reconstruction.f32", dtype=np.float32
+    ).reshape(reconstruction.shape)
+    if not np.array_equal(written, reconstruction):
+        raise SystemExit(
+            f"{case.id}: rvq_reconstruction.f32 does not read back as what was computed"
+        )
+    reconstruction_scale = describe_reconstruction(written, sink, semantic_count, telescoping)
 
     observed = dict(static)
     observed.update({
@@ -1695,6 +2009,7 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
         },
         "latents_equals_downsample": latents_equals_downsample,
         "extra_padding_check": padding_check,
+        "reconstruction_scale": reconstruction_scale,
         "codes_verified_against_base_oracle": codes_verified,
         "base_oracle_reference_codes": str(existing) if codes_verified else None,
     })

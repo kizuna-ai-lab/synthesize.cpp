@@ -142,7 +142,64 @@ struct SynthesisRequest {
     // (weights.cpp), so a Profile prepared against this same Model always
     // satisfies it.
     const std::vector<float> * x_vector = nullptr;
+
+    // The transcript-assisted (ICL) reference, which is an ADDITION to
+    // `x_vector` rather than an alternative to it: D5 marks the `[1024]`
+    // speaker embedding `yes` in both of its columns, so an ICL request
+    // carries all four of these fields and an x-vector request carries only
+    // the one above. Borrowed, not owned -- the same shape `replay_codes`
+    // uses -- from the `std::shared_ptr` payload of the
+    // `synth_voice_profile_t` the caller supplied, whose lifetime the handle
+    // owns for the whole synthesis call (src/synthesize.cpp's dispatch).
+    //
+    // `reference_codes` is `code_group_count * reference_frames` values in
+    // codec-encoder-host.h's settled GROUP-FASTEST order, exactly as
+    // IclProfile::codes stores it: there is no transpose at this boundary or
+    // any other. `reference_text_ids` is what upstream calls `ref_id` -- the
+    // reference transcript through its own turn wrapper and slice, NOT the
+    // target text, which travels in `token_ids` as always.
+    //
+    // The four move together. A half-present set is refused by
+    // validate_speaker_sources below rather than synthesized, because it is
+    // the state that produces a plausible-sounding wrong prompt: dropping the
+    // codes alone leaves the reference transcript prefixed to the target text
+    // with no audio to align it against, and dropping the ids alone shifts
+    // the whole two-track alignment by however many ids went missing.
+    const std::vector<int32_t> * reference_codes    = nullptr;
+    const std::vector<int32_t> * reference_text_ids = nullptr;
+    uint64_t                     reference_frames   = 0;
 };
+
+// The request's speaker-source fields, checked as a SET rather than one at a
+// time, before `run_synthesis` builds anything from them.
+//
+// A free function rather than a private step of run_synthesis because
+// run_synthesis needs a `Model`, a `Model` needs a real 2.5 GB GGUF, and a
+// `unit` test may not load one -- so every rule below would otherwise be
+// reachable only from an integration test, and the half-present ICL states
+// would be reachable from NO test at all: src/synthesize.cpp's dispatch sets
+// the ICL fields as a group, so nothing downstream of it can construct one.
+// tests/qwen3_tts_xvector_length_test.cpp already records that missing
+// harness as the reason its own two cases must be integration tests; this
+// signature is the harness, for these rules.
+//
+// Rules, in the order they are checked:
+//   * a preset Voice and an external embedding are mutually exclusive -- a
+//     request carries one speaker source or the other, never both;
+//   * an `x_vector` must be exactly `hparams.talker.hidden_size` floats;
+//   * the ICL fields are all-present or all-absent, and `reference_text_ids`
+//     present-but-empty counts as absent-but-claimed, i.e. half;
+//   * ICL requires an `x_vector`, because upstream inserts the speaker
+//     embedding in both modes (D5).
+//
+// NOT re-checked here: `reference_codes->size() == reference_frames *
+// code_group_count`, and the per-code table bounds. Those belong to
+// talker-host.cpp's reference_is_well_formed, which build_talker_prompt calls
+// on every ICL request; duplicating them here would create a pair of checks
+// where deleting either one alone changes nothing observable.
+//
+// Returns SYNTH_ERR_INVALID_ARG for any violation, SYNTH_OK otherwise.
+synth_status_t validate_speaker_sources(const HParams & hparams, const SynthesisRequest & request);
 
 // The talker attends over the whole utterance, so its cache grows with it: at
 // 28 layers, 8 key/value heads and a head width of 128, one frame costs 229 kB.

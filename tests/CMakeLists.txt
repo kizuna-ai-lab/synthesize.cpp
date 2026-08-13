@@ -169,6 +169,7 @@ synth_add_unit_test(synthesize-qwen3-tts-decoder-layer-test qwen3_tts_decoder_la
 synth_add_unit_test(synthesize-qwen3-tts-talker-test qwen3_tts_talker_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-prompt-slot-test qwen3_tts_prompt_slot_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-icl-prompt-test qwen3_tts_icl_prompt_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-icl-request-test qwen3_tts_icl_request_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-codec-ops-test qwen3_tts_codec_ops_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-codec-test qwen3_tts_codec_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-codec-encoder-test qwen3_tts_codec_encoder_test.cpp)
@@ -1058,10 +1059,12 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                 ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-clone-real)
         set_tests_properties(synthesize-qwen3-tts-clone-real PROPERTIES
             LABELS "integration;qwen3-tts;abi;golden"
-            # Four full autoregressive synthesis passes over a two-word
-            # sentence (assertions 2/3, 4, and 5) plus two ECAPA-TDNN
-            # encode passes (assertion 1's direct call and assertion 4's
-            # second Profile) against the real ~2.5 GB Base package -- the
+            # Five full autoregressive synthesis passes over a two-word
+            # sentence (assertions 2/3, 4, 5 and 7) plus three ECAPA-TDNN
+            # encode passes (assertion 1's direct call, assertion 4's second
+            # Profile, and assertion 7's ICL Profile, which also runs one
+            # codec-encoder pass over the 8-second clip) against the real
+            # ~2.5 GB Base package -- the
             # same per-call budget tests/qwen3_tts_base_load_real.cpp's own
             # TIMEOUT reasoning already sizes for a single such call, times
             # roughly four, with headroom for the sanitizer build.

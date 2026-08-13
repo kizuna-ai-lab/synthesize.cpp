@@ -30,7 +30,11 @@
 //      original Profile produced -- what makes the Serialized Profile a real
 //      artifact rather than a round-trippable blob;
 //   6. a Profile presented to a second Loaded Model refuses with
-//      SYNTH_ERR_UNSUPPORTED_VOICE and writes no audio.
+//      SYNTH_ERR_UNSUPPORTED_VOICE and writes no audio;
+//   7. a transcript-assisted (ICL) Profile prepared from the SAME clip and
+//      its own real transcript synthesizes finite, non-silent PCM that
+//      differs from (2)'s -- Plan 3's Task 11, and the only place the real
+//      clip's real transcript is used for a real synthesis.
 //
 // Only one real reference clip is materialized in this tree
 // (SYNTH_QWEN3_TTS_REFERENCE_WAV, models/qwen3-tts-reference-audio/clone.wav
@@ -567,6 +571,60 @@ int main(int argc, char ** argv) {
     SYNTH_TEST_CHECK(channels_reloaded == channels_first && rate_reloaded == rate_first);
     SYNTH_TEST_CHECK(pcm_reloaded.size() == pcm_first.size());
     SYNTH_TEST_CHECK(std::memcmp(pcm_reloaded.data(), pcm_first.data(), pcm_first.size() * sizeof(float)) == 0);
+
+    // --- Assertion 7: the transcript-assisted (ICL) mode, from the same clip
+    // and the same nominal request. The transcript is the pinned clip's own,
+    // as recorded in tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.
+    // manifest.json for every reference case in it -- the one place in this
+    // tree where an ICL synthesis runs against a reference whose transcript
+    // is actually what the reference says.
+    //
+    // The assertion is the DIFFERENCE, not the success. Both Profiles come
+    // from the same 24 kHz PCM, so create_icl_profile ran the same
+    // encode_speaker_reference over the same samples and both carry
+    // bit-identical x-vectors; kText and kSeed are unchanged from assertion
+    // 2. The reference block -- the codes and the reference text ids the
+    // dispatch passes only in the ICL arm -- is therefore the only thing left
+    // that can move a sample. A dispatch that dropped either field would
+    // reproduce pcm_first exactly.
+    //
+    // What this does NOT claim: that the ICL clone resembles the speaker more
+    // closely than the x-vector one does. That is a Quality Evaluation claim
+    // (ADR 0017, unrun), and this file's own header already states the same
+    // limit for assertion 4.
+    {
+        const char * kTranscript =
+            "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.";
+        synth_voice_reference_t icl_reference =
+            make_reference(pcm, sample_rate, capabilities.reference_target_channel_count);
+        icl_reference.transcript      = kTranscript;
+        icl_reference.transcript_size = std::strlen(kTranscript);
+
+        const synth_voice_reference_params_t icl_params  = make_params(&icl_reference, 1, nullptr);
+        synth_voice_profile_t *              icl_profile = nullptr;
+        SYNTH_TEST_CHECK(synth_voice_profile_create_from_reference(model, &icl_params, &icl_profile) == SYNTH_OK);
+        SYNTH_TEST_CHECK(icl_profile != nullptr);
+
+        std::vector<float> pcm_icl;
+        uint32_t           channels_icl = 0;
+        uint32_t           rate_icl     = 0;
+        SYNTH_TEST_CHECK(synthesize_pcm(model, icl_profile, kText, kSeed, pcm_icl, channels_icl, rate_icl));
+        SYNTH_TEST_CHECK(!pcm_icl.empty());
+        SYNTH_TEST_CHECK(channels_icl == channels_first && rate_icl == rate_first);
+        float max_abs_icl = 0.0f;
+        for (float sample : pcm_icl) {
+            SYNTH_TEST_CHECK(std::isfinite(sample));
+            max_abs_icl = std::max(max_abs_icl, std::fabs(sample));
+        }
+        SYNTH_TEST_CHECK(max_abs_icl > kNonSilentThreshold);
+
+        const size_t compared_length = std::min(pcm_icl.size(), pcm_first.size());
+        const bool   differs = pcm_icl.size() != pcm_first.size() ||
+                               std::memcmp(pcm_icl.data(), pcm_first.data(), compared_length * sizeof(float)) != 0;
+        SYNTH_TEST_CHECK(differs);
+
+        synth_voice_profile_free(icl_profile);
+    }
 
     // --- Assertion 6: a Profile presented to a second Loaded Model refuses
     // with SYNTH_ERR_UNSUPPORTED_VOICE and writes no audio. The second Model

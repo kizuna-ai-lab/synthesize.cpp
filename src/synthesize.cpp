@@ -1072,18 +1072,6 @@ synth_status_t synth_synthesize(synth_context_t *          context,
                 }
                 const auto & clone =
                     *static_cast<const synth::qwen3tts::XVectorProfile *>(prepared.voice_profile->payload.get());
-                // Plan 3 adds CloneMode::Icl; until then, D4 (this plan's own
-                // ruling) fixes the mode at preparation and every Profile this
-                // family can create or load carries CloneMode::XVector, so
-                // this is unreachable today -- guarded now so that landing
-                // Icl does not also have to remember to add this refusal. A
-                // Profile whose payload says otherwise is refused rather than
-                // silently downgraded to the mode it did not ask for.
-                if (clone.mode != synth::qwen3tts::CloneMode::XVector) {
-                    emit_diagnostic(prepared.diagnostics, SYNTH_ERR_UNSUPPORTED_VOICE, "synthesis.voice_unsupported",
-                                    "this build supports x-vector Voice Profiles only");
-                    return SYNTH_ERR_UNSUPPORTED_VOICE;
-                }
                 // request.voice_id stays empty above, so model.cpp's own
                 // external/voice_id mutual-exclusivity check is always
                 // satisfied here. The guarantee is
@@ -1093,7 +1081,60 @@ synth_status_t synth_synthesize(synth_context_t *          context,
                 // variant's empty Preset Voice Catalog, which happens to hold
                 // as well and would stop holding the day a Base-shaped
                 // package shipped a catalog.
+                //
+                // BOTH modes carry the x-vector. D5's table marks the [1024]
+                // speaker embedding `yes` in both of its columns, because
+                // upstream inserts it regardless of mode, which is why
+                // IclProfile carries a whole XVectorProfile as its first
+                // member rather than an alternative to one -- and why this
+                // assignment sits above the switch instead of inside its
+                // XVector arm.
                 family_request.x_vector = &clone.x_vector;
+                switch (clone.mode) {
+                    case synth::qwen3tts::CloneMode::XVector:
+                        break;
+                    case synth::qwen3tts::CloneMode::Icl:
+                        {
+                            // The same pointer, read back at its real type. The
+                            // `clone` reference above IS this object's `speaker`
+                            // member -- IclProfile is standard-layout with
+                            // XVectorProfile first, and profile.h holds that
+                            // property with static_asserts -- so the two casts
+                            // name one object and `clone.x_vector` above is
+                            // `icl.speaker.x_vector`.
+                            //
+                            // Borrowed, not copied: `prepared.voice_profile`
+                            // owns the shared_ptr payload for the whole call, the
+                            // same lifetime `family_request.replay_codes` already
+                            // relies on. `groups` is not passed -- the family
+                            // checks the grid against its own
+                            // talker.code_group_count in
+                            // talker-host.cpp's reference_is_well_formed, and a
+                            // second copy of that number here would be a check
+                            // that could not fail on its own.
+                            const auto & icl = *static_cast<const synth::qwen3tts::IclProfile *>(
+                                prepared.voice_profile->payload.get());
+                            family_request.reference_codes    = &icl.codes;
+                            family_request.reference_text_ids = &icl.reference_text_ids;
+                            family_request.reference_frames   = icl.frames;
+                            break;
+                        }
+                    default:
+                        // Unreachable for every Profile this family can
+                        // create or load today -- both enumerators are
+                        // handled above -- and kept for the same reason its
+                        // predecessor was kept through Plan 2: a third clone
+                        // mode added later must be refused by name rather
+                        // than silently downgraded to whichever arm happens
+                        // to fall through. The message names both supported
+                        // modes because the ABI has exactly one voice-error
+                        // status and the diagnostic text is the only thing
+                        // separating this refusal from the two above it.
+                        emit_diagnostic(prepared.diagnostics, SYNTH_ERR_UNSUPPORTED_VOICE,
+                                        "synthesis.voice_unsupported",
+                                        "this build supports x-vector and transcript-assisted Voice Profiles only");
+                        return SYNTH_ERR_UNSUPPORTED_VOICE;
+                }
             }
             family_request.seed              = actual_seed;
             family_request.threads           = context->threads;

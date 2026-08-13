@@ -160,7 +160,7 @@ synth_status_t create_x_vector_profile(const HParams &                         h
 // ProfileFamilyTag::Qwen3TtsClone covers both of this family's clone modes,
 // and voice-profile-handle.h's own comment says why: "the payload's own
 // CloneMode discriminates". The consumer that acts on that
-// (src/synthesize.cpp:1073-1086) reads the type-erased `shared_ptr<void>`
+// (src/synthesize.cpp:1073-1136) reads the type-erased `shared_ptr<void>`
 // payload back as an `XVectorProfile *` and inspects `.mode` BEFORE it knows
 // which mode it has -- so for an ICL payload that read has to be well-defined
 // rather than merely usually-right. It is: both structs are standard-layout,

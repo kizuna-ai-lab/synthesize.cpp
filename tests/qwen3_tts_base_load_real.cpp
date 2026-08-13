@@ -46,6 +46,10 @@
 // src/voice-profile.cpp's ICL arm has no `unit`-layer coverage at all and
 // check_transcript_selects_icl_mode below is where it gets covered.
 //
+// Plan 3's Task 11 (not the Plan 2 task of the same number named below) then
+// made an ICL Profile SYNTHESIZE rather than be refused, and that check grew
+// the assertion that separates the two modes by their audio.
+//
 // Task 11 adds a fourth thing only this tier proves: that a Profile prepared
 // against the real Base package actually SYNTHESIZES -- src/synthesize.cpp's
 // Qwen3Tts branch refused every non-null `prepared.voice_profile`
@@ -60,6 +64,7 @@
 #include "synthesize.h"
 #include "test-assert.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -293,12 +298,22 @@ synth_status_t create_with(synth_model_t *                            model,
 }
 
 // Presents `profile` to a synthesis request on `context` and reports what came
-// back. Used twice below with two Profiles that differ ONLY in their clone
-// mode.
+// back, including the PCM: check_transcript_selects_icl_mode below compares
+// two Profiles' audio, and "it returned SYNTH_OK" is exactly the assertion a
+// dispatch that dropped the ICL fields would also satisfy.
+//
+// The seed is FIXED rather than left at whatever synth_request_init defaults
+// to, because that comparison is only meaningful between two requests drawing
+// from the same stream. A seed of SYNTH_SEED_RANDOM would make two runs of
+// the SAME Profile differ and the comparison vacuous.
+constexpr uint64_t kSeed = 7;
+
 int synthesize_with(synth_context_t *       context,
                     synth_voice_profile_t * profile,
                     SeenDiagnostic &        diagnostic,
-                    synth_status_t &        out_status) {
+                    synth_status_t &        out_status,
+                    std::vector<float> *    out_pcm        = nullptr,
+                    uint64_t                max_output_pcm = 0) {
     synth_diagnostic_sink_t sink;
     synth_diagnostic_sink_init(&sink, sizeof(sink));
     sink.emit      = record_diagnostic;
@@ -306,11 +321,13 @@ int synthesize_with(synth_context_t *       context,
 
     synth_request_t request;
     synth_request_init(&request, sizeof(request));
-    request.input_kind    = SYNTH_INPUT_TEXT_UTF8;
-    request.input_data    = kText;
-    request.input_count   = std::strlen(kText);
-    request.voice_profile = profile;
-    request.diagnostics   = &sink;
+    request.input_kind        = SYNTH_INPUT_TEXT_UTF8;
+    request.input_data        = kText;
+    request.input_count       = std::strlen(kText);
+    request.voice_profile     = profile;
+    request.diagnostics       = &sink;
+    request.seed              = kSeed;
+    request.max_output_frames = max_output_pcm;
 
     synth_audio_buffer_t * audio = nullptr;
     synth_result_t         result;
@@ -318,6 +335,10 @@ int synthesize_with(synth_context_t *       context,
     out_status = synth_synthesize_to_buffer(context, &request, &audio, &result);
     if (out_status == SYNTH_OK) {
         SYNTH_TEST_CHECK(audio != nullptr && audio->frame_count > 0);
+        if (out_pcm != nullptr) {
+            const uint64_t sample_count = audio->frame_count * audio->channel_count;
+            out_pcm->assign(audio->samples, audio->samples + sample_count);
+        }
     } else {
         SYNTH_TEST_CHECK(audio == nullptr);
     }
@@ -355,17 +376,21 @@ int synthesize_with(synth_context_t *       context,
 //     payload. The ICL envelope is also strictly the larger of the two: it
 //     carries the [16, T] reference codes and the reference text ids on top of
 //     everything the x-vector envelope carries.
-//   * SYNTHESIZE. src/synthesize.cpp refuses a payload whose CloneMode is not
-//     XVector, by message. Plan 2 wrote that guard against a mode that could
-//     not yet exist and its own comment says so ("unreachable today"); this is
-//     the first test anywhere to reach it. The message is what identifies it:
-//     the ABI defines exactly one voice-error status and this file already
-//     asserts `synthesis.voice_unsupported` for two OTHER refusals, so the
-//     code alone would not tell the three apart.
-//
-// Task 11 turns that refusal into the ICL prompt and will rewrite the second
-// half of this check with it; until it does, the refusal is what the runtime
-// honestly reports.
+//   * SYNTHESIZE. src/synthesize.cpp dispatches on the CloneMode it finds in
+//     the payload: XVector passes the embedding alone, Icl passes the
+//     reference codes and reference text ids alongside it, and anything else
+//     is refused by name. Plan 2 wrote that site as a flat refusal against a
+//     mode that could not yet exist; Task 11 turned it into this dispatch.
+//     What identifies the ICL arm here is NOT that synthesis succeeded -- a
+//     dispatch that dropped the two ICL fields and fell through to the
+//     x-vector arm would also return SYNTH_OK -- but that the audio DIFFERS
+//     from the x-vector Profile's own audio for the same text and the same
+//     seed. Both Profiles are prepared from the same tone, so their x-vectors
+//     are identical floats; the reference block in the prompt is the only
+//     thing left that can move a sample. That comparison is this check's
+//     load-bearing assertion, and dropping either
+//     `family_request.reference_codes` or `family_request.reference_text_ids`
+//     at the seam is what it catches.
 int check_transcript_selects_icl_mode(synth_model_t *                            model,
                                       synth_context_t *                          context,
                                       const synth_voice_profile_capabilities_t & capabilities) {
@@ -391,32 +416,74 @@ int check_transcript_selects_icl_mode(synth_model_t *                           
     SYNTH_TEST_CHECK(round_trip(model, icl_profile, icl_envelope, icl_reloaded) == 0);
     SYNTH_TEST_CHECK(icl_envelope.size() > x_vector_envelope.size());
 
-    // The contrast: the x-vector Profile synthesizes, and BOTH ICL Profiles --
-    // the freshly created one and the one reloaded from its own envelope --
-    // are refused BY MODE. The reloaded ICL Profile is what proves the
-    // envelope carried the kind across the round trip rather than the reader
-    // defaulting to a mode.
+    // The contrast: both modes reach a synthesis, and the two runs are not the
+    // same run.
     //
     // Only ONE x-vector synthesis runs here, deliberately: the second one this
     // check used to do added a full graph pass to prove something
     // check_profile_synthesizes and check_reference_profile_round_trip already
     // prove between them (that an x-vector Profile synthesizes, and that a
     // reloaded one loads). The contrast needs one side of it, not two.
+    //
+    // EVERY run below is capped, and the cap is what keeps this check cheap
+    // enough to belong here. 76,800 output PCM frames is about forty codec
+    // frames at this package's 1,920-sample hop -- comfortably past where the
+    // x-vector run stops on its own, and a bound on the ICL runs, which on
+    // THIS reference do not stop at all. See the loop below for why that is a
+    // property of the reference and not of the wiring.
+    constexpr uint64_t kFrameCap = 76800;
+    std::vector<float> x_vector_pcm;
+    synth_status_t     x_vector_status = SYNTH_OK;
     {
         SeenDiagnostic diagnostic;
-        synth_status_t status = SYNTH_OK;
-        SYNTH_TEST_CHECK(synthesize_with(context, x_vector_profile, diagnostic, status) == 0);
-        SYNTH_TEST_CHECK(status == SYNTH_OK);
+        SYNTH_TEST_CHECK(
+            synthesize_with(context, x_vector_profile, diagnostic, x_vector_status, &x_vector_pcm, kFrameCap) == 0);
+        // Stopped on its own stop code, inside the cap: measured at 14 codec
+        // frames on 2026-08-14 against the BF16 Base package on CPU.
+        SYNTH_TEST_CHECK(x_vector_status == SYNTH_OK);
+        SYNTH_TEST_CHECK(!x_vector_pcm.empty());
     }
+    // BOTH ICL Profiles -- the freshly created one and the one reloaded from
+    // its own envelope -- reach the ICL prompt rather than the mode refusal
+    // that stood here through Plan 2, and neither reproduces the x-vector
+    // run. The reloaded one is what proves the envelope carried the reference
+    // across the round trip rather than the reader defaulting to a mode: its
+    // codes and ids were reconstructed from bytes, and had they not been it
+    // would land back on the x-vector run below.
+    //
+    // MEASURED, 2026-08-14, BF16 Base on CPU: the x-vector run stops at 14
+    // codec frames and the ICL runs do not terminate at all -- they reach the
+    // cap and come back SYNTH_ERR_OUTPUT_LIMIT with no audio. That is a
+    // property of THIS reference, not of the wiring: the reference here is
+    // one second of a 220 Hz tone paired with the transcript "hello there",
+    // which is as far out of distribution as a reference gets, and the same
+    // code path on the real pinned clip with its real transcript terminates
+    // normally and produces audio (tests/qwen3_tts_clone_real.cpp, assertion
+    // 7). The assertion below is therefore "the two runs are not the same
+    // run" rather than "SYNTH_ERR_OUTPUT_LIMIT": what has to hold is that the
+    // reference block reached the prompt, not that an out-of-distribution
+    // reference degenerates in one particular way.
     for (synth_voice_profile_t * profile : { icl_profile, icl_reloaded }) {
-        SeenDiagnostic diagnostic;
-        synth_status_t status = SYNTH_OK;
-        SYNTH_TEST_CHECK(synthesize_with(context, profile, diagnostic, status) == 0);
-        SYNTH_TEST_CHECK(status == SYNTH_ERR_UNSUPPORTED_VOICE);
-        SYNTH_TEST_CHECK(diagnostic.seen);
-        SYNTH_TEST_CHECK(diagnostic.status == SYNTH_ERR_UNSUPPORTED_VOICE);
-        SYNTH_TEST_CHECK(diagnostic.code == "synthesis.voice_unsupported");
-        SYNTH_TEST_CHECK(diagnostic.message == "this build supports x-vector Voice Profiles only");
+        SeenDiagnostic     diagnostic;
+        synth_status_t     status = SYNTH_OK;
+        std::vector<float> icl_pcm;
+        SYNTH_TEST_CHECK(synthesize_with(context, profile, diagnostic, status, &icl_pcm, kFrameCap) == 0);
+        // Not refused BY MODE any more, which is the flip this task landed.
+        // Checked by code as well as by status, because the ABI defines
+        // exactly one voice-error status and this file asserts
+        // "synthesis.voice_unsupported" for two OTHER refusals.
+        SYNTH_TEST_CHECK(status != SYNTH_ERR_UNSUPPORTED_VOICE);
+        SYNTH_TEST_CHECK(!(diagnostic.seen && diagnostic.code == "synthesis.voice_unsupported"));
+        // Same text, same seed, same reference clip, and therefore the same
+        // x-vector floats in both Profiles -- create_icl_profile runs the same
+        // encode_speaker_reference over the same samples. The reference block
+        // is the only thing left that can move a sample, so an ICL run that
+        // matched the x-vector run would mean the block never reached the
+        // prompt.
+        const size_t compared = std::min(icl_pcm.size(), x_vector_pcm.size());
+        const bool   same_run = status == x_vector_status && icl_pcm.size() == x_vector_pcm.size() &&
+                                std::memcmp(icl_pcm.data(), x_vector_pcm.data(), compared * sizeof(float)) == 0;
+        SYNTH_TEST_CHECK(!same_run);
     }
 
     synth_voice_profile_free(icl_reloaded);

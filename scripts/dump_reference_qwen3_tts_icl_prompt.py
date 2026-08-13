@@ -88,6 +88,7 @@ import argparse
 import ast
 import dataclasses
 import hashlib
+import importlib.metadata
 import inspect
 import json
 import pathlib
@@ -161,6 +162,34 @@ def to_numpy(value: Any, dtype: Optional[torch.dtype] = None) -> np.ndarray:
 # --------------------------------------------------------------------------
 # source location: every citation this script emits is found, not remembered
 # --------------------------------------------------------------------------
+
+def installed_upstream() -> dict:
+    """Read the pinned qwen-tts repository and commit out of the installed wheel.
+
+    uv records a VCS install's resolved commit in the distribution's
+    ``direct_url.json`` (PEP 610), so the revision the artifacts claim is the
+    revision that actually produced them. A missing or non-VCS record is a hard
+    failure rather than a fallback to a remembered string: an artifact naming the
+    wrong upstream commit is worse than one that was never written.
+    """
+    try:
+        raw = importlib.metadata.distribution("qwen-tts").read_text("direct_url.json")
+    except importlib.metadata.PackageNotFoundError as error:  # pragma: no cover - env guard
+        raise SystemExit(f"qwen-tts is not installed in this environment: {error}")
+    if raw is None:
+        raise SystemExit(
+            "the installed qwen-tts has no direct_url.json, so its upstream commit cannot be "
+            "read; the artifacts would have to name a revision nothing verified"
+        )
+    record = json.loads(raw)
+    vcs = record.get("vcs_info") or {}
+    if not vcs.get("commit_id"):
+        raise SystemExit(
+            f"the installed qwen-tts was not installed from a VCS ({record.get('url')!r}), so "
+            "there is no commit to record"
+        )
+    return {"repository": record["url"], "revision": vcs["commit_id"]}
+
 
 def function_ast(func) -> tuple[pathlib.Path, ast.FunctionDef]:
     """Parse one function out of the *installed* package, in file line numbers.
@@ -330,7 +359,6 @@ def describe_icl_prompt_source(func) -> dict:
             "codec_track": statement_span(codec_stmts),
             "lens": statement_span(lens_stmts),
             "alignment": (inner.lineno, inner.end_lineno),
-            "signature": (fn.lineno, max(a.end_lineno for a in fn.args.args)),
         },
     }
 
@@ -420,7 +448,6 @@ def describe_generate_source(func) -> dict:
         },
         "text_id_slice": text_slice,
         "ref_id_slice": ref_slice,
-        "speaker_precedes_icl": True,
     }
 
 
@@ -680,8 +707,16 @@ def load_reference_audio(source: str, trim_seconds: Optional[float]) -> tuple[np
 # --------------------------------------------------------------------------
 
 def gate(checks: list[dict], name: str, ok: bool, detail: str) -> None:
-    """Record a check and abort on failure, before anything is written."""
-    checks.append({"check": name, "ok": bool(ok), "detail": detail})
+    """Record a check and abort on failure, before anything is written.
+
+    ``detail`` is the sentence printed when the check *fails*, so it is recorded
+    under ``on_failure`` rather than as a bare ``detail``. Storing a failure
+    sentence next to ``"ok": true`` reads as an assertion that the thing failed:
+    the sum gate's message says the tracks "do not reproduce the block", which is
+    the opposite of what a passing run means. Downstream tasks are written from
+    these files, so the key has to say which outcome the sentence describes.
+    """
+    checks.append({"check": name, "ok": bool(ok), "on_failure": detail})
     if not ok:
         raise SystemExit(f"{name}: {detail}")
 
@@ -800,6 +835,16 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
     else:
         arm_from_length = None
 
+    # Ordered before the agreement gate on purpose. `arm_from_identity` can only
+    # ever be pad or truncate, so a streaming return would trip the agreement
+    # gate first and be reported as "the three readings disagree" -- a
+    # misdiagnosis of a case that is really "this script does not describe that
+    # layout". Checking the one reading that can actually say `stream` first is
+    # what makes this gate reachable rather than decorative.
+    gate(checks, "arm_is_not_streaming", arm_from_line != ARM_STREAM,
+         f"generate_icl_prompt returned from its streaming arm (line "
+         f"{sink['return_line']}); these artifacts describe the non-streaming layout only, "
+         "in which the two tracks are summed rather than concatenated")
     gate(checks, "arm_observations_agree",
          arm_from_line == arm_from_identity == arm_from_length,
          f"the three independent readings of the alignment arm disagree: return line "
@@ -807,9 +852,6 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
          f"{arm_from_identity!r}, text_embed length {text_local_positions} says "
          f"{arm_from_length!r} (T1={t1}, T2={t2})")
     arm = arm_from_line
-    gate(checks, "arm_is_not_streaming", arm != ARM_STREAM,
-         f"generate_icl_prompt took its streaming arm; these artifacts describe the "
-         "non-streaming layout only")
 
     # ---- the transcribed shapes, made executable --------------------------
     gate(checks, "T1_is_ref_plus_target_plus_eos",
@@ -930,7 +972,11 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
         gate(checks, "trailing_ends_with_tts_eos", trailing_ends_with_tts_eos,
              "the truncate arm's trailing schedule does not end with tts_eos_embed, so the "
              "recorded token ids do not describe it")
-        if trailing_positions > 2:
+        # Runs whenever the schedule has a head at all -- a 2-position tail
+        # leaves one head position, and one position is enough to separate the
+        # aligned ids from a shift. The threshold used to be 2 and would have
+        # skipped that case silently.
+        if trailing_positions > 1:
             # Corroborating the recorded ids cannot be a bitwise check, and the
             # reason is worth stating: `text_projection` is a matmul, and running
             # it over a short slice of ids reassociates differently from running
@@ -959,7 +1005,11 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
 
             aligned = deviation(t2)
             shifted = min(deviation(t2 - 1), deviation(t2 + 1))
-            trailing_id_margin = {"aligned_max_abs": aligned, "nearest_shift_max_abs": shifted}
+            trailing_id_margin = {
+                "aligned_max_abs": aligned,
+                "nearest_shift_max_abs": shifted,
+                "head_positions": trailing_positions - 1,
+            }
             gate(checks, "trailing_head_is_those_token_ids",
                  aligned * 4.0 < shifted,
                  f"projecting the recorded trailing token ids lands {aligned:.4g} from the "
@@ -968,6 +1018,10 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
     else:
         gate(checks, "trailing_length_is_one", trailing_positions == 1,
              f"the pad arm's trailing schedule is {trailing_positions} positions, expected 1")
+        trailing_id_margin = {
+            "skipped": "the pad arm's schedule is a single tts_pad_embed, so it carries no "
+                       "token ids to corroborate",
+        }
 
     # ---- the arrays that will be written, checked as f32 ------------------
     text_f32 = to_numpy(text_track, torch.float32)
@@ -977,12 +1031,20 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
     ref_ids_i32 = to_numpy(ref_id).astype(np.int32)
     target_ids_i32 = to_numpy(text_id).astype(np.int32)
 
+    # These three catch infinities and nothing else, which is worth stating
+    # because the bitwise gates below look like they subsume them and only half
+    # do. `torch.equal` returns False for NaN (NaN != NaN elementwise), so a NaN
+    # anywhere in a track already fails the sum gates -- but it returns True for
+    # inf, and inf + finite = inf on both sides of the sum, so an infinity would
+    # pass every bitwise check in this script. `trailing` has no sum gate at all.
     for name, array in (("text_track", text_f32), ("codec_track", codec_f32),
                         ("trailing", trailing_f32)):
         gate(checks, f"{name}_is_finite", bool(np.isfinite(array).all()),
-             f"{name} holds non-finite values")
+             f"{name} holds non-finite values (an infinity survives every bitwise gate here, "
+             "because inf == inf)")
 
-    def sum_round_trips(text: np.ndarray, codec: np.ndarray, block: np.ndarray) -> tuple[bool, float]:
+    def sum_round_trips(text: np.ndarray, codec: np.ndarray,
+                        block: np.ndarray) -> tuple[bool, dict]:
         """Does f32(text) + f32(codec), rounded back to the model dtype, equal the block?
 
         The written files are float32 widenings of bfloat16 tensors, so a
@@ -990,17 +1052,33 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
         rounding away from the block upstream computed. Rounding the f32 sum back
         through the model's dtype is the exact statement, and it is the statement
         Tasks 6, 7 and 12 can rely on.
-        """
-        summed = torch.from_numpy(text) + torch.from_numpy(codec)
-        rounded = summed.to(icl.dtype).to(torch.float32).numpy()
-        deviation = float(np.abs(summed.numpy() - block).max()) if block.size else 0.0
-        return bool(np.array_equal(rounded, block)), deviation
 
-    exact, deviation = sum_round_trips(text_f32, codec_f32, icl_f32)
+        The deviations returned alongside it are measured here rather than
+        derived so that the bound published in the artifacts is a number this run
+        observed. A raw float32 comparison against ``icl_embed.f32`` -- the
+        obvious thing a downstream test does -- has to allow this much.
+        """
+        summed = (torch.from_numpy(text) + torch.from_numpy(codec)).numpy()
+        rounded = torch.from_numpy(summed).to(icl.dtype).to(torch.float32).numpy()
+        absolute = np.abs(summed - block)
+        nonzero = block != 0
+        stats = {
+            "max_abs": float(absolute.max()) if block.size else 0.0,
+            "max_rel": float((absolute[nonzero] / np.abs(block[nonzero])).max())
+                       if bool(nonzero.any()) else 0.0,
+            # A purely relative bound is unusable where the block is exactly
+            # zero, so the residue there is published separately.
+            "zero_positions": int((~nonzero).sum()),
+            "max_abs_where_block_is_zero": float(absolute[~nonzero].max())
+                                           if bool((~nonzero).any()) else 0.0,
+        }
+        return bool(np.array_equal(rounded, block)), stats
+
+    exact, sum_stats = sum_round_trips(text_f32, codec_f32, icl_f32)
     gate(checks, "written_tracks_sum_to_the_block",
          exact,
          f"adding the float32 tracks and rounding back to {icl.dtype} does not reproduce the "
-         f"block (max float32 deviation {deviation:.3e})")
+         f"block (max float32 deviation {sum_stats['max_abs']:.3e})")
 
     # ---- the sibling artifact the Base dumper already wrote ---------------
     icl_embed_path = case_dir / "prompt" / "icl_embed.f32"
@@ -1017,13 +1095,52 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
          f"{icl_embed_path} ({on_disk.size} floats) bitwise. The prompt is deterministic, so "
          "a mismatch means the two runs saw different inputs -- not a tolerance question.")
 
+    # ---- everything that can still raise, resolved before the first write ---
+    # `span_source` reads the file again and `build_conventions` resolves spans
+    # the startup pass did not; doing both here means the only work left after
+    # the first byte is written is writing the rest of the bytes.
+    executed_return_source = span_source(
+        icl_source["path"], sink["return_line"], sink["return_line"]).strip()
+    numerics = {
+        "storage_dtype": "float32",
+        "model_dtype": str(icl.dtype).replace("torch.", ""),
+        "rule": "text_track.f32 + codec_track.f32 reproduces icl_embed.f32 only after the "
+                "float32 sum is rounded back to the model dtype. Compare "
+                "round_to_bfloat16(text_track + codec_track) against icl_embed for a bitwise "
+                "result; a raw float32 comparison must carry the tolerance below.",
+        "why": "The three files are float32 widenings of bfloat16 tensors, so adding two of "
+               "them in float32 produces the exact real sum, while upstream computed the sum "
+               "in bfloat16 and rounded once. The gap is one bfloat16 rounding, not an error.",
+        "raw_f32_sum_max_abs_deviation": sum_stats["max_abs"],
+        "raw_f32_sum_max_rel_deviation": sum_stats["max_rel"],
+        "raw_f32_sum_max_rel_deviation_as_power_of_two": (
+            round(float(np.log2(sum_stats["max_rel"])), 6) if sum_stats["max_rel"] > 0 else None
+        ),
+        "block_zero_positions": sum_stats["zero_positions"],
+        "raw_f32_sum_max_abs_deviation_where_block_is_zero":
+            sum_stats["max_abs_where_block_is_zero"],
+        "tolerance_note": "The relative figure is bfloat16's unit roundoff, 2**-8 == "
+                          "0.00390625 -- NOT the 2**-9 half-ulp figure, which a raw float32 "
+                          "comparison will exceed. Measured on this case's own bytes, not "
+                          "derived. Where the block is exactly zero a relative bound does not "
+                          "apply; use the absolute figure recorded beside it.",
+    }
+    conventions = build_conventions(icl_source, generate_source, model, case,
+                                    {"T1": t1, "T2": t2, "branch": arm,
+                                     "trailing_positions": trailing_positions},
+                                    numerics)
+
     # ---- write, then verify the bytes on disk -----------------------------
+    # Every write lives inside one guard, including the two JSON files. Leaving
+    # them outside it was a real hole: a raise between the binaries and
+    # prompt_conventions.json would have left five binaries and alignment.json on
+    # disk -- a complete, usable, and by then unverified artifact set.
     prompt_dir = case_dir / "prompt"
     written: list[pathlib.Path] = []
 
-    def record(name: str, writer, array) -> dict:
+    def record(name: str, writer, payload) -> dict:
         path = prompt_dir / name
-        info = writer(path, array)
+        info = writer(path, payload)
         written.append(path)
         return info
 
@@ -1035,19 +1152,43 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
             "ref_text_ids": record("ref_text_ids.i32", write_i32, ref_ids_i32),
             "target_text_ids": record("target_text_ids.i32", write_i32, target_ids_i32),
         }
-        reread_exact, reread_deviation = sum_round_trips(
+        reread_exact, reread_stats = sum_round_trips(
             np.fromfile(prompt_dir / "text_track.f32", dtype=np.float32),
             np.fromfile(prompt_dir / "codec_track.f32", dtype=np.float32),
             on_disk,
         )
         gate(checks, "bytes_on_disk_sum_to_icl_embed_f32", reread_exact,
              f"re-reading the written tracks and adding them does not reproduce "
-             f"{icl_embed_path} (max float32 deviation {reread_deviation:.3e})")
+             f"{icl_embed_path} (max float32 deviation {reread_stats['max_abs']:.3e})")
+        alignment = build_alignment(
+            case, t1, t2, arm, ref_frames, trailing_positions, hidden, numerics,
+            sink, executed_return_source, arm_from_line, arm_from_identity, arm_from_length,
+            text_local_positions, trailing_token_ids, trailing_ends_with_tts_eos,
+            trailing_id_margin, prefix_positions, assembled, speaker_slot,
+            ref_ids_i32, target_ids_i32, (ref_lo, ref_hi), (text_lo, text_hi),
+            artifacts, ref_info, checks, started)
+        record("alignment.json", write_json_artifact, alignment)
+        record("prompt_conventions.json", write_json_artifact, conventions)
     except BaseException:
         for path in written:
             path.unlink(missing_ok=True)
         raise
+    return {"id": case.id, "alignment": alignment}
 
+
+def write_json_artifact(path: pathlib.Path, payload: dict) -> dict:
+    write_json(path, payload)
+    return {"path": path.name}
+
+
+def build_alignment(case, t1, t2, arm, ref_frames, trailing_positions, hidden, numerics,
+                    sink, executed_return_source, arm_from_line, arm_from_identity,
+                    arm_from_length, text_local_positions, trailing_token_ids,
+                    trailing_ends_with_tts_eos, trailing_id_margin, prefix_positions,
+                    assembled, speaker_slot, ref_ids_i32, target_ids_i32, ref_slice,
+                    text_slice, artifacts, ref_info, checks, started) -> dict:
+    ref_lo, ref_hi = ref_slice
+    text_lo, text_hi = text_slice
     alignment = {
         "schema": ALIGNMENT_SCHEMA,
         "case": case.id,
@@ -1061,8 +1202,7 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
             "note": "The arm is read out of the return statement that executed, never "
                     "recomputed from T1 and T2. Two further independent signals must agree.",
             "executed_return_line": sink["return_line"],
-            "executed_return_source": span_source(
-                icl_source["path"], sink["return_line"], sink["return_line"]).strip(),
+            "executed_return_source": executed_return_source,
             "arm_from_return_line": arm_from_line,
             "arm_from_trailing_object_identity": arm_from_identity,
             "arm_from_text_embed_length": arm_from_length,
@@ -1104,17 +1244,15 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
             "trim_seconds": case.trim_seconds,
             "reference_audio": ref_info,
         },
+        "numerics": numerics,
         "checks": checks,
         "wall_seconds": round(time.time() - started, 3),
     }
-    write_json(prompt_dir / "alignment.json", alignment)
-    write_json(prompt_dir / "prompt_conventions.json",
-               build_conventions(icl_source, generate_source, model, case, alignment))
-    return {"id": case.id, "alignment": alignment}
+    return alignment
 
 
 def build_conventions(icl_source: dict, generate_source: dict, model, case: RunCase,
-                      alignment: dict) -> dict:
+                      observed: dict, numerics: dict) -> dict:
     """The transcription, with every span extracted from the installed source."""
     icl_path = icl_source["path"]
     gen_path = generate_source["path"]
@@ -1136,9 +1274,12 @@ def build_conventions(icl_source: dict, generate_source: dict, model, case: RunC
                 "claim was checked -- 'executed' means this script re-ran upstream's own code "
                 "and compared bitwise, 'observed' means it was read out of a running frame or "
                 "the assembled prompt, 'ast' means the structure itself was asserted.",
+        "numerics": numerics,
         "upstream": {
-            "repository": "https://github.com/QwenLM/Qwen3-TTS",
-            "revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
+            # Read out of the installed distribution rather than written down.
+            # A hardcoded revision is the one fact that can go stale silently in
+            # a file whose whole premise is that nothing here is hardcoded.
+            **installed_upstream(),
             "files": [
                 str(icl_path.relative_to(icl_path.parents[3])),
                 str(model_path.relative_to(model_path.parents[2])),
@@ -1214,13 +1355,7 @@ def build_conventions(icl_source: dict, generate_source: dict, model, case: RunC
         "target_turn_wrapper": method_citation(
             "_build_assistant_text",
             "The target text's wrapper, tokenized whole and sliced [3:-5]."),
-        "observed": {
-            "case": case.id,
-            "T1": alignment["T1"],
-            "T2": alignment["T2"],
-            "branch": alignment["branch"],
-            "trailing_positions": alignment["trailing_positions"],
-        },
+        "observed": {"case": case.id, **observed},
     }
 
 

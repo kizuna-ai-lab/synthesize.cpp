@@ -405,12 +405,15 @@ bool resolve_codec(Resolver & resolver, const HParams & hparams, CodecDecoderWei
 bool resolve_codec_encoder_quantizer(Resolver &                 resolver,
                                      const std::string &        prefix,
                                      const CodecDecoderParams & p,
-                                     uint32_t                   codebook_count) {
-    const int64_t inner = p.codebook_dim / 2;
-    resolver.find(prefix + "input_proj.weight", { 1, p.codebook_dim, inner });
-    resolver.find(prefix + "output_proj.weight", { 1, inner, p.codebook_dim });
+                                     uint32_t                   codebook_count,
+                                     CodecQuantizerWeights &    quantizer) {
+    const int64_t inner   = p.codebook_dim / 2;
+    quantizer.input_proj  = resolver.find(prefix + "input_proj.weight", { 1, p.codebook_dim, inner });
+    quantizer.output_proj = resolver.find(prefix + "output_proj.weight", { 1, inner, p.codebook_dim });
+    quantizer.codebooks.assign(codebook_count, nullptr);
     for (uint32_t index = 0; index < codebook_count; ++index) {
-        resolver.find(index_of(prefix + "layers.", index, ".codebook"), { inner, p.codebook_size });
+        quantizer.codebooks[index] =
+            resolver.find(index_of(prefix + "layers.", index, ".codebook"), { inner, p.codebook_size });
     }
     return resolver.ok();
 }
@@ -507,33 +510,32 @@ bool resolve_speaker_encoder(Resolver & resolver, const SpeakerEncoderParams & p
 // decoder's, so those are literals rather than derived. See this task's
 // report for the exact per-tensor shapes this was checked against.
 //
-// Still Plan 1's discard-into-scratch shape: every resolved pointer below is
-// written into a local that nothing reads, on purpose, because no graph
-// reaches this encoder yet. Do not read the sibling resolve_speaker_encoder
-// above as evidence that this one was converted too -- Plan 3 owns that, and
-// its signature will need to change the same way this task changed
-// resolve_speaker_encoder's.
-bool resolve_codec_encoder(Resolver & resolver, const HParams & hparams) {
+// Plan 1 resolved these 161 names into a scratch struct nobody read, because
+// no graph reached this encoder; Plan 3's ICL path is that graph, so every
+// pointer below is kept in `target`. There is deliberately no scratch local
+// left here: an unused one is what the next resolver would copy.
+bool resolve_codec_encoder(Resolver & resolver, const HParams & hparams, CodecEncoderWeights & target) {
     const CodecDecoderParams & p = hparams.codec.decoder;
 
-    Conv1dWeights scratch;
-    resolver.conv("codec.encoder.encoder.layers.0.conv", 7, 1, kCodecEncoderInitialChannels, scratch);
+    resolver.conv("codec.encoder.encoder.layers.0.conv", 7, 1, kCodecEncoderInitialChannels, target.stem);
 
     // A flat ModuleList: one narrow-then-wide residual bottleneck followed by
     // a strided convolution per downsampling stage, at positions 1, 3, 4, 6,
     // 7, 9, 10, 12 (each stage's activation-only position, 2/5/8/11, carries
     // no tensor and is skipped).
+    target.stages.assign(kCodecEncoderStageWidths.size(), CodecEncoderStage{});
     int64_t width = kCodecEncoderInitialChannels;
     for (size_t stage = 0; stage < kCodecEncoderStageWidths.size(); ++stage) {
-        const size_t      residual_index = 3 * stage + 1;
-        const std::string base           = index_of("codec.encoder.encoder.layers.", residual_index, ".block.");
-        const int64_t     narrower       = width / 2;
-        resolver.conv(base + "1.conv", 3, width, narrower, scratch);
-        resolver.conv(base + "3.conv", 1, narrower, width, scratch);
+        CodecEncoderStage & into           = target.stages[stage];
+        const size_t        residual_index = 3 * stage + 1;
+        const std::string   base           = index_of("codec.encoder.encoder.layers.", residual_index, ".block.");
+        const int64_t       narrower       = width / 2;
+        resolver.conv(base + "1.conv", 3, width, narrower, into.bottleneck_in);
+        resolver.conv(base + "3.conv", 1, narrower, width, into.bottleneck_out);
 
         const size_t downsample_index = 3 * stage + 3;
         resolver.conv(index_of("codec.encoder.encoder.layers.", downsample_index, ".conv"),
-                      kCodecEncoderDownsampleKernels[stage], width, kCodecEncoderStageWidths[stage], scratch);
+                      kCodecEncoderDownsampleKernels[stage], width, kCodecEncoderStageWidths[stage], into.stride_conv);
         width = kCodecEncoderStageWidths[stage];
     }
 
@@ -542,9 +544,9 @@ bool resolve_codec_encoder(Resolver & resolver, const HParams & hparams) {
     // projection between them the way the decoder's pre_transformer has one,
     // so that width is not free to choose independently.
     const int64_t hidden = int64_t(p.codebook_dim);
-    resolver.conv("codec.encoder.encoder.layers.14.conv", 3, width, hidden, scratch);
-    resolver.find("codec.encoder.downsample.conv.weight", { kCodecEncoderDownsampleConvKernel, hidden, hidden },
-                  Role::Matrix);
+    resolver.conv("codec.encoder.encoder.layers.14.conv", 3, width, hidden, target.tail);
+    target.downsample = resolver.find("codec.encoder.downsample.conv.weight",
+                                      { kCodecEncoderDownsampleConvKernel, hidden, hidden }, Role::Matrix);
 
     // Standard LayerNorm (weight and bias) and a plain two-layer MLP, unlike
     // the decoder's RMSNorm and gated MLP -- this transformer is not a copy of
@@ -552,20 +554,21 @@ bool resolve_codec_encoder(Resolver & resolver, const HParams & hparams) {
     // idea. The MLP's 4x expansion mirrors the ratio ConvNeXt already uses
     // elsewhere in this file; the attention keeps the projection width
     // unchanged rather than narrowing through a GQA-style kv split.
-    const int64_t    intermediate = 4 * hidden;
-    LayerNormWeights norm_scratch;
+    const int64_t intermediate = 4 * hidden;
+    target.layers.assign(kCodecEncoderTransformerLayerCount, CodecEncoderTransformerLayerWeights{});
     for (uint32_t layer = 0; layer < kCodecEncoderTransformerLayerCount; ++layer) {
-        const std::string base = index_of("codec.encoder.enc_transformer.layers.", layer, ".");
-        resolver.layer_norm(base + "input_layernorm", hidden, norm_scratch);
-        resolver.find(base + "self_attn.q_proj.weight", { hidden, hidden }, Role::Matrix);
-        resolver.find(base + "self_attn.k_proj.weight", { hidden, hidden }, Role::Matrix);
-        resolver.find(base + "self_attn.v_proj.weight", { hidden, hidden }, Role::Matrix);
-        resolver.find(base + "self_attn.o_proj.weight", { hidden, hidden }, Role::Matrix);
-        resolver.find(base + "self_attn_scale.scale", { hidden });
-        resolver.layer_norm(base + "post_attn_norm", hidden, norm_scratch);
-        resolver.find(base + "mlp.fc1.weight", { hidden, intermediate }, Role::Matrix);
-        resolver.find(base + "mlp.fc2.weight", { intermediate, hidden }, Role::Matrix);
-        resolver.find(base + "mlp_scale.scale", { hidden });
+        const std::string                     base = index_of("codec.encoder.enc_transformer.layers.", layer, ".");
+        CodecEncoderTransformerLayerWeights & into = target.layers[layer];
+        resolver.layer_norm(base + "input_layernorm", hidden, into.input_layernorm);
+        into.q_proj                = resolver.find(base + "self_attn.q_proj.weight", { hidden, hidden }, Role::Matrix);
+        into.k_proj                = resolver.find(base + "self_attn.k_proj.weight", { hidden, hidden }, Role::Matrix);
+        into.v_proj                = resolver.find(base + "self_attn.v_proj.weight", { hidden, hidden }, Role::Matrix);
+        into.o_proj                = resolver.find(base + "self_attn.o_proj.weight", { hidden, hidden }, Role::Matrix);
+        into.self_attn_layer_scale = resolver.find(base + "self_attn_scale.scale", { hidden });
+        resolver.layer_norm(base + "post_attn_norm", hidden, into.post_attention_layernorm);
+        into.fc1             = resolver.find(base + "mlp.fc1.weight", { hidden, intermediate }, Role::Matrix);
+        into.fc2             = resolver.find(base + "mlp.fc2.weight", { intermediate, hidden }, Role::Matrix);
+        into.mlp_layer_scale = resolver.find(base + "mlp_scale.scale", { hidden });
     }
 
     // The encoder's RVQ cascades to 32 stages (1 semantic + 31 acoustic) so it
@@ -573,9 +576,10 @@ bool resolve_codec_encoder(Resolver & resolver, const HParams & hparams) {
     // decoder) only ever reads the semantic stage plus the first
     // `quantizer_count - semantic_quantizer_count` acoustic ones. Nothing here
     // is deduplicated, so every stage the checkpoint carries is catalogued.
-    resolve_codec_encoder_quantizer(resolver, "codec.encoder.quantizer.semantic_rvq.", p, p.semantic_quantizer_count);
+    resolve_codec_encoder_quantizer(resolver, "codec.encoder.quantizer.semantic_rvq.", p, p.semantic_quantizer_count,
+                                    target.semantic);
     resolve_codec_encoder_quantizer(resolver, "codec.encoder.quantizer.acoustic_rvq.", p,
-                                    kCodecEncoderAcousticQuantizerCount);
+                                    kCodecEncoderAcousticQuantizerCount, target.acoustic);
     return resolver.ok();
 }
 
@@ -649,22 +653,23 @@ synth_status_t build_model_weights(ggml_context *  context,
         return SYNTH_ERR_GGUF;
     }
     // Base carries the ECAPA-TDNN speaker encoder and the codec's encoder half
-    // alongside the decoder. The speaker encoder's pointers are kept in
-    // weights.speaker_encoder for speaker-encoder.cpp's graph (Plan 2); the
-    // codec encoder still has no graph (Plan 3 adds one), so it is resolved
-    // here only to bring its names into the sweep below -- a package that
-    // carries either uncatalogued is refused, not silently accepted.
+    // alongside the decoder. Both keep their pointers -- the speaker encoder's
+    // in weights.speaker_encoder for speaker-encoder.cpp's graph (Plan 2), the
+    // codec encoder's in weights.codec_encoder for the ICL path's (Plan 3) --
+    // and both are swept below, so a package that carries either uncatalogued
+    // is refused rather than silently accepted.
     if (hparams.has_speaker_encoder &&
         (!resolve_speaker_encoder(resolver, hparams.speaker_encoder, weights.speaker_encoder) ||
-         !resolve_codec_encoder(resolver, hparams))) {
+         !resolve_codec_encoder(resolver, hparams, weights.codec_encoder))) {
         return SYNTH_ERR_GGUF;
     }
     if (codec_context != nullptr) {
         // The twin context holds `codec.decoder.*` and nothing else, which is
         // exactly the set resolve_codec looks up -- the two must stay in step,
         // so widening either one means widening both. The encoder half above
-        // is resolved against the package only, and stays on the CPU until a
-        // graph exists that reads it.
+        // is resolved against the package only and so is never rebound to a
+        // twin: `weights.codec_encoder` points at package tensors, which is
+        // what keeps it on the CPU.
         Resolver twins(codec_context, hparams);
         if (!resolve_codec(twins, hparams, weights.codec)) {
             return SYNTH_ERR_GGUF;

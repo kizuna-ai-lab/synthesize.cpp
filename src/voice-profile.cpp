@@ -539,6 +539,19 @@ synth_status_t create_qwen3_tts_profile_from_reference(const synth_model_t *    
         }
         const synth_status_t tokenize_status =
             model->qwen3_tts->tokenize_reference_transcript(transcript_text, reference_text_ids);
+        // UNCOVERED AND UNREACHABLE FROM THE PUBLIC SEAM, stated rather than
+        // left for the next reader to wonder about. With the blank check
+        // above in front of it, the three statuses this can carry all need a
+        // broken package rather than a hostile caller: SYNTH_ERR_TEXT_FRONTEND
+        // for a Model whose reference frontend failed to build (load would
+        // have failed first) or whose frontend is not this family's byte-level
+        // BPE (bpe.cpp's own degenerate-token-count guard), and
+        // SYNTH_ERR_INPUT_TOO_LONG for a transcript over `max_input_tokens` --
+        // which this package sets far above the largest transcript a
+        // 720,000-frame reference clip could plausibly carry. No test reaches
+        // it; it exists so that a tokenizer failure is NAMED instead of
+        // surfacing as a bare status, the same reason the two refusals it sits
+        // between are named.
         if (tokenize_status != SYNTH_OK) {
             emit_diagnostic(diagnostics, tokenize_status, "voice_profile.transcript_untokenizable",
                             "the reference transcript could not be tokenized against this package's text "
@@ -579,6 +592,19 @@ synth_status_t create_qwen3_tts_profile_from_reference(const synth_model_t *    
     // names instead would make the same string legal in a Reference Audio
     // descriptor and illegal in the synthesis request it clones for, which is
     // why this mirrors synthesis-request.cpp's list and not the package's.
+    //
+    // MUTUAL MASKING, ONE-DIRECTIONAL, NAMED HERE THE WAY THE BLANK-TRANSCRIPT
+    // CHECK ABOVE NAMES ITS OWN. The shape check's partner is the
+    // `declared_language` call immediately below it: that is an exact,
+    // case-insensitive match against the published list, so NO malformed tag
+    // can pass it either. Delete the shape check alone and `"e"` or `"en_US"`
+    // are still refused -- only the STATUS moves, from SYNTH_ERR_INVALID_ARG
+    // to SYNTH_ERR_UNSUPPORTED_LANGUAGE. A test asserting merely "not
+    // SYNTH_OK" here would be unable to fail on that deletion; the covering
+    // check is load-bearing only because it asserts the exact status.
+    // The masking does NOT run the other way -- deleting `declared_language`
+    // lets `"english"` and `"zz-ZZ"` through as SYNTH_OK, which any assertion
+    // catches -- so only this half needs the warning.
     std::string language_text;
     if (language_tag != nullptr && language_size != 0) {
         if (!valid_bcp47_shape(language_tag, static_cast<size_t>(language_size))) {

@@ -123,11 +123,21 @@ int check_capabilities(synth_model_t * model, synth_voice_profile_capabilities_t
     SYNTH_TEST_CHECK(std::string(capabilities.profile_schema, size_t(capabilities.profile_schema_size)) ==
                      "qwen3-tts-voice-clone");
     SYNTH_TEST_CHECK(capabilities.profile_schema_version == 1);
-    bool compatibility_id_nonzero = false;
+    // BY VALUE, not merely nonzero. "The Compatibility ID is unchanged" is one
+    // of the things this task promised about the package's declared contract,
+    // and a nonzero check cannot tell an unchanged id from a different one.
+    // The literal is the shipped Base package's, the same value the converter
+    // asserts on the other side of the pipeline
+    // (tests/python/test_convert_qwen3_tts.py) -- so the two ends of the
+    // contract are now pinned to the same 32 bytes rather than each to its own
+    // idea of them.
+    static const char kHexDigits[] = "0123456789abcdef";
+    std::string       compatibility_id_hex;
     for (uint8_t byte : capabilities.profile_compatibility_id) {
-        compatibility_id_nonzero = compatibility_id_nonzero || (byte != 0);
+        compatibility_id_hex.push_back(kHexDigits[byte >> 4]);
+        compatibility_id_hex.push_back(kHexDigits[byte & 0x0F]);
     }
-    SYNTH_TEST_CHECK(compatibility_id_nonzero);
+    SYNTH_TEST_CHECK(compatibility_id_hex == "34d4de22a329b6bc8347cb952b6fa16513320012628598ab59743679cc16806e");
     return 0;
 }
 
@@ -201,6 +211,32 @@ synth_voice_reference_params_t make_reference_params(const synth_voice_reference
     return params;
 }
 
+// Serializes `profile` and loads the bytes straight back, handing the caller
+// the envelope itself so it can be compared against another kind's -- by size,
+// or by whether a particular string reached it.
+int round_trip(synth_model_t *          model,
+               synth_voice_profile_t *  profile,
+               std::string &            out_envelope,
+               synth_voice_profile_t *& out_reloaded) {
+    synth_voice_profile_serialize_params_t serialize_params;
+    synth_voice_profile_serialize_params_init(&serialize_params, sizeof(serialize_params));
+    synth_byte_buffer_t * bytes = nullptr;
+    SYNTH_TEST_CHECK(synth_voice_profile_serialize(profile, &serialize_params, &bytes) == SYNTH_OK);
+    SYNTH_TEST_CHECK(bytes != nullptr && bytes->data != nullptr && bytes->data_size > 0);
+    out_envelope.assign(reinterpret_cast<const char *>(bytes->data), size_t(bytes->data_size));
+
+    synth_voice_profile_load_params_t load_params;
+    synth_voice_profile_load_params_init(&load_params, sizeof(load_params));
+    load_params.data      = bytes->data;
+    load_params.data_size = bytes->data_size;
+
+    out_reloaded = nullptr;
+    SYNTH_TEST_CHECK(synth_voice_profile_load_from_memory(model, &load_params, &out_reloaded) == SYNTH_OK);
+    SYNTH_TEST_CHECK(out_reloaded != nullptr);
+    synth_byte_buffer_free(bytes);
+    return 0;
+}
+
 // Create -> serialize -> load -> the loaded Profile is usable. Every one of
 // these calls returned SYNTH_ERR_UNSUPPORTED_VOICE before this task.
 int check_reference_profile_round_trip(synth_model_t * model, const synth_voice_profile_capabilities_t & capabilities) {
@@ -214,24 +250,11 @@ int check_reference_profile_round_trip(synth_model_t * model, const synth_voice_
     SYNTH_TEST_CHECK(synth_voice_profile_create_from_reference(model, &params, &profile) == SYNTH_OK);
     SYNTH_TEST_CHECK(profile != nullptr);
 
-    synth_voice_profile_serialize_params_t serialize_params;
-    synth_voice_profile_serialize_params_init(&serialize_params, sizeof(serialize_params));
-    synth_byte_buffer_t * bytes = nullptr;
-    SYNTH_TEST_CHECK(synth_voice_profile_serialize(profile, &serialize_params, &bytes) == SYNTH_OK);
-    SYNTH_TEST_CHECK(bytes != nullptr);
-    SYNTH_TEST_CHECK(bytes->data != nullptr && bytes->data_size > 0);
-
-    synth_voice_profile_load_params_t load_params;
-    synth_voice_profile_load_params_init(&load_params, sizeof(load_params));
-    load_params.data      = bytes->data;
-    load_params.data_size = bytes->data_size;
-
+    std::string             envelope;
     synth_voice_profile_t * reloaded = nullptr;
-    SYNTH_TEST_CHECK(synth_voice_profile_load_from_memory(model, &load_params, &reloaded) == SYNTH_OK);
-    SYNTH_TEST_CHECK(reloaded != nullptr);
+    SYNTH_TEST_CHECK(round_trip(model, profile, envelope, reloaded) == 0);
 
     synth_voice_profile_free(reloaded);
-    synth_byte_buffer_free(bytes);
     synth_voice_profile_free(profile);
     return 0;
 }
@@ -302,31 +325,6 @@ int synthesize_with(synth_context_t *       context,
     return 0;
 }
 
-// Serializes `profile` and loads the bytes straight back. Returns the envelope
-// size so the caller can compare two kinds.
-int round_trip(synth_model_t *          model,
-               synth_voice_profile_t *  profile,
-               uint64_t &               out_size,
-               synth_voice_profile_t *& out_reloaded) {
-    synth_voice_profile_serialize_params_t serialize_params;
-    synth_voice_profile_serialize_params_init(&serialize_params, sizeof(serialize_params));
-    synth_byte_buffer_t * bytes = nullptr;
-    SYNTH_TEST_CHECK(synth_voice_profile_serialize(profile, &serialize_params, &bytes) == SYNTH_OK);
-    SYNTH_TEST_CHECK(bytes != nullptr && bytes->data != nullptr && bytes->data_size > 0);
-    out_size = bytes->data_size;
-
-    synth_voice_profile_load_params_t load_params;
-    synth_voice_profile_load_params_init(&load_params, sizeof(load_params));
-    load_params.data      = bytes->data;
-    load_params.data_size = bytes->data_size;
-
-    out_reloaded = nullptr;
-    SYNTH_TEST_CHECK(synth_voice_profile_load_from_memory(model, &load_params, &out_reloaded) == SYNTH_OK);
-    SYNTH_TEST_CHECK(out_reloaded != nullptr);
-    synth_byte_buffer_free(bytes);
-    return 0;
-}
-
 // THE MODE SELECTOR, at the seam that publishes it (Task 10). This is the
 // assertion Task 8's unit test could not make: selecting the mode needs a live
 // Model, because the transcript has to be tokenized against the BPE tables
@@ -385,22 +383,29 @@ int check_transcript_selects_icl_mode(synth_model_t *                           
     // than tripping a diagnostic.
     SYNTH_TEST_CHECK(!icl_diagnostic.seen);
 
-    uint64_t                x_vector_size     = 0;
-    uint64_t                icl_size          = 0;
+    std::string             x_vector_envelope;
+    std::string             icl_envelope;
     synth_voice_profile_t * x_vector_reloaded = nullptr;
     synth_voice_profile_t * icl_reloaded      = nullptr;
-    SYNTH_TEST_CHECK(round_trip(model, x_vector_profile, x_vector_size, x_vector_reloaded) == 0);
-    SYNTH_TEST_CHECK(round_trip(model, icl_profile, icl_size, icl_reloaded) == 0);
-    SYNTH_TEST_CHECK(icl_size > x_vector_size);
+    SYNTH_TEST_CHECK(round_trip(model, x_vector_profile, x_vector_envelope, x_vector_reloaded) == 0);
+    SYNTH_TEST_CHECK(round_trip(model, icl_profile, icl_envelope, icl_reloaded) == 0);
+    SYNTH_TEST_CHECK(icl_envelope.size() > x_vector_envelope.size());
 
-    // The contrast, on the four Profiles: the two x-vector ones synthesize,
-    // the two ICL ones are refused BY MODE. The reloaded pair is what proves
-    // the envelope carried the kind across the round trip rather than the
-    // reader defaulting to one of them.
-    for (synth_voice_profile_t * profile : { x_vector_profile, x_vector_reloaded }) {
+    // The contrast: the x-vector Profile synthesizes, and BOTH ICL Profiles --
+    // the freshly created one and the one reloaded from its own envelope --
+    // are refused BY MODE. The reloaded ICL Profile is what proves the
+    // envelope carried the kind across the round trip rather than the reader
+    // defaulting to a mode.
+    //
+    // Only ONE x-vector synthesis runs here, deliberately: the second one this
+    // check used to do added a full graph pass to prove something
+    // check_profile_synthesizes and check_reference_profile_round_trip already
+    // prove between them (that an x-vector Profile synthesizes, and that a
+    // reloaded one loads). The contrast needs one side of it, not two.
+    {
         SeenDiagnostic diagnostic;
         synth_status_t status = SYNTH_OK;
-        SYNTH_TEST_CHECK(synthesize_with(context, profile, diagnostic, status) == 0);
+        SYNTH_TEST_CHECK(synthesize_with(context, x_vector_profile, diagnostic, status) == 0);
         SYNTH_TEST_CHECK(status == SYNTH_OK);
     }
     for (synth_voice_profile_t * profile : { icl_profile, icl_reloaded }) {
@@ -502,46 +507,111 @@ int check_reference_language_validated(synth_model_t * model, const synth_voice_
     SYNTH_TEST_CHECK(declares_en);
     SYNTH_TEST_CHECK(!declares_english);
 
-    // Accepted: declared, and it survives the round trip our own reader would
-    // otherwise have to refuse.
+    // ACCEPTED, AND IT ARRIVES. Validating a tag and then dropping it would
+    // pass every status assertion in this function, so the accepted case
+    // asserts that the tag reaches the prepared payload -- otherwise the
+    // dispatch's `language_text` argument to both preparers could be reverted
+    // to `std::string()` with the whole suite still green, which is exactly
+    // the "unable to fail" shape this task spent its inversions hunting.
+    //
+    // A Profile handle is opaque and has no public language accessor, so the
+    // observation is the SERIALIZED ENVELOPE, which is a documented public
+    // contract: profile.cpp's set_common_metadata writes
+    // `synthesize.voice_profile.language_tag` for BOTH kinds, so a tag that
+    // reached the payload is in those bytes and one that did not is not.
+    // Asserted DIFFERENTIALLY against an otherwise identical Profile created
+    // with no tag, which is what rules out the needle having come from
+    // somewhere else in the envelope -- and the needle is "en-US" rather than
+    // "en" precisely because "en" occurs in `general.architecture` and in
+    // other key names, while "en-US" occurs nowhere but the value.
+    //
+    // "en-US" is accepted by `declared_language`'s regional-fallback arm: the
+    // primary subtag "en" is declared, and this family publishes every entry
+    // with SYNTH_LANGUAGE_REGIONAL_FALLBACK (src/synthesize.cpp).
+    //
+    // BOTH ARMS OF THE DISPATCH ARE COVERED, separately, because the
+    // pass-through was added to both: reverting either one alone must fail
+    // here.
     {
-        SeenDiagnostic          diagnostic;
-        synth_voice_profile_t * profile = nullptr;
-        SYNTH_TEST_CHECK(create_with(model, capabilities, nullptr, "en", diagnostic, profile) == SYNTH_OK);
-        SYNTH_TEST_CHECK(profile != nullptr);
-        SYNTH_TEST_CHECK(!diagnostic.seen);
+        const char * const kTag = "en-US";
 
-        uint64_t                size     = 0;
-        synth_voice_profile_t * reloaded = nullptr;
-        SYNTH_TEST_CHECK(round_trip(model, profile, size, reloaded) == 0);
-        synth_voice_profile_free(reloaded);
-        synth_voice_profile_free(profile);
+        SeenDiagnostic          plain_diagnostic;
+        synth_voice_profile_t * plain = nullptr;
+        SYNTH_TEST_CHECK(create_with(model, capabilities, nullptr, nullptr, plain_diagnostic, plain) == SYNTH_OK);
+        SYNTH_TEST_CHECK(plain != nullptr);
+
+        SeenDiagnostic          tagged_diagnostic;
+        synth_voice_profile_t * tagged = nullptr;
+        SYNTH_TEST_CHECK(create_with(model, capabilities, nullptr, kTag, tagged_diagnostic, tagged) == SYNTH_OK);
+        SYNTH_TEST_CHECK(tagged != nullptr);
+        SYNTH_TEST_CHECK(!tagged_diagnostic.seen);
+
+        SeenDiagnostic          icl_diagnostic;
+        synth_voice_profile_t * tagged_icl = nullptr;
+        SYNTH_TEST_CHECK(create_with(model, capabilities, "hello there", kTag, icl_diagnostic, tagged_icl) == SYNTH_OK);
+        SYNTH_TEST_CHECK(tagged_icl != nullptr);
+
+        std::string             plain_envelope;
+        std::string             tagged_envelope;
+        std::string             tagged_icl_envelope;
+        synth_voice_profile_t * plain_reloaded      = nullptr;
+        synth_voice_profile_t * tagged_reloaded     = nullptr;
+        synth_voice_profile_t * tagged_icl_reloaded = nullptr;
+        SYNTH_TEST_CHECK(round_trip(model, plain, plain_envelope, plain_reloaded) == 0);
+        SYNTH_TEST_CHECK(round_trip(model, tagged, tagged_envelope, tagged_reloaded) == 0);
+        SYNTH_TEST_CHECK(round_trip(model, tagged_icl, tagged_icl_envelope, tagged_icl_reloaded) == 0);
+
+        // The x-vector arm, differentially.
+        SYNTH_TEST_CHECK(plain_envelope.find(kTag) == std::string::npos);
+        SYNTH_TEST_CHECK(tagged_envelope.find(kTag) != std::string::npos);
+        // The ICL arm, which carries the tag through IclProfile::speaker.
+        SYNTH_TEST_CHECK(tagged_icl_envelope.find(kTag) != std::string::npos);
+
+        synth_voice_profile_free(tagged_icl_reloaded);
+        synth_voice_profile_free(tagged_reloaded);
+        synth_voice_profile_free(plain_reloaded);
+        synth_voice_profile_free(tagged_icl);
+        synth_voice_profile_free(tagged);
+        synth_voice_profile_free(plain);
     }
 
     // Well-formed, undeclared. "english" is here because it is the package's
     // OWN name for a language it really does carry -- undeclared at this seam
     // all the same; "zz-ZZ" names no language on either side of the bridge.
+    //
+    // Both refusals return a BARE STATUS and emit no diagnostic, which is the
+    // shape OmniVoice's own handler already has for the identical pair
+    // (src/voice-profile.cpp) -- asserted rather than left implicit, so the
+    // sink is read and not merely passed.
     for (const char * language_tag : { "english", "zz-ZZ" }) {
         SeenDiagnostic          diagnostic;
         synth_voice_profile_t * profile = nullptr;
         SYNTH_TEST_CHECK(create_with(model, capabilities, nullptr, language_tag, diagnostic, profile) ==
                          SYNTH_ERR_UNSUPPORTED_LANGUAGE);
         SYNTH_TEST_CHECK(profile == nullptr);
+        SYNTH_TEST_CHECK(!diagnostic.seen);
     }
 
     // Malformed shape, two different sub-rules of it: "e" is below the
     // two-character minimum, and "en_US" carries a byte that is neither
-    // alphanumeric nor the subtag separator. Both must come back INVALID_ARG
-    // and not UNSUPPORTED_LANGUAGE -- which is what makes the shape half and
-    // the declared half independently deletable rather than masking each
-    // other. Delete the declared half and the pair above starts succeeding;
-    // delete the shape half and these two change status instead of passing.
+    // alphanumeric nor the subtag separator.
+    //
+    // THE EXACT STATUS IS THE ASSERTION, AND IT HAS TO BE. `declared_language`
+    // is the shape check's MUTUAL-MASKING PARTNER: it is an exact match
+    // against the published list, so no malformed tag passes it either.
+    // Deleting `valid_bcp47_shape` alone does NOT let "e" or "en_US" through
+    // -- it only moves the status to SYNTH_ERR_UNSUPPORTED_LANGUAGE -- so a
+    // check asserting merely "not SYNTH_OK" here would be unable to fail on
+    // that deletion. The masking runs one way only: deleting
+    // `declared_language` lets "english" and "zz-ZZ" through as SYNTH_OK,
+    // which the loop above catches on any assertion at all.
     for (const char * language_tag : { "e", "en_US" }) {
         SeenDiagnostic          diagnostic;
         synth_voice_profile_t * profile = nullptr;
         SYNTH_TEST_CHECK(create_with(model, capabilities, nullptr, language_tag, diagnostic, profile) ==
                          SYNTH_ERR_INVALID_ARG);
         SYNTH_TEST_CHECK(profile == nullptr);
+        SYNTH_TEST_CHECK(!diagnostic.seen);
     }
     return 0;
 }

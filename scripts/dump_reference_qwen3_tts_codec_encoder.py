@@ -44,13 +44,23 @@ chosen.
 a fixed transformer, and an argmin over fixed codebooks. The seeded-sampling
 rule applies only to scripts that run the talker, and this one does not.
 
-Usage (explicit-argument form):
+Every case is gated on reproducing the Base oracle's own ``codes/reference.i32``
+byte for byte, and that check -- like every other check here -- runs *before*
+anything reaches disk, because Tasks 3/4/5/12 read the ``.f32`` files rather
+than ``result.json``: a failed run must leave nothing consumable behind, not
+merely nothing announced. A case with no Base artifacts to check against is a
+hard failure unless ``--allow-unverified`` is passed, which downgrades the run's
+status to ``unverified`` in both ``result.json`` and ``conventions.json``.
+
+Usage (explicit-argument form -- exploration only; there is no Base oracle
+output at an ad-hoc ``--out-dir``, hence ``--allow-unverified``):
 
     uv run --project scripts/envs/qwen3-tts --locked python \\
       scripts/dump_reference_qwen3_tts_codec_encoder.py \\
       --weights-dir models/qwen3-tts-12hz-0-6b-base \\
       --ref-audio models/qwen3-tts-reference-audio/clone.wav \\
-      --out-dir build/goldens/qwen3-tts/qwen3-tts-12hz-0-6b-base/base-icl-en
+      --out-dir build/scratch/codec-encoder-probe \\
+      --allow-unverified
 
 Manifest form (the primary interface):
 
@@ -176,18 +186,28 @@ def install_taps(mimi_model, captured: dict) -> list:
     handles = []
     encoder = mimi_model.encoder
 
+    # Every tap counts its firings. MimiModel.encode calls _encode_frame exactly
+    # once in 4.57.3 (modeling_mimi.py:1577), so a second firing cannot happen
+    # today -- but if streaming were ever enabled, last-wins would leave the
+    # stage artifacts describing the final chunk while codes.i32 described the
+    # whole clip, and the codes check would still pass because the codes come
+    # from upstream's own output. run_case turns a second firing into a failure.
+    captured["tap_firings"] = {}
+
     def capture(key):
         def hook(_module, _inputs, output):
             # A transformer layer returns a tuple whose first element is the
             # hidden state (modeling_mimi.py:989); a convolution returns the
             # tensor itself.
             captured[key] = to_numpy(output[0] if isinstance(output, tuple) else output, torch.float32)
+            captured["tap_firings"][key] = captured["tap_firings"].get(key, 0) + 1
 
         return hook
 
     def capture_input(key):
         def hook(_module, inputs):
             captured[key] = to_numpy(inputs[0], torch.float32)
+            captured["tap_firings"][key] = captured["tap_firings"].get(key, 0) + 1
 
         return hook
 
@@ -201,7 +221,102 @@ def install_taps(mimi_model, captured: dict) -> list:
         handles.append(layer.register_forward_hook(capture(f"transformer_l{index}")))
 
     handles.append(mimi_model.downsample.register_forward_hook(capture("downsample")))
+
+    # Input and output lengths of every MimiConv1d on the encode path, so the
+    # published padding arithmetic can be checked against upstream's own
+    # functions at the lengths this case actually produced rather than asserted
+    # from a reading. See check_padding_arithmetic.
+    captured["conv_lengths"] = {}
+
+    def capture_length(name, module):
+        def pre_hook(_module, inputs):
+            captured["conv_lengths"].setdefault(name, {})["module"] = module
+            captured["conv_lengths"][name]["input_length"] = int(inputs[0].shape[-1])
+
+        def post_hook(_module, _inputs, output):
+            captured["conv_lengths"][name]["output_length"] = int(output.shape[-1])
+
+        return pre_hook, post_hook
+
+    conv_modules = [
+        (f"encoder.{name}", module)
+        for name, module in encoder.named_modules()
+        if type(module).__name__ == "MimiConv1d"
+    ] + [("downsample", mimi_model.downsample)]
+    for name, module in conv_modules:
+        pre_hook, post_hook = capture_length(name, module)
+        handles.append(module.register_forward_pre_hook(pre_hook))
+        handles.append(module.register_forward_hook(post_hook))
+
     return handles
+
+
+def published_extra_padding(length: int, kernel_effective: int, padding_total: int,
+                            stride: int) -> int:
+    """The formula ``conventions.json`` publishes, implemented exactly as written.
+
+    Kept as its own function so ``check_padding_arithmetic`` compares the
+    PUBLISHED rule against upstream, not a second private copy that could drift
+    from the string. Upstream writes ``ceil(x + 1) - 1`` (modeling_mimi.py:269-270);
+    that equals ``ceil(x)`` for integer 1, and this is the reduced form.
+    """
+    n_frames = -(-(length - kernel_effective + padding_total) // stride)  # ceiling divide
+    ideal_length = n_frames * stride + kernel_effective - padding_total
+    return ideal_length - length
+
+
+def check_padding_arithmetic(conv_lengths: dict) -> list[dict]:
+    """Run the published padding formula against upstream's own two functions.
+
+    The causal-padding convention is one of the five the plan names as
+    dangerous, and it is the one a reader of ``conventions.json`` implements
+    from. So it is not transcribed and left: for every convolution on the encode
+    path, at the real input length this case produced, the published rule is
+    evaluated and compared against ``_get_extra_padding_for_conv1d`` and
+    ``_get_output_length`` -- upstream's own arithmetic -- and against the output
+    length the forward actually produced. A mismatch fails the run.
+    """
+    rows = []
+    for name in sorted(conv_lengths):
+        entry = conv_lengths[name]
+        module = entry["module"]
+        length = entry["input_length"]
+        kernel_effective = int(module.kernel_size)
+        padding_total = int(module.padding_total)
+        stride = int(module.stride)
+
+        published = published_extra_padding(length, kernel_effective, padding_total, stride)
+        upstream = int(module._get_extra_padding_for_conv1d(
+            torch.zeros(1, 1, length, device="meta")
+        ))
+        if published != upstream:
+            raise SystemExit(
+                f"{name}: the extra_padding formula conventions.json publishes gives "
+                f"{published} at input length {length}, upstream's own "
+                f"_get_extra_padding_for_conv1d gives {upstream}. Refusing to publish a "
+                "padding convention that does not reproduce the padding actually applied."
+            )
+
+        upstream_output = int(module._get_output_length(length))
+        actual_output = entry["output_length"]
+        if upstream_output != actual_output:
+            raise SystemExit(
+                f"{name}: _get_output_length says {upstream_output} but the forward "
+                f"produced {actual_output}"
+            )
+        rows.append({
+            "module": name,
+            "input_length": length,
+            "kernel_effective": kernel_effective,
+            "stride": stride,
+            "padding_total": padding_total,
+            "pad_left": padding_total,
+            "pad_right": published,
+            "extra_padding": published,
+            "output_length": actual_output,
+            "agrees_with_upstream": True,
+        })
+    return rows
 
 
 def install_rvq_probes(mimi_model, captured: dict) -> list:
@@ -343,10 +458,24 @@ def build_conventions(observed: dict) -> dict:
             "padding_total_formula": "((kernel_size - 1) * dilation + 1) - stride",
             "causal_split": "all of padding_total on the LEFT; only extra_padding on the right",
             "extra_padding_formula": (
-                "ideal_length - length, where "
-                "n_frames = ceil((length - effective_kernel + padding_total) / stride) - 1 and "
+                "extra_padding = ideal_length - length, where "
+                "n_frames = ceil((length - effective_kernel + padding_total) / stride) and "
                 "ideal_length = n_frames * stride + effective_kernel - padding_total"
             ),
+            "extra_padding_formula_note": (
+                "Upstream writes this as `ceil((L - k + p)/s + 1) - 1` "
+                f"({MIMI_FILE}:269-270). The `+ 1` is INSIDE the ceil and the `- 1` is "
+                "outside it; since 1 is an integer, ceil(x + 1) - 1 == ceil(x), and the "
+                "two reduce to the single ceil recorded above. Transcribing the outer "
+                "`- 1` without the inner `+ 1` yields a formula one `stride` short -- it "
+                "makes extra_padding come out -1 for the stem and -4 for stage 0 where "
+                "the true value is 0, i.e. it turns a pad into a truncation. The form "
+                "above is not merely transcribed: extra_padding_check below runs it "
+                "against upstream's own _get_extra_padding_for_conv1d and "
+                "_get_output_length, for every convolution on the encode path, at the "
+                "real input lengths this case produced."
+            ),
+            "extra_padding_check": observed["extra_padding_check"],
             "source": (
                 f"{MIMI_FILE}:221 (self.causal = config.use_causal_conv); :222 "
                 "(self.pad_mode = config.pad_mode unless the constructor overrides it); "
@@ -521,7 +650,8 @@ def build_conventions(observed: dict) -> dict:
                 "cluster_usage_observed_min": observed["cluster_usage_min"],
                 "clamp_note": (
                     "The 1e-5 clamp is inert for this checkpoint -- the smallest "
-                    "cluster_usage across all 64 codebooks is orders of magnitude above "
+                    "cluster_usage across all 32 codebooks (1 semantic + 31 acoustic) "
+                    "is orders of magnitude above "
                     "it -- so the converter's baked codebook and upstream's derived one "
                     "differ only by arithmetic precision, not by the clamp. See "
                     "artifact_dtypes: the precision difference is NOT negligible."
@@ -783,7 +913,7 @@ def build_conventions(observed: dict) -> dict:
                     "the DIVISION ITSELF is done in bfloat16 and its result is a bfloat16 "
                     "table, later widened by .float() at :1207 for the distance. The "
                     "converter performs the same division in float32 from the float32 "
-                    "safetensors (convert-qwen3-tts.py:377, :388) and bakes a float32 "
+                    "safetensors (convert-qwen3-tts.py:376-377, :388) and bakes a float32 "
                     "table. The port's codebook is therefore MORE accurate than the "
                     "oracle's, and the two tables differ by roughly bfloat16 rounding. "
                     "That difference lands directly in the argmin, which is why "
@@ -823,6 +953,14 @@ def build_conventions(observed: dict) -> dict:
             "artifact": "rvq_distance_margin.f32",
             "layout": "[kept_stages, frames] float32, row-major (frames contiguous)",
             "definition": "squared-distance margin: d2**2 - d1**2, over the 2048 codebook entries",
+            "computed_as": (
+                "(d2 - d1) * (d2 + d1), which is algebraically d2**2 - d1**2 but far "
+                "better conditioned: the margin is a gap between two nearly equal "
+                "distances, so evaluating it as a difference of two float32 squares of "
+                "similar magnitude loses most of the significant digits at exactly the "
+                "frames that matter most. Measured on this family's own artifacts, the "
+                "naive form is off by roughly half a percent at the tightest margins."
+            ),
             "why_squared": (
                 "Upstream computes NON-squared Euclidean distances (torch.cdist p=2, "
                 "modeling_mimi.py:1207); a port will almost certainly expand ||x-e||^2 "
@@ -839,15 +977,24 @@ def build_conventions(observed: dict) -> dict:
             "exact_ties_observed": observed["exact_ties"],
             "per_stage_min_margin": observed["per_stage_min_margin"],
             "measurement_coverage": (
-                "The three ICL cases this script is run on give only TWO distinct "
-                "measurements, not three. base-icl-en and base-text-short reference the "
-                "same clip with no trim_seconds and differ only in synthesis text, which "
-                "the codec encoder never reads -- all 34 artifacts are byte-identical "
-                "between them (confirmed by sha256 across every .f32 and .i32). The "
-                "repeat is worth having as proof that the path is deterministic case to "
-                "case with no hidden state leaking in, but it is one measurement taken "
-                "twice. base-ref-min (1.0 s, 13 frames) is the only genuinely independent "
-                "second point. A gate chosen from these numbers is chosen from two clips."
+                "The three ICL cases this script is run on give TWO distinct measurements, "
+                "not three -- and, stated precisely, they are ONE SOURCE FILE AT TWO "
+                "LENGTHS, not two clips. All three cases point at the same "
+                "models/qwen3-tts-reference-audio/clone.wav. base-icl-en and "
+                "base-text-short take it whole and differ only in synthesis text, which "
+                "the codec encoder never reads: all 34 artifacts are byte-identical "
+                "between them (confirmed by sha256 across every .f32 and .i32). That "
+                "repeat is worth having as proof the path is deterministic case to case "
+                "with no hidden state leaking in, but it is one measurement taken twice. "
+                "base-ref-min is that same file's first 1.0 s. It is nonetheless a "
+                "genuinely independent measurement rather than a prefix of the first: the "
+                "encoder transformer is not causal, so shortening the input changes the "
+                "interior -- 37 of its 208 codes differ from the corresponding prefix of "
+                "the full-clip codes, and latents differ by up to 17.2 against an rms of "
+                "4.1. So the numbers below rest on two real points, both drawn from one "
+                "speaker in one recording. No second speaker, no second recording "
+                "condition, no second sample rate. A gate chosen from them is chosen on "
+                "that basis."
             ),
             "interpretation": (
                 "NOT a conclusion, a measurement -- the gate is Task 12's decision. What "
@@ -858,8 +1005,9 @@ def build_conventions(observed: dict) -> dict:
                 "Weigh that against codebook_precision_divergence above: the port's "
                 "float32 codebook is not the same table as this oracle's bfloat16 one, "
                 "and that difference is not obviously smaller than the margin it has to "
-                "clear. Plain equality may well hold on these two clips and not on a "
-                "third."
+                "clear. Plain equality may well hold on these two measurements -- one "
+                "recording at two lengths, see measurement_coverage -- and not on a "
+                "different speaker."
             ),
         },
         # ------------------------------------------------------------------
@@ -891,13 +1039,15 @@ def build_conventions(observed: dict) -> dict:
                 "The quantizer's input, captured at the quantizer boundary. Upstream "
                 "hands it the downsample output with nothing in between "
                 "(modeling_mimi.py:1467-1469), so this is byte-identical to "
-                "downsample.f32 -- verified per case by sha256 rather than assumed, and "
-                "kept as a separate file because it is the seam Tasks 3/4 compare at. "
-                "The 256-wide PROJECTED latents each branch actually quantizes are "
-                "rvq_residual_s00 (semantic input_proj) and rvq_residual_s01 (acoustic "
-                "input_proj); they are not the same tensor as this one and not the same "
-                "as each other."
+                "downsample.f32 -- asserted per case on the exact bytes written, not "
+                "assumed, with the outcome published as "
+                "latents_equals_downsample_observed immediately below. Kept as a separate "
+                "file because it is the seam Tasks 3/4 compare at. The 256-wide PROJECTED "
+                "latents each branch actually quantizes are rvq_residual_s00 (semantic "
+                "input_proj) and rvq_residual_s01 (acoustic input_proj); they are not the "
+                "same tensor as this one and not the same as each other."
             ),
+            "latents_equals_downsample_observed": observed["latents_equals_downsample"],
             "rvq_residual_s00..s15.f32": ["frames", "256 projected"],
             "rvq_residual_note": (
                 "The residual ENTERING each kept stage, in concatenated-code order: s00 "
@@ -910,8 +1060,13 @@ def build_conventions(observed: dict) -> dict:
             "codes_note": (
                 "Post-slice and post-trim -- the same tensor "
                 "dump_reference_qwen3_tts_base.py writes as codes/reference.i32, and "
-                "asserted byte-identical to it when that file is present."
+                "asserted byte-identical to it BEFORE any artifact in this directory is "
+                "written. See codes_verified_against_base_oracle: when it is false, the "
+                "check was skipped under --allow-unverified and every file here is "
+                "unvouched-for."
             ),
+            "codes_verified_against_base_oracle": observed["codes_verified_against_base_oracle"],
+            "base_oracle_reference_codes": observed["base_oracle_reference_codes"],
         },
         # ------------------------------------------------------------------
         # Frame counts
@@ -929,12 +1084,17 @@ def build_conventions(observed: dict) -> dict:
                 "independent of how upsampling_ratios is written down."
             ),
             "rvq_stage_order": (
-                "Observed, not inferred from call order: each MimiEuclideanCodebook was "
-                "shadowed carrying its own (branch, stage) identity read off the module "
-                "graph, and run_case then asserts codes[:, 0] equals the semantic stage's "
-                "recorded argmin and codes[:, 1 + i] equals acoustic stage i's, for all "
-                "15 kept acoustic stages. A concatenation the other way round would fail "
-                "that assertion, not be silently relabelled."
+                "Observed in three independent parts, none of them tautological. (a) "
+                "num_semantic_quantizers is read off the module and asserted to be 1 -- "
+                "that, not a hardcoded rule, is what makes column 0 semantic. (b) The "
+                "firing order is recorded as the calls arrive and asserted to be one "
+                "semantic stage followed by the acoustic stages in index order. (c) The "
+                "load-bearing one: each MimiEuclideanCodebook was shadowed carrying its "
+                "own (branch, stage) identity read off the module graph, and run_case "
+                "asserts that upstream's OWN codes[:, position] equal the argmin this "
+                "script probed for the stage it claims that column is, for all 16. A "
+                "concatenation the other way round fails (c); a reordered branch walk "
+                "fails (b); a checkpoint with a wider semantic branch fails (a)."
             ),
             "acoustic_branch_input": (
                 "Read at modeling_mimi.py:1340-1342 and corroborated numerically: "
@@ -956,14 +1116,14 @@ def build_conventions(observed: dict) -> dict:
                 "Observed: MimiEuclideanCodebook.embed's dtype was read off the loaded "
                 "model and is bfloat16, because from_pretrained cast embed_sum and "
                 "cluster_usage before the @property divided them. Cross-read against "
-                "scripts/convert-qwen3-tts.py:377 (.to(torch.float32) on both operands) "
-                "and :388 (the division), which is float32. The two codebooks are not the "
-                "same table."
+                "scripts/convert-qwen3-tts.py:376-377 (.to(torch.float32), one line per "
+                "operand -- :376 embedding_sum, :377 cluster_usage) and :388 (the "
+                "division), which is float32. The two codebooks are not the same table."
             ),
             "cluster_usage_clamp": (
-                "Observed: the minimum cluster_usage over all 64 encoder codebooks was "
-                "recorded and compared against the 1e-5 clamp; see "
-                "split_rvq.ema_at_inference.clamp_binds."
+                "Observed: the minimum cluster_usage over all 32 encoder codebooks "
+                "(1 semantic + 31 acoustic) was recorded and compared against the 1e-5 "
+                "clamp; see split_rvq.ema_at_inference.clamp_binds."
             ),
             "attn_implementation": (
                 "Observed on the loaded model "
@@ -973,14 +1133,36 @@ def build_conventions(observed: dict) -> dict:
                 f"{QWEN_MODELING_FILE}:1872 pops it out of kwargs first."
             ),
             "latents_equals_downsample": (
-                "Observed per case by sha256 over the two written files, not asserted "
-                "from the source reading alone."
+                "Asserted per case on the exact bytes written, and published as the "
+                "boolean artifact_layout.latents_equals_downsample_observed in THIS file "
+                "rather than only in result.json. A mismatch aborts the run before any "
+                "artifact reaches disk, so the claim in artifact_layout.latents_note "
+                "cannot outlive the fact it describes."
             ),
             "frames": (
                 "Observed from this case's own artifacts: the encoder's untrimmed output "
                 "frame count from downsample.f32, the post-trim count from codes.i32, and "
-                "the trim divisor's arithmetic recomputed from the padding mask this case "
-                "actually produced."
+                "the trim divisor's arithmetic recomputed from the sample count this case "
+                "actually produced. The ceiling divide and the observed frame count are "
+                "not merely both recorded -- run_case asserts they agree."
+            ),
+            "extra_padding_formula": (
+                "Not transcribed and left: the formula string published under "
+                "convolution_padding is implemented verbatim by published_extra_padding() "
+                "and run, for every convolution on the encode path at this case's real "
+                "input lengths, against upstream's own "
+                "_get_extra_padding_for_conv1d and _get_output_length. Any disagreement "
+                "aborts the run before anything is written. Per-convolution results are "
+                "in convolution_padding.extra_padding_check. This check exists because an "
+                "earlier revision of this file published the formula with upstream's "
+                "outer '- 1' but without its inner '+ 1', which reads as a plausible "
+                "transcription and turns every pad into a truncation."
+            ),
+            "codes_verified_against_base_oracle": (
+                "The run fails outright when codes/reference.i32 is absent, unless "
+                "--allow-unverified is passed -- in which case this flag is false and "
+                "result.json's status is 'unverified' rather than 'ok'. A check that is "
+                "skipped must not read like a check that passed."
             ),
         },
     }
@@ -1263,7 +1445,7 @@ def observe_static(mimi_model, tokenizer_model) -> dict:
 
 
 def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: pathlib.Path,
-             static: dict, device: str) -> dict:
+             static: dict, device: str, allow_unverified: bool = False) -> dict:
     local_ref_audio = resolve_reference_locator(case.ref_audio, case.ref_sha256, reference_audio_dir)
     ref_wav, ref_sr, ref_info = load_reference_audio(local_ref_audio, case.trim_seconds)
 
@@ -1302,12 +1484,26 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
             f"{case.id}: never observed {missing} -- the taps are stale or the forward "
             "path changed"
         )
+    repeated = {key: count for key, count in sink["tap_firings"].items() if count != 1}
+    if repeated:
+        raise SystemExit(
+            f"{case.id}: taps fired more than once ({repeated}). The stage artifacts "
+            "would describe the last chunk while codes.i32 described the whole clip, and "
+            "the codes check would still pass because the codes come from upstream's own "
+            "output. Refusing to dump a chunked forward."
+        )
     missing_stages = [i for i in range(KEPT_QUANTIZER_COUNT) if i not in sink["rvq"]]
     if missing_stages:
         raise SystemExit(
             f"{case.id}: RVQ stages {missing_stages} never fired -- the quantizer's "
             "structure changed"
         )
+
+    # The published padding arithmetic, run against upstream's own functions at
+    # this case's real input lengths. Before any write: a padding convention
+    # that does not reproduce upstream is the single most damaging thing this
+    # file could publish.
+    padding_check = check_padding_arithmetic(sink["conv_lengths"])
 
     codes = to_numpy(encoded.audio_codes[0])
     if codes.ndim != 2 or codes.shape[1] != KEPT_QUANTIZER_COUNT:
@@ -1316,24 +1512,108 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
         )
     frames_kept = int(codes.shape[0])
 
-    # The concatenation order, checked rather than read. Column 0 must be the
-    # semantic branch's stage 0 and column 1+i the acoustic branch's stage i --
-    # over the frames that survive the trim.
+    # The concatenation order, checked rather than read, in three parts that
+    # each have content:
+    #
+    #  (a) the semantic branch's width, which is what makes position 0 semantic
+    #      and positions 1.. acoustic. Read off the module, not hardcoded.
+    #  (b) the firing order, which is a real property of upstream's encode
+    #      (semantic branch first, each branch walking its layers in order) and
+    #      is recorded independently of the (branch, stage) identities.
+    #  (c) the load-bearing one: each column of upstream's own codes equals the
+    #      argmin this script probed for the stage it claims that column is.
+    #
+    # An earlier revision also compared each probe's (branch, stage) against the
+    # rule that had assigned its position -- which could not fail under any
+    # input. That tautology is gone; these three can each trip.
+    semantic_count = int(mimi.quantizer.num_semantic_quantizers)
+    if semantic_count != 1:
+        raise SystemExit(
+            f"{case.id}: num_semantic_quantizers is {semantic_count}, not 1. The "
+            "position mapping this script publishes (column 0 semantic, columns 1.. "
+            "acoustic) assumes 1; re-derive it before dumping."
+        )
+    expected_order = (
+        [["semantic", stage] for stage in range(semantic_count)]
+        + [["acoustic", stage] for stage in range(KEPT_QUANTIZER_COUNT - semantic_count)]
+    )
+    if sink["rvq_call_order"][:KEPT_QUANTIZER_COUNT] != expected_order:
+        raise SystemExit(
+            f"{case.id}: the quantizer fired in the order "
+            f"{sink['rvq_call_order'][:KEPT_QUANTIZER_COUNT]}, not {expected_order} -- "
+            "the split RVQ's branch order or per-branch stage order changed"
+        )
     for position in range(KEPT_QUANTIZER_COUNT):
         probe = sink["rvq"][position]
-        expected_branch = "semantic" if position == 0 else "acoustic"
-        expected_stage = 0 if position == 0 else position - 1
-        if probe["branch"] != expected_branch or probe["stage"] != expected_stage:
-            raise SystemExit(
-                f"{case.id}: code column {position} maps to {probe['branch']} stage "
-                f"{probe['stage']}, expected {expected_branch} stage {expected_stage}"
-            )
         if not np.array_equal(probe["indices"][:frames_kept], codes[:, position]):
             raise SystemExit(
                 f"{case.id}: code column {position} does not match the probed argmin of "
-                f"{expected_branch} stage {expected_stage} -- the concatenated stage "
+                f"{probe['branch']} stage {probe['stage']} -- the concatenated stage "
                 "order is not what this script recorded"
             )
+
+    # Byte-identity of latents and downsample. Upstream hands the downsample
+    # output straight to the quantizer (modeling_mimi.py:1467-1469), and
+    # conventions.json states that identity as fact -- so it is asserted here,
+    # on the exact bytes that are about to be written, and the result is
+    # published in conventions.json rather than only in result.json. If upstream
+    # ever inserts a step between the two, this fails instead of quietly
+    # contradicting the contract.
+    latents_bytes = np.ascontiguousarray(sink["latents"][0], dtype=np.float32).tobytes()
+    downsample_bytes = np.ascontiguousarray(sink["downsample"][0], dtype=np.float32).tobytes()
+    latents_equals_downsample = latents_bytes == downsample_bytes
+    if not latents_equals_downsample:
+        raise SystemExit(
+            f"{case.id}: the quantizer's input is no longer byte-identical to the "
+            "downsample output. Something now sits between them, and "
+            "conventions.json's artifact_layout.latents_note -- which states the "
+            "identity as established fact -- is stale. Fix the contract before dumping."
+        )
+
+    # Frame geometry, and the trim arithmetic checked rather than merely
+    # recorded: the ceiling divide must land on the frame count upstream's own
+    # slice actually produced.
+    frames_untrimmed = int(sink["downsample"][0].shape[-1])
+    samples = int(sink["waveform"].reshape(-1).shape[0])
+    trim_divisor = int(speech_tokenizer.model.encode_downsample_rate)
+    trim_target = -(-samples // trim_divisor)
+    if trim_target != frames_kept:
+        raise SystemExit(
+            f"{case.id}: the published trim arithmetic gives ceil({samples} / "
+            f"{trim_divisor}) = {trim_target} frames, upstream produced {frames_kept}. "
+            "Refusing to publish a frame rule that does not describe the codes."
+        )
+
+    # The strongest check available, and it runs BEFORE anything reaches disk:
+    # the Base oracle already dumped this exact tensor for these cases. If the
+    # hooks changed the forward, or the clip is being loaded differently, this
+    # is where it shows -- and every tolerance measured downstream would
+    # otherwise inherit the difference. A failed run must leave nothing
+    # consumable behind, because Tasks 3/4/5/12 read the .f32 files, not
+    # result.json.
+    existing = case_dir / "codes" / "reference.i32"
+    codes_bytes = np.ascontiguousarray(codes, dtype=np.int32).tobytes()
+    if existing.exists():
+        if existing.read_bytes() != codes_bytes:
+            raise SystemExit(
+                f"{case.id}: codes.i32 would differ from the Base oracle's {existing} -- "
+                "the taps changed the forward, or the reference clip is not being loaded "
+                "the same way. Nothing was written. Refusing to publish a stage dump "
+                "that does not reproduce the codes it is supposed to explain."
+            )
+        codes_verified = True
+    elif allow_unverified:
+        codes_verified = False
+        print(f"    WARNING: {existing} is absent; this case is UNVERIFIED", flush=True)
+    else:
+        raise SystemExit(
+            f"{case.id}: {existing} does not exist, so codes.i32 cannot be checked "
+            "against the Base oracle -- the one check that would catch a tap changing "
+            "the forward. Nothing was written. Run "
+            "scripts/dump_reference_qwen3_tts_base.py for this case first, or pass "
+            "--allow-unverified to dump anyway (the run is then recorded as "
+            "status 'unverified', not 'ok', in both result.json and conventions.json)."
+        )
 
     artifacts: dict[str, dict] = {}
     artifacts["waveform"] = write_f32(case_dir / "codec_encoder" / "waveform.f32",
@@ -1362,7 +1642,13 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
         )
         d1 = probe["d1"].astype(np.float32).reshape(-1)
         d2 = probe["d2"].astype(np.float32).reshape(-1)
-        margins[position] = d2 * d2 - d1 * d1
+        # (d2 - d1) * (d2 + d1) rather than d2*d2 - d1*d1. Algebraically the
+        # same; numerically much better conditioned. The margin is a gap between
+        # two nearly equal distances -- exactly the case where subtracting two
+        # squares of similar magnitude in float32 loses most of the significant
+        # digits, and this artifact IS the measurement, so ~0.5% of avoidable
+        # error in it is not acceptable rounding.
+        margins[position] = (d2 - d1) * (d2 + d1)
         margins_euclidean[position] = d2 - d1
         # d1 is a distance to a 256-wide codebook row; it is zero only if the
         # residual sits exactly on a centroid, which does not happen in float32
@@ -1374,17 +1660,6 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
         case_dir / "codec_encoder" / "rvq_distance_margin.f32", margins
     )
     artifacts["codes"] = write_i32(case_dir / "codec_encoder" / "codes.i32", codes)
-
-    # Byte-identity of latents and downsample: verified, not assumed.
-    def digest(name: str) -> str:
-        return hashlib.sha256((case_dir / "codec_encoder" / name).read_bytes()).hexdigest()
-
-    latents_equals_downsample = digest("latents.f32") == digest("downsample.f32")
-
-    frames_untrimmed = int(sink["downsample"][0].shape[-1])
-    samples = int(sink["waveform"].reshape(-1).shape[0])
-    trim_divisor = int(speech_tokenizer.model.encode_downsample_rate)
-    trim_target = -(-samples // trim_divisor)
 
     observed = dict(static)
     observed.update({
@@ -1419,6 +1694,9 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
             ),
         },
         "latents_equals_downsample": latents_equals_downsample,
+        "extra_padding_check": padding_check,
+        "codes_verified_against_base_oracle": codes_verified,
+        "base_oracle_reference_codes": str(existing) if codes_verified else None,
     })
     conventions = build_conventions(observed)
     write_json(case_dir / "codec_encoder" / "conventions.json", conventions)
@@ -1426,7 +1704,10 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
 
     result = {
         "case": case.id,
-        "status": "ok",
+        # Not an unconditional literal: a run that could not check its codes
+        # against the Base oracle is not an "ok" run, and says so where any
+        # consumer looks first.
+        "status": "ok" if codes_verified else "unverified",
         "samples": samples,
         "encoder_output_frames": frames_untrimmed,
         "frames": frames_kept,
@@ -1434,28 +1715,11 @@ def run_case(model, case: RunCase, case_dir: pathlib.Path, reference_audio_dir: 
         "min_distance_margin": observed["min_distance_margin"],
         "exact_ties": observed["exact_ties"],
         "latents_equals_downsample": latents_equals_downsample,
+        "matches_base_oracle_reference_codes": codes_verified,
         "reference_audio": ref_info,
         "wall_seconds": round(wall_seconds, 3),
         "artifacts": artifacts,
     }
-
-    # The strongest check available: the Base oracle already dumped this exact
-    # tensor for these cases. If the hooks changed the forward, or the clip is
-    # being loaded differently, this is where it shows -- and every tolerance
-    # measured downstream would otherwise inherit the difference.
-    existing = case_dir / "codes" / "reference.i32"
-    if existing.exists():
-        if existing.read_bytes() != (case_dir / "codec_encoder" / "codes.i32").read_bytes():
-            raise SystemExit(
-                f"{case.id}: codes.i32 differs from the Base oracle's "
-                f"{existing} -- the taps changed the forward, or the reference clip is "
-                "not being loaded the same way. Refusing to publish a stage dump that "
-                "does not reproduce the codes it is supposed to explain."
-            )
-        result["matches_base_oracle_reference_codes"] = True
-    else:
-        result["matches_base_oracle_reference_codes"] = None
-
     write_json(case_dir / "codec_encoder" / "result.json", result)
     artifacts["result"] = {"path": "result.json"}
     return {"id": case.id, "result": result}
@@ -1499,6 +1763,15 @@ def parse_args() -> argparse.Namespace:
              "(git-ignored). Unused for a local-path locator.",
     )
 
+    parser.add_argument(
+        "--allow-unverified", action="store_true",
+        help="Dump even when the case has no codes/reference.i32 from "
+             "dump_reference_qwen3_tts_base.py to check codes.i32 against. Without it, a "
+             "missing reference is a hard failure -- a skipped check must not read as a "
+             "passing run. With it, the case is recorded as status 'unverified' in "
+             "result.json and codes_verified_against_base_oracle false in "
+             "conventions.json, so a consumer can tell the two apart.",
+    )
     parser.add_argument("--report", type=pathlib.Path, default=None)
     return parser.parse_args()
 
@@ -1541,10 +1814,12 @@ def main() -> int:
     records = []
     for index, (case, case_dir) in enumerate(run_specs, 1):
         print(f"[{index}/{len(run_specs)}] {case.id}", flush=True)
-        records.append(run_case(model, case, case_dir, args.reference_audio_dir, static, args.device))
+        records.append(run_case(model, case, case_dir, args.reference_audio_dir, static,
+                                args.device, args.allow_unverified))
         result = records[-1]["result"]
         print(f"    {result['frames']} frames, min margin {result['min_distance_margin']:.6g}, "
-              f"ties {result['exact_ties']}, wall {result['wall_seconds']}s", flush=True)
+              f"ties {result['exact_ties']}, {result['status']}, "
+              f"wall {result['wall_seconds']}s", flush=True)
 
     report = {
         "schema": "synthesize-oracle-dump-v1",

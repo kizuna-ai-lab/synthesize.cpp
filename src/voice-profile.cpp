@@ -808,11 +808,23 @@ synth_status_t serialize_qwen3_tts_profile(const synth_voice_profile *          
     }
 
     const uint8_t (&compatibility_id)[32] = profile->model->info.voice_profile.compatibility_id;
-    const auto & x_vector_profile = *static_cast<const synth::qwen3tts::XVectorProfile *>(profile->payload.get());
+    // ONE ProfileFamilyTag covers both of this family's clone modes, and the
+    // payload's own CloneMode discriminates (voice-profile-handle.h). Reading
+    // it back through an `XVectorProfile *` is well-defined for an ICL
+    // payload too -- IclProfile is standard-layout with an XVectorProfile as
+    // its first member, and profile.h holds that property with static_asserts
+    // -- which is what lets this one read decide which writer to call. Both
+    // writers refuse a payload whose mode names the other kind, so a wrong
+    // branch here is an error rather than a silent downgrade.
+    const auto & speaker = *static_cast<const synth::qwen3tts::XVectorProfile *>(profile->payload.get());
 
     std::vector<uint8_t> bytes;
     const synth_status_t status =
-        synth::qwen3tts::serialize_x_vector_profile(x_vector_profile, compatibility_id, bytes);
+        speaker.mode == synth::qwen3tts::CloneMode::Icl ?
+            synth::qwen3tts::serialize_icl_profile(
+                profile->model->qwen3_tts->hparams(),
+                *static_cast<const synth::qwen3tts::IclProfile *>(profile->payload.get()), compatibility_id, bytes) :
+            synth::qwen3tts::serialize_x_vector_profile(speaker, compatibility_id, bytes);
     if (status != SYNTH_OK) {
         return status;
     }
@@ -856,8 +868,8 @@ synth_status_t load_qwen3_tts_profile_from_memory(const synth_model_t *         
     const char *                diagnostic_code    = nullptr;
     const char *                diagnostic_message = nullptr;
     const synth_status_t        status             = synth::qwen3tts::load_profile_from_memory(
-        model->qwen3_tts->hparams().speaker_encoder.enc_dim, data, static_cast<size_t>(data_size),
-        model->info.voice_profile.compatibility_id, family_tag, payload, diagnostic_code, diagnostic_message);
+        model->qwen3_tts->hparams(), data, static_cast<size_t>(data_size), model->info.voice_profile.compatibility_id,
+        family_tag, payload, diagnostic_code, diagnostic_message);
     if (status != SYNTH_OK) {
         emit_diagnostic(diagnostics, status, diagnostic_code, diagnostic_message);
         return status;

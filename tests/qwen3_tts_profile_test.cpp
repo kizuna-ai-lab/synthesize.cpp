@@ -38,6 +38,7 @@
 #include "ggml-backend.h"
 #include "ggml.h"
 #include "gguf.h"
+#include "sha256.h"
 #include "test-assert.h"
 #include "voice-profile-handle.h"
 
@@ -61,6 +62,7 @@ using synth::qwen3tts::HParams;
 using synth::qwen3tts::IclProfile;
 using synth::qwen3tts::kPrescanKnownKeyCount;
 using synth::qwen3tts::kPrescanKnownKeys;
+using synth::qwen3tts::kPrescanKvCountIcl;
 using synth::qwen3tts::kPrescanKvCountXVector;
 using synth::qwen3tts::PrescanKeyScope;
 using synth::qwen3tts::SpeakerEncoderBlockWeights;
@@ -129,9 +131,18 @@ Context make_context(size_t bytes) {
     return Context(ggml_init(parameters));
 }
 
+// The talker's own text-embedding width, which is what bounds a reference
+// text token id: those ids index `talker.model.text_embedding.weight`, whose
+// ne[1] IS this number (catalog.cpp). Distinct from every other extent in
+// this fixture, and comfortably above the ids reference_text_ids() below
+// hands out, so a bound fault shows up as a refusal rather than as a
+// coincidence.
+constexpr uint32_t kTextVocabSize = 12000;
+
 HParams make_hparams() {
     HParams hparams;
     hparams.has_speaker_encoder         = true;
+    hparams.talker.text_vocab_size      = kTextVocabSize;
     hparams.speaker_encoder.enc_dim     = uint32_t(kEncDim);
     hparams.speaker_encoder.sample_rate = kSampleRate;
     hparams.speaker_encoder.mel_bins    = uint32_t(kMelBins);
@@ -485,10 +496,12 @@ constexpr uint64_t kShortReferenceFrames  = 13;
 constexpr uint64_t kLongReferenceFrames   = 101;
 
 // The ids Task 10's dispatch will pass down from
-// Model::tokenize_reference_transcript. Opaque here by construction:
-// create_icl_profile never touches a vocabulary, so nothing below depends on
-// these being real ids for the transcript beside them -- only on them being
-// carried through unchanged.
+// Model::tokenize_reference_transcript. Not real ids for the transcript
+// beside them, and nothing below depends on them being so -- only on them
+// being carried through unchanged and on every one of them being INSIDE
+// kTextVocabSize, which stopped being an irrelevance in Task 9: the envelope
+// writer and reader both range-check this stream against the talker's own
+// text-embedding width, so ids outside it are refused rather than opaque.
 std::vector<int32_t> reference_text_ids() {
     return { 9707, 11, 1879, 13 };
 }
@@ -648,10 +661,26 @@ synth_status_t prepare_icl(const IclFixture &                  fixture,
                                                /*language_tag=*/"english", /*threads=*/1, profile, code, message);
 }
 
-// --- The mode the Profile names. This is the rule Step 2's inversion targets
-// (make create_icl_profile write CloneMode::XVector and this check is what
-// fails), and it is the whole point of D4: the mode is decided here, at
-// preparation, so a Serialized Profile has one unambiguous meaning.
+// --- The mode the Profile names, and the type-erased read that recovers it.
+// This is the rule Step 2's inversion targets (make create_icl_profile write
+// CloneMode::XVector and this check is what fails), and it is the whole point
+// of D4: the mode is decided here, at preparation, so a Serialized Profile
+// has one unambiguous meaning.
+//
+// THE ERASED READ WAS A SEPARATE TEST AND WAS FOLDED IN HERE (Task 8 review
+// finding, closed by Task 9): it drove the identical preparation and then
+// asserted the same four fields this function already asserts, reached
+// through a pointer rather than directly, so its own inversion had never been
+// run against anything the checks below do not already cover. What it
+// documents is worth keeping, so it is kept here rather than deleted: the
+// layout contract IclProfile's own header comment states, exercised the exact
+// way src/synthesize.cpp exercises it -- recover the type-erased payload as
+// an XVectorProfile and read `.mode` off it BEFORE knowing which mode it is.
+// One ProfileFamilyTag covers both of this family's clone modes precisely
+// because that read works (voice-profile-handle.h), and src/voice-profile.cpp
+// now uses exactly this read to pick which envelope writer to call. The
+// COMPILE-TIME half of the rule is the static_assert set in profile.h: move
+// `speaker` off offset 0 and the BUILD fails rather than any check here.
 int test_an_icl_profile_reports_the_icl_mode() {
     IclFixture fixture;
     SYNTH_TEST_CHECK(build_icl_fixture(fixture));
@@ -664,27 +693,6 @@ int test_an_icl_profile_reports_the_icl_mode() {
     SYNTH_TEST_CHECK(message == nullptr);
     SYNTH_TEST_CHECK(profile->speaker.mode == CloneMode::Icl);
     SYNTH_TEST_CHECK(profile->speaker.language_tag == "english");
-    return 0;
-}
-
-// --- The layout contract IclProfile's own header comment states, exercised
-// the exact way src/synthesize.cpp:1073-1086 exercises it: recover the
-// type-erased payload as an XVectorProfile and read `.mode` off it BEFORE
-// knowing which mode it is. One ProfileFamilyTag covers both of this family's
-// clone modes precisely because that read works
-// (voice-profile-handle.h:21-26), so it has to be well-defined for an ICL
-// payload and not merely usually-right.
-//
-// The compile-time half of this rule is the static_assert set in profile.h:
-// move `speaker` off offset 0 and the BUILD fails rather than this check.
-int test_an_icl_payload_reads_back_through_an_x_vector_pointer() {
-    IclFixture fixture;
-    SYNTH_TEST_CHECK(build_icl_fixture(fixture));
-    const char *                      code    = nullptr;
-    const char *                      message = nullptr;
-    std::shared_ptr<const IclProfile> profile;
-    SYNTH_TEST_CHECK(prepare_icl(fixture, speech_of(kShortReferenceSamples), profile, code, message) == SYNTH_OK);
-    SYNTH_TEST_CHECK(profile != nullptr);
 
     const std::shared_ptr<const void> erased      = profile;
     const auto *                      as_x_vector = static_cast<const XVectorProfile *>(erased.get());
@@ -1099,20 +1107,48 @@ void put_kv_u8_array32(std::vector<uint8_t> & out, const std::string & key) {
     put_bytes(out, value.data(), value.size());
 }
 
-// The 8 metadata keys set_common_metadata (arch/qwen3-tts/profile.cpp)
-// writes for every envelope, in that function's own order, ending with
-// `kind` itself.
-std::vector<uint8_t> common_kv_bytes(const std::string & kind) {
+// The 10 kCommon metadata keys set_common_metadata (arch/qwen3-tts/profile.cpp)
+// writes for EVERY envelope, in that function's own order. `ref_rms` and
+// `language_tag` are part of this set as of Plan 3 Task 9 -- they were
+// x-vector-only through Plan 2 and moved here when the ICL kind turned out to
+// carry both.
+//
+// `omit` names one key to leave out, which is how the arms below build a
+// buffer with a required key missing, or free up a slot for a key that
+// replaces it, without renumbering anything else. Empty emits all ten.
+std::vector<uint8_t> common_kv_bytes(const std::string & kind, const std::string & omit = std::string()) {
     std::vector<uint8_t> bytes;
-    put_kv_string(bytes, "general.architecture", "synthprofile");
-    put_kv_u32(bytes, "synthesize.voice_profile.format_version", 1);
-    put_kv_string(bytes, "synthesize.voice_profile.model_family", "qwen3-tts");
-    put_kv_string(bytes, "synthesize.voice_profile.schema", "qwen3-tts-voice-clone");
-    put_kv_u32(bytes, "synthesize.voice_profile.schema_version", 1);
-    put_kv_u8_array32(bytes, "synthesize.voice_profile.compatibility_id");
-    put_kv_u8_array32(bytes, "synthesize.voice_profile.content_sha256");
-    put_kv_string(bytes, "synthesize.voice_profile.kind", kind);
+    const auto           emit = [&](const std::string & key, const auto & write) {
+        if (key != omit) {
+            write(key);
+        }
+    };
+    emit("general.architecture", [&](const std::string & k) { put_kv_string(bytes, k, "synthprofile"); });
+    emit("synthesize.voice_profile.format_version", [&](const std::string & k) { put_kv_u32(bytes, k, 1); });
+    emit("synthesize.voice_profile.model_family", [&](const std::string & k) { put_kv_string(bytes, k, "qwen3-tts"); });
+    emit("synthesize.voice_profile.schema",
+         [&](const std::string & k) { put_kv_string(bytes, k, "qwen3-tts-voice-clone"); });
+    emit("synthesize.voice_profile.schema_version", [&](const std::string & k) { put_kv_u32(bytes, k, 1); });
+    emit("synthesize.voice_profile.compatibility_id", [&](const std::string & k) { put_kv_u8_array32(bytes, k); });
+    emit("synthesize.voice_profile.content_sha256", [&](const std::string & k) { put_kv_u8_array32(bytes, k); });
+    emit("synthesize.voice_profile.kind", [&](const std::string & k) { put_kv_string(bytes, k, kind); });
+    emit("synthesize.voice_profile.ref_rms", [&](const std::string & k) { put_kv_f32(bytes, k, 0.5f); });
+    emit("synthesize.voice_profile.language_tag", [&](const std::string & k) { put_kv_string(bytes, k, "en"); });
     return bytes;
+}
+
+// The two kIclOnly keys serialize_icl_profile appends after the ten above,
+// in its own order. `omit` behaves as it does for common_kv_bytes.
+void append_icl_kv_bytes(std::vector<uint8_t> & bytes,
+                         uint32_t               groups,
+                         uint32_t               frames,
+                         const std::string &    omit = std::string()) {
+    if (omit != "synthesize.voice_profile.code_groups") {
+        put_kv_u32(bytes, "synthesize.voice_profile.code_groups", groups);
+    }
+    if (omit != "synthesize.voice_profile.reference_frames") {
+        put_kv_u32(bytes, "synthesize.voice_profile.reference_frames", frames);
+    }
 }
 
 // Appends a well-formed "profile.x_vector" tensor-info entry (the writer's
@@ -1144,12 +1180,85 @@ std::vector<uint8_t> assemble_hand_built(const std::vector<uint8_t> & kv, int64_
     return bytes;
 }
 
+// The "icl" kind's own three tensor-info entries plus their payloads, in
+// serialize_icl_profile's own order, at the cumulative ALIGNMENT-padded
+// offsets write_envelope computes (and gguf_init_from_buffer independently
+// requires). Payload bytes are zero, exactly as append_x_vector_tensor's
+// are and for the same reason: every hand-built arm below is rejected before
+// any payload VALUE is read.
+void append_icl_tensors(std::vector<uint8_t> & bytes, int64_t enc_dim, int64_t code_count, int64_t id_count) {
+    const struct {
+        const char * name;
+        int32_t      type;
+        int64_t      elements;
+    } entries[] = {
+        { "profile.x_vector",           int32_t(GGML_TYPE_F32), enc_dim    },
+        { "profile.codes",              int32_t(GGML_TYPE_I32), code_count },
+        { "profile.reference_text_ids", int32_t(GGML_TYPE_I32), id_count   },
+    };
+
+    uint64_t offset = 0;
+    for (const auto & entry : entries) {
+        put_gguf_string(bytes, entry.name);
+        put<uint32_t>(bytes, uint32_t(1));  // n_dims
+        put<int64_t>(bytes, entry.elements);
+        put<int32_t>(bytes, entry.type);
+        put<uint64_t>(bytes, offset);
+        offset += uint64_t(entry.elements) * 4;
+        while (offset % GGUF_DEFAULT_ALIGNMENT != 0) {
+            ++offset;
+        }
+    }
+    pad_to_alignment(bytes, GGUF_DEFAULT_ALIGNMENT);
+    for (const auto & entry : entries) {
+        const std::vector<uint8_t> payload(size_t(entry.elements) * 4, 0);
+        put_bytes(bytes, payload.data(), payload.size());
+        pad_to_alignment(bytes, GGUF_DEFAULT_ALIGNMENT);
+    }
+}
+
+std::vector<uint8_t> assemble_hand_built_icl(const std::vector<uint8_t> & kv,
+                                             int64_t                      n_kv,
+                                             int64_t                      n_tensors,
+                                             int64_t                      enc_dim,
+                                             int64_t                      code_count,
+                                             int64_t                      id_count) {
+    std::vector<uint8_t> bytes = make_header(n_tensors, n_kv);
+    put_bytes(bytes, kv.data(), kv.size());
+    append_icl_tensors(bytes, enc_dim, code_count, id_count);
+    return bytes;
+}
+
 void fill_compatibility_id(uint8_t (&id)[32]) {
     // Arbitrary but non-zero, so a reviewer scanning a hex dump never
     // mistakes this for an all-zero placeholder that was never set.
     for (size_t index = 0; index < sizeof(id); ++index) {
         id[index] = uint8_t(index + 7);
     }
+}
+
+// The envelope section's own package widths. load_profile_from_memory takes
+// `HParams` rather than a bare `enc_dim` as of Task 9 -- an ICL payload
+// carries two discrete streams and the loader range-checks both against the
+// package -- so every arm below needs a struct rather than a scalar. Still no
+// Model and still no GGUF: these are four plain integers.
+//
+// kEnvelopeGroups is deliberately NOT kGroups (16) and kEnvelopeCodebook
+// deliberately NOT kCodebookSize (8, which happens to equal kEnvelopeGroups
+// -- so a groups/codebook mix-up cannot pass by coincidence in EITHER
+// fixture, since the numbers differ across them).
+constexpr uint32_t kEnvelopeGroups    = 4;
+constexpr uint32_t kEnvelopeFrames    = 3;
+constexpr uint32_t kEnvelopeCodebook  = 8;
+constexpr uint32_t kEnvelopeTextVocab = 64;
+
+HParams envelope_hparams(uint32_t enc_dim) {
+    HParams hparams;
+    hparams.speaker_encoder.enc_dim       = enc_dim;
+    hparams.codec.decoder.quantizer_count = kEnvelopeGroups;
+    hparams.codec.decoder.codebook_size   = kEnvelopeCodebook;
+    hparams.talker.text_vocab_size        = kEnvelopeTextVocab;
+    return hparams;
 }
 
 std::shared_ptr<XVectorProfile> make_serializable_profile(uint32_t            enc_dim,
@@ -1161,6 +1270,29 @@ std::shared_ptr<XVectorProfile> make_serializable_profile(uint32_t            en
     profile->x_vector     = stream.fill(enc_dim, 1.0f);
     profile->ref_rms      = ref_rms;
     profile->language_tag = language_tag;
+    return profile;
+}
+
+// A hand-built ICL payload at envelope_hparams' own widths, bypassing
+// create_icl_profile exactly as make_serializable_profile bypasses
+// create_x_vector_profile: this section tests the ENVELOPE, and building the
+// payload directly is what lets an arm perturb one field at a time. The
+// codes walk the codebook so no permutation of them is the identity, and the
+// ids are small, distinct, and inside kEnvelopeTextVocab.
+std::shared_ptr<IclProfile> make_serializable_icl_profile(uint32_t enc_dim) {
+    auto profile          = std::make_shared<IclProfile>();
+    profile->speaker.mode = CloneMode::Icl;
+    LcgStream stream(kSeed + 901);
+    profile->speaker.x_vector     = stream.fill(enc_dim, 1.0f);
+    profile->speaker.ref_rms      = 0.5f;
+    profile->speaker.language_tag = "en-US";
+    profile->groups               = kEnvelopeGroups;
+    profile->frames               = kEnvelopeFrames;
+    profile->codes.resize(size_t(kEnvelopeGroups) * size_t(kEnvelopeFrames));
+    for (size_t index = 0; index < profile->codes.size(); ++index) {
+        profile->codes[index] = int32_t(index % kEnvelopeCodebook);
+    }
+    profile->reference_text_ids = { 7, 11, 13, 40, 63 };
     return profile;
 }
 
@@ -1191,8 +1323,9 @@ int test_round_trip_of_a_well_formed_profile() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_OK);
     SYNTH_TEST_CHECK(family_tag == synth::ProfileFamilyTag::Qwen3TtsClone);
     SYNTH_TEST_CHECK(payload != nullptr);
@@ -1242,8 +1375,9 @@ int test_wrong_model_family_is_unsupported_voice() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_UNSUPPORTED_VOICE);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
@@ -1270,8 +1404,9 @@ int test_wrong_schema_is_unsupported_voice() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_UNSUPPORTED_VOICE);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
@@ -1295,29 +1430,33 @@ int test_wrong_schema_version_is_unsupported_voice() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_UNSUPPORTED_VOICE);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
 }
 
-// --- `kind` is "icl" -> INVALID_ARG, deliberately not UNSUPPORTED_VOICE: an
-// unrecognized kind inside a schema this build owns is malformed, the exact
-// case Plan 3 turns into a success. "icl" (3 bytes) is shorter than
-// "x-vector" (8 bytes), so an in-place byte patch of a valid envelope cannot
-// produce it without breaking every offset downstream -- this envelope is
-// hand-built instead. Everything past the `kind` check (compatibility_id,
-// content_sha256, the tensor payload) is checked LATER than `kind` in
-// load_profile_from_memory's own order, so it never needs to be genuinely
-// valid for this arm: reaching INVALID_ARG here has to be the `kind` check,
-// not anything downstream of it.
+// --- An unrecognized `kind` -> INVALID_ARG, deliberately not
+// UNSUPPORTED_VOICE: a kind inside a schema this build owns, but that this
+// build does not know, is malformed rather than merely newer. The mapping is
+// unchanged from Plan 2; only the value had to change, because Plan 2's own
+// choice here was "icl", which this build now RECOGNIZES.
+//
+// "clone-prompt" is the replacement rather than a nonsense string: it is
+// omnivoice's own ClonePrompt kind (arch/omnivoice/profile.cpp), so this arm
+// asserts that a sibling family's kind in THIS family's schema is refused --
+// a mistake a future writer could actually make, unlike "x-vektor". The
+// envelope is hand-built because a kind of a different length cannot be
+// patched into a real one without breaking every offset downstream.
+// Everything past the `kind` check (compatibility_id, content_sha256, the
+// tensor payload) is checked LATER in load_profile_from_memory's own order,
+// so none of it needs to be genuinely valid here.
 int test_unrecognized_kind_is_invalid_arg() {
-    constexpr int64_t    kProfileEncDim = 11;
-    std::vector<uint8_t> kv             = common_kv_bytes("icl");
-    put_kv_f32(kv, "synthesize.voice_profile.ref_rms", 0.5f);
-    put_kv_string(kv, "synthesize.voice_profile.language_tag", "en");
-    const std::vector<uint8_t> bytes = assemble_hand_built(kv, kPrescanKvCountXVector, kProfileEncDim);
+    constexpr int64_t          kProfileEncDim = 11;
+    const std::vector<uint8_t> kv             = common_kv_bytes("clone-prompt");
+    const std::vector<uint8_t> bytes          = assemble_hand_built(kv, kPrescanKvCountXVector, kProfileEncDim);
 
     uint8_t compatibility_id[32];
     fill_compatibility_id(compatibility_id);
@@ -1325,8 +1464,9 @@ int test_unrecognized_kind_is_invalid_arg() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        uint32_t(kProfileEncDim), bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(uint32_t(kProfileEncDim)), bytes.data(),
+                                                  bytes.size(), compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
@@ -1351,8 +1491,9 @@ int test_wrong_compatibility_id_is_unsupported_voice() {
     const char *                message = nullptr;
     // The expected compatibility_id passed here is the ORIGINAL, unchanged
     // one -- only the envelope's own embedded copy was tampered with.
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_UNSUPPORTED_VOICE);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
@@ -1374,8 +1515,9 @@ int test_tampered_content_sha256_is_invalid_arg() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
@@ -1394,8 +1536,9 @@ int test_truncated_buffer_is_invalid_arg() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        kProfileEncDim, truncated.data(), truncated.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), truncated.data(), truncated.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
@@ -1418,9 +1561,9 @@ int test_truncated_buffer_is_invalid_arg() {
 // eager reader.
 int test_non_default_alignment_is_invalid_arg() {
     constexpr int64_t    kProfileEncDim = 11;
-    std::vector<uint8_t> kv             = common_kv_bytes("x-vector");
-    put_kv_f32(kv, "synthesize.voice_profile.ref_rms", 0.5f);
-    put_kv_u32(kv, "general.alignment", 64);  // in place of language_tag, keeping n_kv == 10
+    // In place of language_tag, keeping n_kv == kPrescanKvCountXVector.
+    std::vector<uint8_t> kv             = common_kv_bytes("x-vector", "synthesize.voice_profile.language_tag");
+    put_kv_u32(kv, "general.alignment", 64);
     const std::vector<uint8_t> bytes = assemble_hand_built(kv, kPrescanKvCountXVector, kProfileEncDim);
 
     uint8_t compatibility_id[32];
@@ -1429,8 +1572,9 @@ int test_non_default_alignment_is_invalid_arg() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        uint32_t(kProfileEncDim), bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(uint32_t(kProfileEncDim)), bytes.data(),
+                                                  bytes.size(), compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
@@ -1464,8 +1608,9 @@ int test_tensor_count_zero_is_invalid_arg() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
@@ -1495,8 +1640,9 @@ int test_tensor_count_two_is_invalid_arg() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
@@ -1519,8 +1665,9 @@ int test_x_vector_length_mismatch_is_invalid_arg() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        kProfileEncDim + 1, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim + 1), bytes.data(), bytes.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
@@ -1531,8 +1678,7 @@ int test_x_vector_length_mismatch_is_invalid_arg() {
 // keeping n_kv == 10.
 int test_key_outside_whitelist_is_invalid_arg() {
     constexpr int64_t    kProfileEncDim = 11;
-    std::vector<uint8_t> kv             = common_kv_bytes("x-vector");
-    put_kv_f32(kv, "synthesize.voice_profile.ref_rms", 0.5f);
+    std::vector<uint8_t> kv             = common_kv_bytes("x-vector", "synthesize.voice_profile.language_tag");
     put_kv_string(kv, "synthesize.voice_profile.bogus", "z");
     const std::vector<uint8_t> bytes = assemble_hand_built(kv, kPrescanKvCountXVector, kProfileEncDim);
 
@@ -1542,8 +1688,9 @@ int test_key_outside_whitelist_is_invalid_arg() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        uint32_t(kProfileEncDim), bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(uint32_t(kProfileEncDim)), bytes.data(),
+                                                  bytes.size(), compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
@@ -1553,9 +1700,8 @@ int test_key_outside_whitelist_is_invalid_arg() {
 // (FLOAT32 in kPrescanKnownKeys) declared as UINT32 instead.
 int test_whitelisted_key_wrong_type_is_invalid_arg() {
     constexpr int64_t    kProfileEncDim = 11;
-    std::vector<uint8_t> kv             = common_kv_bytes("x-vector");
+    std::vector<uint8_t> kv             = common_kv_bytes("x-vector", "synthesize.voice_profile.ref_rms");
     put_kv_u32(kv, "synthesize.voice_profile.ref_rms", 42);  // wrong type: should be FLOAT32
-    put_kv_string(kv, "synthesize.voice_profile.language_tag", "en");
     const std::vector<uint8_t> bytes = assemble_hand_built(kv, kPrescanKvCountXVector, kProfileEncDim);
 
     uint8_t compatibility_id[32];
@@ -1564,8 +1710,9 @@ int test_whitelisted_key_wrong_type_is_invalid_arg() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        uint32_t(kProfileEncDim), bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(uint32_t(kProfileEncDim)), bytes.data(),
+                                                  bytes.size(), compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
@@ -1621,9 +1768,8 @@ int test_out_of_range_type_tag_is_invalid_arg() {
     constexpr int64_t kProfileEncDim = 11;
     for (int32_t type_tag :
          { int32_t(-1), int32_t(13), int32_t(16), int32_t(0x7FFFFFFF), std::numeric_limits<int32_t>::min() }) {
-        std::vector<uint8_t> kv = common_kv_bytes("x-vector");
+        std::vector<uint8_t> kv = common_kv_bytes("x-vector", "synthesize.voice_profile.ref_rms");
         put_kv_raw_type(kv, "synthesize.voice_profile.ref_rms", type_tag);
-        put_kv_string(kv, "synthesize.voice_profile.language_tag", "en");
         const std::vector<uint8_t> bytes = assemble_hand_built(kv, kPrescanKvCountXVector, kProfileEncDim);
 
         uint8_t compatibility_id[32];
@@ -1633,7 +1779,8 @@ int test_out_of_range_type_tag_is_invalid_arg() {
         const char *                code    = nullptr;
         const char *                message = nullptr;
         const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-            uint32_t(kProfileEncDim), bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+            envelope_hparams(uint32_t(kProfileEncDim)), bytes.data(), bytes.size(), compatibility_id, family_tag,
+            payload, code, message);
         SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
         SYNTH_TEST_CHECK(payload == nullptr);
     }
@@ -1668,8 +1815,9 @@ int test_wrong_n_kv_count_is_invalid_arg() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
@@ -1689,6 +1837,27 @@ int test_wrong_n_kv_count_is_invalid_arg() {
 // writer stopped emitting.
 // =============================================================================
 
+// Reads back the metadata key set of an envelope this file's REAL writers
+// produced, through ggml's own parser rather than through profile.cpp's
+// hand-rolled prescan walk -- so writer and whitelist are compared across two
+// independent decoders.
+std::set<std::string> emitted_keys_of(const std::vector<uint8_t> & bytes) {
+    gguf_init_params init_params{};
+    init_params.no_alloc = true;
+    init_params.ctx      = nullptr;
+    gguf_context * ctx   = gguf_init_from_buffer(bytes.data(), bytes.size(), init_params);
+    if (ctx == nullptr) {
+        return {};
+    }
+    std::set<std::string> keys;
+    const int64_t         n_kv = gguf_get_n_kv(ctx);
+    for (int64_t index = 0; index < n_kv; ++index) {
+        keys.insert(gguf_get_key(ctx, index));
+    }
+    gguf_free(ctx);
+    return keys;
+}
+
 int test_writer_emits_exactly_the_whitelisted_keys() {
     constexpr uint32_t kProfileEncDim = 11;
     uint8_t            compatibility_id[32];
@@ -1697,34 +1866,57 @@ int test_writer_emits_exactly_the_whitelisted_keys() {
     std::vector<uint8_t>                  bytes;
     SYNTH_TEST_CHECK(synth::qwen3tts::serialize_x_vector_profile(*profile, compatibility_id, bytes) == SYNTH_OK);
     SYNTH_TEST_CHECK(!bytes.empty());
+    const std::set<std::string> emitted_keys = emitted_keys_of(bytes);
 
-    gguf_init_params init_params{};
-    init_params.no_alloc = true;
-    init_params.ctx      = nullptr;
-    gguf_context * ctx   = gguf_init_from_buffer(bytes.data(), bytes.size(), init_params);
-    SYNTH_TEST_CHECK(ctx != nullptr);
-    std::set<std::string> emitted_keys;
-    const int64_t         n_kv = gguf_get_n_kv(ctx);
-    for (int64_t index = 0; index < n_kv; ++index) {
-        emitted_keys.insert(gguf_get_key(ctx, index));
-    }
-    gguf_free(ctx);
-
-    // Every kPrescanKnownKeys entry applies to the "x-vector" kind (Plan 2
-    // has no other kind yet), filtered by `scope` rather than re-typed as
-    // fresh string literals here -- the same discipline
-    // tests/omnivoice_serialize_writer_agreement_test.cpp's own
-    // expected_keys_for holds itself to.
+    // The "x-vector" kind's key set is exactly the kCommon entries, filtered
+    // by `scope` rather than re-typed as fresh string literals here -- the
+    // same discipline tests/omnivoice_serialize_writer_agreement_test.cpp's
+    // own expected_keys_for holds itself to. The filter is written out by
+    // hand rather than taken from a shared production helper, so a scope
+    // assigned wrongly in the table cannot cancel out against a matching
+    // mistake in the walk that reads it.
     std::set<std::string> expected_keys;
     for (size_t index = 0; index < kPrescanKnownKeyCount; ++index) {
         const auto & spec = kPrescanKnownKeys[index];
-        if (spec.scope == PrescanKeyScope::kCommon || spec.scope == PrescanKeyScope::kXVectorOnly) {
+        if (spec.scope == PrescanKeyScope::kCommon) {
             expected_keys.insert(spec.key);
         }
     }
 
     SYNTH_TEST_CHECK(emitted_keys == expected_keys);
     SYNTH_TEST_CHECK(int64_t(emitted_keys.size()) == kPrescanKvCountXVector);
+    return 0;
+}
+
+// --- The same agreement for the ICL writer, against the SAME table: the real
+// serialize_icl_profile's emitted key set is checked against
+// kPrescanKnownKeys itself, never against a second hand-transcription. The
+// ICL kind's set is every kCommon entry PLUS every kIclOnly one, which is the
+// half a union whitelist could not express.
+int test_the_icl_writer_emits_exactly_the_whitelisted_keys() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    const std::shared_ptr<IclProfile> profile = make_serializable_icl_profile(kProfileEncDim);
+    std::vector<uint8_t>              bytes;
+    SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(envelope_hparams(kProfileEncDim), *profile,
+                                                            compatibility_id, bytes) == SYNTH_OK);
+    SYNTH_TEST_CHECK(!bytes.empty());
+    const std::set<std::string> emitted_keys = emitted_keys_of(bytes);
+
+    std::set<std::string> expected_keys;
+    for (size_t index = 0; index < kPrescanKnownKeyCount; ++index) {
+        const auto & spec = kPrescanKnownKeys[index];
+        if (spec.scope == PrescanKeyScope::kCommon || spec.scope == PrescanKeyScope::kIclOnly) {
+            expected_keys.insert(spec.key);
+        }
+    }
+
+    SYNTH_TEST_CHECK(emitted_keys == expected_keys);
+    SYNTH_TEST_CHECK(int64_t(emitted_keys.size()) == kPrescanKvCountIcl);
+    // And the two sets are genuinely different, so the check above cannot be
+    // passing because both filters collapsed to the same thing.
+    SYNTH_TEST_CHECK(kPrescanKvCountIcl > kPrescanKvCountXVector);
     return 0;
 }
 
@@ -1797,8 +1989,9 @@ int test_language_tag_at_the_max_length_round_trips() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_OK);
     const auto * reloaded = static_cast<const XVectorProfile *>(payload.get());
     SYNTH_TEST_CHECK(reloaded->language_tag == tag);
@@ -1827,8 +2020,9 @@ int test_zero_ref_rms_is_rejected_by_the_reader() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
@@ -1849,8 +2043,9 @@ int test_negative_ref_rms_is_rejected_by_the_reader() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
@@ -1873,8 +2068,9 @@ int test_infinite_ref_rms_is_rejected_by_the_reader() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
@@ -1896,8 +2092,9 @@ int test_nan_ref_rms_is_rejected_by_the_reader() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
@@ -1924,66 +2121,759 @@ int test_all_zero_x_vector_is_rejected_by_the_reader() {
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
     const char *                message = nullptr;
-    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
-        kProfileEncDim, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
     SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(payload == nullptr);
     return 0;
 }
 
 // =============================================================================
-// Plan 3 Task 8, the claim that has to be ASSERTED rather than assumed: adding
-// a second clone mode did not disturb the first one.
+// Plan 3 Task 9: the "icl" kind in the SAME v1 envelope -- round trip,
+// determinism, the cross-kind tamper matrix, and the two discrete streams'
+// own value bounds.
 //
-// The Profile Schema does not change identity or version for this -- it stays
-// "qwen3-tts-voice-clone" at version 1, and the in-envelope
-// `synthesize.voice_profile.kind` gains a second value instead. Discriminating
-// on `kind` rather than on `schema_version` is the entire point of that field
-// (profile.h's own header comment on the envelope section), and what it BUYS
-// is exactly this: an x-vector Profile written before ICL existed still loads,
-// with no package re-cut. So the claim is checked here, in the commit that
-// lands the second mode, rather than left to Task 9's own round trip.
+// EVERY RULE BELOW WAS INVERTED AND RE-RUN, and where each failure actually
+// REPORTED is recorded as MEASURED rather than as predicted -- twice it was
+// somewhere other than the obvious place. Named by the DIMENSION each
+// perturbation moves, because five inversions of the same dimension are one
+// inversion:
 //
-// Distinct from test_round_trip_of_a_well_formed_profile above, which starts
-// from a HAND-BUILT XVectorProfile: this one starts from the real
-// create_x_vector_profile, so the whole Plan 2 path -- prepare, serialize,
-// load -- is what is asserted still intact.
+//   kind      serialize_icl_profile writes "x-vector"   -> the ICL round trip
+//   kind      serialize_x_vector_profile's mode guard
+//             deleted                                    -> the downgrade arm
+//   kind      serialize_icl_profile's mode guard deleted -> the downgrade arm's
+//                                                           second half
+//   presence  a kIclOnly entry dropped from
+//             kPrescanKnownKeys                          -> the ICL WRITER-AGREEMENT
+//                                                           test, not the round trip:
+//                                                           the writer still emits the
+//                                                           key, so writer and table
+//                                                           disagree before any
+//                                                           envelope is loaded
+//   value     kPrescanKvCountIcl set to 13               -> the ICL writer-agreement
+//                                                           COUNT assertion, and (run
+//                                                           in isolation) the round
+//                                                           trip. NOT test 6, which the
+//                                                           brief predicted: test 6's
+//                                                           own two arms are still
+//                                                           refused under the wrong
+//                                                           constant, one by the KV
+//                                                           walk stopping early and one
+//                                                           by it running off the end
+//   presence  the per-kind key-SET check deleted         -> nothing: the per-kind COUNT
+//                                                           still catches it
+//   presence  the per-kind COUNT check deleted           -> nothing: the SET still does
+//   presence  BOTH deleted                               -> the extra-keys arm, which
+//                                                           then loads with SYNTH_OK and
+//                                                           the stray keys ignored --
+//                                                           the union-whitelist behaviour
+//                                                           this family's prescan departs
+//                                                           from
+//   presence  ref_rms out of the table, both counts
+//             decremented, AND the post-parse read made
+//             optional                                   -> the moved-key arm (any two of
+//                                                           the three left in place keep
+//                                                           it refused)
+//   presence  language_tag dropped from the whitelist    -> the committed Plan 2 buffer
+//   order     a stage-major transpose on the way out     -> the prepared-ICL round trip,
+//                                                           at codes_equal
+//   value     the codes' range check deleted             -> the out-of-range code arm
+//   value     the ids' `id < 0` half deleted             -> the negative id arm
+//   value     the ids' upper half deleted                -> the too-large id arm
+//   value     the groups/frames product check deleted    -> the inconsistent-grid arm
+//   value     the writer's own two range loops deleted   -> the writer-refusal arm
+//
+// Payload bytes in the hand-built arms are zero-filled, exactly as the Plan 2
+// arms above are: every one of them is refused before a payload VALUE is ever
+// read, and the ones that DO test values go through the real writer and are
+// re-sealed below instead.
 // =============================================================================
 
-int test_a_plan_2_x_vector_profile_still_round_trips() {
-    Fixture fixture;
-    SYNTH_TEST_CHECK(build_fixture(fixture));
-    const char *                          code    = nullptr;
-    const char *                          message = nullptr;
-    std::shared_ptr<const XVectorProfile> prepared;
-    SYNTH_TEST_CHECK(synth::qwen3tts::create_x_vector_profile(fixture.hparams, fixture.weights, one_second_of_speech(),
-                                                              /*transcript=*/"", /*language_tag=*/"english", 1,
-                                                              prepared, code, message) == SYNTH_OK);
+// Re-computes `content_sha256` over a buffer whose bytes were edited after
+// the real writer sealed it -- the same two-step docs/c-interface.md
+// prescribes (hash with that field zeroed, then write the digest back), so an
+// arm that perturbs a payload VALUE reaches the check aimed at it instead of
+// stopping at the digest comparison in front of it.
+bool reseal(std::vector<uint8_t> & bytes) {
+    size_t offset = 0;
+    if (!find_u8_32_value(bytes, "synthesize.voice_profile.content_sha256", offset)) {
+        return false;
+    }
+    std::memset(bytes.data() + offset, 0, 32);
+    uint8_t digest[32];
+    synth::sha256(bytes.data(), bytes.size(), digest);
+    std::memcpy(bytes.data() + offset, digest, sizeof(digest));
+    return true;
+}
+
+// Locates an I32 tensor's first payload byte in a sealed envelope, by parsing
+// the buffer with ggml's own reader rather than re-deriving the layout here.
+bool find_tensor_payload(const std::vector<uint8_t> & bytes, const char * name, size_t & out_offset) {
+    gguf_init_params init_params{};
+    init_params.no_alloc = true;
+    init_params.ctx      = nullptr;
+    gguf_context * ctx   = gguf_init_from_buffer(bytes.data(), bytes.size(), init_params);
+    if (ctx == nullptr) {
+        return false;
+    }
+    const int64_t id = gguf_find_tensor(ctx, name);
+    if (id < 0) {
+        gguf_free(ctx);
+        return false;
+    }
+    out_offset = gguf_get_data_offset(ctx) + gguf_get_tensor_offset(ctx, id);
+    gguf_free(ctx);
+    return out_offset + sizeof(int32_t) <= bytes.size();
+}
+
+std::vector<uint8_t> build_valid_icl_bytes(uint32_t enc_dim, const uint8_t (&compatibility_id)[32]) {
+    const std::shared_ptr<IclProfile> profile = make_serializable_icl_profile(enc_dim);
+    std::vector<uint8_t>              bytes;
+    if (synth::qwen3tts::serialize_icl_profile(envelope_hparams(enc_dim), *profile, compatibility_id, bytes) !=
+        SYNTH_OK) {
+        return {};
+    }
+    return bytes;
+}
+
+// --- Round trip (brief test 1): a hand-built ICL payload -> the real ICL
+// writer -> the real reader -> every one of D5's three rows, plus the two the
+// speaker half carries, comes back identical.
+int test_the_icl_envelope_round_trips() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    const std::shared_ptr<IclProfile> profile = make_serializable_icl_profile(kProfileEncDim);
+
+    std::vector<uint8_t> bytes;
+    SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(envelope_hparams(kProfileEncDim), *profile,
+                                                            compatibility_id, bytes) == SYNTH_OK);
+    SYNTH_TEST_CHECK(!bytes.empty());
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> payload;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                  compatibility_id, family_tag, payload, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_OK);
+    SYNTH_TEST_CHECK(family_tag == synth::ProfileFamilyTag::Qwen3TtsClone);
+    SYNTH_TEST_CHECK(payload != nullptr);
+    SYNTH_TEST_CHECK(code == nullptr);
+    SYNTH_TEST_CHECK(message == nullptr);
+
+    // The consumer's own view first: one ProfileFamilyTag covers both modes,
+    // so src/synthesize.cpp reads `.mode` off the erased payload through an
+    // XVectorProfile pointer before it knows which mode it has. A loaded ICL
+    // payload has to answer that read correctly or the whole discriminator
+    // is a lie.
+    SYNTH_TEST_CHECK(static_cast<const XVectorProfile *>(payload.get())->mode == CloneMode::Icl);
+
+    const auto * reloaded = static_cast<const IclProfile *>(payload.get());
+    SYNTH_TEST_CHECK(reloaded->speaker.mode == CloneMode::Icl);
+    SYNTH_TEST_CHECK(reloaded->speaker.x_vector == profile->speaker.x_vector);
+    SYNTH_TEST_CHECK(reloaded->speaker.ref_rms == profile->speaker.ref_rms);
+    SYNTH_TEST_CHECK(reloaded->speaker.language_tag == profile->speaker.language_tag);
+    SYNTH_TEST_CHECK(reloaded->groups == profile->groups);
+    SYNTH_TEST_CHECK(reloaded->frames == profile->frames);
+    SYNTH_TEST_CHECK(reloaded->codes == profile->codes);
+    SYNTH_TEST_CHECK(reloaded->reference_text_ids == profile->reference_text_ids);
+    return 0;
+}
+
+// --- The whole Plan 3 preparation path, not just the envelope: the REAL
+// create_icl_profile's output serializes and loads back with its code grid
+// element for element, through codec-encoder-host.h's own `codes_equal`
+// production comparison rather than a test-local one.
+int test_a_prepared_icl_profile_round_trips_through_the_envelope() {
+    IclFixture fixture;
+    SYNTH_TEST_CHECK(build_icl_fixture(fixture));
+    const std::vector<float>          pcm     = speech_of(kShortReferenceSamples);
+    const char *                      code    = nullptr;
+    const char *                      message = nullptr;
+    std::shared_ptr<const IclProfile> prepared;
+    SYNTH_TEST_CHECK(prepare_icl(fixture, pcm, prepared, code, message) == SYNTH_OK);
     SYNTH_TEST_CHECK(prepared != nullptr);
-    SYNTH_TEST_CHECK(prepared->mode == CloneMode::XVector);
 
     uint8_t compatibility_id[32];
     fill_compatibility_id(compatibility_id);
     std::vector<uint8_t> bytes;
-    SYNTH_TEST_CHECK(synth::qwen3tts::serialize_x_vector_profile(*prepared, compatibility_id, bytes) == SYNTH_OK);
+    SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(fixture.hparams, *prepared, compatibility_id, bytes) ==
+                     SYNTH_OK);
 
     synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
     std::shared_ptr<const void> payload;
     const char *                load_code    = nullptr;
     const char *                load_message = nullptr;
-    SYNTH_TEST_CHECK(synth::qwen3tts::load_profile_from_memory(fixture.hparams.speaker_encoder.enc_dim, bytes.data(),
-                                                               bytes.size(), compatibility_id, family_tag, payload,
-                                                               load_code, load_message) == SYNTH_OK);
+    SYNTH_TEST_CHECK(synth::qwen3tts::load_profile_from_memory(fixture.hparams, bytes.data(), bytes.size(),
+                                                               compatibility_id, family_tag, payload, load_code,
+                                                               load_message) == SYNTH_OK);
+    const auto * reloaded = static_cast<const IclProfile *>(payload.get());
+    SYNTH_TEST_CHECK(reloaded->speaker.mode == CloneMode::Icl);
+    SYNTH_TEST_CHECK(reloaded->groups == uint64_t(kGroups));
+    SYNTH_TEST_CHECK(reloaded->frames == kShortReferenceFrames);
+    SYNTH_TEST_CHECK(reloaded->reference_text_ids == reference_text_ids());
+
+    synth::qwen3tts::CodecEncoding encoding;
+    const char *                   encode_code    = nullptr;
+    const char *                   encode_message = nullptr;
+    SYNTH_TEST_CHECK(synth::qwen3tts::encode_codec_reference(fixture.hparams, fixture.codec, pcm, 1, encoding,
+                                                             encode_code, encode_message) == SYNTH_OK);
+    SYNTH_TEST_CHECK(synth::qwen3tts::codes_equal(encoding, reloaded->codes.data(), int64_t(reloaded->frames)));
+    return 0;
+}
+
+// --- Determinism (brief test 2): the same ICL payload serializes
+// byte-identically twice.
+int test_the_icl_writer_is_deterministic() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    const std::shared_ptr<IclProfile> profile = make_serializable_icl_profile(kProfileEncDim);
+    std::vector<uint8_t>              first, second;
+    SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(envelope_hparams(kProfileEncDim), *profile,
+                                                            compatibility_id, first) == SYNTH_OK);
+    SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(envelope_hparams(kProfileEncDim), *profile,
+                                                            compatibility_id, second) == SYNTH_OK);
+    SYNTH_TEST_CHECK(first == second);
+    return 0;
+}
+
+// --- THE SILENT DOWNGRADE (Task 8 review, carried item 1). Composing
+// XVectorProfile as IclProfile's first member made `XVectorProfile{mode ==
+// Icl}` constructible -- `icl->speaker` is exactly one -- so handing it to
+// the x-vector writer used to emit a perfectly valid, digest-correct
+// `kind="x-vector"` envelope with the codes and the ids simply dropped, and
+// the ICL Profile round-tripped back as an x-vector Profile with nothing
+// disagreeing anywhere. Both writers now refuse a payload whose mode names
+// the other kind.
+//
+// Dimension: kind. Deleting either guard makes the matching arm below return
+// SYNTH_OK with a non-empty buffer.
+int test_a_writer_refuses_a_payload_of_the_other_mode() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+
+    // An ICL payload's own speaker half, handed to the x-vector writer -- the
+    // exact object that made this reachable, not a hand-set flag.
+    const std::shared_ptr<IclProfile> icl = make_serializable_icl_profile(kProfileEncDim);
+    std::vector<uint8_t>              bytes;
+    SYNTH_TEST_CHECK(synth::qwen3tts::serialize_x_vector_profile(icl->speaker, compatibility_id, bytes) ==
+                     SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(bytes.empty());
+
+    // And the mirror: an x-vector payload handed to the ICL writer.
+    auto downgraded          = std::make_shared<IclProfile>(*icl);
+    downgraded->speaker.mode = CloneMode::XVector;
+    SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(envelope_hparams(kProfileEncDim), *downgraded,
+                                                            compatibility_id, bytes) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(bytes.empty());
+    return 0;
+}
+
+// --- THE WHITELIST IS PER-KIND, NOT A UNION (brief test 4). An "x-vector"
+// envelope carrying both kIclOnly keys has twelve whitelisted, duplicate-free
+// keys, so every gate a UNION whitelist could offer passes.
+//
+// Dimension: presence (a key belonging to the other kind). MEASURED, because
+// two independent rules catch this and the brief predicted only one: with the
+// per-kind key-SET check disabled it is still refused, by the per-kind KV
+// COUNT (12 != kPrescanKvCountXVector); with the COUNT check disabled it is
+// still refused, by the SET check; with BOTH disabled it loads with SYNTH_OK
+// and the two stray keys are silently ignored -- which is exactly the
+// omnivoice-inherited behaviour this family's prescan now departs from.
+int test_an_x_vector_envelope_with_icl_keys_is_refused() {
+    constexpr int64_t    kProfileEncDim = 11;
+    std::vector<uint8_t> kv             = common_kv_bytes("x-vector");
+    append_icl_kv_bytes(kv, kEnvelopeGroups, kEnvelopeFrames);
+    // A literal for the same reason the arms below use literals: twelve is
+    // what this buffer holds, whatever the table currently claims.
+    const std::vector<uint8_t> bytes = assemble_hand_built(kv, /*n_kv=*/12, kProfileEncDim);
+
+    uint8_t compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> payload;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(uint32_t(kProfileEncDim)), bytes.data(),
+                                                  bytes.size(), compatibility_id, family_tag, payload, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(payload == nullptr);
+    return 0;
+}
+
+// --- The same required-key machinery from the ICL side (brief test 5, first
+// bullet): an "icl" envelope with a kIclOnly key missing is refused.
+//
+// Dimension: presence. WHAT ACTUALLY REJECTS IT, measured rather than
+// predicted: the per-kind KV count, since eleven keys is neither
+// kPrescanKvCountXVector nor kPrescanKvCountIcl. The count-PRESERVING version
+// of this arm -- drop one kIclOnly key and put a different whitelisted,
+// non-duplicate key in its place -- is UNWRITABLE for the ICL kind after this
+// task's own scope move: kXVectorOnly is gone, so the ICL kind's expected set
+// is the entire table and there is no thirteenth name to substitute in. The
+// x-vector direction, where a substitution IS available, is the arm above.
+int test_an_icl_envelope_missing_an_icl_key_is_refused() {
+    constexpr int64_t    kProfileEncDim = 11;
+    std::vector<uint8_t> kv             = common_kv_bytes("icl");
+    append_icl_kv_bytes(kv, kEnvelopeGroups, kEnvelopeFrames, "synthesize.voice_profile.code_groups");
+    // A literal, not `kPrescanKvCountIcl - 1`: this is what the buffer
+    // actually contains, and writing it against the constant would let an
+    // inversion of that constant move the test's own expectation with it.
+    const std::vector<uint8_t> bytes = assemble_hand_built_icl(kv, /*n_kv=*/11, /*n_tensors=*/3, kProfileEncDim,
+                                                               int64_t(kEnvelopeGroups) * int64_t(kEnvelopeFrames), 5);
+
+    uint8_t compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> payload;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(uint32_t(kProfileEncDim)), bytes.data(),
+                                                  bytes.size(), compatibility_id, family_tag, payload, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(payload == nullptr);
+    return 0;
+}
+
+// --- THE KEY THAT MOVED IS REQUIRED IN BOTH KINDS (brief test 5, second
+// bullet). `ref_rms` was kXVectorOnly through Plan 2 and is kCommon now; an
+// envelope of EITHER kind that omits it is refused. This is the "key moved
+// between kinds" defect PrescanKeyScope was built for, asserted from both
+// sides.
+//
+// Dimension: presence. THE DECLARED KV COUNTS BELOW ARE LITERALS, not
+// `kPrescanKvCount* - 1`, and that is the difference between a test that can
+// fail and one that cannot: written against the constants, an inversion that
+// moves `ref_rms` out of a kind's scope AND decrements that kind's count
+// moves the test's own expectation with it, and the arm keeps passing for the
+// wrong reason. That exact defect was measured on the first draft of this
+// test. The literals are what a buffer of nine (or eleven) keys ACTUALLY
+// contains, independent of what the table says it should.
+//
+// MEASURED, two rules deep, the same shape test 4 above turned out to have:
+// with both per-kind counts decremented so a nine-key x-vector envelope is
+// "correct", the arms are STILL refused, by the post-parse `meta.f32(ref_rms)`
+// read that fails closed on a missing field; with that read also made
+// optional, they load. Either rule alone is enough, and neither is redundant:
+// the count rejects before ggml's parser is entered at all, and the read is
+// what covers a kind whose count happens to be right for another reason.
+int test_the_moved_ref_rms_key_is_required_in_both_kinds() {
+    constexpr int64_t kProfileEncDim = 11;
+    uint8_t           compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+
+    const std::vector<uint8_t> x_vector_kv = common_kv_bytes("x-vector", "synthesize.voice_profile.ref_rms");
+    std::vector<uint8_t>       icl_kv      = common_kv_bytes("icl", "synthesize.voice_profile.ref_rms");
+    append_icl_kv_bytes(icl_kv, kEnvelopeGroups, kEnvelopeFrames);
+
+    const std::vector<uint8_t> cases[] = {
+        assemble_hand_built(x_vector_kv, /*n_kv=*/9, kProfileEncDim),
+        assemble_hand_built_icl(icl_kv, /*n_kv=*/11, /*n_tensors=*/3, kProfileEncDim,
+                                int64_t(kEnvelopeGroups) * int64_t(kEnvelopeFrames), 5),
+    };
+
+    for (const std::vector<uint8_t> & bytes : cases) {
+        synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+        std::shared_ptr<const void> payload;
+        const char *                code    = nullptr;
+        const char *                message = nullptr;
+        const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
+            envelope_hparams(uint32_t(kProfileEncDim)), bytes.data(), bytes.size(), compatibility_id, family_tag,
+            payload, code, message);
+        SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(payload == nullptr);
+    }
+    return 0;
+}
+
+// --- n_kv is EXACTLY kPrescanKvCountIcl for an "icl" envelope (brief test
+// 6), not a ceiling: the header's own count field is patched one under and
+// one over on a real, otherwise-valid envelope, and both are refused before
+// gguf_init_from_buffer runs.
+//
+// Dimension: value (the declared KV count). MEASURED, and the measurement is
+// worth stating plainly because it contradicts what this arm was expected to
+// do: setting `kPrescanKvCountIcl` to 13 does NOT make this test fail. Both
+// arms stay refused under the wrong constant -- one under stops the KV walk an
+// entry early and the leftover bytes fail the tensor-name check, one over
+// walks off the end of the metadata and fails the read itself -- and what
+// reports the wrong constant is the ICL writer-agreement test's own count
+// assertion, and the ICL round trip. So this arm pins the black-box contract
+// (a declared count other than the writer's own is refused before
+// gguf_init_from_buffer runs), and the CONSTANT is pinned elsewhere. Both are
+// worth having; neither is the other.
+int test_the_icl_kv_count_is_exact() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    const std::vector<uint8_t> valid = build_valid_icl_bytes(kProfileEncDim, compatibility_id);
+    SYNTH_TEST_CHECK(valid.size() > 24);
+
+    for (int64_t wrong_n_kv : { kPrescanKvCountIcl - 1, kPrescanKvCountIcl + 1 }) {
+        std::vector<uint8_t> bytes = valid;
+        std::memcpy(bytes.data() + 16, &wrong_n_kv, sizeof(wrong_n_kv));
+
+        synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+        std::shared_ptr<const void> payload;
+        const char *                code    = nullptr;
+        const char *                message = nullptr;
+        const synth_status_t        status =
+            synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                      compatibility_id, family_tag, payload, code, message);
+        SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(payload == nullptr);
+    }
+    return 0;
+}
+
+// --- THE REFERENCE CODES ARE BOUNDED ON BOTH SIDES (brief test 9, the new
+// half). A code is a `ggml_get_rows` index and that op ABORTS the process
+// outside its range, so a code out of range in an envelope someone else wrote
+// is not a wrong answer, it is a crash the caller cannot map. The bound is
+// the POSITIVE one -- encode_codec_reference's own postcondition,
+// `[0, codebook_size)` -- not an enumeration of what the prompt builder
+// happens to assert.
+//
+// The envelope goes through the real writer and is then edited and RE-SEALED,
+// so the arm reaches the value check instead of stopping at the digest
+// comparison in front of it. Dimension: value.
+int test_the_reader_refuses_a_code_outside_the_codebook() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+
+    for (int32_t bad_code : { int32_t(-1), int32_t(kEnvelopeCodebook), std::numeric_limits<int32_t>::min() }) {
+        std::vector<uint8_t> bytes = build_valid_icl_bytes(kProfileEncDim, compatibility_id);
+        SYNTH_TEST_CHECK(!bytes.empty());
+        size_t offset = 0;
+        SYNTH_TEST_CHECK(find_tensor_payload(bytes, "profile.codes", offset));
+        std::memcpy(bytes.data() + offset, &bad_code, sizeof(bad_code));
+        SYNTH_TEST_CHECK(reseal(bytes));
+
+        synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+        std::shared_ptr<const void> payload;
+        const char *                code    = nullptr;
+        const char *                message = nullptr;
+        const synth_status_t        status =
+            synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                      compatibility_id, family_tag, payload, code, message);
+        SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(payload == nullptr);
+    }
+    return 0;
+}
+
+// --- THE REFERENCE TEXT IDS ARE BOUNDED ON BOTH SIDES (Task 8 review,
+// carried item 2). This stream had no bound anywhere: the codes are at least
+// range-checked again by talker-host.cpp's reference_is_well_formed before a
+// prompt is built, and the ids are not. They are carried into the prompt as
+// `uint32_t`, so -1 arrives as roughly 4e9 and indexes a table with a few
+// tens of thousands of rows; the get_rows assert that follows aborts the
+// process. Once an envelope can be read from a file every one of these values
+// is bytes someone else wrote, which is what makes this the task that had to
+// close it.
+//
+// The bound is again POSITIVE -- `[0, text_vocab_size)`, the width of the
+// talker's own text embedding table, which is what our own tokenizer can
+// emit -- rather than a blacklist of what some consumer asserts
+// (docs/porting/families/omnivoice.md's untrusted-bytes rule).
+//
+// Dimension: value. The two halves of the check are inverted separately
+// below, because deleting only `id < 0` leaves the negative arm passing on a
+// signed comparison that a `uint32_t` cast downstream would have undone.
+int test_the_reader_refuses_a_reference_text_id_outside_the_vocabulary() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+
+    for (int32_t bad_id : { int32_t(-1), int32_t(kEnvelopeTextVocab), std::numeric_limits<int32_t>::max() }) {
+        std::vector<uint8_t> bytes = build_valid_icl_bytes(kProfileEncDim, compatibility_id);
+        SYNTH_TEST_CHECK(!bytes.empty());
+        size_t offset = 0;
+        SYNTH_TEST_CHECK(find_tensor_payload(bytes, "profile.reference_text_ids", offset));
+        std::memcpy(bytes.data() + offset, &bad_id, sizeof(bad_id));
+        SYNTH_TEST_CHECK(reseal(bytes));
+
+        synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+        std::shared_ptr<const void> payload;
+        const char *                code    = nullptr;
+        const char *                message = nullptr;
+        const synth_status_t        status =
+            synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                      compatibility_id, family_tag, payload, code, message);
+        SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(payload == nullptr);
+    }
+    return 0;
+}
+
+// --- The same bound at the WRITER (the rule kMaxLanguageTagLength's own
+// header comment states, applied to the two discrete streams): this family
+// must never emit an envelope its own reader refuses. A hand-built payload
+// carrying an out-of-range code or id is refused before any bytes are
+// produced, so the reader's refusals above can only ever fire on someone
+// else's bytes.
+//
+// Dimension: value. Deleting either writer-side loop makes the matching arm
+// return SYNTH_OK -- and, since the reader still refuses the result,
+// reproduces exactly the "our own writer's output, rejected by our own
+// reader" defect a reviewer measured on `language_tag`.
+int test_the_icl_writer_refuses_out_of_range_streams() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    const HParams hparams = envelope_hparams(kProfileEncDim);
+
+    {
+        auto profile      = std::make_shared<IclProfile>(*make_serializable_icl_profile(kProfileEncDim));
+        profile->codes[2] = int32_t(kEnvelopeCodebook);
+        std::vector<uint8_t> bytes;
+        SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(hparams, *profile, compatibility_id, bytes) ==
+                         SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(bytes.empty());
+    }
+    {
+        auto profile                   = std::make_shared<IclProfile>(*make_serializable_icl_profile(kProfileEncDim));
+        profile->reference_text_ids[1] = -1;
+        std::vector<uint8_t> bytes;
+        SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(hparams, *profile, compatibility_id, bytes) ==
+                         SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(bytes.empty());
+    }
+    // And the half-present state create_icl_profile refuses at creation: an
+    // ICL envelope with no reference text at all is a plausible-sounding
+    // wrong prompt, so the writer refuses to produce one.
+    {
+        auto profile = std::make_shared<IclProfile>(*make_serializable_icl_profile(kProfileEncDim));
+        profile->reference_text_ids.clear();
+        std::vector<uint8_t> bytes;
+        SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(hparams, *profile, compatibility_id, bytes) ==
+                         SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(bytes.empty());
+    }
+    return 0;
+}
+
+// --- The grid's own three numbers have to agree (brief test 9, the
+// "frame count consistent with the declared grid" half). `groups * frames`
+// must equal the codes tensor's declared element count, and `groups` must be
+// exactly the package's own quantizer count -- a grid of the wrong width
+// builds a wrong-shaped prompt, the same reason `enc_dim` is exact rather
+// than a ceiling.
+//
+// Dimension: value (the declared grid), perturbed at the METADATA rather than
+// the tensor, so the codes tensor itself stays exactly what the writer wrote.
+int test_the_reader_refuses_an_inconsistent_code_grid() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+
+    const struct {
+        const char * key;
+        uint32_t     value;
+    } cases[] = {
+        // frames one over: groups * frames no longer equals the tensor's
+        // element count.
+        { "synthesize.voice_profile.reference_frames", kEnvelopeFrames + 1 },
+        // frames zero: an ICL Profile with no reference audio behind it.
+        { "synthesize.voice_profile.reference_frames", 0                   },
+        // groups not the package's quantizer count, and chosen so the product
+        // ALSO stops matching -- the two rules are separate and this arm is
+        // the one that names the package.
+        { "synthesize.voice_profile.code_groups",      kEnvelopeGroups * 2 },
+    };
+
+    for (const auto & one : cases) {
+        std::vector<uint8_t> bytes = build_valid_icl_bytes(kProfileEncDim, compatibility_id);
+        SYNTH_TEST_CHECK(!bytes.empty());
+        size_t offset = 0;
+        SYNTH_TEST_CHECK(find_u32_value(bytes, one.key, offset));
+        std::memcpy(bytes.data() + offset, &one.value, sizeof(one.value));
+        SYNTH_TEST_CHECK(reseal(bytes));
+
+        synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+        std::shared_ptr<const void> payload;
+        const char *                code    = nullptr;
+        const char *                message = nullptr;
+        const synth_status_t        status =
+            synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                      compatibility_id, family_tag, payload, code, message);
+        SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(payload == nullptr);
+    }
+    return 0;
+}
+
+// --- The x-vector half of brief test 9, on an ICL envelope: a loaded ICL
+// Profile satisfies the SAME payload-value invariants a loaded x-vector one
+// does. Those checks are Plan 2's, measured after a reviewer found all four
+// ref_rms states loading with SYNTH_OK, and an ICL Profile carries the same
+// `speaker` an x-vector Profile IS -- so they have to reach it here too
+// rather than being skipped on the new path.
+//
+// Dimension: value. Deleting the shared ref_rms/x_vector checks makes this
+// arm AND the five Plan 2 arms above fail together, which is the point: there
+// is one implementation, not two.
+int test_an_icl_envelope_inherits_the_payload_value_checks() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    const HParams hparams = envelope_hparams(kProfileEncDim);
+
+    const float bad_ref_rms[] = { 0.0f, -1.0f, std::numeric_limits<float>::infinity(),
+                                  std::numeric_limits<float>::quiet_NaN() };
+    for (float ref_rms : bad_ref_rms) {
+        auto profile             = std::make_shared<IclProfile>(*make_serializable_icl_profile(kProfileEncDim));
+        profile->speaker.ref_rms = ref_rms;
+        std::vector<uint8_t> bytes;
+        SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(hparams, *profile, compatibility_id, bytes) ==
+                         SYNTH_OK);
+
+        synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+        std::shared_ptr<const void> payload;
+        const char *                code    = nullptr;
+        const char *                message = nullptr;
+        SYNTH_TEST_CHECK(synth::qwen3tts::load_profile_from_memory(hparams, bytes.data(), bytes.size(),
+                                                                   compatibility_id, family_tag, payload, code,
+                                                                   message) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(payload == nullptr);
+    }
+
+    // An all-zero x-vector, finite in every element and still refused.
+    {
+        auto profile = std::make_shared<IclProfile>(*make_serializable_icl_profile(kProfileEncDim));
+        profile->speaker.x_vector.assign(kProfileEncDim, 0.0f);
+        std::vector<uint8_t> bytes;
+        SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(hparams, *profile, compatibility_id, bytes) ==
+                         SYNTH_OK);
+
+        synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+        std::shared_ptr<const void> payload;
+        const char *                code    = nullptr;
+        const char *                message = nullptr;
+        SYNTH_TEST_CHECK(synth::qwen3tts::load_profile_from_memory(hparams, bytes.data(), bytes.size(),
+                                                                   compatibility_id, family_tag, payload, code,
+                                                                   message) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(payload == nullptr);
+    }
+    return 0;
+}
+
+// =============================================================================
+// Plan 3 Task 9, the claim that has to be ASSERTED rather than assumed: adding
+// a second clone mode did not break the first one's ALREADY-WRITTEN bytes.
+//
+// The Profile Schema does not change identity or version for this -- it stays
+// "qwen3-tts-voice-clone" at version 1, and the in-envelope
+// `synthesize.voice_profile.kind` gained a second value instead.
+// Discriminating on `kind` rather than on `schema_version` is the entire point
+// of that field (profile.h's own header comment on the envelope section), and
+// what it BUYS is exactly this: an x-vector Profile serialized before ICL
+// existed still loads, with no package re-cut and no version bump.
+//
+// THE BUFFER IS COMMITTED RATHER THAN REGENERATED, and that is the whole
+// difference between this check and the round trips above. Task 8 shipped this
+// assertion as a prepare/serialize/load cycle through the CURRENT writer, and
+// its review found it made no claim test_round_trip_of_a_well_formed_profile
+// and test_a_prepared_profile_carries_the_declared_width were not already
+// making -- a writer and reader changed together stay agreeing with each
+// other, so a cycle through both cannot notice that "a Plan 2 profile" has
+// been quietly redefined. These 800 bytes were produced by the Plan 2 writer
+// AT COMMIT 50912d9, before serialize_icl_profile or the widened whitelist
+// existed, and are pasted here verbatim. Only the READER runs below.
+//
+// (Recorded because it is the reassuring half and the next reader will want
+// it: the Plan 3 writer, driven on the same make_serializable_profile(11,
+// 0.5f, "en-US") payload and the same compatibility id, was measured to emit
+// these 800 bytes exactly -- moving `ref_rms`/`language_tag` into
+// set_common_metadata preserved their emission order. That measurement is NOT
+// what this test asserts; it asserts the reader, which is the half a future
+// writer change cannot compensate for.)
+//
+// Dimension: presence/value of the whole Plan 2 encoding. Narrow the
+// whitelist, renumber a per-kind count, reorder set_common_metadata, or
+// change the tensor layout, and this is the check that reports it.
+constexpr uint8_t kPlan2XVectorEnvelope[] = {
+    0x47, 0x47, 0x55, 0x46, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x67, 0x65, 0x6e, 0x65, 0x72, 0x61,
+    0x6c, 0x2e, 0x61, 0x72, 0x63, 0x68, 0x69, 0x74, 0x65, 0x63, 0x74, 0x75, 0x72, 0x65, 0x08, 0x00, 0x00, 0x00, 0x0c,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x73, 0x79, 0x6e, 0x74, 0x68, 0x70, 0x72, 0x6f, 0x66, 0x69, 0x6c, 0x65,
+    0x27, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x73, 0x79, 0x6e, 0x74, 0x68, 0x65, 0x73, 0x69, 0x7a, 0x65, 0x2e,
+    0x76, 0x6f, 0x69, 0x63, 0x65, 0x5f, 0x70, 0x72, 0x6f, 0x66, 0x69, 0x6c, 0x65, 0x2e, 0x66, 0x6f, 0x72, 0x6d, 0x61,
+    0x74, 0x5f, 0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x25, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x73, 0x79, 0x6e, 0x74, 0x68, 0x65, 0x73, 0x69, 0x7a, 0x65, 0x2e, 0x76, 0x6f,
+    0x69, 0x63, 0x65, 0x5f, 0x70, 0x72, 0x6f, 0x66, 0x69, 0x6c, 0x65, 0x2e, 0x6d, 0x6f, 0x64, 0x65, 0x6c, 0x5f, 0x66,
+    0x61, 0x6d, 0x69, 0x6c, 0x79, 0x08, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x71, 0x77,
+    0x65, 0x6e, 0x33, 0x2d, 0x74, 0x74, 0x73, 0x1f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x73, 0x79, 0x6e, 0x74,
+    0x68, 0x65, 0x73, 0x69, 0x7a, 0x65, 0x2e, 0x76, 0x6f, 0x69, 0x63, 0x65, 0x5f, 0x70, 0x72, 0x6f, 0x66, 0x69, 0x6c,
+    0x65, 0x2e, 0x73, 0x63, 0x68, 0x65, 0x6d, 0x61, 0x08, 0x00, 0x00, 0x00, 0x15, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x71, 0x77, 0x65, 0x6e, 0x33, 0x2d, 0x74, 0x74, 0x73, 0x2d, 0x76, 0x6f, 0x69, 0x63, 0x65, 0x2d, 0x63, 0x6c,
+    0x6f, 0x6e, 0x65, 0x27, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x73, 0x79, 0x6e, 0x74, 0x68, 0x65, 0x73, 0x69,
+    0x7a, 0x65, 0x2e, 0x76, 0x6f, 0x69, 0x63, 0x65, 0x5f, 0x70, 0x72, 0x6f, 0x66, 0x69, 0x6c, 0x65, 0x2e, 0x73, 0x63,
+    0x68, 0x65, 0x6d, 0x61, 0x5f, 0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+    0x00, 0x29, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x73, 0x79, 0x6e, 0x74, 0x68, 0x65, 0x73, 0x69, 0x7a, 0x65,
+    0x2e, 0x76, 0x6f, 0x69, 0x63, 0x65, 0x5f, 0x70, 0x72, 0x6f, 0x66, 0x69, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d, 0x70,
+    0x61, 0x74, 0x69, 0x62, 0x69, 0x6c, 0x69, 0x74, 0x79, 0x5f, 0x69, 0x64, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+    0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23,
+    0x24, 0x25, 0x26, 0x27, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x73, 0x79, 0x6e, 0x74, 0x68, 0x65, 0x73, 0x69,
+    0x7a, 0x65, 0x2e, 0x76, 0x6f, 0x69, 0x63, 0x65, 0x5f, 0x70, 0x72, 0x6f, 0x66, 0x69, 0x6c, 0x65, 0x2e, 0x63, 0x6f,
+    0x6e, 0x74, 0x65, 0x6e, 0x74, 0x5f, 0x73, 0x68, 0x61, 0x32, 0x35, 0x36, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x15, 0x5d, 0xb3, 0xe7, 0xbf, 0xc1, 0x7e, 0x80, 0xf9, 0x48,
+    0xec, 0x06, 0x91, 0xbb, 0x34, 0x9d, 0x64, 0x2f, 0x12, 0x09, 0x4e, 0xba, 0x8c, 0xfe, 0x78, 0xb8, 0x5e, 0x92, 0xdf,
+    0x48, 0xc5, 0xa8, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x73, 0x79, 0x6e, 0x74, 0x68, 0x65, 0x73, 0x69,
+    0x7a, 0x65, 0x2e, 0x76, 0x6f, 0x69, 0x63, 0x65, 0x5f, 0x70, 0x72, 0x6f, 0x66, 0x69, 0x6c, 0x65, 0x2e, 0x6b, 0x69,
+    0x6e, 0x64, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x2d, 0x76, 0x65, 0x63,
+    0x74, 0x6f, 0x72, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x73, 0x79, 0x6e, 0x74, 0x68, 0x65, 0x73, 0x69,
+    0x7a, 0x65, 0x2e, 0x76, 0x6f, 0x69, 0x63, 0x65, 0x5f, 0x70, 0x72, 0x6f, 0x66, 0x69, 0x6c, 0x65, 0x2e, 0x72, 0x65,
+    0x66, 0x5f, 0x72, 0x6d, 0x73, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3f, 0x25, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x73, 0x79, 0x6e, 0x74, 0x68, 0x65, 0x73, 0x69, 0x7a, 0x65, 0x2e, 0x76, 0x6f, 0x69, 0x63, 0x65, 0x5f,
+    0x70, 0x72, 0x6f, 0x66, 0x69, 0x6c, 0x65, 0x2e, 0x6c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x5f, 0x74, 0x61,
+    0x67, 0x08, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x6e, 0x2d, 0x55, 0x53, 0x10,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70, 0x72, 0x6f, 0x66, 0x69, 0x6c, 0x65, 0x2e, 0x78, 0x5f, 0x76, 0x65,
+    0x63, 0x74, 0x6f, 0x72, 0x01, 0x00, 0x00, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x56, 0x5a, 0x27, 0xbf, 0x8e,
+    0xd0, 0x7b, 0xbf, 0xa4, 0xbe, 0x52, 0xbf, 0x00, 0xd9, 0x78, 0x3f, 0x6e, 0x37, 0x22, 0xbf, 0x84, 0x77, 0xa6, 0x3e,
+    0xf4, 0xb0, 0xca, 0x3e, 0xcc, 0xda, 0x15, 0xbf, 0xee, 0x90, 0x49, 0xbf, 0xb0, 0x80, 0xd6, 0xbe, 0x46, 0xf9, 0x41,
+    0xbf, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00,
+};
+
+int test_a_plan_2_x_vector_envelope_still_loads() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> payload;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
+        envelope_hparams(kProfileEncDim), kPlan2XVectorEnvelope, sizeof(kPlan2XVectorEnvelope), compatibility_id,
+        family_tag, payload, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_OK);
     SYNTH_TEST_CHECK(family_tag == synth::ProfileFamilyTag::Qwen3TtsClone);
     SYNTH_TEST_CHECK(payload != nullptr);
 
     const auto * reloaded = static_cast<const XVectorProfile *>(payload.get());
-    // Still the FIRST mode, not the new one: a Plan 2 Profile read under a
-    // build that knows about `icl` must not come back meaning `icl`.
+    // Still the FIRST mode, not the new one: bytes written before `icl`
+    // existed must not come back meaning `icl`.
     SYNTH_TEST_CHECK(reloaded->mode == CloneMode::XVector);
-    SYNTH_TEST_CHECK(reloaded->x_vector == prepared->x_vector);
-    SYNTH_TEST_CHECK(reloaded->ref_rms == prepared->ref_rms);
-    SYNTH_TEST_CHECK(reloaded->language_tag == "english");
+    SYNTH_TEST_CHECK(reloaded->language_tag == "en-US");
+    SYNTH_TEST_CHECK(reloaded->ref_rms == 0.5f);
+    SYNTH_TEST_CHECK(reloaded->x_vector.size() == kProfileEncDim);
+    // The payload values themselves, against the same generator that produced
+    // the committed bytes -- so a reader that returned the right SHAPE from
+    // the wrong offsets would still be caught.
+    SYNTH_TEST_CHECK(reloaded->x_vector == make_serializable_profile(kProfileEncDim, 0.5f, "en-US")->x_vector);
     return 0;
 }
 
@@ -1998,7 +2888,6 @@ int main() {
     SYNTH_TEST_CHECK(test_a_language_tag_is_stored_verbatim() == 0);
 
     SYNTH_TEST_CHECK(test_an_icl_profile_reports_the_icl_mode() == 0);
-    SYNTH_TEST_CHECK(test_an_icl_payload_reads_back_through_an_x_vector_pointer() == 0);
     SYNTH_TEST_CHECK(test_an_icl_profile_carries_all_three_of_d5s_rows() == 0);
     SYNTH_TEST_CHECK(test_the_icl_code_grid_is_the_encoders_own_grid() == 0);
     SYNTH_TEST_CHECK(test_the_icl_frame_count_follows_the_reference_length() == 0);
@@ -2025,6 +2914,7 @@ int main() {
     SYNTH_TEST_CHECK(test_out_of_range_type_tag_is_invalid_arg() == 0);
     SYNTH_TEST_CHECK(test_wrong_n_kv_count_is_invalid_arg() == 0);
     SYNTH_TEST_CHECK(test_writer_emits_exactly_the_whitelisted_keys() == 0);
+    SYNTH_TEST_CHECK(test_the_icl_writer_emits_exactly_the_whitelisted_keys() == 0);
 
     SYNTH_TEST_CHECK(test_language_tag_too_long_is_rejected_at_creation() == 0);
     SYNTH_TEST_CHECK(test_oversized_language_tag_is_rejected_by_the_writer() == 0);
@@ -2035,7 +2925,21 @@ int main() {
     SYNTH_TEST_CHECK(test_nan_ref_rms_is_rejected_by_the_reader() == 0);
     SYNTH_TEST_CHECK(test_all_zero_x_vector_is_rejected_by_the_reader() == 0);
 
-    SYNTH_TEST_CHECK(test_a_plan_2_x_vector_profile_still_round_trips() == 0);
+    SYNTH_TEST_CHECK(test_the_icl_envelope_round_trips() == 0);
+    SYNTH_TEST_CHECK(test_a_prepared_icl_profile_round_trips_through_the_envelope() == 0);
+    SYNTH_TEST_CHECK(test_the_icl_writer_is_deterministic() == 0);
+    SYNTH_TEST_CHECK(test_a_writer_refuses_a_payload_of_the_other_mode() == 0);
+    SYNTH_TEST_CHECK(test_an_x_vector_envelope_with_icl_keys_is_refused() == 0);
+    SYNTH_TEST_CHECK(test_an_icl_envelope_missing_an_icl_key_is_refused() == 0);
+    SYNTH_TEST_CHECK(test_the_moved_ref_rms_key_is_required_in_both_kinds() == 0);
+    SYNTH_TEST_CHECK(test_the_icl_kv_count_is_exact() == 0);
+    SYNTH_TEST_CHECK(test_the_reader_refuses_a_code_outside_the_codebook() == 0);
+    SYNTH_TEST_CHECK(test_the_reader_refuses_a_reference_text_id_outside_the_vocabulary() == 0);
+    SYNTH_TEST_CHECK(test_the_icl_writer_refuses_out_of_range_streams() == 0);
+    SYNTH_TEST_CHECK(test_the_reader_refuses_an_inconsistent_code_grid() == 0);
+    SYNTH_TEST_CHECK(test_an_icl_envelope_inherits_the_payload_value_checks() == 0);
+
+    SYNTH_TEST_CHECK(test_a_plan_2_x_vector_envelope_still_loads() == 0);
 
     std::printf("qwen3-tts-profile: all checks passed\n");
     return 0;

@@ -1,4 +1,5 @@
 #include "arch/omnivoice/profile.h"
+#include "arch/qwen3-tts/bpe.h"
 #include "arch/qwen3-tts/profile.h"
 #include "arch/qwen3-tts/weights.h"
 #include "audio-normalizer.h"
@@ -382,33 +383,41 @@ synth_status_t create_omnivoice_profile_from_reference(const synth_model_t *    
 }
 
 // ---------------------------------------------------------------------------
-// Qwen3-TTS's create_from_reference handler (Stage 2 Plan 2 Task 9): the
-// x-vector Voice Profile source this family's Base variant implements.
-// `model`/`params` are already known non-null with a params struct_size of at
-// least sizeof(uint64_t) by the caller below, which also already confirmed
-// this Loaded Model's own capability snapshot advertises Reference Audio --
-// see that caller's own comment for why a CustomVoice Loaded Model (this
-// family's OTHER variant, sharing the same `ModelFamily::Qwen3Tts` tag) never
-// reaches this function at all.
+// Qwen3-TTS's create_from_reference handler (Stage 2 Plan 2 Task 9, opened to
+// both clone modes by Plan 3's Task 10): the Reference Audio Voice Profile
+// source this family's Base variant implements. `model`/`params` are already
+// known non-null with a params struct_size of at least sizeof(uint64_t) by the
+// caller below, which also already confirmed this Loaded Model's own
+// capability snapshot advertises Reference Audio -- see that caller's own
+// comment for why a CustomVoice Loaded Model (this family's OTHER variant,
+// sharing the same `ModelFamily::Qwen3Tts` tag) never reaches this function at
+// all.
+//
+// THIS FUNCTION IS THE MODE SELECTOR, and it is the only one. D4 (this plan's
+// own ruling) fixes the clone mode at preparation rather than at synthesis, so
+// something has to choose, once, from the request: the transcript's PRESENCE
+// chooses. Absent -> create_x_vector_profile, exactly as Plan 2 did. Present
+// -> tokenize through Model::tokenize_reference_transcript and hand the ids to
+// create_icl_profile. The selection lives HERE and nowhere else because this
+// is the one site in the chain that holds a live `Model &` and can therefore
+// reach the BPE tables; arch/qwen3-tts/profile.h's create_x_vector_profile
+// takes `(HParams, SpeakerEncoderWeights, ...)` precisely so it stays
+// unit-testable without a 2.5 GB package, which also means it cannot tokenize
+// and cannot build create_icl_profile's `reference_text_ids` -- see that
+// function's own header comment. Its own transcript refusal therefore SURVIVES
+// as defence in depth rather than becoming this dispatch.
 //
 // Steps 1-4 below mirror create_omnivoice_profile_from_reference's own Steps
-// 1, 4 in order -- there is no shared helper for them (family internals are
-// private, CLAUDE.md) -- with TWO family-specific substitutions in place of
-// that function's Steps 2-3: a non-null transcript (Step 2) and a non-null
-// reference_language tag (Step 3) are both refused BY NAME here, before
-// normalization, rather than required/matched. D4 (this plan's own ruling)
-// fixes the clone mode at preparation; this rung implements the x-vector
-// mode only, so accepting a transcript and silently building the x-vector
-// Profile anyway would hand back a weaker clone than the caller asked for --
-// the same capability lie the carryover's erratum removed from the source
-// flags. A language tag has no meaning without the transcript it would
-// qualify (2026-08-11-qwen3-tts-stage-2-design.md:174: "reference_language
-// follows the transcript: it qualifies a transcript this rung cannot use"),
-// so it is refused for the identical reason rather than silently accepted,
-// shape-checked, and persisted into a payload the capability snapshot says
-// this rung cannot describe -- docs/c-interface.md is explicit that
-// supplying a field declared unsupported must fail rather than being
-// silently ignored.
+// 1-4 in order -- there is no shared helper for them (family internals are
+// private, CLAUDE.md) -- with one family-specific difference at Step 2: where
+// OmniVoice REQUIRES a transcript, this family treats it as the optional mode
+// selector the capability snapshot now advertises
+// (arch/qwen3-tts/weights.cpp's fill_voice_profile_capability, flipped to
+// SYNTH_REQUIREMENT_OPTIONAL in this same change -- reporting OPTIONAL while
+// still refusing a transcript would be the capability lie the design's erratum
+// exists to prevent, in the opposite direction). Step 3 validates the optional
+// `reference_language` exactly the way OmniVoice's own handler above does:
+// shape first, then this package's declared languages.
 synth_status_t create_qwen3_tts_profile_from_reference(const synth_model_t *                  model,
                                                        const synth_voice_reference_params_t * params,
                                                        synth_voice_profile_t **               out_profile) {
@@ -489,34 +498,96 @@ synth_status_t create_qwen3_tts_profile_from_reference(const synth_model_t *    
         return SYNTH_ERR_INVALID_ARG;
     }
 
-    // Step 2: the one family-specific difference from OmniVoice's own
-    // handler. The capability says reference_transcript is UNSUPPORTED, and
-    // the runtime has to agree with what it advertises. Checked before
-    // normalization ever runs, the same way create_x_vector_profile's own
-    // transcript check runs before its (expensive) encode chain: there is no
-    // reason to resample reference audio for a request this function is
-    // about to refuse anyway.
-    if (transcript != nullptr && transcript_size != 0) {
-        emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.transcript_unsupported",
-                        "this package's Voice Profile creation implements x-vector cloning only; a reference "
-                        "transcript names the transcript-assisted mode, which has no implementation yet");
-        return SYNTH_ERR_INVALID_ARG;
+    // Step 2: the mode selector (see this function's own header comment). A
+    // present transcript names the transcript-assisted mode and is tokenized
+    // here, where the BPE tables are reachable; an absent one leaves
+    // `icl_mode` false and Step 5 below prepares the x-vector Profile Plan 2
+    // already prepared.
+    //
+    // Tokenizing BEFORE normalization is the same ordering the refusal this
+    // replaced used, kept for the same reason: a blank or untokenizable
+    // transcript is refused without ever paying to resample reference audio.
+    // A blank transcript -- empty or whitespace-only, which is one state --
+    // is SYNTH_ERR_INVALID_ARG (the design's section 9 error table), decided
+    // by the SAME bpe.h predicate create_icl_profile applies to its own
+    // `transcript` argument, so this dispatch and the preparer can never
+    // disagree about which transcripts exist. Note that a non-null pointer
+    // with a zero size never reaches here at all: the paired-null check above
+    // already refused it.
+    //
+    // MUTUAL MASKING, NAMED SO THE NEXT DELETION IS VISIBLE: this check has
+    // TWO partners applying the same predicate behind it --
+    // qwen_reference_transcript_ids (bpe.cpp), which the very next line calls,
+    // and create_icl_profile (arch/qwen3-tts/profile.cpp). Both return
+    // SYNTH_ERR_INVALID_ARG for a blank transcript too, so deleting THIS check
+    // does not change the STATUS a caller sees; all it changes is which
+    // diagnostic code is emitted, from the named "voice_profile.transcript_blank"
+    // to the generic untokenizable one below. A test asserting only the status
+    // could not fail on that deletion -- measured, by making it. The
+    // integration check that covers this therefore asserts the CODE, and that
+    // is the only reason it is load-bearing. All three would have to go before
+    // a blank transcript produced a Profile.
+    const std::string    transcript_text(transcript != nullptr ? transcript : "", static_cast<size_t>(transcript_size));
+    const bool           icl_mode = !transcript_text.empty();
+    std::vector<int32_t> reference_text_ids;
+    if (icl_mode) {
+        if (synth::qwen3tts::qwen_transcript_is_blank(transcript_text)) {
+            emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.transcript_blank",
+                            "the reference transcript is empty or whitespace-only; a transcript names the "
+                            "transcript-assisted clone mode, so a blank one names nothing");
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        const synth_status_t tokenize_status =
+            model->qwen3_tts->tokenize_reference_transcript(transcript_text, reference_text_ids);
+        if (tokenize_status != SYNTH_OK) {
+            emit_diagnostic(diagnostics, tokenize_status, "voice_profile.transcript_untokenizable",
+                            "the reference transcript could not be tokenized against this package's text "
+                            "frontend");
+            return tokenize_status;
+        }
     }
 
-    // Step 3: the same UNSUPPORTED/refuse-by-name reasoning Step 2 applies to
-    // the transcript applies here (see this function's own header comment).
-    // A reviewer measured the defect this closes: before this check existed,
-    // `language_tag="en"` returned SYNTH_OK and was written verbatim into
-    // the serialized envelope, and `language_tag="zz-ZZ"` -- a tag this
-    // package does not even declare -- also returned SYNTH_OK, where
-    // OmniVoice's own equivalent check (this file's `declared_language`)
-    // would have refused it with SYNTH_ERR_UNSUPPORTED_LANGUAGE. Checked
-    // before normalization, the same reason Step 2 is.
+    // Step 3: the optional `reference_language`, VALIDATED rather than
+    // refused, and validated the way OmniVoice's own handler above validates
+    // its own (this file's `valid_bcp47_shape` then `declared_language`, in
+    // that order). The two halves refuse different things and must both stay:
+    // a malformed shape is SYNTH_ERR_INVALID_ARG, and a well-formed tag this
+    // package does not declare is SYNTH_ERR_UNSUPPORTED_LANGUAGE.
+    //
+    // A reviewer measured what a MISSING declared_language costs, and the
+    // measurement is why this is not a blanket acceptance: before Plan 2's
+    // refusal went in, `language_tag="zz-ZZ"` -- a tag this package has never
+    // heard of -- returned SYNTH_OK and was written verbatim into the
+    // serialized envelope. Plan 3 replaces that blanket refusal with this
+    // pair, NOT with a blanket acceptance, which would reintroduce exactly
+    // that defect.
+    //
+    // WHAT "DECLARED" MEANS HERE IS THE **PUBLISHED BCP-47 TAG**, NOT THE
+    // PACKAGE'S OWN NAME FOR THE LANGUAGE, and the difference is a real trap
+    // rather than a pedantic one. The package's `general.languages` and
+    // `synthesize.qwen3-tts.languages.names` hold FULL ENGLISH NAMES --
+    // `chinese english french ...` -- and so does the Golden Manifest's own
+    // `language_tags` (it even lists `auto`), because both describe the
+    // upstream oracle's vocabulary. `model->info.languages`, which is what
+    // this validates against, is the OTHER side of
+    // arch/qwen3-tts/model.cpp's bridge ("the public interface speaks BCP-47
+    // and the package names its languages in full"): measured on the shipped
+    // Base package, `synth_model_get_language` enumerates exactly
+    // `en de es zh ja fr ko ru it pt`. So `"en"` is accepted and `"english"`
+    // is a well-formed, UNDECLARED tag refused with
+    // SYNTH_ERR_UNSUPPORTED_LANGUAGE. Validating against the package's own
+    // names instead would make the same string legal in a Reference Audio
+    // descriptor and illegal in the synthesis request it clones for, which is
+    // why this mirrors synthesis-request.cpp's list and not the package's.
+    std::string language_text;
     if (language_tag != nullptr && language_size != 0) {
-        emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.reference_language_unsupported",
-                        "this package's Voice Profile creation does not accept a Reference Audio language tag at "
-                        "this rung; the tag would qualify a transcript this rung cannot use");
-        return SYNTH_ERR_INVALID_ARG;
+        if (!valid_bcp47_shape(language_tag, static_cast<size_t>(language_size))) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        if (!declared_language(model->info.languages, language_tag, static_cast<size_t>(language_size))) {
+            return SYNTH_ERR_UNSUPPORTED_LANGUAGE;
+        }
+        language_text.assign(language_tag, static_cast<size_t>(language_size));
     }
 
     // Step 4: the Audio Normalizer, RFE-prechecked against this package's
@@ -556,24 +627,44 @@ synth_status_t create_qwen3_tts_profile_from_reference(const synth_model_t *    
         return normalize_status;
     }
 
-    // Step 5: the family's own encode chain (arch/qwen3-tts/profile.h's
-    // create_x_vector_profile), fed the two pieces of the live Model it needs
-    // through Model::hparams()/speaker_encoder_weights() rather than a
-    // `Model &` -- see that function's own header comment, and
-    // qwen3-tts.h's own comment on those two accessors, for why. `transcript`
-    // and `language_tag` are always empty here: Steps 2-3 above already
-    // refused any non-empty one of either, so create_x_vector_profile's own
-    // identical transcript check can never fire; it stays in that function
-    // as the defense-in-depth for any future caller that reaches it a
-    // different way. `XVectorProfile::language_tag` (arch/qwen3-tts/profile.h)
-    // exists for Plan 3's ICL payload, which pairs a transcript with a
-    // language; nothing populates it at this rung.
-    std::shared_ptr<const synth::qwen3tts::XVectorProfile> x_vector_profile;
-    const char *                                           diagnostic_code    = nullptr;
-    const char *                                           diagnostic_message = nullptr;
-    const synth_status_t                                   create_status = synth::qwen3tts::create_x_vector_profile(
-        model->qwen3_tts->hparams(), model->qwen3_tts->speaker_encoder_weights(), normalized.pcm, std::string(),
-        std::string(), 0, x_vector_profile, diagnostic_code, diagnostic_message);
+    // Step 5: the family's own encode chain, whichever mode Step 2 selected.
+    // Both preparers are fed the pieces of the live Model they need through
+    // Model::hparams()/speaker_encoder_weights()/codec_encoder_weights()
+    // rather than a `Model &` -- see create_x_vector_profile's own header
+    // comment, and qwen3-tts.h's own comment on those accessors, for why the
+    // signatures are shaped that way and what it costs this site (the
+    // tokenization above).
+    //
+    // ONE ProfileFamilyTag covers both modes; the payload's own CloneMode
+    // discriminates (voice-profile-handle.h), which is what lets the
+    // serialize dispatch below read either payload back through an
+    // `XVectorProfile *` and pick its writer. `transcript_text` is passed to
+    // create_x_vector_profile still empty -- Step 2 routes every non-empty one
+    // to create_icl_profile before it can get here -- so that function's own
+    // transcript refusal stays unreachable from this call, now for a second
+    // reason on top of the first; it remains as defence in depth for a future
+    // caller arriving another way, and Task 8's unit test pins it directly.
+    // `language_text` IS passed to both: it is validated rather than refused
+    // now, and `XVectorProfile::language_tag` is where it lands in either mode
+    // (an IclProfile carries an XVectorProfile as its first member).
+    std::shared_ptr<const void> payload;
+    const char *                diagnostic_code    = nullptr;
+    const char *                diagnostic_message = nullptr;
+    synth_status_t              create_status      = SYNTH_OK;
+    if (icl_mode) {
+        std::shared_ptr<const synth::qwen3tts::IclProfile> icl_profile;
+        create_status = synth::qwen3tts::create_icl_profile(
+            model->qwen3_tts->hparams(), model->qwen3_tts->speaker_encoder_weights(),
+            model->qwen3_tts->codec_encoder_weights(), normalized.pcm, transcript_text, reference_text_ids,
+            language_text, 0, icl_profile, diagnostic_code, diagnostic_message);
+        payload = std::move(icl_profile);
+    } else {
+        std::shared_ptr<const synth::qwen3tts::XVectorProfile> x_vector_profile;
+        create_status = synth::qwen3tts::create_x_vector_profile(
+            model->qwen3_tts->hparams(), model->qwen3_tts->speaker_encoder_weights(), normalized.pcm, transcript_text,
+            language_text, 0, x_vector_profile, diagnostic_code, diagnostic_message);
+        payload = std::move(x_vector_profile);
+    }
     if (create_status != SYNTH_OK) {
         emit_diagnostic(diagnostics, create_status, diagnostic_code, diagnostic_message);
         return create_status;
@@ -582,7 +673,7 @@ synth_status_t create_qwen3_tts_profile_from_reference(const synth_model_t *    
     auto profile        = std::make_unique<synth_voice_profile>();
     profile->model      = model;
     profile->family_tag = synth::ProfileFamilyTag::Qwen3TtsClone;
-    profile->payload    = std::move(x_vector_profile);
+    profile->payload    = std::move(payload);
     *out_profile        = profile.release();
     return SYNTH_OK;
 }

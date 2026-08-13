@@ -26,16 +26,25 @@
 // synthetic-HParams unit test cannot: that create_from_reference ->
 // serialize -> load_from_memory actually works end to end against the real
 // 894-tensor Base GGUF and its real speaker encoder, that every one of this
-// family's new public refusal paths (a transcript, a reference_language tag
-// -- declared or not, per the Task 9 review's own finding that this rung
-// must refuse the field it advertises UNSUPPORTED -- too many clips, a clip
-// outside the declared frame bounds, an out-of-contract rate or channel
-// count) fires with the real package's own declared limits rather than a
-// fixture's, and that a real Preset Voice Catalog request still refuses.
-// What it does not duplicate is the family-layer resolve_voice/
-// fill_voice_profile_capability logic itself, or the CustomVoice-model
-// dispatch guard, both already covered against synthetic HParams/a hand-built
-// `synth_model` in tests/qwen3_tts_voice_required_test.cpp.
+// family's public refusal paths (a blank transcript, a malformed or
+// undeclared reference_language tag, too many clips, a clip outside the
+// declared frame bounds, an out-of-contract rate or channel count) fires with
+// the real package's own declared limits rather than a fixture's, and that a
+// real Preset Voice Catalog request still refuses. What it does not duplicate
+// is the family-layer resolve_voice/fill_voice_profile_capability logic
+// itself, or the CustomVoice-model dispatch guard, both already covered
+// against synthetic HParams/a hand-built `synth_model` in
+// tests/qwen3_tts_voice_required_test.cpp.
+//
+// Stage 2 Plan 3's Task 10 adds the thing this tier alone can prove about the
+// CLONE MODE. `reference_transcript` became SYNTH_REQUIREMENT_OPTIONAL in the
+// same change that landed ICL, and the transcript's presence became the mode
+// selector (D4) -- so the two checks that used to assert a transcript and a
+// language tag were REFUSED now assert what they select and how they are
+// validated. Selecting the mode needs a live Model, because the transcript is
+// tokenized against BPE tables only a loaded package carries, which is why
+// src/voice-profile.cpp's ICL arm has no `unit`-layer coverage at all and
+// check_transcript_selects_icl_mode below is where it gets covered.
 //
 // Task 11 adds a fourth thing only this tier proves: that a Profile prepared
 // against the real Base package actually SYNTHESIZES -- src/synthesize.cpp's
@@ -86,12 +95,15 @@ int check_capabilities(synth_model_t * model, synth_voice_profile_capabilities_t
     // capability query and what the calls below actually do have to agree.
     SYNTH_TEST_CHECK(capabilities.source_flags ==
                      (SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE));
-    // UNSUPPORTED, not OPTIONAL: this rung implements the x-vector clone mode
-    // only, and a transcript names the transcript-assisted mode Plan 3 adds.
-    SYNTH_TEST_CHECK(capabilities.reference_transcript == SYNTH_REQUIREMENT_UNSUPPORTED);
-    SYNTH_TEST_CHECK(capabilities.reference_language == SYNTH_REQUIREMENT_UNSUPPORTED);
+    // OPTIONAL since Plan 3 landed ICL: both clone modes exist and the
+    // transcript's presence selects between them. This is the on-disk
+    // package's answer rather than a fixture's, and what the two mode-selector
+    // checks below actually do has to agree with it.
+    SYNTH_TEST_CHECK(capabilities.reference_transcript == SYNTH_REQUIREMENT_OPTIONAL);
+    SYNTH_TEST_CHECK(capabilities.reference_language == SYNTH_REQUIREMENT_OPTIONAL);
     // Never claimed for this family: there is no Description Text path at
-    // any stage of the Reference Model Variant Ladder's second rung.
+    // any stage of the Reference Model Variant Ladder's second rung. Unchanged
+    // by Plan 3 -- only the two fields above moved.
     SYNTH_TEST_CHECK(capabilities.description_language == SYNTH_REQUIREMENT_UNSUPPORTED);
 
     // The real package's own declared Voice Profile contract
@@ -120,10 +132,17 @@ int check_capabilities(synth_model_t * model, synth_voice_profile_capabilities_t
 }
 
 // The last diagnostic a request emitted, captured through the public sink.
+// The message is captured as well as the code because this family has more
+// than one refusal behind a single code: `synthesis.voice_unsupported` covers
+// the Catalog-less case, the cross-Model case AND the wrong-clone-mode case
+// (the ABI defines exactly one voice-error status, so the code cannot split
+// further), and the mode-selector check below needs to tell the third from the
+// other two.
 struct SeenDiagnostic {
     bool           seen   = false;
     synth_status_t status = SYNTH_OK;
     std::string    code;
+    std::string    message;
 };
 
 void SYNTH_CALL record_diagnostic(void * user_data, const synth_diagnostic_t * diagnostic) {
@@ -131,6 +150,7 @@ void SYNTH_CALL record_diagnostic(void * user_data, const synth_diagnostic_t * d
     target->seen            = true;
     target->status          = diagnostic->status;
     target->code.assign(diagnostic->code != nullptr ? diagnostic->code : "", size_t(diagnostic->code_size));
+    target->message.assign(diagnostic->message != nullptr ? diagnostic->message : "", size_t(diagnostic->message_size));
 }
 
 // ---------------------------------------------------------------------------
@@ -216,68 +236,312 @@ int check_reference_profile_round_trip(synth_model_t * model, const synth_voice_
     return 0;
 }
 
-// A reference transcript names the transcript-assisted mode this rung has no
-// implementation for, so it is refused by name rather than silently
-// downgraded to the x-vector mode it did not ask for.
-int check_reference_transcript_refused(synth_model_t * model, const synth_voice_profile_capabilities_t & capabilities) {
+// One create_from_reference call over this package's own minimum-length tone,
+// optionally carrying a transcript and/or a language tag. `out_profile` is
+// pre-poisoned so "left untouched" and "set to null on failure" are
+// distinguishable, the same way the refusal checks below rely on.
+synth_status_t create_with(synth_model_t *                            model,
+                           const synth_voice_profile_capabilities_t & capabilities,
+                           const char *                               transcript,
+                           const char *                               language_tag,
+                           SeenDiagnostic &                           diagnostic,
+                           synth_voice_profile_t *&                   out_profile) {
     const std::vector<float> pcm =
         make_tone(capabilities.min_reference_frames_per_clip, capabilities.reference_target_sample_rate);
     synth_voice_reference_t reference =
         make_reference(pcm, capabilities.reference_target_sample_rate, capabilities.reference_target_channel_count);
-    const char * transcript   = "hello there";
-    reference.transcript      = transcript;
-    reference.transcript_size = std::strlen(transcript);
+    if (transcript != nullptr) {
+        reference.transcript      = transcript;
+        reference.transcript_size = std::strlen(transcript);
+    }
+    if (language_tag != nullptr) {
+        reference.language_tag      = language_tag;
+        reference.language_tag_size = std::strlen(language_tag);
+    }
 
-    SeenDiagnostic          diagnostic;
     synth_diagnostic_sink_t sink;
     synth_diagnostic_sink_init(&sink, sizeof(sink));
     sink.emit      = record_diagnostic;
     sink.user_data = &diagnostic;
 
-    const synth_voice_reference_params_t params  = make_reference_params(&reference, 1, &sink);
-    synth_voice_profile_t *              profile = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
-    SYNTH_TEST_CHECK(synth_voice_profile_create_from_reference(model, &params, &profile) == SYNTH_ERR_INVALID_ARG);
-    SYNTH_TEST_CHECK(profile == nullptr);
-    SYNTH_TEST_CHECK(diagnostic.seen);
-    SYNTH_TEST_CHECK(diagnostic.status == SYNTH_ERR_INVALID_ARG);
-    SYNTH_TEST_CHECK(diagnostic.code == "voice_profile.transcript_unsupported");
+    const synth_voice_reference_params_t params = make_reference_params(&reference, 1, &sink);
+    out_profile                                 = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+    return synth_voice_profile_create_from_reference(model, &params, &out_profile);
+}
+
+// Presents `profile` to a synthesis request on `context` and reports what came
+// back. Used twice below with two Profiles that differ ONLY in their clone
+// mode.
+int synthesize_with(synth_context_t *       context,
+                    synth_voice_profile_t * profile,
+                    SeenDiagnostic &        diagnostic,
+                    synth_status_t &        out_status) {
+    synth_diagnostic_sink_t sink;
+    synth_diagnostic_sink_init(&sink, sizeof(sink));
+    sink.emit      = record_diagnostic;
+    sink.user_data = &diagnostic;
+
+    synth_request_t request;
+    synth_request_init(&request, sizeof(request));
+    request.input_kind    = SYNTH_INPUT_TEXT_UTF8;
+    request.input_data    = kText;
+    request.input_count   = std::strlen(kText);
+    request.voice_profile = profile;
+    request.diagnostics   = &sink;
+
+    synth_audio_buffer_t * audio = nullptr;
+    synth_result_t         result;
+    synth_result_init(&result, sizeof(result));
+    out_status = synth_synthesize_to_buffer(context, &request, &audio, &result);
+    if (out_status == SYNTH_OK) {
+        SYNTH_TEST_CHECK(audio != nullptr && audio->frame_count > 0);
+    } else {
+        SYNTH_TEST_CHECK(audio == nullptr);
+    }
+    synth_audio_buffer_free(audio);
     return 0;
 }
 
-// reference_language is advertised SYNTH_REQUIREMENT_UNSUPPORTED
-// (check_capabilities above), and docs/c-interface.md requires a caller
-// supplying a field declared unsupported to be refused rather than silently
-// accepted. Both a real, package-declared tag ("en") and one this package
-// does not declare at all ("zz-ZZ") are refused identically and by name --
-// the point is that NO language tag is accepted at this rung, not that an
-// undeclared one is treated differently from a declared one the way
-// OmniVoice's own (fully supported) reference_language handling would.
-// Before this task's review fix, both of these returned SYNTH_OK -- "en"
-// was written verbatim into the serialized envelope, and "zz-ZZ" was
-// accepted despite naming no language this package has ever heard of.
-int check_reference_language_refused(synth_model_t * model, const synth_voice_profile_capabilities_t & capabilities) {
-    const std::vector<float> pcm =
-        make_tone(capabilities.min_reference_frames_per_clip, capabilities.reference_target_sample_rate);
+// Serializes `profile` and loads the bytes straight back. Returns the envelope
+// size so the caller can compare two kinds.
+int round_trip(synth_model_t *          model,
+               synth_voice_profile_t *  profile,
+               uint64_t &               out_size,
+               synth_voice_profile_t *& out_reloaded) {
+    synth_voice_profile_serialize_params_t serialize_params;
+    synth_voice_profile_serialize_params_init(&serialize_params, sizeof(serialize_params));
+    synth_byte_buffer_t * bytes = nullptr;
+    SYNTH_TEST_CHECK(synth_voice_profile_serialize(profile, &serialize_params, &bytes) == SYNTH_OK);
+    SYNTH_TEST_CHECK(bytes != nullptr && bytes->data != nullptr && bytes->data_size > 0);
+    out_size = bytes->data_size;
 
-    for (const char * language_tag : { "en", "zz-ZZ" }) {
-        synth_voice_reference_t reference =
-            make_reference(pcm, capabilities.reference_target_sample_rate, capabilities.reference_target_channel_count);
-        reference.language_tag      = language_tag;
-        reference.language_tag_size = std::strlen(language_tag);
+    synth_voice_profile_load_params_t load_params;
+    synth_voice_profile_load_params_init(&load_params, sizeof(load_params));
+    load_params.data      = bytes->data;
+    load_params.data_size = bytes->data_size;
 
+    out_reloaded = nullptr;
+    SYNTH_TEST_CHECK(synth_voice_profile_load_from_memory(model, &load_params, &out_reloaded) == SYNTH_OK);
+    SYNTH_TEST_CHECK(out_reloaded != nullptr);
+    synth_byte_buffer_free(bytes);
+    return 0;
+}
+
+// THE MODE SELECTOR, at the seam that publishes it (Task 10). This is the
+// assertion Task 8's unit test could not make: selecting the mode needs a live
+// Model, because the transcript has to be tokenized against the BPE tables
+// that only a loaded package carries. The SAME
+// synth_voice_profile_create_from_reference call runs twice, differing ONLY in
+// whether `reference.transcript` is set --
+//
+//     transcript absent  -> the x-vector mode Plan 2 shipped
+//     transcript present -> the transcript-assisted (ICL) mode Plan 3 adds
+//
+// -- and BOTH succeed, which is the whole of the flip: a transcript was
+// SYNTH_ERR_INVALID_ARG ("voice_profile.transcript_unsupported") for the whole
+// of Plan 2, and reporting reference_transcript OPTIONAL while still refusing
+// one would be the same capability lie in the opposite direction.
+//
+// A Profile handle is opaque, so neither `kind` is directly readable here.
+// Both are observed through what the runtime does with the payload, in two
+// independent ways:
+//
+//   * SERIALIZE. src/voice-profile.cpp's serialize dispatch reads the payload
+//     back through an `XVectorProfile *` and picks its writer from the
+//     CloneMode it finds there, and BOTH writers refuse a payload whose mode
+//     names the other kind (Task 9), so a wrong branch is an error and never a
+//     silent downgrade. A serialize that SUCCEEDS on the transcript-carrying
+//     Profile is therefore that dispatch's ICL arm running -- the one line in
+//     that file no `unit` test can reach, since a `unit` test may not load
+//     this family's 2.5 GB package and nothing smaller can build an ICL
+//     payload. The ICL envelope is also strictly the larger of the two: it
+//     carries the [16, T] reference codes and the reference text ids on top of
+//     everything the x-vector envelope carries.
+//   * SYNTHESIZE. src/synthesize.cpp refuses a payload whose CloneMode is not
+//     XVector, by message. Plan 2 wrote that guard against a mode that could
+//     not yet exist and its own comment says so ("unreachable today"); this is
+//     the first test anywhere to reach it. The message is what identifies it:
+//     the ABI defines exactly one voice-error status and this file already
+//     asserts `synthesis.voice_unsupported` for two OTHER refusals, so the
+//     code alone would not tell the three apart.
+//
+// Task 11 turns that refusal into the ICL prompt and will rewrite the second
+// half of this check with it; until it does, the refusal is what the runtime
+// honestly reports.
+int check_transcript_selects_icl_mode(synth_model_t *                            model,
+                                      synth_context_t *                          context,
+                                      const synth_voice_profile_capabilities_t & capabilities) {
+    SeenDiagnostic          x_vector_diagnostic;
+    synth_voice_profile_t * x_vector_profile = nullptr;
+    SYNTH_TEST_CHECK(create_with(model, capabilities, nullptr, nullptr, x_vector_diagnostic, x_vector_profile) ==
+                     SYNTH_OK);
+    SYNTH_TEST_CHECK(x_vector_profile != nullptr);
+
+    SeenDiagnostic          icl_diagnostic;
+    synth_voice_profile_t * icl_profile = nullptr;
+    SYNTH_TEST_CHECK(create_with(model, capabilities, "hello there", nullptr, icl_diagnostic, icl_profile) == SYNTH_OK);
+    SYNTH_TEST_CHECK(icl_profile != nullptr);
+    // Nothing was refused on the way: the transcript selected a mode rather
+    // than tripping a diagnostic.
+    SYNTH_TEST_CHECK(!icl_diagnostic.seen);
+
+    uint64_t                x_vector_size     = 0;
+    uint64_t                icl_size          = 0;
+    synth_voice_profile_t * x_vector_reloaded = nullptr;
+    synth_voice_profile_t * icl_reloaded      = nullptr;
+    SYNTH_TEST_CHECK(round_trip(model, x_vector_profile, x_vector_size, x_vector_reloaded) == 0);
+    SYNTH_TEST_CHECK(round_trip(model, icl_profile, icl_size, icl_reloaded) == 0);
+    SYNTH_TEST_CHECK(icl_size > x_vector_size);
+
+    // The contrast, on the four Profiles: the two x-vector ones synthesize,
+    // the two ICL ones are refused BY MODE. The reloaded pair is what proves
+    // the envelope carried the kind across the round trip rather than the
+    // reader defaulting to one of them.
+    for (synth_voice_profile_t * profile : { x_vector_profile, x_vector_reloaded }) {
+        SeenDiagnostic diagnostic;
+        synth_status_t status = SYNTH_OK;
+        SYNTH_TEST_CHECK(synthesize_with(context, profile, diagnostic, status) == 0);
+        SYNTH_TEST_CHECK(status == SYNTH_OK);
+    }
+    for (synth_voice_profile_t * profile : { icl_profile, icl_reloaded }) {
+        SeenDiagnostic diagnostic;
+        synth_status_t status = SYNTH_OK;
+        SYNTH_TEST_CHECK(synthesize_with(context, profile, diagnostic, status) == 0);
+        SYNTH_TEST_CHECK(status == SYNTH_ERR_UNSUPPORTED_VOICE);
+        SYNTH_TEST_CHECK(diagnostic.seen);
+        SYNTH_TEST_CHECK(diagnostic.status == SYNTH_ERR_UNSUPPORTED_VOICE);
+        SYNTH_TEST_CHECK(diagnostic.code == "synthesis.voice_unsupported");
+        SYNTH_TEST_CHECK(diagnostic.message == "this build supports x-vector Voice Profiles only");
+    }
+
+    synth_voice_profile_free(icl_reloaded);
+    synth_voice_profile_free(x_vector_reloaded);
+    synth_voice_profile_free(icl_profile);
+    synth_voice_profile_free(x_vector_profile);
+    return 0;
+}
+
+// A blank transcript names the transcript-assisted mode and then supplies
+// nothing to assist with, so it is SYNTH_ERR_INVALID_ARG rather than a quiet
+// fallback to the x-vector mode the caller did not ask for (the design's
+// section 9 error table). "Blank" is one state covering empty and
+// whitespace-only alike; a NULL transcript is the absent case the check above
+// proves selects x-vector, and is not blank.
+//
+// The zero-size-but-non-null descriptor is the third shape and has its own
+// refusal: the paired-null rule refuses it before the mode is ever selected.
+//
+// THE CODE IS ASSERTED, NOT JUST THE STATUS, AND THAT IS THE WHOLE POINT.
+// Three checks apply the same blankness predicate on this path (the dispatch
+// in src/voice-profile.cpp, bpe.cpp's qwen_reference_transcript_ids, and
+// create_icl_profile), so deleting the first leaves the status at
+// SYNTH_ERR_INVALID_ARG and changes only which diagnostic is named -- measured
+// by making that deletion. A status-only assertion here would have been the
+// fourteenth check in this repository unable to fail.
+int check_blank_transcript_refused(synth_model_t * model, const synth_voice_profile_capabilities_t & capabilities) {
+    for (const char * transcript : { " ", "\t\n  ", "\r\n" }) {
         SeenDiagnostic          diagnostic;
-        synth_diagnostic_sink_t sink;
-        synth_diagnostic_sink_init(&sink, sizeof(sink));
-        sink.emit      = record_diagnostic;
-        sink.user_data = &diagnostic;
-
-        const synth_voice_reference_params_t params  = make_reference_params(&reference, 1, &sink);
-        synth_voice_profile_t *              profile = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
-        SYNTH_TEST_CHECK(synth_voice_profile_create_from_reference(model, &params, &profile) == SYNTH_ERR_INVALID_ARG);
+        synth_voice_profile_t * profile = nullptr;
+        SYNTH_TEST_CHECK(create_with(model, capabilities, transcript, nullptr, diagnostic, profile) ==
+                         SYNTH_ERR_INVALID_ARG);
         SYNTH_TEST_CHECK(profile == nullptr);
         SYNTH_TEST_CHECK(diagnostic.seen);
         SYNTH_TEST_CHECK(diagnostic.status == SYNTH_ERR_INVALID_ARG);
-        SYNTH_TEST_CHECK(diagnostic.code == "voice_profile.reference_language_unsupported");
+        SYNTH_TEST_CHECK(diagnostic.code == "voice_profile.transcript_blank");
+    }
+    return 0;
+}
+
+// reference_language is SYNTH_REQUIREMENT_OPTIONAL now, which means VALIDATED,
+// not accepted. Plan 2 refused every tag identically; replacing that blanket
+// refusal with a blanket acceptance would reintroduce the exact defect the
+// refusal closed (a reviewer measured `language_tag="zz-ZZ"` returning
+// SYNTH_OK and being written verbatim into the serialized envelope). So the
+// two halves OmniVoice's own handler applies apply here, and they refuse
+// DIFFERENT things with DIFFERENT statuses:
+//
+//   * a tag that is not BCP-47-SHAPED     -> SYNTH_ERR_INVALID_ARG
+//   * a well-formed tag this package does
+//     not DECLARE                          -> SYNTH_ERR_UNSUPPORTED_LANGUAGE
+//
+// WHAT THIS SEAM DECLARES IS THE BCP-47 TAG, NOT THE PACKAGE'S OWN NAME FOR
+// THE LANGUAGE -- and the two really are different strings here, which is the
+// trap worth naming. The package's `general.languages` and
+// `synthesize.qwen3-tts.languages.names` hold FULL ENGLISH NAMES (`chinese
+// english french ...`), and so does the Golden Manifest's `language_tags`
+// (which also lists `auto`), because both describe the upstream oracle's
+// vocabulary rather than this library's. `src/arch/qwen3-tts/model.cpp`
+// bridges them -- "the public interface speaks BCP-47 and the package names
+// its languages in full" -- and `declared_language` validates against the
+// PUBLIC side of that bridge, the same list `synthesis-request.cpp` validates
+// a request's language against. Validating against the package's own names
+// instead would make one string legal in a Reference Audio descriptor and
+// illegal in the synthesis request it clones for.
+//
+// So `"en"` is the accepted case and `"english"` is refused as undeclared.
+// That is the opposite of what this task's own brief asserted, so the premise
+// is ASSERTED below through the public language enumeration rather than
+// restated in prose: a comment about which tags a package declares is exactly
+// the thing that gets copied forward wrong.
+int check_reference_language_validated(synth_model_t * model, const synth_voice_profile_capabilities_t & capabilities) {
+    // The premise, measured from the package through the public seam:
+    // `en de es zh ja fr ko ru it pt`, and no full name among them.
+    bool     declares_english = false;
+    bool     declares_en      = false;
+    uint64_t language_count   = 0;
+    SYNTH_TEST_CHECK(synth_model_get_language_count(model, &language_count) == SYNTH_OK);
+    SYNTH_TEST_CHECK(language_count > 0);
+    for (uint64_t index = 0; index < language_count; ++index) {
+        synth_language_capability_t language;
+        synth_language_capability_init(&language, sizeof(language));
+        SYNTH_TEST_CHECK(synth_model_get_language(model, index, &language) == SYNTH_OK);
+        const std::string tag(language.tag != nullptr ? language.tag : "", size_t(language.tag_size));
+        declares_english = declares_english || tag == "english";
+        declares_en      = declares_en || tag == "en";
+    }
+    SYNTH_TEST_CHECK(declares_en);
+    SYNTH_TEST_CHECK(!declares_english);
+
+    // Accepted: declared, and it survives the round trip our own reader would
+    // otherwise have to refuse.
+    {
+        SeenDiagnostic          diagnostic;
+        synth_voice_profile_t * profile = nullptr;
+        SYNTH_TEST_CHECK(create_with(model, capabilities, nullptr, "en", diagnostic, profile) == SYNTH_OK);
+        SYNTH_TEST_CHECK(profile != nullptr);
+        SYNTH_TEST_CHECK(!diagnostic.seen);
+
+        uint64_t                size     = 0;
+        synth_voice_profile_t * reloaded = nullptr;
+        SYNTH_TEST_CHECK(round_trip(model, profile, size, reloaded) == 0);
+        synth_voice_profile_free(reloaded);
+        synth_voice_profile_free(profile);
+    }
+
+    // Well-formed, undeclared. "english" is here because it is the package's
+    // OWN name for a language it really does carry -- undeclared at this seam
+    // all the same; "zz-ZZ" names no language on either side of the bridge.
+    for (const char * language_tag : { "english", "zz-ZZ" }) {
+        SeenDiagnostic          diagnostic;
+        synth_voice_profile_t * profile = nullptr;
+        SYNTH_TEST_CHECK(create_with(model, capabilities, nullptr, language_tag, diagnostic, profile) ==
+                         SYNTH_ERR_UNSUPPORTED_LANGUAGE);
+        SYNTH_TEST_CHECK(profile == nullptr);
+    }
+
+    // Malformed shape, two different sub-rules of it: "e" is below the
+    // two-character minimum, and "en_US" carries a byte that is neither
+    // alphanumeric nor the subtag separator. Both must come back INVALID_ARG
+    // and not UNSUPPORTED_LANGUAGE -- which is what makes the shape half and
+    // the declared half independently deletable rather than masking each
+    // other. Delete the declared half and the pair above starts succeeding;
+    // delete the shape half and these two change status instead of passing.
+    for (const char * language_tag : { "e", "en_US" }) {
+        SeenDiagnostic          diagnostic;
+        synth_voice_profile_t * profile = nullptr;
+        SYNTH_TEST_CHECK(create_with(model, capabilities, nullptr, language_tag, diagnostic, profile) ==
+                         SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(profile == nullptr);
     }
     return 0;
 }
@@ -544,8 +808,8 @@ int main(int argc, char ** argv) {
     SYNTH_TEST_CHECK(check_capabilities(model, capabilities) == 0);
 
     SYNTH_TEST_CHECK(check_reference_profile_round_trip(model, capabilities) == 0);
-    SYNTH_TEST_CHECK(check_reference_transcript_refused(model, capabilities) == 0);
-    SYNTH_TEST_CHECK(check_reference_language_refused(model, capabilities) == 0);
+    SYNTH_TEST_CHECK(check_blank_transcript_refused(model, capabilities) == 0);
+    SYNTH_TEST_CHECK(check_reference_language_validated(model, capabilities) == 0);
     SYNTH_TEST_CHECK(check_two_reference_clips_refused(model) == 0);
     SYNTH_TEST_CHECK(check_reference_clip_length_bounds_refused(model, capabilities) == 0);
     SYNTH_TEST_CHECK(check_reference_format_gate_matrix_refused(model, capabilities) == 0);
@@ -556,6 +820,9 @@ int main(int argc, char ** argv) {
 
     SYNTH_TEST_CHECK(check_unnamed_voice_refused(context) == 0);
     SYNTH_TEST_CHECK(check_named_voice_refused(context) == 0);
+    // Needs the context as well as the Model: the clone mode a Profile fixes
+    // is only observable through what the runtime does with the payload.
+    SYNTH_TEST_CHECK(check_transcript_selects_icl_mode(model, context, capabilities) == 0);
 
     synth_voice_profile_t * clone_profile = nullptr;
     SYNTH_TEST_CHECK(create_test_profile(model, capabilities, clone_profile) == 0);

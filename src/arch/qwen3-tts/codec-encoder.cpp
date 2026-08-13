@@ -24,9 +24,6 @@
 //     Zero-padding it corrupts exactly the first frame of every clip.
 //   * The frame downsampler runs AFTER the transformer (:1456-1467), so the
 //     transformer's sequence length is twice the frame count, not equal to it.
-//     The transformer itself is the next commit; the geometry already accounts
-//     for where it sits, because getting that wrong is a shape error and would
-//     be baked in here otherwise.
 //
 // Nothing here names a channel width. Every extent is read off the weights,
 // which catalog.cpp already checked against the package's own hyper-parameters.
@@ -50,6 +47,10 @@ namespace {
 // speech_tokenizer/config.json's `encoder_config`, which the package does not
 // republish. Read from the checkpoint at revision
 // 5d83992436eae1d760afd27aff78a71d676296fc.
+constexpr int64_t kTransformerHeadCount = 8;         // num_attention_heads (= num_key_value_heads: no GQA split)
+constexpr float   kLayerNormEps         = 1e-5f;     // norm_eps
+constexpr float   kRopeTheta            = 10000.0f;  // rope_theta
+
 // One convolution's geometry, in the order the encode path applies them.
 struct ConvStep {
     ggml_tensor * weight        = nullptr;
@@ -201,6 +202,17 @@ ggml_tensor * replicate_pad_edge(ggml_context * context, ggml_tensor * time_majo
 ggml_tensor * add_channel_bias(ggml_context * context, ggml_tensor * signal, ggml_tensor * bias) {
     ggml_tensor * bias_f32 = as_f32(context, bias);
     return ggml_add(context, signal, ggml_reshape_2d(context, bias_f32, bias_f32->ne[0], 1));
+}
+
+// LayerNorm with a learned weight AND bias, which is what this transformer
+// norms with -- not the RMSNorm the decoder's own transformer uses
+// (modeling_mimi.py:930-931).
+ggml_tensor * layer_norm(ggml_context * context, ggml_tensor * input, const LayerNormWeights & weights, float eps) {
+    if (weights.weight == nullptr || weights.bias == nullptr) {
+        return nullptr;
+    }
+    ggml_tensor * normed = ggml_norm(context, input, eps);
+    return ggml_add(context, ggml_mul(context, normed, as_f32(context, weights.weight)), as_f32(context, weights.bias));
 }
 
 // One residual block: ELU, kernel-3 convolution down to dim/2, ELU, kernel-1
@@ -390,6 +402,125 @@ ggml_tensor * build_codec_encoder_seanet(ggml_context *              context,
     return tail;
 }
 
+ggml_tensor * codec_encoder_transformer_layer(ggml_context *                              context,
+                                              ggml_tensor *                               input,
+                                              ggml_tensor *                               position_ids,
+                                              const CodecEncoderTransformerLayerWeights & weights,
+                                              const CodecEncoderAttentionShape &          shape) {
+    if (context == nullptr || input == nullptr || position_ids == nullptr || weights.q_proj == nullptr ||
+        weights.k_proj == nullptr || weights.v_proj == nullptr || weights.o_proj == nullptr ||
+        weights.self_attn_layer_scale == nullptr || weights.fc1 == nullptr || weights.fc2 == nullptr ||
+        weights.mlp_layer_scale == nullptr) {
+        return nullptr;
+    }
+    const int64_t hidden    = shape.hidden;
+    const int64_t heads     = shape.head_count;
+    const int64_t head_dim  = shape.head_dim;
+    const int64_t positions = input->ne[1];
+    if (hidden <= 0 || heads <= 0 || head_dim <= 0 || positions <= 0 || input->ne[0] != hidden ||
+        heads * head_dim != hidden) {
+        return nullptr;
+    }
+    if (position_ids->type != GGML_TYPE_I32 || position_ids->ne[0] != positions) {
+        return nullptr;
+    }
+
+    ggml_tensor * residual = input;
+    ggml_tensor * normed   = layer_norm(context, input, weights.input_layernorm, shape.layer_norm_eps);
+    if (normed == nullptr) {
+        return nullptr;
+    }
+
+    // No bias on any of the four projections: `attention_bias` is false
+    // (modeling_mimi.py:646-649), which is also why the catalog resolves a bare
+    // weight for each.
+    ggml_tensor * q =
+        ggml_reshape_3d(context, ggml_mul_mat(context, weights.q_proj, normed), head_dim, heads, positions);
+    ggml_tensor * k =
+        ggml_reshape_3d(context, ggml_mul_mat(context, weights.k_proj, normed), head_dim, heads, positions);
+    ggml_tensor * v =
+        ggml_reshape_3d(context, ggml_mul_mat(context, weights.v_proj, normed), head_dim, heads, positions);
+
+    // NEOX-style rope: transformers' `rotate_half` splits the head in half and
+    // swaps (modeling_mimi.py:542-546), which is ggml's NEOX layout rather than
+    // its interleaved one. No per-head norms -- this is not a Qwen3 block.
+    q = ggml_rope_ext(context, q, position_ids, nullptr, int(head_dim), GGML_ROPE_TYPE_NEOX, 0, shape.rope_theta, 1.0f,
+                      0.0f, 1.0f, 0.0f, 0.0f);
+    k = ggml_rope_ext(context, k, position_ids, nullptr, int(head_dim), GGML_ROPE_TYPE_NEOX, 0, shape.rope_theta, 1.0f,
+                      0.0f, 1.0f, 0.0f, 0.0f);
+
+    ggml_tensor * q_hd = ggml_cont(context, ggml_permute(context, q, 0, 2, 1, 3));
+    ggml_tensor * k_hd = ggml_cont(context, ggml_permute(context, k, 0, 2, 1, 3));
+    ggml_tensor * v_hd = ggml_cont(context, ggml_permute(context, v, 0, 2, 1, 3));
+
+    // Causal, and nothing narrower. See codec-encoder.h for why the
+    // checkpoint's `sliding_window: 250` does not reach this mask under the
+    // attention implementation the oracle ran. Built in-graph because the
+    // sequence length determines it completely.
+    ggml_tensor * scores = ggml_diag_mask_inf(context, ggml_mul_mat(context, k_hd, q_hd), 0);
+    scores               = ggml_soft_max_ext(context, scores, nullptr, 1.0f / std::sqrt(float(head_dim)), 0.0f);
+
+    ggml_tensor * v_t      = ggml_cont(context, ggml_permute(context, v_hd, 1, 0, 2, 3));
+    ggml_tensor * attended = ggml_mul_mat(context, v_t, scores);
+    attended               = ggml_cont(context, ggml_permute(context, attended, 0, 2, 1, 3));
+    attended               = ggml_reshape_2d(context, attended, head_dim * heads, positions);
+
+    // MimiLayerScale is a learnt per-channel vector applied to the BRANCH
+    // output before the residual add (:981, `residual +
+    // self_attn_layer_scale(hidden_states)`), not to the sum and not to the
+    // residual. It initialises at 0.01, so scaling the wrong operand is a
+    // hundredfold error that still produces finite latents.
+    ggml_tensor * projected = ggml_mul_mat(context, weights.o_proj, attended);
+    ggml_tensor * after_attention =
+        ggml_add(context, residual, ggml_mul(context, projected, as_f32(context, weights.self_attn_layer_scale)));
+
+    ggml_tensor * mlp_in = layer_norm(context, after_attention, weights.post_attention_layernorm, shape.layer_norm_eps);
+    if (mlp_in == nullptr) {
+        return nullptr;
+    }
+    // A plain two-layer MLP, not the decoder's gated one: fc1, activation, fc2,
+    // both bias-free (MimiMLP, :577-587). `hidden_act` is "gelu", and
+    // transformers' ACT2FN["gelu"] is the exact erf form -- ggml_gelu is the
+    // tanh approximation, which differs by around 2e-4 and compounds over
+    // sixteen of these.
+    ggml_tensor * mlp = ggml_mul_mat(context, weights.fc1, mlp_in);
+    mlp               = ggml_mul_mat(context, weights.fc2, ggml_gelu_erf(context, mlp));
+    return ggml_add(context, after_attention, ggml_mul(context, mlp, as_f32(context, weights.mlp_layer_scale)));
+}
+
+ggml_tensor * build_codec_encoder_transformer(ggml_context *              context,
+                                              ggml_tensor *               input,
+                                              ggml_tensor *               position_ids,
+                                              const CodecEncoderWeights & weights,
+                                              CodecEncoderTaps *          taps) {
+    if (context == nullptr || input == nullptr || weights.layers.empty()) {
+        return nullptr;
+    }
+    CodecEncoderAttentionShape shape;
+    shape.hidden         = input->ne[0];
+    shape.head_count     = kTransformerHeadCount;
+    shape.head_dim       = shape.hidden / kTransformerHeadCount;
+    shape.layer_norm_eps = kLayerNormEps;
+    shape.rope_theta     = kRopeTheta;
+    if (shape.hidden % kTransformerHeadCount != 0) {
+        return nullptr;
+    }
+
+    ggml_tensor * hidden = input;
+    for (const CodecEncoderTransformerLayerWeights & layer : weights.layers) {
+        hidden = codec_encoder_transformer_layer(context, hidden, position_ids, layer, shape);
+        if (hidden == nullptr) {
+            return nullptr;
+        }
+        if (taps != nullptr) {
+            taps->transformer_layers.push_back(hidden);
+        }
+    }
+    // No final norm: MimiTransformerModel has none, and the package carries
+    // none for this half either.
+    return hidden;
+}
+
 ggml_tensor * build_codec_encoder_downsample(ggml_context *              context,
                                              ggml_tensor *               input,
                                              const CodecEncoderWeights & weights) {
@@ -398,6 +529,44 @@ ggml_tensor * build_codec_encoder_downsample(ggml_context *              context
     }
     return codec_encoder_causal_conv1d(context, input, weights.downsample, nullptr, stride_of(weights.downsample), 1,
                                        true);
+}
+
+ggml_tensor * build_codec_encoder(ggml_context *              context,
+                                  ggml_tensor *               waveform,
+                                  ggml_tensor *               position_ids,
+                                  const CodecEncoderWeights & weights,
+                                  CodecEncoderTaps *          taps) {
+    if (context == nullptr || waveform == nullptr || position_ids == nullptr) {
+        return nullptr;
+    }
+    CodecEncoderGeometry geometry;
+    if (!codec_encoder_geometry(weights, waveform->ne[1], geometry)) {
+        return nullptr;
+    }
+    // The transformer runs BEFORE the frame downsampler, so its length is the
+    // SEANet stack's output and not the frame count. A caller that sized
+    // `position_ids` from `frames` is off by a factor of two and would rope
+    // every position wrong; refused here rather than encoded.
+    if (position_ids->ne[0] != geometry.transformer_positions) {
+        return nullptr;
+    }
+
+    ggml_tensor * hidden = build_codec_encoder_seanet(context, waveform, weights, taps);
+    if (hidden == nullptr || hidden->ne[1] != geometry.transformer_positions) {
+        return nullptr;
+    }
+    hidden = build_codec_encoder_transformer(context, hidden, position_ids, weights, taps);
+    if (hidden == nullptr) {
+        return nullptr;
+    }
+    hidden = build_codec_encoder_downsample(context, hidden, weights);
+    if (hidden == nullptr || hidden->ne[1] != geometry.frames) {
+        return nullptr;
+    }
+    if (taps != nullptr) {
+        taps->downsample = hidden;
+    }
+    return hidden;
 }
 
 }  // namespace synth::qwen3tts

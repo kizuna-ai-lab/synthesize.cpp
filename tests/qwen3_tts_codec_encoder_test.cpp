@@ -1,6 +1,4 @@
-// The codec encoder's SEANet stack and frame downsampler: waveform in, the
-// stack's own output out. The transformer that belongs between them lands in
-// the next commit, with its own per-layer measurement.
+// The codec encoder's graph: waveform in, pre-quantization latents out.
 //
 // Six rules, each with an input that fails it. None of them is a reference
 // value: the encoder's numerical agreement with upstream is measured against
@@ -13,7 +11,7 @@
 // what produce it) run on weights carrying only kernel extents, because a
 // geometry walk reads ne[0] and nothing else. The graph checks run on a small
 // synthetic stack drawn from one 64-bit LCG, which is what keeps them cheap
-// enough to be a unit test at all: the real stack is 1024 channels wide.
+// enough to be a unit test at all: the real transformer is 8 x 512 x 2048.
 //
 // The causality check is the one nothing downstream can replace. A symmetric
 // MimiConv1d pad -- upstream's own non-causal branch, one `if` away from the
@@ -50,6 +48,8 @@ constexpr int64_t  kStem            = 4;
 constexpr int64_t  kStageWidths[]   = { 8, 16, 32, 64 };
 constexpr int64_t  kStageKernels[]  = { 4, 6, 4, 4 };
 constexpr int64_t  kHidden          = 32;
+constexpr int64_t  kIntermediate    = 128;
+constexpr int64_t  kLayers          = 8;
 constexpr int64_t  kSamplesPerFrame = 48;
 constexpr size_t   kNodeBudget      = 8192;
 constexpr uint64_t kSeed            = 20260813u;
@@ -167,6 +167,26 @@ bool build_fixture(ggml_backend_dev_t device, Fixture & fixture) {
     // `bias=False`, which is why the catalog holds it as a bare tensor.
     fixture.weights.downsample = add(ggml_new_tensor_3d(pctx, GGML_TYPE_F32, 4, kHidden, kHidden), 0.15f);
 
+    fixture.weights.layers.assign(kLayers, synth::qwen3tts::CodecEncoderTransformerLayerWeights{});
+    for (synth::qwen3tts::CodecEncoderTransformerLayerWeights & layer : fixture.weights.layers) {
+        // LayerNorm carries a weight AND a bias here, unlike the decoder's
+        // RMSNorm. The weight is drawn about 1 and the bias about 0, which is
+        // what a trained LayerNorm looks like.
+        layer.input_layernorm.weight          = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.0f);
+        layer.input_layernorm.bias            = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.05f);
+        layer.q_proj                          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kHidden), 0.2f);
+        layer.k_proj                          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kHidden), 0.2f);
+        layer.v_proj                          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kHidden), 0.2f);
+        layer.o_proj                          = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kHidden), 0.2f);
+        // MimiLayerScale initialises at 0.01 and stays small after training.
+        layer.self_attn_layer_scale           = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.02f);
+        layer.post_attention_layernorm.weight = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.0f);
+        layer.post_attention_layernorm.bias   = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.05f);
+        layer.fc1             = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kHidden, kIntermediate), 0.2f);
+        layer.fc2             = add(ggml_new_tensor_2d(pctx, GGML_TYPE_F32, kIntermediate, kHidden), 0.1f);
+        layer.mlp_layer_scale = add(ggml_new_tensor_1d(pctx, GGML_TYPE_F32, kHidden), 0.02f);
+    }
+
     fixture.buffer = ggml_backend_alloc_ctx_tensors(pctx, fixture.backend);
     if (fixture.buffer == nullptr) {
         return false;
@@ -185,7 +205,7 @@ bool build_fixture(ggml_backend_dev_t device, Fixture & fixture) {
     return true;
 }
 
-// Runs the SEANet stack and the frame downsampler over `samples` LCG samples.
+// Runs the encoder over `samples` LCG samples and returns the latents.
 bool run_encoder(const Fixture &      fixture,
                  int64_t              samples,
                  float                first_sample_bump,
@@ -215,15 +235,18 @@ bool run_encoder(const Fixture &      fixture,
     pcm[0] += first_sample_bump;
     ggml_backend_tensor_set(waveform, pcm.data(), 0, ggml_nbytes(waveform));
 
+    std::vector<int32_t> sequential(size_t(geometry.transformer_positions));
+    for (int64_t index = 0; index < geometry.transformer_positions; ++index) {
+        sequential[size_t(index)] = int32_t(index);
+    }
+    ggml_backend_tensor_set(positions, sequential.data(), 0, ggml_nbytes(positions));
+
     Context graph_ctx =
         make_context(ggml_tensor_overhead() * (kNodeBudget + 64) + ggml_graph_overhead_custom(kNodeBudget, false));
     ggml_cgraph * graph = ggml_new_graph_custom(graph_ctx.get(), kNodeBudget, false);
 
-    ggml_tensor * stack  = synth::qwen3tts::build_codec_encoder_seanet(graph_ctx.get(), waveform, fixture.weights);
-    ggml_tensor * result = stack == nullptr ?
-                               nullptr :
-                               synth::qwen3tts::build_codec_encoder_downsample(graph_ctx.get(), stack, fixture.weights);
-    bool          ok     = result != nullptr && stack->ne[1] == geometry.transformer_positions;
+    ggml_tensor * result = synth::qwen3tts::build_codec_encoder(graph_ctx.get(), waveform, positions, fixture.weights);
+    bool          ok     = result != nullptr;
     if (ok) {
         // Rule 3: the latents are as wide as the tail convolution's output,
         // which catalog.cpp binds to the package's `codebook_dim` (512 in the
@@ -442,6 +465,23 @@ int main() {
         // A stack that decayed to zero would satisfy every other rule here.
         SYNTH_TEST_CHECK(magnitude > 1e-6);
         std::printf("    nodes %d, frames %lld, |latents|max %.4g\n", nodes, (long long) frames, magnitude);
+
+        // The attention is causal and NOT windowed. `encoder_config` declares
+        // sliding_window 250, but MimiTransformerModel builds its mask with
+        // create_causal_mask -- transformers' plain causal mask -- and only
+        // MimiFlashAttention2 ever reads the window. So the last frame must
+        // still depend on the first samples; a windowed mask would sever that
+        // and nothing in the 101-frame oracle dump could show it.
+        std::vector<float> bumped;
+        int64_t            bumped_frames = 0;
+        SYNTH_TEST_CHECK(run_encoder(fixture, kSamplesPerFrame * 30, 4.0f, bumped, bumped_frames, nodes));
+        double last_frame_change = 0.0;
+        for (int64_t channel = 0; channel < kHidden; ++channel) {
+            const size_t at   = size_t((30 - 1) * kHidden + channel);
+            last_frame_change = std::fmax(last_frame_change, double(std::fabs(bumped[at] - latents[at])));
+        }
+        std::printf("    last frame moves %.4g when sample 0 moves\n", last_frame_change);
+        SYNTH_TEST_CHECK(last_frame_change > 1e-6);
 
         // Rule 6.
         float causal_diff = 0.0f;

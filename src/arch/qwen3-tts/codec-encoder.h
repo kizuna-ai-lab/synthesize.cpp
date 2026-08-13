@@ -33,9 +33,6 @@ namespace synth::qwen3tts {
 // back at :1466 -- nothing has to be transposed across that boundary. The
 // oracle's `transformer_l*.f32` artifacts are dumped in upstream's transposed
 // order and a comparison has to transpose them, not this graph.
-//
-// This half is the SEANet stack and the frame downsampler. The encoder
-// transformer that runs between them follows.
 
 // What a clip of `samples` samples turns into. Derived by walking the real
 // convolutions rather than dividing by a constant: the strides ARE the model,
@@ -69,25 +66,43 @@ bool codec_encoder_geometry(const CodecEncoderWeights & weights, int64_t samples
 
 // The two rules a graph cannot enforce, because a graph builder sees shapes and
 // never values: the clip must fill at least one frame, and every sample must be
-// finite. A NaN sample propagates through every convolution that reaches it, so
+// finite. A NaN sample propagates into every frame the transformer touches, so
 // it must be refused at the seam rather than found in the codes.
 synth_status_t codec_encoder_check_waveform(const CodecEncoderWeights & weights,
                                             const float *               samples,
                                             size_t                      count,
                                             CodecEncoderGeometry &      geometry);
 
+// The encoder transformer's geometry.
+//
+// Deliberately NOT operations.h's AttentionShape: that struct names its epsilon
+// `rms_norm_eps`, and this block does not RMS-norm. It uses a standard
+// LayerNorm with a weight AND a bias (modeling_mimi.py:930-931,
+// `nn.LayerNorm(config.hidden_size, eps=config.norm_eps)`). Reusing a struct
+// whose field name asserts the other norm is exactly the sort of quiet
+// mis-transcription this port keeps paying for.
+struct CodecEncoderAttentionShape {
+    int64_t hidden         = 0;
+    int64_t head_count     = 0;
+    int64_t head_dim       = 0;
+    float   layer_norm_eps = 0.0f;
+    float   rope_theta     = 0.0f;
+};
+
 // Where the stage-wise comparison against the oracle reads.
 //
 // There is one entry here for every artifact Task 1's dumper writes
-// (`seanet_stage0..3`, `seanet_tail`, `downsample`; `transformer_l0..l7`
-// once the transformer lands beside them), and
+// (`seanet_stage0..3`, `seanet_tail`, `transformer_l0..l7`, `downsample`), and
 // filling them costs a pointer copy: the tensors are the graph's own, not
 // copies of it. That matters more than it looks. The alternative -- a validator
 // that rebuilds the stages out of the exposed operators to get at the
 // intermediates -- measures the validator, and would have agreed with the
 // oracle stage by stage while the encoder Task 5 actually runs disagreed.
 //
-// Every tap is in the graph's channel-major [channels, length] layout.
+// Every tap is in the graph's channel-major [channels, length] layout,
+// INCLUDING the transformer ones. The oracle's `transformer_l*.f32` are
+// channel-last, because upstream transposes around its transformer and this
+// port does not; a comparison transposes them.
 //
 // A CALLER MUST ggml_set_output EACH TAP BEFORE ALLOCATING THE GRAPH.
 // ggml_gallocr recycles an intermediate's buffer the moment nothing left to
@@ -98,9 +113,10 @@ synth_status_t codec_encoder_check_waveform(const CodecEncoderWeights & weights,
 // which reported every stage disagreeing with the oracle by 15-70x when the
 // graph was already correct to 2e-4.
 struct CodecEncoderTaps {
-    std::vector<ggml_tensor *> seanet_stages;  // one per downsampling stage, after its strided convolution
+    std::vector<ggml_tensor *> seanet_stages;       // one per downsampling stage, after its strided convolution
     ggml_tensor *              seanet_tail = nullptr;
-    ggml_tensor *              downsample  = nullptr;
+    std::vector<ggml_tensor *> transformer_layers;  // one per layer, after the layer's MLP residual
+    ggml_tensor *              downsample = nullptr;
 };
 
 // One causal convolution, at `stride` and `dilation`.
@@ -133,8 +149,7 @@ ggml_tensor * codec_encoder_causal_conv1d(ggml_context * context,
                                           bool           replicate_pad);
 
 // The SEANet stack: an F32 [1, samples] waveform in, [codebook_dim,
-// transformer_positions] out -- `transformer_positions` because the length it
-// produces is the one the encoder transformer runs at, not the frame count.
+// transformer_positions] out.
 //
 // [1, samples] and not [samples]: this family's layout is channel-major, so a
 // mono clip is one channel of `samples`, exactly the shape build_codec_decoder
@@ -152,17 +167,56 @@ ggml_tensor * build_codec_encoder_seanet(ggml_context *              context,
                                          const CodecEncoderWeights & weights,
                                          CodecEncoderTaps *          taps = nullptr);
 
+// One encoder transformer layer over [hidden, positions].
+//
+// `position_ids` is an I32 [positions] that rope consumes. The causal mask is
+// built inside, with ggml_diag_mask_inf, rather than taken from the caller: it
+// is fully determined by the sequence length and there is nothing for a caller
+// to decide.
+//
+// THERE IS NO SLIDING WINDOW, and that is a measured claim rather than an
+// omission. `encoder_config.sliding_window` is 250 and MimiAttention stores it
+// (modeling_mimi.py:644), but the only forward pass that reads it is
+// MimiFlashAttention2's (:810). MimiTransformerModel builds its mask with
+// `create_causal_mask` (:1099-1106), which is transformers' PLAIN causal mask
+// -- `create_sliding_window_causal_mask` is a different function it does not
+// call -- so under `eager` and `sdpa` alike the window never reaches the mask.
+// The oracle ran `sdpa` (conventions.json's attn_implementation_observed).
+// Verified by running MimiTransformerModel at sliding_window=2 over 8
+// positions: position 7 still depends on position 0, and create_causal_mask
+// returns a full lower-triangular mask. See this task's report.
+ggml_tensor * codec_encoder_transformer_layer(ggml_context *                              context,
+                                              ggml_tensor *                               input,
+                                              ggml_tensor *                               position_ids,
+                                              const CodecEncoderTransformerLayerWeights & weights,
+                                              const CodecEncoderAttentionShape &          shape);
+
+// The eight-layer encoder transformer. There is no final norm after it: the
+// package carries none, and modeling_mimi.py's MimiTransformerModel has none.
+ggml_tensor * build_codec_encoder_transformer(ggml_context *              context,
+                                              ggml_tensor *               input,
+                                              ggml_tensor *               position_ids,
+                                              const CodecEncoderWeights & weights,
+                                              CodecEncoderTaps *          taps = nullptr);
+
 // The frame downsampler: kernel 4, stride 2, no bias, replicate padding.
 // [hidden, positions] in, [hidden, ceil(positions / 2)] out.
 ggml_tensor * build_codec_encoder_downsample(ggml_context *              context,
                                              ggml_tensor *               input,
                                              const CodecEncoderWeights & weights);
 
-// The transformer that sits between the tail convolution and the frame
-// downsampler is the other half of this encoder and lands next, with its own
-// per-layer measurement against the oracle. Until it does there is no
-// whole-encoder entry point here on purpose: composing SEANet straight into the
-// downsampler would build a plausible encoder that is not this one, and would
-// be one commit harder to bisect for it.
+// The whole encoder: an F32 [1, samples] waveform in, [codebook_dim, frames] of
+// pre-quantization latents out. Task 5's host wrapper runs this and quantizes.
+//
+// `position_ids` is an I32 [transformer_positions] -- the SEANet stack's output
+// length, NOT the frame count, because the transformer runs before the frame
+// downsampler. Take it from codec_encoder_geometry rather than computing it.
+//
+// Returns nullptr rather than aborting on anything it cannot build.
+ggml_tensor * build_codec_encoder(ggml_context *              context,
+                                  ggml_tensor *               waveform,
+                                  ggml_tensor *               position_ids,
+                                  const CodecEncoderWeights & weights,
+                                  CodecEncoderTaps *          taps = nullptr);
 
 }  // namespace synth::qwen3tts

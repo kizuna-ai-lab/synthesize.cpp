@@ -2510,9 +2510,12 @@ committed, so this table and the family record are the audit's artifact.
 - One listener's judgement that a clone is recognisably the same speaker as
   its source. This is the first such evidence in this repository.
 
-**What it does not establish.** Any quality, naturalness or comparative claim
-— ADR 0017 defers Quality Evaluation, and a Listening Audit does not move the
-Validation Level. Any speaker-similarity metric; the resemblance finding is one
+**What it does not establish.** Any quality, naturalness or comparative-ranking
+claim — ADR 0017 defers Quality Evaluation, and a Listening Audit does not move
+the Validation Level. The audit *is* a comparison, and a bounded one: this port
+against its own reference implementation, four cases, one listener. What stays
+out of reach is ranking this model against any other, which is what
+`comparative` means everywhere else in this project's documents. Any speaker-similarity metric; the resemblance finding is one
 listener, one source clip, one clone, and is evidence rather than a property of
 the port. Anything about transcript-assisted (ICL) mode, which this port does
 not implement. Anything about CUDA for the new graphs, which have only ever run

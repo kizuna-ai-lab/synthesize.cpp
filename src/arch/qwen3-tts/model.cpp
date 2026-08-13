@@ -501,10 +501,16 @@ synth_status_t Model::load(const std::string &      path,
         // build_model_weights binds against the twin context: it calls
         // resolve_codec there, which resolves `codec.decoder.*` and nothing
         // else. A Base package also carries 161 `codec.encoder.*` tensors,
-        // and twinning those mirrored 224,674,944 bytes onto the device that
-        // no graph ever bound -- there is no codec encoder graph until Plan 2,
-        // and when there is one it needs a twin pass of its own rather than
-        // this one widened by accident.
+        // and twinning those would mirror 224,674,944 bytes onto the device
+        // for a graph that is not bound against the twin.
+        //
+        // There IS a codec encoder graph now -- codec-encoder.cpp, the ICL
+        // path's -- and it is deliberately still outside this pass. It is
+        // bound against `weights_context`, so it reads the CPU-resident
+        // originals wherever its caller's BackendPlan puts the computation,
+        // exactly as speaker-encoder.cpp's ECAPA graph does. Moving it onto an
+        // accelerator is a twin pass of its own, with its own prefix; it is not
+        // this one widened by one strncmp.
         const bool split = implementation->backend_plan->primary() != implementation->backend_plan->cpu_backend();
         if (split) {
             ggml_init_params twin_params{};

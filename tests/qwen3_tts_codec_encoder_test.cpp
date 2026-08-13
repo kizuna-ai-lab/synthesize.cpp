@@ -54,6 +54,30 @@ constexpr int64_t  kSamplesPerFrame = 48;
 constexpr size_t   kNodeBudget      = 8192;
 constexpr uint64_t kSeed            = 20260813u;
 
+// The graph this fixture builds, exactly. Pinned because a budget of 8192
+// against 445 catches nothing: a stray ggml_cont per layer, a convolution that
+// grew a copy, or a mask that stopped being inplace all fit inside it
+// unnoticed. tests/qwen3_tts_speaker_encoder_test.cpp:416-426 pins its own
+// counts the same way.
+//
+// TWO counts, because the graph is NOT length-independent, which is worth
+// stating precisely since an earlier revision of this comment claimed it was.
+// Thirteen convolutions and eight transformer layers do not change shape with
+// the clip -- but the frame downsampler REPLICATE-pads, and its right-hand
+// `extra_padding` is zero exactly when the clip is a whole number of frames.
+// When it is not, that pad is built out of a view, a cont, a repeat and a
+// concat: four more nodes. Measured, not derived. The real package shows the
+// same split: 445 nodes on base-icl-en's 193,920 samples (101 whole frames) and
+// 449 on base-ref-min's 24,000 (12.5 frames).
+//
+// Both are F32 counts. `as_f32` inserts a ggml_cast per elementwise weight that
+// is not already F32, so a package storing this half at lower precision would
+// build a larger graph -- the F32/BF16 split the speaker encoder's test pins.
+// All 161 `codec.encoder.*` tensors in the real Base package are F32 (measured
+// with a GGUF read), so these are the real package's counts too.
+constexpr int kNodesWholeFrames = 445;
+constexpr int kNodesRaggedTail  = 449;
+
 class LcgStream {
   public:
     explicit LcgStream(uint64_t seed) : state_(seed) {}
@@ -205,13 +229,28 @@ bool build_fixture(ggml_backend_dev_t device, Fixture & fixture) {
     return true;
 }
 
+// The clip a run_encoder call encodes: `samples` LCG samples, with `bump` added
+// to sample 0. Same stream at every length, so a longer clip is the shorter one
+// with samples appended and nothing else changed.
+std::vector<float> lcg_clip(int64_t samples, float bump) {
+    LcgStream          stream(kSeed ^ 0x9e3779b97f4a7c15ull);
+    std::vector<float> pcm = stream.fill(size_t(samples), 0.5f, 0.0f);
+    pcm[0] += bump;
+    return pcm;
+}
+
 // Runs the encoder over `samples` LCG samples and returns the latents.
+//
+// `seanet_tail_out`, when non-null, additionally reads back the seanet_tail tap
+// -- which is what proves the tap is readable at all, since it is an
+// intermediate the graph allocator would otherwise be free to recycle.
 bool run_encoder(const Fixture &      fixture,
                  int64_t              samples,
                  float                first_sample_bump,
                  std::vector<float> & latents,
                  int64_t &            frames,
-                 int &                nodes) {
+                 int &                nodes,
+                 std::vector<float> * seanet_tail_out = nullptr) {
     synth::qwen3tts::CodecEncoderGeometry geometry;
     if (!synth::qwen3tts::codec_encoder_geometry(fixture.weights, samples, geometry)) {
         return false;
@@ -227,12 +266,7 @@ bool run_encoder(const Fixture &      fixture,
         return false;
     }
 
-    // The same LCG for every length, so a longer clip is the shorter one with
-    // samples appended and nothing else changed -- which is what makes the
-    // causality comparison meaningful.
-    LcgStream          stream(kSeed ^ 0x9e3779b97f4a7c15ull);
-    std::vector<float> pcm = stream.fill(size_t(samples), 0.5f, 0.0f);
-    pcm[0] += first_sample_bump;
+    const std::vector<float> pcm = lcg_clip(samples, first_sample_bump);
     ggml_backend_tensor_set(waveform, pcm.data(), 0, ggml_nbytes(waveform));
 
     std::vector<int32_t> sequential(size_t(geometry.transformer_positions));
@@ -245,7 +279,16 @@ bool run_encoder(const Fixture &      fixture,
         make_context(ggml_tensor_overhead() * (kNodeBudget + 64) + ggml_graph_overhead_custom(kNodeBudget, false));
     ggml_cgraph * graph = ggml_new_graph_custom(graph_ctx.get(), kNodeBudget, false);
 
-    ggml_tensor * result = synth::qwen3tts::build_codec_encoder(graph_ctx.get(), waveform, positions, fixture.weights);
+    synth::qwen3tts::CodecEncoderTaps taps;
+    // Deliberately pre-loaded with junk: the builder must CLEAR its own lists
+    // rather than append to them, or a reused taps struct silently carries the
+    // previous graph's pointers.
+    taps.seanet_stages.assign(3, nullptr);
+    taps.transformer_layers.assign(5, nullptr);
+    taps.downsample      = waveform;
+    taps.seanet_tail     = waveform;
+    ggml_tensor * result = synth::qwen3tts::build_codec_encoder(graph_ctx.get(), waveform, positions, fixture.weights,
+                                                                seanet_tail_out == nullptr ? nullptr : &taps);
     bool          ok     = result != nullptr;
     if (ok) {
         // Rule 3: the latents are as wide as the tail convolution's output,
@@ -255,6 +298,15 @@ bool run_encoder(const Fixture &      fixture,
         if (!ok) {
             std::printf("    unexpected latent shape [%lld, %lld], wanted [%lld, %lld]\n", (long long) result->ne[0],
                         (long long) result->ne[1], (long long) kHidden, (long long) geometry.frames);
+        }
+    }
+    if (ok && seanet_tail_out != nullptr) {
+        ok = taps.seanet_stages.size() == std::size(kStageWidths) &&
+             taps.transformer_layers.size() == size_t(kLayers) && taps.seanet_tail != nullptr &&
+             taps.downsample == result;
+        if (!ok) {
+            std::printf("    taps not filled as declared: %zu stages, %zu layers\n", taps.seanet_stages.size(),
+                        taps.transformer_layers.size());
         }
     }
     ggml_gallocr_t allocator = nullptr;
@@ -271,6 +323,10 @@ bool run_encoder(const Fixture &      fixture,
         latents.assign(size_t(ggml_nelements(result)), 0.0f);
         ggml_backend_tensor_get(result, latents.data(), 0, ggml_nbytes(result));
         frames = geometry.frames;
+        if (seanet_tail_out != nullptr) {
+            seanet_tail_out->assign(size_t(ggml_nelements(taps.seanet_tail)), 0.0f);
+            ggml_backend_tensor_get(taps.seanet_tail, seanet_tail_out->data(), 0, ggml_nbytes(taps.seanet_tail));
+        }
     }
     if (allocator != nullptr) {
         ggml_gallocr_free(allocator);
@@ -406,19 +462,171 @@ bool check_causality(const Fixture & fixture, float & max_diff) {
     int64_t            short_frames = 0;
     int64_t            long_frames  = 0;
     int                nodes        = 0;
+    int                second_nodes = 0;
     if (!run_encoder(fixture, kSamplesPerFrame * 8, 0.0f, shorter, short_frames, nodes)) {
         return false;
     }
-    if (!run_encoder(fixture, kSamplesPerFrame * 12, 0.0f, longer, long_frames, nodes)) {
+    if (!run_encoder(fixture, kSamplesPerFrame * 12, 0.0f, longer, long_frames, second_nodes)) {
         return false;
     }
     if (short_frames != 8 || long_frames != 12) {
+        return false;
+    }
+    // Both lengths are whole frames, so both build the same graph.
+    if (nodes != kNodesWholeFrames || second_nodes != kNodesWholeFrames) {
+        std::printf("    causality runs built %d and %d nodes, expected %d\n", nodes, second_nodes, kNodesWholeFrames);
         return false;
     }
 
     max_diff = 0.0f;
     for (size_t index = 0; index < shorter.size(); ++index) {
         max_diff = std::fmax(max_diff, std::fabs(shorter[index] - longer[index]));
+    }
+    return true;
+}
+
+// The seanet_tail tap must hold the SEANet stack's own output after the graph
+// has run.
+//
+// Checked against a second graph that ends at the tail, where it is the final
+// node and so cannot be recycled. Without the builder's ggml_set_output the
+// first graph's tap is whatever later node the allocator put on top of it --
+// plausible floats of exactly the right shape, which is how this went unnoticed
+// through a whole stage-wise measurement run against the real package.
+bool check_taps_survive_allocation(const Fixture & fixture, float & max_diff) {
+    std::vector<float> latents;
+    std::vector<float> tapped;
+    int64_t            frames = 0;
+    int                nodes  = 0;
+    if (!run_encoder(fixture, kSamplesPerFrame * 8, 0.0f, latents, frames, nodes, &tapped)) {
+        return false;
+    }
+
+    // The same stack, built so that the tail IS the graph's output.
+    synth::qwen3tts::CodecEncoderGeometry geometry;
+    if (!synth::qwen3tts::codec_encoder_geometry(fixture.weights, kSamplesPerFrame * 8, geometry)) {
+        return false;
+    }
+    Context               input_ctx    = make_context(ggml_tensor_overhead() * 8);
+    ggml_tensor *         waveform     = ggml_new_tensor_2d(input_ctx.get(), GGML_TYPE_F32, 1, kSamplesPerFrame * 8);
+    ggml_backend_buffer_t input_buffer = ggml_backend_alloc_ctx_tensors(input_ctx.get(), fixture.backend);
+    if (input_buffer == nullptr) {
+        return false;
+    }
+    const std::vector<float> pcm = lcg_clip(kSamplesPerFrame * 8, 0.0f);
+    ggml_backend_tensor_set(waveform, pcm.data(), 0, ggml_nbytes(waveform));
+
+    Context graph_ctx =
+        make_context(ggml_tensor_overhead() * (kNodeBudget + 64) + ggml_graph_overhead_custom(kNodeBudget, false));
+    ggml_cgraph *  graph     = ggml_new_graph_custom(graph_ctx.get(), kNodeBudget, false);
+    ggml_tensor *  tail      = synth::qwen3tts::build_codec_encoder_seanet(graph_ctx.get(), waveform, fixture.weights);
+    bool           ok        = tail != nullptr && size_t(ggml_nelements(tail)) == tapped.size();
+    ggml_gallocr_t allocator = nullptr;
+    if (ok) {
+        ggml_build_forward_expand(graph, tail);
+        allocator = ggml_gallocr_new(ggml_backend_get_default_buffer_type(fixture.backend));
+        ok        = allocator != nullptr && ggml_gallocr_alloc_graph(allocator, graph);
+    }
+    if (ok) {
+        ok = ggml_backend_graph_compute(fixture.backend, graph) == GGML_STATUS_SUCCESS;
+    }
+    if (ok) {
+        std::vector<float> direct(size_t(ggml_nelements(tail)), 0.0f);
+        ggml_backend_tensor_get(tail, direct.data(), 0, ggml_nbytes(tail));
+        max_diff = 0.0f;
+        for (size_t index = 0; index < direct.size(); ++index) {
+            max_diff = std::fmax(max_diff, std::fabs(direct[index] - tapped[index]));
+        }
+    }
+    if (allocator != nullptr) {
+        ggml_gallocr_free(allocator);
+    }
+    ggml_backend_buffer_free(input_buffer);
+    return ok;
+}
+
+// The attention is causal and NOT windowed, on a probe that can tell the
+// difference.
+//
+// ONE layer, sixteen positions. That shape is the whole point. With L stacked
+// layers a window of w gives a receptive field of 1 + L*(w - 1) positions, so at
+// eight layers the last position depends on the first for any window down to 2
+// -- an end-to-end check over the real stack cannot see a window at all below
+// about 2400 frames, and the 30-frame one in main() certainly cannot. At L = 1
+// the receptive field IS the window: position 15 sees positions 15-w+1..15 and
+// nothing earlier, so a windowed mask of any width under 16 severs its
+// dependence on position 0 and a plain causal mask does not.
+//
+// This replaces an assertion that could not have failed. See codec-encoder.h
+// for the source trace and the measurement on the real weights.
+bool check_attention_is_unwindowed(const Fixture & fixture, double & change) {
+    constexpr int64_t kProbePositions = 16;
+
+    synth::qwen3tts::CodecEncoderWeights one_layer = fixture.weights;
+    one_layer.layers.resize(1);
+
+    Context               input_ctx    = make_context(ggml_tensor_overhead() * 8);
+    ggml_tensor *         hidden       = ggml_new_tensor_2d(input_ctx.get(), GGML_TYPE_F32, kHidden, kProbePositions);
+    ggml_tensor *         positions    = ggml_new_tensor_1d(input_ctx.get(), GGML_TYPE_I32, kProbePositions);
+    ggml_backend_buffer_t input_buffer = ggml_backend_alloc_ctx_tensors(input_ctx.get(), fixture.backend);
+    if (input_buffer == nullptr) {
+        return false;
+    }
+    // Braced, not parenthesised: `size_t(kProbePositions)` on a constexpr name
+    // parses as a parameter declaration, not a size.
+    std::vector<int32_t> sequential(static_cast<size_t>(kProbePositions), 0);
+    for (int64_t index = 0; index < kProbePositions; ++index) {
+        sequential[size_t(index)] = int32_t(index);
+    }
+    ggml_backend_tensor_set(positions, sequential.data(), 0, ggml_nbytes(positions));
+
+    LcgStream          stream(kSeed ^ 0xd1b54a32d192ed03ull);
+    std::vector<float> base = stream.fill(size_t(kHidden * kProbePositions), 1.0f, 0.0f);
+
+    std::vector<float> outputs[2];
+    for (int run = 0; run < 2; ++run) {
+        std::vector<float> values = base;
+        if (run == 1) {
+            // Position 0 only, and one channel of it: a LayerNorm subtracts the
+            // mean, so shifting every channel equally would be erased before
+            // the attention ever saw it.
+            values[0] += 8.0f;
+        }
+        ggml_backend_tensor_set(hidden, values.data(), 0, ggml_nbytes(hidden));
+
+        Context graph_ctx =
+            make_context(ggml_tensor_overhead() * (kNodeBudget + 64) + ggml_graph_overhead_custom(kNodeBudget, false));
+        ggml_cgraph * graph = ggml_new_graph_custom(graph_ctx.get(), kNodeBudget, false);
+        ggml_tensor * result =
+            synth::qwen3tts::build_codec_encoder_transformer(graph_ctx.get(), hidden, positions, one_layer);
+        if (result == nullptr) {
+            ggml_backend_buffer_free(input_buffer);
+            return false;
+        }
+        ggml_build_forward_expand(graph, result);
+        ggml_gallocr_t allocator = ggml_gallocr_new(ggml_backend_get_default_buffer_type(fixture.backend));
+        bool           ok        = allocator != nullptr && ggml_gallocr_alloc_graph(allocator, graph);
+        if (ok) {
+            ok = ggml_backend_graph_compute(fixture.backend, graph) == GGML_STATUS_SUCCESS;
+        }
+        if (ok) {
+            outputs[run].assign(size_t(ggml_nelements(result)), 0.0f);
+            ggml_backend_tensor_get(result, outputs[run].data(), 0, ggml_nbytes(result));
+        }
+        if (allocator != nullptr) {
+            ggml_gallocr_free(allocator);
+        }
+        if (!ok) {
+            ggml_backend_buffer_free(input_buffer);
+            return false;
+        }
+    }
+    ggml_backend_buffer_free(input_buffer);
+
+    change = 0.0;
+    for (int64_t channel = 0; channel < kHidden; ++channel) {
+        const size_t at = size_t((kProbePositions - 1) * kHidden + channel);
+        change          = std::fmax(change, double(std::fabs(outputs[1][at] - outputs[0][at])));
     }
     return true;
 }
@@ -455,6 +663,7 @@ int main() {
         int64_t            frames = 0;
         int                nodes  = 0;
         SYNTH_TEST_CHECK(run_encoder(fixture, kSamplesPerFrame * 30, 0.0f, latents, frames, nodes));
+        SYNTH_TEST_CHECK(nodes == kNodesWholeFrames);
         SYNTH_TEST_CHECK(frames == 30);
         SYNTH_TEST_CHECK(latents.size() == size_t(kHidden * 30));
         double magnitude = 0.0;
@@ -464,14 +673,32 @@ int main() {
         }
         // A stack that decayed to zero would satisfy every other rule here.
         SYNTH_TEST_CHECK(magnitude > 1e-6);
-        std::printf("    nodes %d, frames %lld, |latents|max %.4g\n", nodes, (long long) frames, magnitude);
+        std::printf("    frames %lld, |latents|max %.4g, %d nodes\n", (long long) frames, magnitude, nodes);
 
-        // The attention is causal and NOT windowed. `encoder_config` declares
-        // sliding_window 250, but MimiTransformerModel builds its mask with
-        // create_causal_mask -- transformers' plain causal mask -- and only
-        // MimiFlashAttention2 ever reads the window. So the last frame must
-        // still depend on the first samples; a windowed mask would sever that
-        // and nothing in the 101-frame oracle dump could show it.
+        // A clip that does NOT end on a frame boundary. This is the only place
+        // the frame downsampler's right-hand extra_padding is exercised at all
+        // -- every other length here is a whole number of frames, where it is
+        // zero -- and the replicate pad it needs on that side is four more
+        // graph nodes. 401 samples is 8.35 frames, so the encoder rounds up to
+        // 9 and the downsampler pads its input by one position.
+        std::vector<float> ragged;
+        int64_t            ragged_frames = 0;
+        int                ragged_nodes  = 0;
+        SYNTH_TEST_CHECK(run_encoder(fixture, kSamplesPerFrame * 8 + 17, 0.0f, ragged, ragged_frames, ragged_nodes));
+        SYNTH_TEST_CHECK(ragged_frames == 9);
+        SYNTH_TEST_CHECK(ragged_nodes == kNodesRaggedTail);
+        for (float value : ragged) {
+            SYNTH_TEST_CHECK(std::isfinite(value));
+        }
+        std::printf("    ragged clip: %lld frames, %d nodes\n", (long long) ragged_frames, ragged_nodes);
+
+        // End-to-end liveness: sample 0 must reach the last frame at all. This
+        // is NOT a check on the sliding window -- at eight layers the last
+        // position depends on the first under a window as well as without one,
+        // which is exactly the mistake check_attention_is_unwindowed exists to
+        // correct. What it does catch is a stack that has stopped propagating:
+        // a severed residual, a mask that blocks everything, an attention that
+        // reads only the diagonal.
         std::vector<float> bumped;
         int64_t            bumped_frames = 0;
         SYNTH_TEST_CHECK(run_encoder(fixture, kSamplesPerFrame * 30, 4.0f, bumped, bumped_frames, nodes));
@@ -483,14 +710,39 @@ int main() {
         std::printf("    last frame moves %.4g when sample 0 moves\n", last_frame_change);
         SYNTH_TEST_CHECK(last_frame_change > 1e-6);
 
+        // The window probe that can actually fail.
+        double window_change = 0.0;
+        SYNTH_TEST_CHECK(check_attention_is_unwindowed(fixture, window_change));
+        std::printf("    single-layer probe: position 15 moves %.4g when position 0 moves\n", window_change);
+        SYNTH_TEST_CHECK(window_change > 1e-6);
+
+        // The taps a stage-wise comparison reads are readable.
+        float tap_diff = 0.0f;
+        SYNTH_TEST_CHECK(check_taps_survive_allocation(fixture, tap_diff));
+        std::printf("    seanet_tail tap vs direct build: max_diff %.4g\n", double(tap_diff));
+        SYNTH_TEST_CHECK(tap_diff == 0.0f);
+
         // Rule 6.
         float causal_diff = 0.0f;
         SYNTH_TEST_CHECK(check_causality(fixture, causal_diff));
         std::printf("    causal prefix max_diff %.4g\n", double(causal_diff));
-        // A symmetric pad moves this by order 1, not by order 1e-5: the bound
-        // is loose against backend arithmetic and still four orders tighter
-        // than the fault it catches.
-        SYNTH_TEST_CHECK(causal_diff < 1e-3f);
+        // Exactly 0 on the CPU -- the shared prefix is bit-identical, because
+        // every output element of every convolution reduces over the same
+        // inputs in the same order whatever follows it.
+        //
+        // NOT exactly 0 on an accelerator, and that is arithmetic rather than a
+        // broken prefix: CUDA tiles a matrix multiply by its column count, so
+        // the 8-frame and 12-frame runs accumulate the shared columns in
+        // different orders. Measured on a GB10 (sm_121a): 0.003435, stable to
+        // every digit across repeated runs, against a signal whose peak is
+        // 3.001 -- one part in 900. The same split the sibling codec test makes
+        // for the same reason (qwen3_tts_codec_test.cpp's own 1e-4 / 2e-2).
+        //
+        // Both bounds stay far under the fault they exist to catch: a symmetric
+        // pad moves this to 1.729, which is 17,000x the CPU bound and 86x the
+        // accelerator one.
+        const float causal_tolerance = type == GGML_BACKEND_DEVICE_TYPE_CPU ? 1e-4f : 2e-2f;
+        SYNTH_TEST_CHECK(causal_diff < causal_tolerance);
 
         ++exercised;
     }

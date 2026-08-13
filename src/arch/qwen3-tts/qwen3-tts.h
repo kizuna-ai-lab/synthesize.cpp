@@ -15,8 +15,11 @@ struct ggml_backend_device;
 namespace synth::qwen3tts {
 
 // SpeakerEncoderWeights is already forward-declared by speaker-encoder-host.h
-// above; HParams needs its own declaration for Model::hparams() below.
+// above; HParams needs its own declaration for Model::hparams() below, and
+// CodecEncoderWeights for codec_encoder_weights(). Declared rather than
+// included: catalog.h pulls in ggml types this header keeps out of its callers.
 struct HParams;
+struct CodecEncoderWeights;
 
 struct ModelInfo {
     std::string family = "qwen3-tts";
@@ -214,6 +217,12 @@ class Model {
     // these from a REAL Loaded Model rather than a synthetic HParams fixture.
     const HParams &               hparams() const;
     const SpeakerEncoderWeights & speaker_encoder_weights() const;
+    // The speech tokenizer's encoder half, for the ICL path. Both empty on a
+    // CustomVoice package, which carries neither -- see build_model_weights.
+    // Exposed on the same reasoning as the accessor above: the graph it feeds
+    // takes a weights struct rather than a Model, so a synthetic fixture can
+    // drive it, and only a caller holding a REAL Loaded Model needs this.
+    const CodecEncoderWeights &   codec_encoder_weights() const;
 
   private:
     // The language half of resolve_voice, for a request whose speaker is an

@@ -190,6 +190,18 @@ ggml_tensor * replicate_pad_edge(ggml_context * context, ggml_tensor * time_majo
     return padded;
 }
 
+// Marks a tensor a caller asked to read back.
+//
+// ggml_gallocr recycles an intermediate's buffer as soon as nothing left to run
+// reads it, so a tap without the output flag comes back as whatever later node
+// landed on it: plausible floats, right shape, wrong tensor. Done here rather
+// than asked of the caller, because a caller who has asked for a tap has
+// already said what they want and the flag is the only thing that delivers it.
+ggml_tensor * record_tap(ggml_tensor * tensor) {
+    ggml_set_output(tensor);
+    return tensor;
+}
+
 // A bias over [channels, length] is per channel, so it broadcasts along the
 // length rather than across it.
 //
@@ -368,6 +380,13 @@ ggml_tensor * build_codec_encoder_seanet(ggml_context *              context,
     if (waveform->type != GGML_TYPE_F32 || waveform->ne[0] != 1 || waveform->ne[2] != 1 || waveform->ne[3] != 1) {
         return nullptr;
     }
+    if (taps != nullptr) {
+        // Its own fields only: build_codec_encoder runs this and the
+        // transformer against ONE taps struct, so clearing the whole thing
+        // here would erase whichever half ran first.
+        taps->seanet_stages.clear();
+        taps->seanet_tail = nullptr;
+    }
 
     // No activation before the stem: MimiEncoder opens with a bare MimiConv1d
     // (modeling_mimi.py:449) and the first nn.ELU() is not appended until :463.
@@ -385,8 +404,8 @@ ggml_tensor * build_codec_encoder_seanet(ggml_context *              context,
         // residual block of the same stage.
         hidden = codec_encoder_causal_conv1d(context, ggml_elu(context, hidden), stage.stride_conv.weight,
                                              stage.stride_conv.bias, stride_of(stage.stride_conv.weight), 1, false);
-        if (taps != nullptr) {
-            taps->seanet_stages.push_back(hidden);
+        if (taps != nullptr && hidden != nullptr) {
+            taps->seanet_stages.push_back(record_tap(hidden));
         }
     }
     if (hidden == nullptr) {
@@ -396,8 +415,8 @@ ggml_tensor * build_codec_encoder_seanet(ggml_context *              context,
     // it.
     ggml_tensor * tail = codec_encoder_causal_conv1d(context, ggml_elu(context, hidden), weights.tail.weight,
                                                      weights.tail.bias, 1, 1, false);
-    if (taps != nullptr) {
-        taps->seanet_tail = tail;
+    if (taps != nullptr && tail != nullptr) {
+        taps->seanet_tail = record_tap(tail);
     }
     return tail;
 }
@@ -457,7 +476,10 @@ ggml_tensor * codec_encoder_transformer_layer(ggml_context *                    
     // checkpoint's `sliding_window: 250` does not reach this mask under the
     // attention implementation the oracle ran. Built in-graph because the
     // sequence length determines it completely.
-    ggml_tensor * scores = ggml_diag_mask_inf(context, ggml_mul_mat(context, k_hd, q_hd), 0);
+    // Inplace: the scores have exactly one reader and materialising a second
+    // [positions, positions, heads] F32 copy of them costs 18 MB per layer at
+    // the 375-frame end of the reference range, for nothing.
+    ggml_tensor * scores = ggml_diag_mask_inf_inplace(context, ggml_mul_mat(context, k_hd, q_hd), 0);
     scores               = ggml_soft_max_ext(context, scores, nullptr, 1.0f / std::sqrt(float(head_dim)), 0.0f);
 
     ggml_tensor * v_t      = ggml_cont(context, ggml_permute(context, v_hd, 1, 0, 2, 3));
@@ -505,6 +527,9 @@ ggml_tensor * build_codec_encoder_transformer(ggml_context *              contex
     if (shape.hidden % kTransformerHeadCount != 0) {
         return nullptr;
     }
+    if (taps != nullptr) {
+        taps->transformer_layers.clear();
+    }
 
     ggml_tensor * hidden = input;
     for (const CodecEncoderTransformerLayerWeights & layer : weights.layers) {
@@ -513,7 +538,7 @@ ggml_tensor * build_codec_encoder_transformer(ggml_context *              contex
             return nullptr;
         }
         if (taps != nullptr) {
-            taps->transformer_layers.push_back(hidden);
+            taps->transformer_layers.push_back(record_tap(hidden));
         }
     }
     // No final norm: MimiTransformerModel has none, and the package carries
@@ -538,6 +563,9 @@ ggml_tensor * build_codec_encoder(ggml_context *              context,
                                   CodecEncoderTaps *          taps) {
     if (context == nullptr || waveform == nullptr || position_ids == nullptr) {
         return nullptr;
+    }
+    if (taps != nullptr) {
+        taps->downsample = nullptr;
     }
     CodecEncoderGeometry geometry;
     if (!codec_encoder_geometry(weights, waveform->ne[1], geometry)) {
@@ -564,7 +592,7 @@ ggml_tensor * build_codec_encoder(ggml_context *              context,
         return nullptr;
     }
     if (taps != nullptr) {
-        taps->downsample = hidden;
+        taps->downsample = record_tap(hidden);
     }
     return hidden;
 }

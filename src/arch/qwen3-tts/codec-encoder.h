@@ -104,14 +104,22 @@ struct CodecEncoderAttentionShape {
 // channel-last, because upstream transposes around its transformer and this
 // port does not; a comparison transposes them.
 //
-// A CALLER MUST ggml_set_output EACH TAP BEFORE ALLOCATING THE GRAPH.
-// ggml_gallocr recycles an intermediate's buffer the moment nothing left to
-// run reads it, so a tap read back after compute is whatever later node landed
+// EVERY TAP IS ggml_set_output BY THE BUILDER, not by the caller. ggml_gallocr
+// recycles an intermediate's buffer the moment nothing left to run reads it, so
+// a tap read back after compute would otherwise be whatever later node landed
 // on top of it -- plausible floats, right shape, wrong tensor. Building the tap
 // into the graph with ggml_build_forward_expand is NOT enough; only the output
 // flag pins the memory. This cost the first run of the stage-wise comparison,
 // which reported every stage disagreeing with the oracle by 15-70x when the
-// graph was already correct to 2e-4.
+// graph was already correct to 1e-5, and it was a comment telling callers to do
+// it themselves until a review pointed out that a comment is not a mechanism.
+// Asking for a tap is asking for a readable tensor; the flag is not separately
+// requestable and there is nothing left to forget.
+//
+// A tap list is CLEARED by the builder that fills it, so one CodecEncoderTaps
+// may be reused across builds without accumulating the previous graph's
+// pointers. Only tensors that were actually built are recorded: a failed build
+// leaves the list short rather than holding a nullptr.
 struct CodecEncoderTaps {
     std::vector<ggml_tensor *> seanet_stages;       // one per downsampling stage, after its strided convolution
     ggml_tensor *              seanet_tail = nullptr;
@@ -174,17 +182,33 @@ ggml_tensor * build_codec_encoder_seanet(ggml_context *              context,
 // is fully determined by the sequence length and there is nothing for a caller
 // to decide.
 //
-// THERE IS NO SLIDING WINDOW, and that is a measured claim rather than an
-// omission. `encoder_config.sliding_window` is 250 and MimiAttention stores it
-// (modeling_mimi.py:644), but the only forward pass that reads it is
-// MimiFlashAttention2's (:810). MimiTransformerModel builds its mask with
-// `create_causal_mask` (:1099-1106), which is transformers' PLAIN causal mask
-// -- `create_sliding_window_causal_mask` is a different function it does not
-// call -- so under `eager` and `sdpa` alike the window never reaches the mask.
-// The oracle ran `sdpa` (conventions.json's attn_implementation_observed).
-// Verified by running MimiTransformerModel at sliding_window=2 over 8
-// positions: position 7 still depends on position 0, and create_causal_mask
-// returns a full lower-triangular mask. See this task's report.
+// THERE IS NO SLIDING WINDOW. `encoder_config.sliding_window` is 250 and
+// MimiAttention stores it (modeling_mimi.py:644), but the only forward pass
+// that reads it is MimiFlashAttention2's (:810), and flash-attn is not
+// installed in the environment the oracle ran in. MimiTransformerModel builds
+// its mask at :1101 with `create_causal_mask`, which sets
+// `mask_factory_function = causal_mask_function` unconditionally
+// (masking_utils.py:795) and never reads config.sliding_window;
+// `create_sliding_window_causal_mask` (masking_utils.py:839, :894) is a
+// separate function modeling_mimi.py does not import. So under `sdpa` -- which
+// is what this checkpoint selects, and what conventions.json observed -- and
+// under `eager` alike, the window never reaches the mask.
+//
+// The wrapper DOES contain sliding-window code, which is where the mistaken
+// claim came from: it belongs to Qwen3TTSTokenizerV2Decoder*, the codec
+// DECODER, which genuinely is windowed and is why codec.cpp carries
+// codec_fill_sliding_window_mask. Encoder and decoder are different classes.
+//
+// Measured on the real 96 encoder-transformer tensors at [1, 400, 512]: the
+// default output is BIT-IDENTICAL to an explicit plain-causal mask and 4.64x
+// rms away from an explicit sliding(250) mask, under both sdpa and eager. At
+// 400 positions 36% of the last query's attention mass sits outside a 250
+// window, so this is an order-1 difference and not a subtlety.
+//
+// Note for a future transformers bump: upstream's own sdpa/eager and
+// flash_attention_2 paths therefore DISAGREE above 250 frames. The pin in
+// scripts/envs/qwen3-tts/pyproject.toml is what protects this reading, and
+// modeling_mimi.py:1101 is the line to re-check when it moves.
 ggml_tensor * codec_encoder_transformer_layer(ggml_context *                              context,
                                               ggml_tensor *                               input,
                                               ggml_tensor *                               position_ids,

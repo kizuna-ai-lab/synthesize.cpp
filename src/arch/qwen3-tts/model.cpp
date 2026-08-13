@@ -394,6 +394,10 @@ const SpeakerEncoderWeights & Model::speaker_encoder_weights() const {
     return implementation_->weights.speaker_encoder;
 }
 
+const CodecEncoderWeights & Model::codec_encoder_weights() const {
+    return implementation_->weights.codec_encoder;
+}
+
 uint32_t Model::samples_per_frame() const {
     return implementation_->hparams.codec.hop_length;
 }

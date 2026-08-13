@@ -507,6 +507,18 @@ set_tests_properties(synthesize-qwen3-tts-wav-reader-test PROPERTIES LABELS "uni
 synth_register_unit_target(synthesize-qwen3-tts-wav-reader-test)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-wav-reader)
 
+# A thin adapter, not a test: runs the codec encoder graph over a real package
+# and writes every stage tap in the oracle's own layout, so Task 1's
+# codec_encoder/*.f32 dumps can be diffed against them. Registered as an
+# INTEGRATION target -- it needs the real ~2.5 GB Base package -- and it takes
+# the oracle's own waveform.f32 rather than a WAV, which is why it carries no
+# WAV reader of its own. See the file header for why that is a correctness
+# requirement and not a shortcut.
+add_executable(synthesize-qwen3-tts-codec-encoder-driver qwen3_tts_codec_encoder_driver.cpp)
+target_include_directories(synthesize-qwen3-tts-codec-encoder-driver PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(synthesize-qwen3-tts-codec-encoder-driver PRIVATE synthesize ggml)
+synth_register_integration_target(synthesize-qwen3-tts-codec-encoder-driver)
+
 # A tiny driver, not a test: runs Model::prepare_x_vector over a real WAV file
 # against a real package so scripts/validate-qwen3-tts-replay.py
 # --compare-x-vector can diff it against Task 1's oracle dump. Needs a real

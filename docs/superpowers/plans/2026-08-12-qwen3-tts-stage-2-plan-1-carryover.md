@@ -167,6 +167,10 @@ again. Expect to change the resolver signatures, not to add to them.
 
 ### 2.2 The reference-duration bounds are safety ceilings with no listening pass
 
+**RESOLVED 2026-08-13 by the Stage 2 Listening Audit. Both halves of this item
+closed, and the second one closed in an unexpected way. The original text is
+kept below unchanged; the resolution follows it.**
+
 Task 6 shipped `min_frames_per_clip 24000` (1 s) and
 `max_frames_per_clip`/`max_total_frames 720000` (30 s) at 24 kHz, with
 `max_reference_count 1`. These are **safety ceilings taken from the plan, not
@@ -186,6 +190,33 @@ A listening pass on the 0.5 s / 1 s / 30 s renders is owed before these bounds
 can be described as validated, and it is owed **before Stage 2 ships**, not
 before Plan 2 starts. See the user memory note "Offer the listening pass before
 shipping": a tolerance grid is not audible evidence.
+
+#### Resolution, 2026-08-13
+
+**The bounds.** The audit's labelled duration sweep found 1 s, 3 s, 10 s and
+30 s references all **usable**, and the 0.5 s case **refused by the library**
+(`voice_profile.reference_too_short`) rather than synthesized badly. The
+shipped ceilings therefore produce usable speech across their whole declared
+range and fail closed below it. They are no longer "safety ceilings with no
+listening pass"; they are safety ceilings that a listener has since heard the
+ends of.
+
+**The 30 s undershoot, and why it is the interesting half.** It did not
+reproduce. Regenerating that case **in x-vector mode** — the only mode this
+port implements — gave **46 codec frames**, in line with every other duration
+in the audit's sweep. The 9-frame figure recorded above came from a
+**transcript-assisted (ICL) dump**. The observation was real and correctly
+recorded; what was wrong was the implicit assumption that it described the path
+Plan 2 built. Nothing in the shipped x-vector path could have produced it.
+
+**Consequence.** The anomaly is not closed, it is **reassigned to Plan 3**,
+which builds the ICL path and is the first plan that can drive the case that
+produced it end to end. Do not treat this as a defect of the shipped bounds,
+and do not treat the 46-frame result as evidence about ICL: they are two
+different modes and only one of them has been listened to.
+
+Full record, including the audit's method and what it deliberately does not
+cover, is in `docs/porting/families/qwen3-tts.md` under "Listening Audits".
 
 ## 3. Deferred minors, by task
 

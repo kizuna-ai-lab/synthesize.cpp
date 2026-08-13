@@ -1,6 +1,6 @@
 # Qwen3-TTS Family Selection and Port Plan
 
-Status: Confirmed 2026-08-12. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
+Status: Confirmed 2026-08-13. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
 complete and published. Intake, the oracle and conversion are done; stages 4
 through 7 have their measured work done: oracle replay and the public seam
 pass, and the codec runs on CUDA while the autoregressive half stays on the CPU
@@ -51,10 +51,19 @@ capability snapshot now advertises
 for Base. See "Stage 2: Base Package, Plan 2" below for the full record,
 including what remains: ICL / transcript-assisted cloning (Plan 3),
 Description Text (Stage 3), the CLI (a cross-family slice, deliberately not
-this plan's), quantization and CUDA for the new graphs (Plan 4), and the
-listening pass on the reference-duration bounds, which are safety ceilings
-Task 6 shipped, not perceptually validated ones -- still owed before Stage 2
-ships.
+this plan's), and quantization and CUDA for the new graphs (Plan 4).
+
+**The Stage 2 Plan 2 Listening Audit ran on 2026-08-13 and recorded
+`no_obvious_regression`.** One listener, four blind port-vs-oracle pairs over
+three languages in x-vector mode; a labelled duration sweep that found the
+shipped reference-duration bounds usable at 1 s, 3 s, 10 s and 30 s, with the
+sub-minimum 0.5 s case refused by the library as designed; and a labelled
+source-versus-clone pair the listener judged **the same speaker** -- the first
+resemblance evidence in this repository, and one listener's judgement on one
+source clip and one clone rather than a property of the port. The audit covers
+neither ICL, which this port does not implement, nor CUDA for the new graphs,
+which have only ever run on CPU. Quality Evaluation stays `not_run` per
+ADR 0017 and the Validation Level does not move. See "Listening Audits" below.
 
 ## Decision
 
@@ -2049,18 +2058,31 @@ documented degeneracy signature (near-silence or one code dominating the
 output; neither fires at either edge). The 10 s point is the best-behaved
 of the five, landing within 3 frames of baseline.
 
-**No listening pass has happened.** `intake.json` records
-`perceptual_evaluation_performed: false` for every point, and its
+**No listening pass had happened when this table was measured.** `intake.json`
+records `perceptual_evaluation_performed: false` for every point, and its
 `recommendation` states plainly that the objective signals checked here
 cannot substitute for one: they rule out the family's *known* hard-failure
 pattern at both edges, but neither confirm nor deny that the resulting audio
 is usable speech, particularly at 30 s. Task 6 shipped
 `min_frames_per_clip=24000` / `max_frames_per_clip=720000` anyway, as safety
 ceilings pulled from the plan rather than as perceptually validated bounds,
-and every later task through this one has carried that distinction forward
-rather than quietly upgrading it. Per this project's practice of offering a
-listening pass before shipping, one on the 0.5 s/1 s/30 s renders under
-`build/qwen3-tts-reference-bounds/` is still owed.
+and every later task through Plan 2 carried that distinction forward rather
+than quietly upgrading it.
+
+**Both open points closed on 2026-08-13, and the table is left as measured.**
+The Listening Audit's labelled duration sweep found 1 s, 3 s, 10 s and 30 s
+references all **usable**, and the 0.5 s case **refused by the library**
+(`voice_profile.reference_too_short`) -- so the shipped bounds produce usable
+speech across their whole declared range, and the sub-minimum case fails
+closed rather than degrading. The 30 s row above did **not** reproduce:
+regenerating that case in x-vector mode gave 46 codec frames, in line with
+every other duration in the audit's sweep, and the 9-frame figure came from a
+transcript-assisted dump -- a mode this port does not implement, which is why
+nothing in the shipped x-vector path could reach it. The anomaly is real and
+belongs to Plan 3, where the ICL path is built and can be adjudicated against
+its own renders. The table stays as the intake script measured it, because the
+row is evidence about the dump, not about the shipped path. See "Listening
+Audits" below.
 
 ### What Plan 1 did not deliver
 
@@ -2102,8 +2124,9 @@ a runtime's capability; it is not a description of the tree today.
   only the second was false. See the ladder section above for what Plan 2
   advertises and why Serialized Profile arrives with Reference Audio rather
   than separately.
-- **The reference-duration bounds are unaudited at the edges**, per the
-  measurement above.
+- **The reference-duration bounds were unaudited at the edges**, per the
+  measurement above. *Closed by the 2026-08-13 Listening Audit, which found
+  1 s, 3 s, 10 s and 30 s usable and 0.5 s refused; same section.*
 
 ### The real Base package through the public C interface
 
@@ -2194,8 +2217,9 @@ a synthesized 440 Hz sine at the package's minimum reference length
 (`tests/qwen3_tts_clone_real.cpp`'s `make_tone`, which its own header states
 and this paragraph did not until 2026-08-12). That is sufficient for what the
 assertion decides — two different inputs must not produce identical output —
-and it is **not** evidence that either clone resembles its source. No
-listening pass has happened.
+and it is **not** evidence that either clone resembles its source. The
+resemblance evidence that exists is one listener's, from the 2026-08-13
+Listening Audit recorded below, not this test's.
 
 A deliberate break of the x-vector substitution (a fixed dummy vector in
 place of the per-Profile one) was confirmed to fail exactly the "two
@@ -2421,20 +2445,91 @@ the tree.
   it"; a graph now exists, and whether quantizing or accelerating it pays is
   a measured decision for Plan 4, not assumed from another family's
   precedent. No performance number is claimed by this plan.
-- **The listening pass.** The reference-duration bounds recorded under
-  "Measured reference-duration bounds" above remain safety ceilings, not
-  perceptually validated ones. The 30 s point that produced only 9 output
-  frames for an 11-word sentence is still unadjudicated by ear; a listening
-  pass on the 0.5 s / 1 s / 30 s renders is owed before Stage 2 ships.
-  jiangzhuo scheduled it **last, after the plan work** (2026-08-12) — that
-  is, in Plan 4's ship-prep phase, where the Stage 2 spec's own phase table
-  (§8, phase 4) already places the listening audit. Not after Plan 2, which
-  is what this branch's SDD ledger said until 2026-08-12; the ledger recorded
-  "after Plan 2" because Plan 2 was the plan in flight when the decision was
-  taken, not because Plan 2 was the boundary.
+- **The listening pass, which Plan 2 did not deliver and which has since
+  run.** jiangzhuo scheduled it **last, after the plan work** (2026-08-12) —
+  that is, in Plan 4's ship-prep phase, where the Stage 2 spec's own phase
+  table (§8, phase 4) already places the listening audit. Not after Plan 2,
+  which is what this branch's SDD ledger said until 2026-08-12; the ledger
+  recorded "after Plan 2" because Plan 2 was the plan in flight when the
+  decision was taken, not because Plan 2 was the boundary. It ran on
+  2026-08-13 and recorded `no_obvious_regression`; see "Listening Audits"
+  below for what it settled — the duration bounds and the 9-frame point —
+  and for what it deliberately does not cover.
 - **Publication and Quality Evaluation.** Unchanged: publication requires
   separate, per-submission confirmation; Quality Evaluation is deferred per
   ADR 0017.
+
+## Listening Audits
+
+Three have run for this family. Two on **2026-07-29** covered Stage 1's
+CustomVoice variant and produced the `listening_audit: no_obvious_regression`
+that `scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml` carries; the
+**2026-08-13** audit is Stage 2's, on the Base variant's x-vector clone path,
+and is the first in this repository to put a question about resemblance to a
+listener. All three are one listener, non-statistical, and none moves
+`quality_evaluation` off `not_run` or changes any Validation Level.
+
+### Base, the x-vector clone path (Stage 2 Plan 2, 2026-08-13)
+
+**Verdict, jiangzhuo, 2026-08-13: `no_obvious_regression`.** Recorded under
+`order_seed 20260813`, listener count 1.
+
+| question | cases | result |
+| --- | --- | --- |
+| Q2, port vs oracle, blind A/B | `agree-en-1`, `agree-en-2`, `agree-ja-1`, `agree-zh-1` | no obvious difference on all four |
+| Q1, reference-duration bounds, labelled | 1 s, 3 s, 10 s, 30 s | usable at every one |
+| Q1, sub-minimum, labelled | 0.5 s | refused by the library (`voice_profile.reference_too_short`) |
+| Q3, resemblance to the source speaker, labelled | 1 source/clone pair | same speaker |
+
+**Method.** A blind A/B web page. Each of the four Q2 pairs is the same
+reference clip and sentence rendered twice: once by this port through the
+public C interface on CPU, once by the pinned upstream PyTorch implementation
+on CUDA at bfloat16. Both sides were driven in **x-vector-only mode**, which is
+the only mode this port implements. A/B order was randomized per pair from
+`order_seed 20260813`; two of the four were swapped. The duration sweep and the
+source-versus-clone pair were **labelled rather than blind**, because in both
+the label is the question: "is 30 s of reference usable" and "does this clone
+sound like that source" cannot be asked of an unlabelled pair. Audio was 24 kHz
+mono 16-bit, converted from each side's native 32-bit float. The generated
+audio lives under a gitignored build directory and the page itself was not
+committed, so this table and the family record are the audit's artifact.
+
+**What it establishes.**
+
+- `no_obvious_regression` against the reference implementation in x-vector
+  mode, across four cases and three languages.
+- The shipped reference-duration bounds produce usable speech at 1 s, 3 s,
+  10 s and 30 s, and the sub-minimum case is refused as designed rather than
+  synthesized badly. This closes the open item under "Measured
+  reference-duration bounds" above.
+- The 30 s / 9-frame anomaly recorded in that same section does not belong to
+  the shipped path: regenerated in x-vector mode the case gave 46 codec
+  frames, in line with the sweep's other durations. The 9-frame figure came
+  from a transcript-assisted dump. The anomaly is real and is Plan 3's, to be
+  adjudicated when the ICL path exists.
+- One listener's judgement that a clone is recognisably the same speaker as
+  its source. This is the first such evidence in this repository.
+
+**What it does not establish.** Any quality, naturalness or comparative claim
+— ADR 0017 defers Quality Evaluation, and a Listening Audit does not move the
+Validation Level. Any speaker-similarity metric; the resemblance finding is one
+listener, one source clip, one clone, and is evidence rather than a property of
+the port. Anything about transcript-assisted (ICL) mode, which this port does
+not implement. Anything about CUDA for the new graphs, which have only ever run
+on CPU — the port side of every pair here was CPU.
+
+### CustomVoice, port vs oracle and Q8_MIXED vs F16 (Stage 1, 2026-07-29)
+
+Two passes on the same day, both one listener, both `no_obvious_regression`.
+The first offered eight replayed cases blind against the PyTorch reference plus
+five natively-sampled clips on CPU and CUDA — the path replay does not cover.
+The second compared six natively-sampled Q8_MIXED clips against F16, natively
+sampled rather than A/B because on the replay path the two profiles' waveforms
+are byte-identical and only a run that draws its own codes can show what
+quantization costs. Full method, the two invalidated attempts that preceded the
+second pass, and the duration observation the listener cleared are in
+`reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/_porting-log.md`
+under its 2026-07-29 entries.
 
 ## Open Questions for Intake
 

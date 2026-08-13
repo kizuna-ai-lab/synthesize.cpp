@@ -34,9 +34,11 @@ interface — no synthesis capability exists only in one of them.
   Transcript-assisted (ICL) cloning is **not** delivered — Qwen3-TTS reports
   `reference_transcript` and `reference_language` as
   `SYNTH_REQUIREMENT_UNSUPPORTED` and refuses a request that carries either.
-  **No listening pass has happened.** What is measured is agreement with the
-  reference implementation, not that a prepared Profile sounds like the voice
-  it was prepared from; this project makes no resemblance claim.
+  What is measured is agreement with the reference implementation, not that a
+  prepared Profile sounds like the voice it was prepared from. **One maintainer
+  listened to one Qwen3-TTS Base source/clone pair on 2026-08-13 and judged it
+  the same speaker** — one listener, one clip, evidence rather than a property
+  of the port, and no similarity metric exists. Nothing here is a quality claim.
   Voice Profiles are reachable through the C interface and the Python Adapter
   only — `synthesize-cli` has no Voice Profile support and no audio reader, for
   any family.
@@ -58,7 +60,7 @@ the model by tokenization, not by G2P. See [docs/text-frontends.md](docs/text-fr
 | VITS | `vits-vctk` | 22.05 kHz | 109 preset | phonemes, token IDs | F32, F16, Q8_MIXED | `port_validated` |
 | Kokoro | `kokoro-v1-0` | 24 kHz | 54 preset | phonemes, token IDs | F32, F16, Q8_MIXED | `port_validated` |
 | Qwen3-TTS | `qwen3-tts-12hz-0.6b-customvoice` | 24 kHz | 9 preset | text, token IDs | BF16, F16, Q8_MIXED | `port_validated` |
-| Qwen3-TTS | `qwen3-tts-12hz-0.6b-base` | 24 kHz | no preset Voices; Reference Audio Voice Profiles (x-vector mode) | text | source dtype only | converted, loads and clones; the speaker path is measured against the oracle, full port validation is not run; not published |
+| Qwen3-TTS | `qwen3-tts-12hz-0.6b-base` | 24 kHz | no preset Voices; Reference Audio Voice Profiles (x-vector mode) | text | source dtype only | converted, loads and clones; the speaker path is measured against the oracle and a 2026-08-13 Listening Audit recorded `no_obvious_regression`, but full port validation is not run; not published |
 | OmniVoice | `omnivoice-0-6b` | 24 kHz | no named Voices; an unnamed auto-voice default, plus Reference Audio and Description Text Voice Profiles | text | F32, F16, Q8 | `port_validated` |
 
 Declared Language Capability differs by family and is read out of the package,
@@ -179,11 +181,17 @@ What Plan 2 did **not** deliver, and what nothing here should be read to claim:
   `reference_transcript` and `reference_language` report
   `SYNTH_REQUIREMENT_UNSUPPORTED`, and a request carrying either is refused by
   name rather than silently downgraded to the weaker clone.
-- **No listening pass has happened**, so nothing claims a clone sounds like its
-  Reference Audio. The x-vector agrees with the reference implementation to a
-  committed cosine tolerance; that is a numerical claim about the port, not a
-  perceptual one about the output. The reference-duration bounds that shipped
-  remain safety ceilings, not perceptually validated ones.
+- **The listening pass is not Plan 2's**, and it has since run. Plan 2's own
+  evidence is numerical: the x-vector agrees with the reference implementation
+  to a committed cosine tolerance, which is a claim about the port and not
+  about how the output sounds. A **Listening Audit** on 2026-08-13 recorded
+  `no_obvious_regression` over four blind port-vs-oracle pairs in three
+  languages, found the shipped reference-duration bounds usable at 1 s, 3 s,
+  10 s and 30 s with the sub-minimum case refused as designed, and returned
+  one listener's judgement that a clone is the same speaker as its source. One
+  maintainer is not a quality evaluation: `quality_evaluation` stays `not_run`
+  and no Validation Level moves. The audit covers neither ICL, which is not
+  implemented, nor CUDA for the new graphs, which have only ever run on CPU.
 - **The CLI still cannot clone, for any family.** `synthesize-cli` has no Voice
   Profile support and no audio reader; adding one is a cross-family slice.
 - **No quantization and no CUDA for the new graphs.** Both are Plan 4's, to be
@@ -280,8 +288,11 @@ Deferred rather than rejected: corpus-scale Quality Evaluation Suites and
 cross-model quality comparison, the reference corpora and evaluator artifacts
 they would need, and frozen perceptual thresholds. Until that exists, delivery is
 `port_validated` plus, for three variants, an optional non-statistical
-**Listening Audit** by one maintainer recording `no_obvious_regression`. A
-Listening Audit is not a quality claim and does not move the Validation Level.
+**Listening Audit** by one maintainer recording `no_obvious_regression`. The
+Qwen3-TTS Base variant carries one too, from 2026-08-13, without being
+port-validated — an audit is not a substitute for that gate any more than it is
+for quality evaluation. A Listening Audit is not a quality claim and does not
+move the Validation Level.
 
 ## The records drift, and that is checkable
 

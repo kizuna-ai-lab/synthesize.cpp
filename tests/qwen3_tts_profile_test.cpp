@@ -42,6 +42,10 @@
 #include "test-assert.h"
 #include "voice-profile-handle.h"
 
+#if defined(__linux__) || defined(__APPLE__)
+#    include <sys/resource.h>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -889,6 +893,53 @@ int test_icl_refuses_a_transcript_without_its_token_ids() {
     return 0;
 }
 
+// --- The id bound holds at the CREATOR too, not only at the writer and the
+// reader (Task 9 review, Minor 3). Without this, create_icl_profile could hand
+// back an in-process Profile that serialize_icl_profile then refuses -- the
+// mirror image of the `language_tag` defect a reviewer measured on Task 8,
+// where our own creator created what our own writer would not write. Nothing
+// between such a Profile and Task 11's prompt builder bounds it, and there an
+// out-of-range id is a `ggml_get_rows` abort rather than a status.
+//
+// Dimension: value. Both directions, because the negative half is the one the
+// `uint32_t` conversion downstream would erase.
+int test_icl_refuses_reference_text_ids_outside_the_vocabulary() {
+    IclFixture fixture;
+    SYNTH_TEST_CHECK(build_icl_fixture(fixture));
+
+    const std::vector<int32_t> cases[] = {
+        { 11, -1,                                  13 },
+        { 11, int32_t(kTextVocabSize),             13 },
+        { 11, std::numeric_limits<int32_t>::max(), 13 },
+    };
+
+    for (const std::vector<int32_t> & ids : cases) {
+        const char *                      code    = nullptr;
+        const char *                      message = nullptr;
+        std::shared_ptr<const IclProfile> profile;
+        const synth_status_t              status = synth::qwen3tts::create_icl_profile(
+            fixture.hparams, fixture.speaker, fixture.codec, speech_of(kShortReferenceSamples), "hello there", ids,
+            "english", 1, profile, code, message);
+        SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(profile == nullptr);
+        SYNTH_TEST_CHECK(code != nullptr && std::strcmp(code, "voice_profile.reference_text_ids_out_of_range") == 0);
+        SYNTH_TEST_CHECK(message != nullptr);
+    }
+
+    // And the boundary the other way: the largest id the package can hold is
+    // accepted, so the bound is exclusive-at-the-top rather than merely
+    // stricter than it needs to be.
+    const char *                      code    = nullptr;
+    const char *                      message = nullptr;
+    std::shared_ptr<const IclProfile> profile;
+    SYNTH_TEST_CHECK(synth::qwen3tts::create_icl_profile(fixture.hparams, fixture.speaker, fixture.codec,
+                                                         speech_of(kShortReferenceSamples), "hello there",
+                                                         { int32_t(kTextVocabSize) - 1 }, "english", 1, profile, code,
+                                                         message) == SYNTH_OK);
+    SYNTH_TEST_CHECK(profile != nullptr);
+    return 0;
+}
+
 // --- The tie kMaxLanguageTagLength documents applies to both kinds or it
 // applies to neither. The reviewer-measured defect it closes -- our own
 // writer emitting an envelope our own reader refuses -- does not care which
@@ -1243,10 +1294,15 @@ void fill_compatibility_id(uint8_t (&id)[32]) {
 // package -- so every arm below needs a struct rather than a scalar. Still no
 // Model and still no GGUF: these are four plain integers.
 //
-// kEnvelopeGroups is deliberately NOT kGroups (16) and kEnvelopeCodebook
-// deliberately NOT kCodebookSize (8, which happens to equal kEnvelopeGroups
-// -- so a groups/codebook mix-up cannot pass by coincidence in EITHER
-// fixture, since the numbers differ across them).
+// THE PROPERTY THAT MATTERS is that the group count and the codebook size
+// differ WITHIN each fixture, so a groups/codebook mix-up cannot pass by
+// coincidence: 4 vs 8 here, 16 vs 8 in the ICL fixture above. (An earlier
+// version of this comment claimed kEnvelopeCodebook was deliberately unequal
+// to kCodebookSize and that kCodebookSize equalled kEnvelopeGroups; both
+// halves were false -- kEnvelopeCodebook == kCodebookSize == 8 and
+// kEnvelopeGroups == 4. The constants were right and only the prose was
+// wrong, which is exactly the kind of comment a reviewer has to disprove by
+// hand, so it is corrected rather than deleted.)
 constexpr uint32_t kEnvelopeGroups    = 4;
 constexpr uint32_t kEnvelopeFrames    = 3;
 constexpr uint32_t kEnvelopeCodebook  = 8;
@@ -2165,12 +2221,41 @@ int test_all_zero_x_vector_is_rejected_by_the_reader() {
 //   presence  the per-kind key-SET check deleted         -> nothing: the per-kind COUNT
 //                                                           still catches it
 //   presence  the per-kind COUNT check deleted           -> nothing: the SET still does
-//   presence  BOTH deleted                               -> the extra-keys arm, which
-//                                                           then loads with SYNTH_OK and
-//                                                           the stray keys ignored --
-//                                                           the union-whitelist behaviour
-//                                                           this family's prescan departs
-//                                                           from
+//   presence  BOTH deleted                               -> the extra-keys arm, MEASURED
+//                                                           at status=0 (SYNTH_OK) with a
+//                                                           non-null payload: the forgery
+//                                                           loads and its stray keys are
+//                                                           ignored, which is the
+//                                                           union-whitelist behaviour this
+//                                                           family's prescan departs from.
+//                                                           An earlier record of this said
+//                                                           the same thing about a buffer
+//                                                           that never reached the rule at
+//                                                           all -- see that arm's own
+//                                                           comment for why it is sealed
+//   value     the prescan's per-kind TENSOR count alone  -> nothing: the loader's own
+//                                                           gguf_get_n_tensors catches it
+//   value     the loader's tensor count alone            -> nothing: the prescan's does
+//   value     BOTH tensor counts deleted                 -> the three-tensors arm, again
+//                                                           MEASURED at status=0. Re-bind
+//                                                           the prescan loop to the
+//                                                           buffer's own n_tensors as well
+//                                                           and the SANITIZER reports an
+//                                                           out-of-bounds read of
+//                                                           ExpectedTensor while the status
+//                                                           stays INVALID_ARG -- a status
+//                                                           assertion cannot see that one
+//   value     the reader's groups-vs-package rule (and
+//             the writer's copy of it)                   -> the package-grid arm; the
+//                                                           product rule alone leaves it
+//                                                           refused, and vice versa
+//   value     the range check hoisted back out of
+//             i32_tensor_elements                        -> the hostile-count arm, at its
+//                                                           RSS assertion and NOT at its
+//                                                           status: 1024 bytes drove
+//                                                           +1,550,024 KiB of peak RSS and
+//                                                           still returned INVALID_ARG
+//   value     create_icl_profile's own id bound deleted  -> the creator id-bound arm
 //   presence  ref_rms out of the table, both counts
 //             decremented, AND the post-parse read made
 //             optional                                   -> the moved-key arm (any two of
@@ -2210,7 +2295,10 @@ bool reseal(std::vector<uint8_t> & bytes) {
 
 // Locates an I32 tensor's first payload byte in a sealed envelope, by parsing
 // the buffer with ggml's own reader rather than re-deriving the layout here.
-bool find_tensor_payload(const std::vector<uint8_t> & bytes, const char * name, size_t & out_offset) {
+bool find_tensor_payload(const std::vector<uint8_t> & bytes,
+                         const char *                 name,
+                         size_t &                     out_offset,
+                         size_t                       needed_bytes = sizeof(int32_t)) {
     gguf_init_params init_params{};
     init_params.no_alloc = true;
     init_params.ctx      = nullptr;
@@ -2225,7 +2313,81 @@ bool find_tensor_payload(const std::vector<uint8_t> & bytes, const char * name, 
     }
     out_offset = gguf_get_data_offset(ctx) + gguf_get_tensor_offset(ctx, id);
     gguf_free(ctx);
-    return out_offset + sizeof(int32_t) <= bytes.size();
+    return out_offset + needed_bytes <= bytes.size();
+}
+
+// This process's peak resident set size in KiB, or 0 where the platform does
+// not report one. Peak rather than current, so it is monotone: a delta across
+// one call is zero unless that call itself pushed the peak up, which makes it
+// exactly the right instrument for "did this refuse-path allocate?".
+uint64_t peak_rss_kib() {
+#if defined(__linux__)
+    rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
+        return 0;
+    }
+    return uint64_t(usage.ru_maxrss);  // Linux reports KiB
+#elif defined(__APPLE__)
+    rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
+        return 0;
+    }
+    return uint64_t(usage.ru_maxrss) / 1024;  // macOS reports bytes
+#else
+    return 0;
+#endif
+}
+
+// A hand-built "icl" envelope whose tensor-info section DECLARES element
+// counts far larger than the buffer that follows can possibly hold. The
+// metadata, the x-vector tensor and its payload are all real; the two I32
+// tensors have honest-looking tensor-info entries (correct names, 1-D, I32,
+// correct cumulative alignment-padded offsets, so both the pre-scan and
+// ggml's own parser accept them) and NO payload bytes at all. That is the
+// shape of a hostile Serialized Profile: about a kilobyte on the wire,
+// claiming gigabytes.
+//
+// `declared_frames` is passed separately from `declared_codes` so an arm can
+// keep `groups * frames == declared_codes` true and reach the allocation
+// rather than being turned away by the grid's own consistency rule.
+std::vector<uint8_t> assemble_hostile_icl(const std::vector<float> & x_vector,
+                                          uint32_t                   groups,
+                                          uint32_t                   frames,
+                                          int64_t                    declared_codes,
+                                          int64_t                    declared_ids) {
+    std::vector<uint8_t> kv = common_kv_bytes("icl");
+    append_icl_kv_bytes(kv, groups, frames);
+    std::vector<uint8_t> bytes = make_header(/*n_tensors=*/3, /*n_kv=*/12);
+    put_bytes(bytes, kv.data(), kv.size());
+
+    const struct {
+        const char * name;
+        int32_t      type;
+        int64_t      elements;
+    } entries[] = {
+        { "profile.x_vector",           int32_t(GGML_TYPE_F32), int64_t(x_vector.size()) },
+        { "profile.codes",              int32_t(GGML_TYPE_I32), declared_codes           },
+        { "profile.reference_text_ids", int32_t(GGML_TYPE_I32), declared_ids             },
+    };
+
+    uint64_t offset = 0;
+    for (const auto & entry : entries) {
+        put_gguf_string(bytes, entry.name);
+        put<uint32_t>(bytes, uint32_t(1));  // n_dims
+        put<int64_t>(bytes, entry.elements);
+        put<int32_t>(bytes, entry.type);
+        put<uint64_t>(bytes, offset);
+        offset += uint64_t(entry.elements) * 4;
+        while (offset % GGUF_DEFAULT_ALIGNMENT != 0) {
+            ++offset;
+        }
+    }
+    pad_to_alignment(bytes, GGUF_DEFAULT_ALIGNMENT);
+    // Only the x-vector's payload is actually written. Everything the two I32
+    // tensors claim lies past the end of the buffer.
+    put_bytes(bytes, x_vector.data(), x_vector.size() * sizeof(float));
+    pad_to_alignment(bytes, GGUF_DEFAULT_ALIGNMENT);
+    return bytes;
 }
 
 std::vector<uint8_t> build_valid_icl_bytes(uint32_t enc_dim, const uint8_t (&compatibility_id)[32]) {
@@ -2379,23 +2541,112 @@ int test_a_writer_refuses_a_payload_of_the_other_mode() {
 // envelope carrying both kIclOnly keys has twelve whitelisted, duplicate-free
 // keys, so every gate a UNION whitelist could offer passes.
 //
-// Dimension: presence (a key belonging to the other kind). MEASURED, because
-// two independent rules catch this and the brief predicted only one: with the
-// per-kind key-SET check disabled it is still refused, by the per-kind KV
-// COUNT (12 != kPrescanKvCountXVector); with the COUNT check disabled it is
-// still refused, by the SET check; with BOTH disabled it loads with SYNTH_OK
-// and the two stray keys are silently ignored -- which is exactly the
-// omnivoice-inherited behaviour this family's prescan now departs from.
+// THIS ARM IS A SEALED FORGERY, AND IT HAD TO BECOME ONE. Its first version
+// used the plain zero-filled hand-built buffer every structural arm around it
+// uses -- and that buffer never reaches the per-kind whitelist at all: its
+// `compatibility_id` is 32 zeros while the caller passes a non-zero one, so
+// with both per-kind checks deleted it is refused at the `memcmp` with
+// SYNTH_ERR_UNSUPPORTED_VOICE, not accepted. The arm still passed, so the
+// inversion looked conclusive and was recorded in three production comments
+// as "loads with SYNTH_OK and the strays are ignored" -- a measurement that
+// was true of the MECHANISM and false of the BUFFER, which a reviewer had to
+// rebuild a forgery to discover. So the buffer is now sealed: real
+// compatibility id, a finite non-zero x-vector, digest recomputed over the
+// forged layout. Every gate downstream of the whitelist now passes, and the
+// per-kind key set is genuinely the only thing left to refuse it.
+//
+// Dimension: presence (a key belonging to the other kind). MEASURED, and it
+// takes TWO deletions: with the per-kind key-SET check alone deleted it is
+// still refused by the per-kind KV COUNT (12 != kPrescanKvCountXVector); with
+// the COUNT alone deleted, still refused by the SET; with BOTH deleted it
+// loads with SYNTH_OK and the two stray keys are silently ignored -- the
+// omnivoice-inherited union-whitelist behaviour this family's prescan departs
+// from. Single-deletion inversion cannot see this; see prescan_buffer's own
+// "MUTUAL MASKING" comment.
+//
+// The exact status matters here and is asserted rather than `!= SYNTH_OK`:
+// relaxing it would let this arm go blind to the whole mechanism again, since
+// a forgery that fails for any other reason also fails a loose comparison.
 int test_an_x_vector_envelope_with_icl_keys_is_refused() {
     constexpr int64_t    kProfileEncDim = 11;
     std::vector<uint8_t> kv             = common_kv_bytes("x-vector");
     append_icl_kv_bytes(kv, kEnvelopeGroups, kEnvelopeFrames);
     // A literal for the same reason the arms below use literals: twelve is
     // what this buffer holds, whatever the table currently claims.
-    const std::vector<uint8_t> bytes = assemble_hand_built(kv, /*n_kv=*/12, kProfileEncDim);
+    std::vector<uint8_t> bytes = assemble_hand_built(kv, /*n_kv=*/12, kProfileEncDim);
 
     uint8_t compatibility_id[32];
     fill_compatibility_id(compatibility_id);
+
+    // Seal it: the real compatibility id, a finite non-zero x-vector, and a
+    // digest over the result. Without all three the arm is refused before the
+    // rule it exists to test.
+    size_t offset = 0;
+    SYNTH_TEST_CHECK(find_u8_32_value(bytes, "synthesize.voice_profile.compatibility_id", offset));
+    std::memcpy(bytes.data() + offset, compatibility_id, sizeof(compatibility_id));
+    const std::vector<float> x_vector = make_serializable_profile(kProfileEncDim, 0.5f, "en-US")->x_vector;
+    SYNTH_TEST_CHECK(find_tensor_payload(bytes, "profile.x_vector", offset, x_vector.size() * sizeof(float)));
+    std::memcpy(bytes.data() + offset, x_vector.data(), x_vector.size() * sizeof(float));
+    SYNTH_TEST_CHECK(reseal(bytes));
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> payload;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    const synth_status_t        status =
+        synth::qwen3tts::load_profile_from_memory(envelope_hparams(uint32_t(kProfileEncDim)), bytes.data(),
+                                                  bytes.size(), compatibility_id, family_tag, payload, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(payload == nullptr);
+    return 0;
+}
+
+// --- THE TENSOR SECTION IS PER-KIND TOO, and this rule is what keeps
+// prescan_buffer's own tensor walk inside its array (Task 9 review, Important
+// 1). The header's own disjunction only narrows `n_tensors` to {1, 3}, so an
+// "x-vector" envelope declaring 3 would, without the per-kind check, walk a
+// one-element expectation array three times and read `[1]` and `[2]` past its
+// end -- on untrusted input. The loop bound is now derived from the array
+// itself, so the coupling is structural rather than documented, and this arm
+// pins the refusal.
+//
+// Nothing covered this before: test_tensor_count_two_is_invalid_arg only
+// perturbs to 2, which the header disjunction alone rejects. Three is the
+// value that gets past it.
+//
+// THE THREE TENSOR ENTRIES ARE REAL, AND THEY HAVE TO BE. A first version of
+// this arm declared `n_tensors = 3` over a section containing only the
+// x-vector entry -- and ggml's own parser refuses that buffer outright, so
+// the arm passed for a third reason and stayed green with BOTH per-kind
+// tensor-count rules deleted (MEASURED). The buffer below carries the ICL
+// kind's full, well-formed three-entry tensor section under an x-vector
+// `kind` and an x-vector key set, and is sealed, so every other gate is
+// satisfied and the per-kind tensor count is the operative rule.
+//
+// Dimension: value (the declared tensor count, against the kind). MEASURED,
+// another masked pair: the prescan's per-kind count alone, or
+// load_profile_from_memory's own `gguf_get_n_tensors` comparison alone,
+// leaves this arm refused; with BOTH deleted the forgery loads with SYNTH_OK
+// as an x-vector Profile and its two stray tensors are ignored.
+int test_an_x_vector_envelope_declaring_three_tensors_is_refused() {
+    constexpr int64_t          kProfileEncDim = 11;
+    const std::vector<uint8_t> kv             = common_kv_bytes("x-vector");
+    // Ten keys -- an honest x-vector key set -- over the ICL kind's own
+    // three-tensor section.
+    std::vector<uint8_t>       bytes          = make_header(/*n_tensors=*/3, /*n_kv=*/10);
+    put_bytes(bytes, kv.data(), kv.size());
+    append_icl_tensors(bytes, kProfileEncDim, int64_t(kEnvelopeGroups) * int64_t(kEnvelopeFrames), 5);
+
+    uint8_t compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    size_t offset = 0;
+    SYNTH_TEST_CHECK(find_u8_32_value(bytes, "synthesize.voice_profile.compatibility_id", offset));
+    std::memcpy(bytes.data() + offset, compatibility_id, sizeof(compatibility_id));
+    const std::vector<float> x_vector = make_serializable_profile(kProfileEncDim, 0.5f, "en-US")->x_vector;
+    SYNTH_TEST_CHECK(find_tensor_payload(bytes, "profile.x_vector", offset, x_vector.size() * sizeof(float)));
+    std::memcpy(bytes.data() + offset, x_vector.data(), x_vector.size() * sizeof(float));
+    SYNTH_TEST_CHECK(reseal(bytes));
+
     synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
     std::shared_ptr<const void> payload;
     const char *                code    = nullptr;
@@ -2662,15 +2913,27 @@ int test_the_icl_writer_refuses_out_of_range_streams() {
     return 0;
 }
 
-// --- The grid's own three numbers have to agree (brief test 9, the
-// "frame count consistent with the declared grid" half). `groups * frames`
-// must equal the codes tensor's declared element count, and `groups` must be
-// exactly the package's own quantizer count -- a grid of the wrong width
-// builds a wrong-shaped prompt, the same reason `enc_dim` is exact rather
-// than a ceiling.
+// --- The grid's own numbers have to agree with each other (brief test 9, the
+// "frame count consistent with the declared grid" half): `groups * frames`
+// must equal the codes tensor's own declared element count.
 //
 // Dimension: value (the declared grid), perturbed at the METADATA rather than
 // the tensor, so the codes tensor itself stays exactly what the writer wrote.
+//
+// THE PACKAGE RULE IS NOT TESTED HERE, and an earlier version of this comment
+// claimed it was. A third arm set `code_groups` to `kEnvelopeGroups * 2` and
+// described itself as "the one that names the package" -- but doubling groups
+// also breaks the product, so both rules fired and the arm isolated neither.
+// MEASURED: with `declared_groups != quantizer_count` deleted, the entire
+// suite still passed. The isolating arm is
+// test_the_reader_refuses_a_grid_the_package_cannot_hold below; what is left
+// here is the product rule alone.
+//
+// The `frames == 0` arm stays, honestly labelled: it is refused by the product
+// rule too (0 * 4 != 12), and the loader's own `declared_frames == 0` clause
+// can never be the SOLE cause of a refusal, because i32_tensor_elements
+// already rejects a zero-length codes tensor. That clause is defence in depth;
+// this arm pins the buffer's rejection, not the clause.
 int test_the_reader_refuses_an_inconsistent_code_grid() {
     constexpr uint32_t kProfileEncDim = 11;
     uint8_t            compatibility_id[32];
@@ -2683,12 +2946,8 @@ int test_the_reader_refuses_an_inconsistent_code_grid() {
         // frames one over: groups * frames no longer equals the tensor's
         // element count.
         { "synthesize.voice_profile.reference_frames", kEnvelopeFrames + 1 },
-        // frames zero: an ICL Profile with no reference audio behind it.
+        // frames zero: refused by that same product rule (see above).
         { "synthesize.voice_profile.reference_frames", 0                   },
-        // groups not the package's quantizer count, and chosen so the product
-        // ALSO stops matching -- the two rules are separate and this arm is
-        // the one that names the package.
-        { "synthesize.voice_profile.code_groups",      kEnvelopeGroups * 2 },
     };
 
     for (const auto & one : cases) {
@@ -2708,6 +2967,141 @@ int test_the_reader_refuses_an_inconsistent_code_grid() {
                                                       compatibility_id, family_tag, payload, code, message);
         SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
         SYNTH_TEST_CHECK(payload == nullptr);
+    }
+    return 0;
+}
+
+// --- THE GRID MUST BE ONE THIS PACKAGE CAN HOLD (Task 9 review, Important 2).
+// `groups` is exactly `codec.decoder.quantizer_count`, not a ceiling: a grid
+// of the wrong width builds a wrong-shaped prompt, the same reason `enc_dim`
+// is exact. That rule had no test of its own -- it was masked by the product
+// rule, because every arm that perturbed `groups` also broke `groups * frames`.
+//
+// THE ISOLATION IS THE POINT OF THIS ARM: `code_groups = 2` with
+// `reference_frames = 6` keeps the product at 12, which is exactly the codes
+// tensor's own element count, so the product rule is satisfied and only the
+// package rule can refuse it.
+//
+// Dimension: value (the declared width, against the package). MEASURED both
+// ways: deleting `declared_groups != quantizer_count` makes this arm load with
+// SYNTH_OK, and deleting the product rule instead leaves it refused.
+//
+// The writer's counterpart is checked here too. It was untested for the same
+// reason and is the half that keeps "our writer never emits what our reader
+// refuses" true for this field.
+int test_the_reader_refuses_a_grid_the_package_cannot_hold() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    static_assert(kEnvelopeGroups * kEnvelopeFrames == 2 * 6, "the isolating arm below needs the product preserved");
+
+    std::vector<uint8_t> bytes = build_valid_icl_bytes(kProfileEncDim, compatibility_id);
+    SYNTH_TEST_CHECK(!bytes.empty());
+    size_t         offset = 0;
+    const uint32_t groups = 2;
+    const uint32_t frames = 6;
+    SYNTH_TEST_CHECK(find_u32_value(bytes, "synthesize.voice_profile.code_groups", offset));
+    std::memcpy(bytes.data() + offset, &groups, sizeof(groups));
+    SYNTH_TEST_CHECK(find_u32_value(bytes, "synthesize.voice_profile.reference_frames", offset));
+    std::memcpy(bytes.data() + offset, &frames, sizeof(frames));
+    SYNTH_TEST_CHECK(reseal(bytes));
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> payload;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    SYNTH_TEST_CHECK(synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(),
+                                                               bytes.size(), compatibility_id, family_tag, payload,
+                                                               code, message) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(payload == nullptr);
+
+    // The writer's own copy of the same rule: a payload whose grid is not the
+    // package's produces no bytes at all.
+    auto profile    = std::make_shared<IclProfile>(*make_serializable_icl_profile(kProfileEncDim));
+    profile->groups = groups;
+    profile->frames = frames;
+    std::vector<uint8_t> written;
+    SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(envelope_hparams(kProfileEncDim), *profile,
+                                                            compatibility_id, written) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(written.empty());
+    return 0;
+}
+
+// --- A DECLARED COUNT IS NOT A BUDGET (Task 9 review, Critical 1). Both I32
+// streams used to be sized from the buffer's own declared element counts and
+// only afterwards asked whether those ranges fit; a reviewer measured a 1 KiB
+// Serialized Profile driving a **1.53 GiB** zero-filled resident allocation
+// before the load was refused, with the id stream's reachable ceiling around
+// 2^62 elements. Nothing upstream closes it: `gguf_init_from_buffer` is called
+// with `ctx == nullptr` so it never looks at the data section, and the
+// pre-scan stops at the tensor-INFO section.
+//
+// THIS ARM ASSERTS THE ALLOCATION, NOT ONLY THE STATUS, because the status was
+// already correct while the defect was live -- both buffers below were refused
+// before the fix, just not before the allocation. Peak RSS is monotone, so the
+// delta across the two calls is 0 for a loader that sizes nothing from an
+// unchecked count and about 1.5 GiB for one that does. The threshold is
+// generous by a factor of six against the measured figure; a correct loader
+// moves it by nothing at all.
+//
+// Dimension: value (the declared element count, against the buffer's actual
+// extent). Inverted by moving the `tensor_range_fits` call in
+// i32_tensor_elements back to the call site, which is where it used to be:
+// status stays SYNTH_ERR_INVALID_ARG and the RSS assertion is what fires.
+int test_a_declared_count_larger_than_the_buffer_allocates_nothing() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    const HParams            hparams  = envelope_hparams(kProfileEncDim);
+    const std::vector<float> x_vector = make_serializable_profile(kProfileEncDim, 0.5f, "en-US")->x_vector;
+
+    // 400,000,000 int32s is 1.53 GiB -- the reviewer's own measured figure,
+    // reused so the number in this test and the number in the finding are the
+    // same number. `frames` is chosen to keep `groups * frames` equal to it,
+    // so the grid's consistency rule cannot turn the codes arm away early.
+    constexpr int64_t kHostileCodes  = 400000000;
+    const uint32_t    hostile_frames = uint32_t(kHostileCodes / int64_t(kEnvelopeGroups));
+
+    const struct {
+        const char * what;
+        uint32_t     frames;
+        int64_t      codes;
+        int64_t      ids;
+    } cases[] = {
+        { "codes", hostile_frames,  kHostileCodes,                                       5             },
+        { "ids",   kEnvelopeFrames, int64_t(kEnvelopeGroups) * int64_t(kEnvelopeFrames), kHostileCodes },
+    };
+
+    for (const auto & one : cases) {
+        std::vector<uint8_t> bytes  = assemble_hostile_icl(x_vector, kEnvelopeGroups, one.frames, one.codes, one.ids);
+        // Sealed, so the load reaches the ICL block rather than stopping at
+        // the compatibility id or the digest.
+        size_t               offset = 0;
+        SYNTH_TEST_CHECK(find_u8_32_value(bytes, "synthesize.voice_profile.compatibility_id", offset));
+        std::memcpy(bytes.data() + offset, compatibility_id, sizeof(compatibility_id));
+        SYNTH_TEST_CHECK(reseal(bytes));
+        // The whole hostile profile is about a kilobyte.
+        SYNTH_TEST_CHECK(bytes.size() < 2048);
+
+        const uint64_t before = peak_rss_kib();
+
+        synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+        std::shared_ptr<const void> payload;
+        const char *                code    = nullptr;
+        const char *                message = nullptr;
+        const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
+            hparams, bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+        SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(payload == nullptr);
+
+        const uint64_t after      = peak_rss_kib();
+        // Zero on a platform that does not report RSS, which makes the
+        // comparison vacuously true there rather than falsely failing.
+        const uint64_t growth_kib = after > before ? after - before : 0;
+        std::printf("    hostile %s: %zu-byte profile declaring %lld elements -> peak RSS +%llu KiB\n", one.what,
+                    bytes.size(), (long long) (one.what[0] == 'c' ? one.codes : one.ids),
+                    (unsigned long long) growth_kib);
+        SYNTH_TEST_CHECK(growth_kib < 256u * 1024u);  // 256 MiB, against a measured 1.53 GiB
     }
     return 0;
 }
@@ -2893,6 +3287,7 @@ int main() {
     SYNTH_TEST_CHECK(test_the_icl_frame_count_follows_the_reference_length() == 0);
     SYNTH_TEST_CHECK(test_icl_refuses_a_blank_transcript() == 0);
     SYNTH_TEST_CHECK(test_icl_refuses_a_transcript_without_its_token_ids() == 0);
+    SYNTH_TEST_CHECK(test_icl_refuses_reference_text_ids_outside_the_vocabulary() == 0);
     SYNTH_TEST_CHECK(test_icl_refuses_an_oversized_language_tag() == 0);
     SYNTH_TEST_CHECK(test_icl_inherits_the_shared_refusals() == 0);
 
@@ -2930,6 +3325,7 @@ int main() {
     SYNTH_TEST_CHECK(test_the_icl_writer_is_deterministic() == 0);
     SYNTH_TEST_CHECK(test_a_writer_refuses_a_payload_of_the_other_mode() == 0);
     SYNTH_TEST_CHECK(test_an_x_vector_envelope_with_icl_keys_is_refused() == 0);
+    SYNTH_TEST_CHECK(test_an_x_vector_envelope_declaring_three_tensors_is_refused() == 0);
     SYNTH_TEST_CHECK(test_an_icl_envelope_missing_an_icl_key_is_refused() == 0);
     SYNTH_TEST_CHECK(test_the_moved_ref_rms_key_is_required_in_both_kinds() == 0);
     SYNTH_TEST_CHECK(test_the_icl_kv_count_is_exact() == 0);
@@ -2937,6 +3333,8 @@ int main() {
     SYNTH_TEST_CHECK(test_the_reader_refuses_a_reference_text_id_outside_the_vocabulary() == 0);
     SYNTH_TEST_CHECK(test_the_icl_writer_refuses_out_of_range_streams() == 0);
     SYNTH_TEST_CHECK(test_the_reader_refuses_an_inconsistent_code_grid() == 0);
+    SYNTH_TEST_CHECK(test_the_reader_refuses_a_grid_the_package_cannot_hold() == 0);
+    SYNTH_TEST_CHECK(test_a_declared_count_larger_than_the_buffer_allocates_nothing() == 0);
     SYNTH_TEST_CHECK(test_an_icl_envelope_inherits_the_payload_value_checks() == 0);
 
     SYNTH_TEST_CHECK(test_a_plan_2_x_vector_envelope_still_loads() == 0);

@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -136,6 +137,26 @@ synth_status_t create_icl_profile(const HParams &                     hparams,
         out_diagnostic_code    = "voice_profile.reference_text_ids_missing";
         out_diagnostic_message = "the reference transcript produced no token ids for the transcript-assisted prompt";
         return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // And every id has to be one this package's talker can actually look up.
+    // Task 9 review, closing the last asymmetry in the "validate positively
+    // against what our own writer emits" rule: serialize_icl_profile and
+    // load_profile_from_memory both bound this stream to
+    // `[0, talker.text_vocab_size)`, and without this check the CREATOR could
+    // hand back an in-process Profile our own writer would then refuse -- the
+    // mirror image of the `language_tag` defect a reviewer measured on Task 8,
+    // and with nothing between such a Profile and Task 11's prompt builder,
+    // where an out-of-range id is a `ggml_get_rows` abort rather than a status.
+    // Checked here, before the encode chains, for the same reason the
+    // transcript and language_tag checks above are.
+    const int64_t text_vocab_size = int64_t(hparams.talker.text_vocab_size);
+    for (int32_t id : reference_text_ids) {
+        if (text_vocab_size <= 0 || id < 0 || int64_t(id) >= text_vocab_size) {
+            out_diagnostic_code    = "voice_profile.reference_text_ids_out_of_range";
+            out_diagnostic_message = "a reference transcript token id falls outside this package's own text vocabulary";
+            return SYNTH_ERR_INVALID_ARG;
+        }
     }
 
     // The tie kMaxLanguageTagLength's own header comment (profile.h) records
@@ -478,18 +499,58 @@ bool read_u8_32_array(const gguf_context * ctx, const char * key, uint8_t (&out)
     return true;
 }
 
+// Whether `tensor_id`'s DECLARED byte range actually fits inside a buffer of
+// `data_size` bytes -- the truncation guard, split out of copy_tensor_bytes
+// below so that a caller can run it BEFORE sizing anything from the declared
+// count rather than after.
+//
+// THAT ORDER IS THE WHOLE POINT, and getting it wrong shipped here once. The
+// first version of this task sized `std::vector<int32_t>` from a declared
+// element count and only then called copy_tensor_bytes; a reviewer measured a
+// 1 KiB Serialized Profile driving a 1.53 GiB zero-filled resident allocation
+// before the load was refused, with the reachable ceiling around 2^62 elements
+// for the id stream. `gguf_init_from_buffer` does NOT close this: called with
+// `params.ctx == nullptr` it never reads the tensor data at all, and its own
+// tensor-info pass only accumulates padded sizes (ggml/src/gguf.cpp:761-782)
+// without ever comparing them to the buffer it was handed. Neither does the
+// prescan, which walks the tensor-INFO section and stops there. So a declared
+// count is attacker-chosen until this function has seen it. This is the same
+// defect shape this project fixed in the WAV readers three days earlier: the
+// VALUES were bounded correctly and the SIZE was taken from an untrusted field
+// before anything had validated it.
+bool tensor_range_fits(const gguf_context * g, size_t data_size, int64_t tensor_id, size_t tensor_bytes) {
+    const size_t data_offset   = gguf_get_data_offset(g);
+    const size_t tensor_offset = gguf_get_tensor_offset(g, tensor_id);
+    if (data_offset > data_size) {
+        return false;
+    }
+    size_t remaining = data_size - data_offset;
+    if (tensor_offset > remaining) {
+        return false;
+    }
+    remaining -= tensor_offset;
+    return tensor_bytes <= remaining;
+}
+
 // Copies `tensor_id`'s DECLARED byte range out of the untrusted buffer, and
-// only after checking that the range actually fits inside it -- the
-// truncation guard. gguf_init_from_buffer is called with `ctx == nullptr`
-// specifically so it never performs this read (or the allocation it implies)
-// itself; see load_profile_from_memory's own comment above its
-// size-arithmetic block. `out` must already be sized to `tensor_bytes`.
+// only after checking that the range actually fits inside it.
+// gguf_init_from_buffer is called with `ctx == nullptr` specifically so it
+// never performs this read (or the allocation it implies) itself; see
+// load_profile_from_memory's own comment above its size-arithmetic block.
+// `out` must already be sized to `tensor_bytes`.
+//
+// The range check is repeated here rather than assumed from the caller: this
+// function performs the memcpy, so it is the one that must not be able to run
+// out of bounds no matter which caller reaches it.
 bool copy_tensor_bytes(const gguf_context * g,
                        const uint8_t *      data,
                        size_t               data_size,
                        int64_t              tensor_id,
                        size_t               tensor_bytes,
                        void *               out) {
+    if (!tensor_range_fits(g, data_size, tensor_id, tensor_bytes)) {
+        return false;
+    }
     const size_t data_offset   = gguf_get_data_offset(g);
     const size_t tensor_offset = gguf_get_tensor_offset(g, tensor_id);
     if (data_offset > data_size) {
@@ -510,15 +571,30 @@ bool copy_tensor_bytes(const gguf_context * g,
 // Locates a required I32 tensor by name and reports its DECLARED element
 // count, reading no payload byte -- only the bounded tensor-info section the
 // parse above already materialized. `false` covers "absent", "wrong type",
-// "zero-length" and "a byte count that is not a whole number of int32s"
-// alike; every one of them is malformed for this schema.
-bool i32_tensor_elements(const gguf_context * g, const char * name, int64_t & out_id, uint64_t & out_elements) {
+// "zero-length", "a byte count that is not a whole number of int32s", and "a
+// declared byte range that does not fit inside `data_size`" alike; every one
+// of them is malformed for this schema.
+//
+// THE RANGE CHECK IS PART OF THIS FUNCTION AND NOT OF ITS CALLER, deliberately
+// and as a fix: this is the function that hands a count to code that will size
+// an allocation from it, so no count leaves here until the bytes behind it are
+// known to exist. Doing it at the call site instead is what shipped the 1.53
+// GiB allocation tensor_range_fits' own header comment records -- the caller
+// had the check, one line too late.
+bool i32_tensor_elements(const gguf_context * g,
+                         size_t               data_size,
+                         const char *         name,
+                         int64_t &            out_id,
+                         uint64_t &           out_elements) {
     out_id = gguf_find_tensor(g, name);
     if (out_id < 0 || gguf_get_tensor_type(g, out_id) != GGML_TYPE_I32) {
         return false;
     }
     const size_t bytes = gguf_get_tensor_size(g, out_id);
     if (bytes == 0 || bytes % sizeof(int32_t) != 0) {
+        return false;
+    }
+    if (!tensor_range_fits(g, data_size, out_id, bytes)) {
         return false;
     }
     out_elements = bytes / sizeof(int32_t);
@@ -710,6 +786,16 @@ bool prescan_skip_value(const uint8_t * data, size_t size, size_t & offset, gguf
 // count-and-name gate would pass and the two stray keys would simply be
 // ignored downstream. A union whitelist cannot say "that key belongs to the
 // other kind", and that is the exact defect PrescanKeyScope was added for.
+//
+// MEASURED, stated precisely because an earlier draft of this paragraph was
+// not: the SET check and the per-kind COUNT check MASK EACH OTHER. Deleting
+// either alone leaves the whole test suite passing; only with both gone does
+// the twelve-key "x-vector" forgery load with SYNTH_OK. Demonstrating that
+// needs a SEALED buffer -- real compatibility_id, finite non-zero x-vector,
+// digest recomputed -- because a zero-filled hand-built one is refused earlier
+// by the compatibility_id comparison, with a different status. See
+// prescan_buffer's own "MUTUAL MASKING" comment for the general rule this is
+// the first instance of.
 bool prescan_scope_applies(PrescanKeyScope scope, bool is_icl) {
     return scope == PrescanKeyScope::kCommon || (is_icl && scope == PrescanKeyScope::kIclOnly);
 }
@@ -861,15 +947,29 @@ bool prescan_buffer(const uint8_t * data, size_t size) {
 
     // The per-kind key SET, the per-kind KV count, and the per-kind tensor
     // count -- all three exact, all three resolved from the `kind` just read.
+    //
+    // MUTUAL MASKING, AND WHY EVERY ONE OF THESE NEEDS A COMMENT LIKE THIS.
+    // Each of the three has a second enforcement somewhere else -- the KV
+    // count is backed by the key SET check just below it, the key set is
+    // backed by the count, and the tensor count is backed by
+    // load_profile_from_memory's own `gguf_get_n_tensors` comparison. A test
+    // that deletes ONE of a masked pair sees the suite pass and concludes the
+    // rule is untested or redundant; both conclusions are wrong. The rules
+    // here are the ones that run BEFORE gguf_init_from_buffer, on bytes ggml's
+    // parser has not touched, which is the entire reason this pre-scan exists
+    // (see this section's header comment). Anyone ADDING a check to this
+    // function should assume it is masked until they have deleted it together
+    // with its partner, and should say in a comment which partner that is --
+    // single-deletion inversion cannot see this class of gap, and a reviewer
+    // found two instances of it here that the original inversion pass missed.
     if (n_kv != (is_icl ? kPrescanKvCountIcl : kPrescanKvCountXVector)) {
-        return false;
+        return false;  // masked by the key SET check below
     }
-    if (n_tensors != (is_icl ? 3 : 1)) {
-        return false;
-    }
+    // (The per-kind TENSOR count is checked below, where the array it has to
+    // agree with is in scope -- see `expected_count`.)
     for (size_t candidate = 0; candidate < kPrescanKnownKeyCount; ++candidate) {
         if (seen[candidate] != prescan_scope_applies(kPrescanKnownKeys[candidate].scope, is_icl)) {
-            return false;
+            return false;  // masked by the KV count check above
         }
     }
 
@@ -895,9 +995,35 @@ bool prescan_buffer(const uint8_t * data, size_t size) {
         { kTensorReferenceTextIds, int32_t(GGML_TYPE_I32) },
     };
     const ExpectedTensor * expected = is_icl ? icl_tensors : x_vector_only;
+    // THE PER-KIND TENSOR COUNT, AND THE LOOP BOUND, BOTH COME FROM THE ARRAY
+    // rather than from the buffer's own `n_tensors` -- and that is a memory
+    // safety property, not a tidiness one. The header disjunction alone only
+    // narrows `n_tensors` to {1, 3}, so an "x-vector" envelope declaring 3
+    // would walk a ONE-element expectation array three times and read
+    // `x_vector_only[1]` and `[2]` past its end, on untrusted input. MEASURED
+    // (Task 9 review, Important 1): with the per-kind count removed and the
+    // loop re-bound to `n_tensors`, the sanitizer build reports
+    // "load of address ... with insufficient space for an object of type
+    // 'const struct ExpectedTensor'" on exactly that buffer -- while the
+    // status stays SYNTH_ERR_INVALID_ARG, because the garbage it reads happens
+    // not to match a tensor name. A status assertion cannot see this; only the
+    // sanitizer gate or the structural bound can.
+    //
+    // So the count and the bound are derived from one `std::size`, and an
+    // earlier hand-written `(is_icl ? 3 : 1)` copy of the same predicate was
+    // deleted rather than left to drift from the array it describes.
+    //
+    // Masked by load_profile_from_memory's own `gguf_get_n_tensors` comparison
+    // (see prescan_buffer's "MUTUAL MASKING" comment) -- but not redundant
+    // with it: that one runs after ggml has already parsed the tensor-info
+    // section, and this one is what keeps THIS walk in bounds.
+    const int64_t expected_count    = is_icl ? int64_t(std::size(icl_tensors)) : int64_t(std::size(x_vector_only));
+    if (n_tensors != expected_count) {
+        return false;
+    }
 
     uint64_t expected_offset = 0;
-    for (int64_t index = 0; index < n_tensors; ++index) {
+    for (int64_t index = 0; index < expected_count; ++index) {
         uint64_t name_length = 0;
         if (!prescan_read(data, size, offset, name_length) || name_length > kPrescanMaxKeyLength) {
             return false;
@@ -1019,6 +1145,11 @@ synth_status_t serialize_icl_profile(const HParams &    hparams,
     // package, and with what a uint32 metadata value can carry. `groups` is
     // exact rather than a ceiling for the same reason `enc_dim` is on the
     // read side: a grid of the wrong width builds a wrong-shaped prompt.
+    // `quantizer_count` rather than `talker.code_group_count` for the reason
+    // load_profile_from_memory's own copy of this check records:
+    // weights.cpp:249-255 refuses any package where the two differ, so they
+    // are interchangeable, and this is the one the writer's own source
+    // (encode_codec_reference) produces.
     if (profile.groups == 0 || profile.frames == 0 ||
         profile.groups != uint64_t(hparams.codec.decoder.quantizer_count) || profile.groups > UINT32_MAX ||
         profile.frames > UINT32_MAX || profile.codes.size() != size_t(profile.groups) * size_t(profile.frames)) {
@@ -1176,6 +1307,15 @@ synth_status_t load_profile_from_memory(const HParams & hparams,
         return SYNTH_ERR_INVALID_ARG;
     }
 
+    // Masked by prescan_buffer's own per-kind tensor-count check, which runs
+    // first and rejects the same buffers -- deleting either one alone leaves
+    // the suite passing, and only deleting BOTH makes a wrong tensor count
+    // observable. Kept anyway: the two guard different things. The prescan's
+    // copy keeps its own tensor walk in bounds; this one keeps the
+    // gguf_find_tensor lookups below from operating on a context whose shape
+    // this function has not itself agreed to. See prescan_buffer's own
+    // "MUTUAL MASKING" comment for why a check here should be assumed masked
+    // until proven otherwise.
     if (gguf_get_n_tensors(g) != (is_icl ? 3 : 1)) {
         return SYNTH_ERR_INVALID_ARG;
     }
@@ -1198,6 +1338,16 @@ synth_status_t load_profile_from_memory(const HParams & hparams,
     if (element_count != hparams.speaker_encoder.enc_dim) {
         // Not a ceiling, an exact match: a Profile of the wrong width builds
         // a wrong-shaped prompt (profile.h's own header comment).
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    // The x-vector's count is already package-bounded by the line above, so
+    // this is not the stream that could drive a hostile allocation. The range
+    // check runs here anyway, and BEFORE the vector below rather than beside
+    // the copy, so that "no declared count reaches a container until its bytes
+    // are known to exist" is a property of every path through this function
+    // rather than of two of the three -- which is exactly the asymmetry that
+    // let the ICL streams ship unguarded.
+    if (!tensor_range_fits(g, data_size, tensor_id, tensor_bytes)) {
         return SYNTH_ERR_INVALID_ARG;
     }
 
@@ -1305,13 +1455,34 @@ synth_status_t load_profile_from_memory(const HParams & hparams,
     // Exact, not a ceiling, for the same reason `enc_dim` is: a code grid of
     // the wrong width builds a wrong-shaped prompt, and every downstream
     // reader indexes a frame by this stride.
+    //
+    // `quantizer_count` AND NOT `talker.code_group_count`, which is what
+    // talker-host.cpp's own reference_is_well_formed indexes by -- and the two
+    // are interchangeable, on the record: weights.cpp:249-255 refuses any
+    // package where `codec.decoder.quantizer_count != talker.code_group_count`
+    // ("the codec takes %u code groups but the talker emits %u"), and
+    // read_codec sits unconditionally in read_hparams' own `&&` chain, so no
+    // voice mode or variant can skip it. Cited here because picking one of two
+    // numbers with no note sends the next reader to a third file to find out
+    // whether the choice is safe. This one is chosen because it is the number
+    // the WRITER's source (encode_codec_reference) produces, which is what
+    // "validate positively against what our own writer emits" means.
+    //
+    // The two `== 0` clauses are defence in depth and cannot be the sole cause
+    // of a refusal: i32_tensor_elements already rejects a zero-length codes
+    // tensor, so a zero factor always breaks the product check below first.
     if (declared_groups == 0 || declared_groups != hparams.codec.decoder.quantizer_count || declared_frames == 0) {
         return SYNTH_ERR_INVALID_ARG;
     }
 
+    // Both counts below arrive already checked against what `data_size` can
+    // actually hold -- i32_tensor_elements refuses a declared range that does
+    // not fit -- so the two `std::vector` constructions further down cannot be
+    // sized from a number the buffer does not back. See tensor_range_fits'
+    // own header comment for the measured defect that ordering closes.
     int64_t  codes_id       = -1;
     uint64_t codes_elements = 0;
-    if (!i32_tensor_elements(g, kTensorCodes, codes_id, codes_elements)) {
+    if (!i32_tensor_elements(g, data_size, kTensorCodes, codes_id, codes_elements)) {
         return SYNTH_ERR_INVALID_ARG;
     }
     // The cross-invariant the two kIclOnly keys exist to make checkable, and
@@ -1325,7 +1496,7 @@ synth_status_t load_profile_from_memory(const HParams & hparams,
 
     int64_t  ids_id       = -1;
     uint64_t ids_elements = 0;
-    if (!i32_tensor_elements(g, kTensorReferenceTextIds, ids_id, ids_elements)) {
+    if (!i32_tensor_elements(g, data_size, kTensorReferenceTextIds, ids_id, ids_elements)) {
         return SYNTH_ERR_INVALID_ARG;
     }
 

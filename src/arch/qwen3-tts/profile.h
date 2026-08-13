@@ -261,6 +261,13 @@ static_assert(offsetof(IclProfile, speaker) == 0, "IclProfile::speaker must stay
 //     ("voice_profile.reference_text_ids_missing"): all-or-nothing, the same
 //     rule Task 11 enforces again at the synthesis seam. Half-present ICL
 //     inputs are what produce a plausible-sounding wrong prompt;
+//   * any `reference_text_ids` entry outside `[0, talker.text_vocab_size)`
+//     ("voice_profile.reference_text_ids_out_of_range"): the same positive
+//     bound serialize_icl_profile and load_profile_from_memory both apply, so
+//     that this family's CREATOR cannot build an in-process Profile its own
+//     WRITER would refuse -- the mirror of the `language_tag` defect
+//     kMaxLanguageTagLength's own header comment records, and the reason that
+//     rule has to hold at all three entry points rather than two of them;
 //   * a `language_tag` over `kMaxLanguageTagLength`
 //     ("voice_profile.language_tag_too_long"): the tie that constant's own
 //     header comment documents applies to both kinds or it applies to
@@ -338,6 +345,18 @@ synth_status_t create_icl_profile(const HParams &                     hparams,
 // count-and-name gate would pass and the two stray keys would simply be
 // ignored on load. A union whitelist cannot state "these keys belong to the
 // OTHER kind", which is the exact defect this enum was added to catch.
+//
+// MEASURED, and the measurement is stated carefully because a first version
+// of this comment overstated it. Deleting the per-kind SET check alone leaves
+// the whole suite passing, and so does deleting the per-kind COUNT check
+// alone; the two mask each other and only the pair enforces this. With BOTH
+// deleted, a SEALED forgery -- real compatibility_id, finite non-zero
+// x-vector, digest recomputed -- loads with SYNTH_OK and its two stray keys
+// ignored. That forgery is what tests/qwen3_tts_profile_test.cpp's
+// test_an_x_vector_envelope_with_icl_keys_is_refused now builds. An earlier
+// draft of this test used a zero-filled hand-built buffer instead, which the
+// compatibility_id comparison refuses first with UNSUPPORTED_VOICE, so it
+// could not have observed the behaviour this paragraph describes.
 enum class PrescanKeyScope {
     kCommon,
     kIclOnly,
@@ -615,10 +634,29 @@ synth_status_t serialize_icl_profile(const HParams &    hparams,
 //     status code as a bug report.
 //
 // Size arithmetic runs BEFORE any allocation sized from the untrusted bytes:
-// every declared tensor's element count is checked against the package's own
-// widths, and its declared byte range against the supplied buffer, using only
-// cheap GGUF metadata/tensor-info getters (no tensor payload is read) before
-// any `std::vector` sizes itself from it.
+// every declared tensor's declared BYTE RANGE is checked against the supplied
+// buffer, using only cheap GGUF metadata/tensor-info getters (no tensor
+// payload is read), before any `std::vector` sizes itself from the
+// corresponding count. For the x-vector the count is additionally pinned to
+// the package's own `enc_dim`; the two ICL streams have no such fixed width,
+// so the buffer itself is what bounds them.
+//
+// THIS SENTENCE WAS FALSE WHEN THIS TASK FIRST SHIPPED IT, and the correction
+// is worth more than the claim. Task 9's original ICL path sized both I32
+// vectors from the buffer's own declared element counts and only afterwards
+// asked whether those ranges fit -- so a reviewer measured a 1 KiB Serialized
+// Profile driving a 1.53 GiB zero-filled resident allocation before the load
+// was refused, with the id stream reaching roughly 2^62 declared elements.
+// Neither `gguf_init_from_buffer` (called with `ctx == nullptr`, so it never
+// looks at the data section: ggml/src/gguf.cpp:761-782 only accumulates padded
+// sizes) nor the pre-scan (which stops at the tensor-INFO section) closes that
+// gap. The order is now enforced inside `i32_tensor_elements`, which refuses
+// to hand back a count at all until the bytes behind it are known to exist --
+// see `tensor_range_fits`' own header comment in profile.cpp. The lesson is
+// the one this project already learned in the WAV readers: bounding the VALUES
+// of an untrusted stream is a separate obligation from bounding the COUNT that
+// sizes the buffer holding them, and doing the first perfectly says nothing
+// about the second.
 //
 // `out_diagnostic_code`/`out_diagnostic_message` are left null: this
 // function names no refusal of its own that needs one (unlike

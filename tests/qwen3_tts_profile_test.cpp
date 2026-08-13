@@ -503,6 +503,17 @@ void put_kv_f32(std::vector<uint8_t> & out, const std::string & key, float value
     put<float>(out, value);
 }
 
+// A metadata entry whose declared type tag is an arbitrary raw int32 rather
+// than one of the GGUF_TYPE_* enumerators -- the one shape the put_kv_*
+// helpers above cannot express, since each of them writes a tag this project
+// itself considers valid. The four payload bytes are never read: the tag is
+// compared against the key's own kPrescanKnownKeys type first.
+void put_kv_raw_type(std::vector<uint8_t> & out, const std::string & key, int32_t type_tag) {
+    put_gguf_string(out, key);
+    put<int32_t>(out, type_tag);
+    put<float>(out, 0.5f);
+}
+
 void put_kv_u8_array32(std::vector<uint8_t> & out, const std::string & key) {
     put_gguf_string(out, key);
     put<int32_t>(out, int32_t(GGUF_TYPE_ARRAY));
@@ -984,6 +995,75 @@ int test_whitelisted_key_wrong_type_is_invalid_arg() {
     return 0;
 }
 
+// --- A type tag no key's spec declares -> INVALID_ARG, at five values
+// chosen around gguf_type's own range.
+//
+// WHICH IS WHICH, since they are not all the same kind of wrong. `gguf_type`
+// enumerates 0..13 (GGUF_TYPE_COUNT is 13, a real enumerator), so its
+// representable range is 0..15 and only a value outside THAT is undefined
+// behaviour to convert. Of the five below, -1, 16, INT32_MAX and INT32_MIN
+// are outside it; 13 is inside it -- GGUF_TYPE_COUNT itself, well-defined to
+// convert and merely not a type any key declares. So this arm is not five
+// demonstrations of the undefined behaviour; it is five values around the
+// boundary, four of which would be UB under a converting reader.
+//
+// WHAT THIS PINS, EXACTLY: the black-box rejection behaviour, at five tag
+// values, and nothing more. It is a value-space regression net over the arm
+// directly above, not new branch coverage -- prescan_buffer's rule is a plain
+// integer inequality against the key's own kPrescanKnownKeys type, so
+// INT32_MIN takes the identical branch that arm's UINT32-instead-of-FLOAT32
+// already takes. It is kept because the values are the interesting ones and
+// they cost nothing to carry, not because it reaches anything new.
+//
+// WHAT THIS DOES NOT PIN, AND CANNOT: the absence of the enum conversion,
+// which is the actual reason these values are interesting. `gguf_type` is an
+// unscoped enum with no fixed underlying type, so its value range is 0..15
+// and converting anything outside it is undefined behaviour -- on bytes that
+// arrive through the public synth_voice_profile_load_from_memory with no
+// prior validation. prescan_buffer therefore keeps the tag an `int32_t` and
+// only ever compares it. Reinstating `gguf_type type = gguf_type(type_raw);`
+// was MEASURED (2026-08-13) to leave this test passing in both the plain and
+// the sanitizer build: GCC 13.3's UBSan instruments loads of enum-typed
+// lvalues, not that register-resident conversion, and the value is never used
+// to index, switch or dispatch, so no defined behaviour changes either. Clang's
+// -fsanitize=enum would catch it; this tree has no clang leg.
+//
+// So if you are here to "simplify" the int32 walk back into a cast: this test
+// will not stop you, and it is not evidence that the cast is safe. The reason
+// not to is [expr.static.cast]/10, and it lives in prescan_buffer's own
+// comment.
+//
+// The rule that IS pinned here is a POSITIVE one: prescan_buffer compares the
+// raw tag against the key's own kPrescanKnownKeys type and refuses anything
+// else, rather than range-testing against GGUF_TYPE_COUNT (which would be a
+// blacklist against ggml's own enum extent -- see prescan_buffer's own header
+// comment and docs/porting/families/omnivoice.md's untrusted-bytes section).
+// `ref_rms` is the target because it is whitelisted, so the KV count, the key
+// set and the duplicate check all pass and the type comparison is the one
+// rule left to do the rejecting.
+int test_out_of_range_type_tag_is_invalid_arg() {
+    constexpr int64_t kProfileEncDim = 11;
+    for (int32_t type_tag :
+         { int32_t(-1), int32_t(13), int32_t(16), int32_t(0x7FFFFFFF), std::numeric_limits<int32_t>::min() }) {
+        std::vector<uint8_t> kv = common_kv_bytes("x-vector");
+        put_kv_raw_type(kv, "synthesize.voice_profile.ref_rms", type_tag);
+        put_kv_string(kv, "synthesize.voice_profile.language_tag", "en");
+        const std::vector<uint8_t> bytes = assemble_hand_built(kv, kPrescanKvCountXVector, kProfileEncDim);
+
+        uint8_t compatibility_id[32];
+        fill_compatibility_id(compatibility_id);
+        synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+        std::shared_ptr<const void> payload;
+        const char *                code    = nullptr;
+        const char *                message = nullptr;
+        const synth_status_t        status  = synth::qwen3tts::load_profile_from_memory(
+            uint32_t(kProfileEncDim), bytes.data(), bytes.size(), compatibility_id, family_tag, payload, code, message);
+        SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(payload == nullptr);
+    }
+    return 0;
+}
+
 // --- n_kv other than the pinned count -> INVALID_ARG. Patches the header's
 // own n_kv field (byte offset 16: magic[4] + version[4] + n_tensors[8]) on a
 // real, otherwise-valid envelope to one less than kPrescanKvCountXVector. As
@@ -1300,6 +1380,7 @@ int main() {
     SYNTH_TEST_CHECK(test_x_vector_length_mismatch_is_invalid_arg() == 0);
     SYNTH_TEST_CHECK(test_key_outside_whitelist_is_invalid_arg() == 0);
     SYNTH_TEST_CHECK(test_whitelisted_key_wrong_type_is_invalid_arg() == 0);
+    SYNTH_TEST_CHECK(test_out_of_range_type_tag_is_invalid_arg() == 0);
     SYNTH_TEST_CHECK(test_wrong_n_kv_count_is_invalid_arg() == 0);
     SYNTH_TEST_CHECK(test_writer_emits_exactly_the_whitelisted_keys() == 0);
 

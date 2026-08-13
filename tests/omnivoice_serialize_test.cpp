@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -175,6 +176,17 @@ void put_kv_f32(std::vector<uint8_t> & out, const std::string & key, float value
     put_gguf_string(out, key);
     put<int32_t>(out, int32_t(GGUF_TYPE_FLOAT32));
     put<float>(out, value);
+}
+
+// A metadata entry whose declared type tag is an arbitrary raw int32 rather
+// than one of the GGUF_TYPE_* enumerators -- the one shape the put_kv_*
+// helpers above cannot express, since each of them writes a tag this project
+// itself considers valid. The four payload bytes are never read: the tag is
+// compared against the key's own kPrescanKnownKeys type first.
+void put_kv_raw_type(std::vector<uint8_t> & out, const std::string & key, int32_t type_tag) {
+    put_gguf_string(out, key);
+    put<int32_t>(out, type_tag);
+    put<float>(out, 0.5f);
 }
 
 void put_kv_u8_array32(std::vector<uint8_t> & out, const std::string & key) {
@@ -804,6 +816,52 @@ int main(int argc, char ** argv) {
         synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
         const synth_status_t    status = load_bytes(model, bytes, &loaded);
         std::fprintf(stderr, "arm (k) bogus tensor name -> status %d\n", int(status));
+        SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+    }
+
+    // --- (l) A type tag no key's spec declares, on a whitelisted key, at
+    // five values chosen around gguf_type's own range. `gguf_type` is an
+    // unscoped enum with no fixed underlying type; it enumerates 0..13
+    // (GGUF_TYPE_COUNT is 13, a real enumerator), so its representable range
+    // is 0..15 and converting a value outside THAT is undefined behaviour --
+    // on bytes that arrive through the public
+    // synth_voice_profile_load_from_memory with no prior validation.
+    //
+    // Not all five below are that, and the arm should not be read as if they
+    // were: -1, 16, INT32_MAX and INT32_MIN are outside the range; 13 is
+    // inside it -- GGUF_TYPE_COUNT itself, well-defined to convert and merely
+    // not a type any key declares.
+    //
+    // The rule this pins is a POSITIVE one: prescan_buffer compares the raw
+    // tag against the key's own kPrescanKnownKeys type and refuses anything
+    // else, rather than range-testing against GGUF_TYPE_COUNT -- which would
+    // be a blacklist against ggml's own enum extent, the shape fix round 2
+    // deleted (this file's own header comment, and
+    // docs/porting/families/omnivoice.md's untrusted-bytes section).
+    // "instruct" is the target because it is whitelisted, so the n_kv check,
+    // the key set and the duplicate check all pass and the type comparison
+    // is the one rule left to do the rejecting.
+    //
+    // What this arm does NOT pin is the absence of the enum conversion
+    // itself, even though that is what makes these values interesting.
+    // Reinstating the cast leaves this arm passing in both the plain and the
+    // sanitizer build -- measured 2026-08-13. The full reasoning, and what
+    // would be needed to catch it, is written out once at this arm's twin,
+    // tests/qwen3_tts_profile_test.cpp's
+    // test_out_of_range_type_tag_is_invalid_arg.
+    for (int32_t type_tag :
+         { int32_t(-1), int32_t(13), int32_t(16), int32_t(0x7FFFFFFF), std::numeric_limits<int32_t>::min() }) {
+        std::vector<uint8_t> kv = common_kv_bytes("design-instruct");
+        put_kv_raw_type(kv, "synthesize.voice_profile.instruct", type_tag);
+        const std::vector<uint8_t> bytes = [&] {
+            std::vector<uint8_t> out = make_header(0, 9);
+            put_bytes(out, kv.data(), kv.size());
+            return out;
+        }();
+        synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        const synth_status_t    status = load_bytes(model, bytes, &loaded);
+        std::fprintf(stderr, "arm (l) out-of-range type tag %d -> status %d\n", int(type_tag), int(status));
         SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
         SYNTH_TEST_CHECK(loaded == nullptr);
     }

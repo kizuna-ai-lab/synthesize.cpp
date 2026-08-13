@@ -42,7 +42,9 @@
 // reference" without caring what voice it names. That is enough for what
 // assertion 4 decides -- the two inputs differ, so the two outputs must --
 // but it is NOT evidence that the clone resembles the speaker in the clip.
-// No listening pass has happened.
+// An audit on 2026-08-13 found no obvious regression in x-vector mode; one
+// listener, one source clip — evidence of resemblance, not a port property —
+// while Quality Evaluation per ADR 0017 stays unrun.
 //
 // This test is registration-gated on the oracle x-vector dump as well as on
 // the package and the clip: assertion 1 is the only enforcement of the

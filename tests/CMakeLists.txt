@@ -810,6 +810,62 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             TIMEOUT 300)
     endif()
 
+    # The reference transcript's ids against the ones upstream passed. Needs the
+    # real Base package -- what this checks is that THIS vocabulary spends 3 and
+    # 2 tokens on the reference turn's markers, which no synthetic fixture can
+    # decide -- and the oracle's ICL prompt dump, which is deliberately not
+    # committed, so it is sentinel-gated the way the x-vector gate above is.
+    #
+    # Each case's transcript is written out of the oracle's own alignment.json
+    # rather than repeated here: the ids and the transcript that produced them
+    # have to come from the same dump or the comparison means nothing. It goes
+    # through a file rather than an argument because a transcript is arbitrary
+    # text and CMake would split one containing a semicolon into two arguments.
+    set(_synth_qwen3_tts_icl_prompt_root
+        "${CMAKE_SOURCE_DIR}/build/goldens/qwen3-tts/qwen3-tts-12hz-0-6b-base")
+    set(_synth_qwen3_tts_ref_ids_sentinel
+        "${_synth_qwen3_tts_icl_prompt_root}/base-icl-en/prompt/ref_text_ids.i32")
+    if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}" AND EXISTS "${_synth_qwen3_tts_ref_ids_sentinel}")
+        set(_synth_qwen3_tts_ref_args "")
+        set(_synth_qwen3_tts_ref_fixtures
+            "${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-reference-transcript")
+        file(MAKE_DIRECTORY "${_synth_qwen3_tts_ref_fixtures}")
+        foreach(_synth_qwen3_tts_ref_case base-icl-en base-ref-min base-text-short)
+            set(_synth_qwen3_tts_ref_ids
+                "${_synth_qwen3_tts_icl_prompt_root}/${_synth_qwen3_tts_ref_case}/prompt/ref_text_ids.i32")
+            set(_synth_qwen3_tts_ref_alignment
+                "${_synth_qwen3_tts_icl_prompt_root}/${_synth_qwen3_tts_ref_case}/prompt/alignment.json")
+            if(EXISTS "${_synth_qwen3_tts_ref_ids}" AND EXISTS "${_synth_qwen3_tts_ref_alignment}")
+                file(READ "${_synth_qwen3_tts_ref_alignment}" _synth_qwen3_tts_ref_alignment_json)
+                string(JSON _synth_qwen3_tts_ref_text
+                    GET "${_synth_qwen3_tts_ref_alignment_json}" inputs ref_text)
+                set(_synth_qwen3_tts_ref_transcript
+                    "${_synth_qwen3_tts_ref_fixtures}/${_synth_qwen3_tts_ref_case}.txt")
+                file(WRITE "${_synth_qwen3_tts_ref_transcript}" "${_synth_qwen3_tts_ref_text}")
+                list(APPEND _synth_qwen3_tts_ref_args
+                    "${_synth_qwen3_tts_ref_case}"
+                    "${_synth_qwen3_tts_ref_transcript}"
+                    "${_synth_qwen3_tts_ref_ids}")
+            endif()
+        endforeach()
+        add_executable(synthesize-qwen3-tts-reference-transcript-real
+            qwen3_tts_reference_transcript_real.cpp)
+        target_include_directories(synthesize-qwen3-tts-reference-transcript-real
+            PRIVATE ${CMAKE_SOURCE_DIR}/src)
+        target_link_libraries(synthesize-qwen3-tts-reference-transcript-real PRIVATE synthesize)
+        synth_register_integration_target(synthesize-qwen3-tts-reference-transcript-real)
+        add_test(NAME synthesize-qwen3-tts-reference-transcript-real
+            COMMAND synthesize-qwen3-tts-reference-transcript-real
+                ${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}
+                ${_synth_qwen3_tts_ref_args})
+        set_tests_properties(synthesize-qwen3-tts-reference-transcript-real PROPERTIES
+            LABELS "integration;qwen3-tts;golden"
+            # Loading the ~2.5 GB package once and tokenizing a sentence; the
+            # budget is the load, and it is the same one the load test above
+            # sizes for.
+            TIMEOUT 300)
+    endif()
+
     # Stage 2 Plan 2's completion gate: reference audio in, cloned audio out,
     # entirely through the public seam, against the real Base package and its
     # pinned reference clip. Guarded on the wav too -- a locally-materialized

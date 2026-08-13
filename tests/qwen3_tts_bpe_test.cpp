@@ -491,6 +491,197 @@ int check_assistant_turn() {
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// The reference transcript's own turn.
+//
+// Transcript-assisted cloning wraps the *reference transcript* in a second,
+// shorter turn than the one every request gets, and slices the tokenized result
+// at different counts. Upstream:
+//
+//     _build_ref_text        <|im_start|>assistant\n{text}<|im_end|>\n
+//                            qwen3_tts_model.py:272-273, tokenized at :598
+//     _build_assistant_text  <|im_start|>assistant\n{text}<|im_end|>\n
+//                                                     <|im_start|>assistant\n
+//                            qwen3_tts_model.py:269-270
+//     the two slices         ref_id[:, 3:-2] and text_id[:, 3:-5], both at
+//                            modeling_qwen3_tts.py:2190-2191
+//
+// Getting this wrong produces no error anywhere. A prompt off by one token
+// still synthesizes speech, in the wrong voice or the wrong language
+// (arch/qwen3-tts/talker-host.h).
+// ---------------------------------------------------------------------------
+
+// The byte-level alphabet again: 0x0A is U+010A, the way 0x20 is U+0120 above.
+constexpr const char * kNewline = "\xc4\x8a";
+
+// A vocabulary with the two properties the reference turn's arithmetic rests
+// on, and nothing else: the role word folds into ONE token, and a newline pair
+// folds into one token too. Both hold in the real package --
+// models/qwen3-tts-12hz-0-6b-base spells "assistant" as the single id 77091,
+// "\n" as 198 and "\n\n" as the single id 271 -- and the second is what makes
+// wrapping observable at all.
+//
+// A vocabulary entry is unreachable without merges that build it, so the role
+// word is spelled out as the chain that reaches it, the way a real vocabulary
+// reaches it.
+synth::qwen3tts::BpeFrontendConfig reference_turn_vocabulary() {
+    synth::qwen3tts::BpeFrontendConfig config;
+    config.provider_id      = "synthesize.qwen_bpe";
+    config.contract_version = 1;
+    config.vocab            = {
+        "a",                               // 0
+        "b",                               // 1
+        "ab",                              // 2
+        "s",                               // 3
+        "i",                               // 4
+        "t",                               // 5
+        "n",                               // 6
+        "as",                              // 7
+        "ass",                             // 8
+        "assi",                            // 9
+        "assis",                           // 10
+        "assist",                          // 11
+        "assista",                         // 12
+        "assistan",                        // 13
+        "assistant",                       // 14
+        kNewline,                          // 15  "\n"
+        std::string(kNewline) + kNewline,  // 16  "\n\n"
+        kSpace,                            // 17  " "
+    };
+    // Ranked most preferred first; the role-word chain has to run in order.
+    config.merges         = { "a s",      "as s",      "ass i",      "assi s", "assis t",
+                              "assist a", "assista n", "assistan t", "a b",    std::string(kNewline) + " " + kNewline };
+    config.special_tokens = {
+        { "<|im_start|>", 100 },
+        { "<|im_end|>",   101 }
+    };
+    // No turn of its own: qwen_reference_transcript_ids applies the reference
+    // turn itself, and a frontend carrying the assistant turn would wrap the
+    // result a second time. This is what Model holds beside the wrapped one.
+    config.prefix = "";
+    config.suffix = "";
+    return config;
+}
+
+// A frontend that hands back fewer tokens than the turn's own markers. Nothing
+// this family loads can do that -- see the proof in bpe.cpp -- so this is how
+// the bounds branch is reached at all. Without that branch, this case aborts:
+// the slice's two iterators cross and assign() raises length_error, measured in
+// both the Release and the sanitizer tree.
+class ShortFrontend : public synth::TextFrontend {
+  public:
+    synth_input_flags_t input_flags() const noexcept override { return SYNTH_INPUT_SUPPORT_TEXT_UTF8; }
+
+    synth_status_t prepare(synth_input_kind_t,
+                           const void *,
+                           uint64_t,
+                           uint64_t,
+                           std::vector<int32_t> & output) const override {
+        output = { 100, 14, 15, 101 };  // the turn's markers, and no transcript
+        return SYNTH_OK;
+    }
+};
+
+int check_reference_turn() {
+    // 1. Two different strings for the same input, and the reference turn stops
+    //    at the closing markers.
+    SYNTH_TEST_CHECK(synth::qwen3tts::qwen_reference_turn("hi") == "<|im_start|>assistant\nhi<|im_end|>\n");
+    SYNTH_TEST_CHECK(synth::qwen3tts::qwen_reference_turn("hi") != synth::qwen3tts::qwen_assistant_turn("hi"));
+    // The assistant turn is the reference turn plus a second opening; that is
+    // the whole difference, and it is what the two suffix counts price.
+    SYNTH_TEST_CHECK(synth::qwen3tts::qwen_assistant_turn("hi") ==
+                     synth::qwen3tts::qwen_reference_turn("hi") + "<|im_start|>assistant\n");
+
+    // 2. The slice constants differ, and the role prefix is shared.
+    SYNTH_TEST_CHECK(synth::qwen3tts::kReferenceSuffixTokens == 2);
+    SYNTH_TEST_CHECK(synth::qwen3tts::kAssistantSuffixTokens == 5);
+    SYNTH_TEST_CHECK(synth::qwen3tts::kReferenceSuffixTokens != synth::qwen3tts::kAssistantSuffixTokens);
+    return 0;
+}
+
+int check_reference_transcript_ids() {
+    std::unique_ptr<synth::TextFrontend> frontend;
+    SYNTH_TEST_CHECK(synth::qwen3tts::make_bpe_frontend(reference_turn_vocabulary(), frontend) == SYNTH_OK);
+
+    std::vector<int32_t> ids;
+    const auto           reference = [&](const std::string & transcript, uint64_t max_tokens = 0) {
+        return synth::qwen3tts::qwen_reference_transcript_ids(*frontend, transcript, max_tokens, ids);
+    };
+    // What the same frontend makes of the bare transcript, with no turn at all.
+    std::vector<int32_t> bare;
+    const auto           tokenize_bare = [&](const std::string & transcript) {
+        SYNTH_TEST_CHECK(frontend->prepare(SYNTH_INPUT_TEXT_UTF8, transcript.data(), transcript.size(), 0, bare) ==
+                         SYNTH_OK);
+        return 0;
+    };
+
+    // 3. Round trip. The wrapped turn is [im_start, "assistant", "\n", <the
+    //    transcript's own ids>, im_end, "\n"], and slicing 3 and 2 off it
+    //    recovers exactly the transcript's contribution -- which is the count
+    //    Task 7's T1 arithmetic adds up.
+    SYNTH_TEST_CHECK(reference("ab") == SYNTH_OK);
+    SYNTH_TEST_CHECK(ids == std::vector<int32_t>({ 2 }));
+    SYNTH_TEST_CHECK(tokenize_bare("ab") == 0);
+    SYNTH_TEST_CHECK(ids == bare);
+    // The markers cost exactly the two constants, measured rather than assumed:
+    // the whole turn is the transcript's ids plus 3 + 2.
+    std::vector<int32_t> whole;
+    const std::string    turn = synth::qwen3tts::qwen_reference_turn("ab");
+    SYNTH_TEST_CHECK(frontend->prepare(SYNTH_INPUT_TEXT_UTF8, turn.data(), turn.size(), 0, whole) == SYNTH_OK);
+    SYNTH_TEST_CHECK(whole.size() == ids.size() + synth::qwen3tts::kAssistantRolePrefixTokens +
+                                         synth::qwen3tts::kReferenceSuffixTokens);
+
+    // 4. The boundary case the wrap-then-slice idiom exists for, on a named
+    //    input: "\nab". The pre-tokenizer's newline branch is greedy, so the
+    //    transcript's leading newline joins the turn's own newline into one
+    //    piece, that piece is one token, and the slice takes it away with the
+    //    role prefix. Wrapping therefore does not merely add tokens around the
+    //    transcript's -- it changes them.
+    //
+    //    The same input on the real package's vocabulary: "\nHello" through
+    //    this path is the single id 9707, while tokenizing "\nHello" on its own
+    //    is 198, 9707 (measured against models/qwen3-tts-12hz-0-6b-base with
+    //    the pinned transformers 4.57.3). The integration test asserts that one
+    //    against the real vocabulary; this one needs no package.
+    SYNTH_TEST_CHECK(reference("\nab") == SYNTH_OK);
+    SYNTH_TEST_CHECK(tokenize_bare("\nab") == 0);
+    SYNTH_TEST_CHECK(bare == std::vector<int32_t>({ 15, 2 }));
+    SYNTH_TEST_CHECK(ids != bare);
+    // And the sharper statement of the same fact: two different transcripts
+    // reach the talker as the same ids. Tokenizing the bare transcript would
+    // keep them apart, which is exactly why it is not equivalent.
+    SYNTH_TEST_CHECK(ids == std::vector<int32_t>({ 2 }));
+
+    // 5. An empty or whitespace-only transcript names no speech -- the design's
+    //    §9 error table. " " is the case that needs the rule: it tokenizes
+    //    perfectly well, to the one id below, so nothing downstream refuses it.
+    SYNTH_TEST_CHECK(reference("") == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(ids.empty());
+    SYNTH_TEST_CHECK(reference(" ") == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(reference("  \t\n ") == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(tokenize_bare(" ") == 0);
+    SYNTH_TEST_CHECK(bare == std::vector<int32_t>({ 17 }));
+
+    // The declared limit counts the turn's markers, the way tokenize_request's
+    // does: a one-token transcript is a six-token turn, so a limit of six
+    // passes and five does not.
+    SYNTH_TEST_CHECK(reference("ab", 6) == SYNTH_OK);
+    SYNTH_TEST_CHECK(reference("ab", 5) == SYNTH_ERR_INPUT_TOO_LONG);
+    SYNTH_TEST_CHECK(ids.empty());
+
+    // A byte the vocabulary cannot name is refused rather than dropped, the
+    // same rule the request path follows.
+    SYNTH_TEST_CHECK(reference("z") == SYNTH_ERR_INVALID_ARG);
+
+    // The precondition on `frontend`, which no package can violate but a
+    // future caller could.
+    const ShortFrontend too_short;
+    SYNTH_TEST_CHECK(synth::qwen3tts::qwen_reference_transcript_ids(too_short, "ab", 0, ids) ==
+                     SYNTH_ERR_TEXT_FRONTEND);
+    SYNTH_TEST_CHECK(ids.empty());
+    return 0;
+}
+
 }  // namespace
 
 // The merge order, and that a long run terminates in reasonable time.
@@ -577,5 +768,7 @@ int main() {
     SYNTH_TEST_CHECK(check_configuration_rejections() == 0);
     SYNTH_TEST_CHECK(check_turn_wrapping() == 0);
     SYNTH_TEST_CHECK(check_assistant_turn() == 0);
+    SYNTH_TEST_CHECK(check_reference_turn() == 0);
+    SYNTH_TEST_CHECK(check_reference_transcript_ids() == 0);
     return 0;
 }

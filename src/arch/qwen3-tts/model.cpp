@@ -278,6 +278,9 @@ struct Model::Impl {
     ggml_backend_buffer_t               codec_buffer   = nullptr;
     HParams                             hparams;
     std::shared_ptr<const TextFrontend> frontend;
+    // The same tokenizer wrapping nothing, for the reference transcript's own
+    // turn; see where it is built for why it cannot be the one above.
+    std::shared_ptr<const TextFrontend> reference_frontend;
     ModelWeights                        weights;
 
     ~Impl() {
@@ -414,6 +417,18 @@ synth_status_t Model::tokenize_request(const std::string & text, std::vector<int
     // The frontend applies the turn wrapper itself, so this hands it the text.
     return implementation_->frontend->prepare(SYNTH_INPUT_TEXT_UTF8, text.data(), text.size(),
                                               implementation_->hparams.max_input_tokens, token_ids);
+}
+
+synth_status_t Model::tokenize_reference_transcript(const std::string & text, std::vector<int32_t> & token_ids) const {
+    token_ids.clear();
+    if (implementation_->reference_frontend == nullptr) {
+        return SYNTH_ERR_TEXT_FRONTEND;
+    }
+    // The reference turn goes on here rather than in the frontend, which is
+    // why this uses the unwrapped one; the rule itself, and everything it
+    // refuses, lives in bpe.cpp where a unit test can reach it.
+    return qwen_reference_transcript_ids(*implementation_->reference_frontend, text,
+                                         implementation_->hparams.max_input_tokens, token_ids);
 }
 
 synth_status_t Model::resolve_voice(const std::string & voice_id,
@@ -571,6 +586,31 @@ synth_status_t Model::load(const std::string &      path,
                 return status;
             }
             implementation->frontend = std::shared_ptr<const TextFrontend>(std::move(frontend));
+
+            // The same tables again, wrapping nothing. The reference
+            // transcript is wrapped in a *different* turn (bpe.h's
+            // qwen_reference_turn), and the frontend above cannot be reused
+            // for it: the core runs that one for every request
+            // (synthesis-request.cpp), so it must keep applying the assistant
+            // turn, and it would apply it on top of the reference turn rather
+            // than instead of it.
+            //
+            // This is a second copy of the vocabulary and merge tables rather
+            // than a second view of them, which the shared make_bpe_frontend
+            // does not offer. The cost was measured rather than assumed: on
+            // the Base package, loading with this frontend takes the peak
+            // resident set from 5 594 676 KB to 5 639 716 KB, +45 MB or
+            // 0.8 %. Sharing the tables would mean reshaping BpeFrontend for
+            // a saving that size, which is a change to a file omnivoice also
+            // loads and is not this slice's to make.
+            config.prefix.clear();
+            config.suffix.clear();
+            std::unique_ptr<TextFrontend> reference_frontend;
+            status = make_bpe_frontend(config, reference_frontend);
+            if (status != SYNTH_OK) {
+                return status;
+            }
+            implementation->reference_frontend = std::shared_ptr<const TextFrontend>(std::move(reference_frontend));
         }
 
         // Every graph runs on the CPU scheduler, so the weights live in the CPU

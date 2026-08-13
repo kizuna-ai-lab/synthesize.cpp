@@ -177,6 +177,19 @@ class Model {
     // lives with the family rather than with the caller.
     synth_status_t tokenize_request(const std::string & text, std::vector<int32_t> & token_ids) const;
 
+    // Tokenizes a reference transcript for transcript-assisted cloning, which
+    // is NOT tokenize_request over different text: the reference wraps a
+    // reference transcript in a shorter turn (bpe.h's qwen_reference_turn) and
+    // slices the tokenized result at 3 and -2 where a request is sliced at 3
+    // and -5. The ids returned are what upstream passes as `ref_id`, so they
+    // are the sliced ones -- the turn's own markers are not in them.
+    //
+    // Not a `std::vector<int32_t>` return: an empty or whitespace-only
+    // transcript is SYNTH_ERR_INVALID_ARG per the design's §9 error table, and
+    // the limit and package-defect paths in qwen_reference_transcript_ids have
+    // their own statuses too.
+    synth_status_t tokenize_reference_transcript(const std::string & text, std::vector<int32_t> & token_ids) const;
+
     // Resolves a preset Voice and the codec language token for a request. A
     // speaker carrying a dialect override wins over the requested language.
     synth_status_t resolve_voice(const std::string & voice_id,

@@ -480,6 +480,32 @@ target_include_directories(synthesize-qwen3-tts-mel-driver PRIVATE ${CMAKE_SOURC
 target_link_libraries(synthesize-qwen3-tts-mel-driver PRIVATE synthesize)
 synth_register_integration_target(synthesize-qwen3-tts-mel-driver)
 
+# The WAV parsing rules the driver above carries, as a `unit` test. It drives
+# that driver as a subprocess rather than linking its read_wav, because there
+# is deliberately no shared reader to link: the duplication across the four
+# WAV readers in this directory is a recorded decision (see
+# qwen3_tts_xvector_driver.cpp's own copy). The mel driver is the one that
+# needs no model or oracle dump, which is what keeps this at the `unit` tier.
+# Same shape as synthesize-shared-exports, whose subject is also a built
+# artifact rather than a linkable symbol.
+#
+# The explicit add_dependencies is load-bearing: the driver is registered as
+# an INTEGRATION target, so synthesize-check-unit would otherwise build this
+# test and run it against whatever driver binary happened to already be in the
+# tree -- exactly the stale-binary failure this file's own header comment
+# records happening twice before.
+add_executable(synthesize-qwen3-tts-wav-reader-test qwen3_tts_wav_reader_test.cpp)
+target_include_directories(synthesize-qwen3-tts-wav-reader-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(synthesize-qwen3-tts-wav-reader-test PRIVATE
+    SYNTH_MEL_DRIVER="$<TARGET_FILE:synthesize-qwen3-tts-mel-driver>")
+add_dependencies(synthesize-qwen3-tts-wav-reader-test synthesize-qwen3-tts-mel-driver)
+add_test(NAME synthesize-qwen3-tts-wav-reader-test
+    COMMAND synthesize-qwen3-tts-wav-reader-test ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-wav-reader)
+set_tests_properties(synthesize-qwen3-tts-wav-reader-test PROPERTIES LABELS "unit;qwen3-tts")
+synth_register_unit_target(synthesize-qwen3-tts-wav-reader-test)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-wav-reader)
+
 # A tiny driver, not a test: runs Model::prepare_x_vector over a real WAV file
 # against a real package so scripts/validate-qwen3-tts-replay.py
 # --compare-x-vector can diff it against Task 1's oracle dump. Needs a real

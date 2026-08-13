@@ -41,10 +41,21 @@ namespace {
 // refuses anything else rather than silently reinterpreting it.
 // ---------------------------------------------------------------------------
 bool read_wav_mono16(const std::string & path, std::vector<float> & pcm, uint32_t & sample_rate) {
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file) {
         return false;
     }
+    // Every chunk_size in the loop below is an untrusted 32-bit field: it can
+    // claim up to 4 GiB no matter how many bytes the file actually holds. The
+    // file's own length is the only honest bound to size an allocation
+    // against, so it is measured once, here, rather than trusted per chunk --
+    // the same shape qwen3_tts_mel_driver.cpp's own copy carries.
+    const std::streamoff file_size = file.tellg();
+    file.seekg(0, std::ios::beg);
+    if (file_size < 0 || !file) {
+        return false;
+    }
+
     char riff_id[4];
     file.read(riff_id, 4);
     uint32_t riff_size = 0;
@@ -67,6 +78,16 @@ bool read_wav_mono16(const std::string & path, std::vector<float> & pcm, uint32_
         file.read(reinterpret_cast<char *>(&chunk_size), 4);
         if (!file) {
             break;
+        }
+        // Before anything is sized from it: a chunk cannot be longer than
+        // what is left of the file. Without this the raw_samples.resize below
+        // is sized from the claim alone, and the short read that follows
+        // leaves the tail zero-filled -- fabricated samples a caller cannot
+        // tell from real ones, on top of a 2 GiB allocation from a 4-byte
+        // field.
+        const std::streamoff position = file.tellg();
+        if (position < 0 || uint64_t(chunk_size) > uint64_t(file_size - position)) {
+            return false;
         }
         if (std::memcmp(chunk_id, "fmt ", 4) == 0) {
             uint16_t audio_format = 0;

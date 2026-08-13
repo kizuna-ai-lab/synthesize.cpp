@@ -37,17 +37,36 @@ struct WavAudio {
 // Not a general-purpose decoder: no compressed formats, no extensible fmt
 // chunk fields beyond what selects the sample layout.
 bool read_wav(const std::string & path, WavAudio & out, std::string & error) {
-    std::ifstream input(path, std::ios::binary);
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input) {
         error = "could not open " + path;
         return false;
     }
+    // Every chunk_size in the loop below is an untrusted 32-bit field: it can
+    // claim up to 4 GiB no matter how many bytes the file actually holds. The
+    // file's own length is the only honest bound to size an allocation
+    // against, so it is measured once, here, rather than trusted per chunk.
+    const std::streamoff file_size = input.tellg();
+    input.seekg(0, std::ios::beg);
+    if (file_size < 0 || !input) {
+        error = "could not measure " + path;
+        return false;
+    }
+
     char riff[4];
     input.read(riff, 4);
     uint32_t riff_size = 0;
     input.read(reinterpret_cast<char *>(&riff_size), 4);
     char wave[4];
     input.read(wave, 4);
+    // The stream state before the contents: a file shorter than this 12-byte
+    // header leaves `riff`/`wave` untouched, and comparing them would read
+    // indeterminate stack bytes. The chunk loop below already checks after
+    // every read; this header was the one place that did not.
+    if (!input) {
+        error = path + " is shorter than a 12-byte RIFF/WAVE header";
+        return false;
+    }
     if (std::memcmp(riff, "RIFF", 4) != 0 || std::memcmp(wave, "WAVE", 4) != 0) {
         error = path + " is not a RIFF/WAVE file";
         return false;
@@ -72,13 +91,26 @@ bool read_wav(const std::string & path, WavAudio & out, std::string & error) {
         if (!input) {
             break;
         }
+        // Before anything is sized from it: a chunk cannot be longer than
+        // what is left of the file. Without this the two allocations below
+        // are sized from the claim alone, and the short read that follows
+        // leaves the tail zero-filled -- fabricated samples a caller cannot
+        // tell from real ones, on top of a 4 GiB allocation from a 4-byte
+        // field.
+        const std::streamoff position = input.tellg();
+        if (position < 0 || uint64_t(chunk_size) > uint64_t(file_size - position)) {
+            error = path + " declares a chunk larger than the file holds";
+            return false;
+        }
         if (std::memcmp(chunk_id, "fmt ", 4) == 0) {
-            std::vector<char> fmt(chunk_size);
-            input.read(fmt.data(), std::streamsize(chunk_size));
+            // The floor before the allocation, not after it: the read below
+            // is what the memcpy offsets depend on.
             if (chunk_size < 16) {
                 error = "fmt chunk too small";
                 return false;
             }
+            std::vector<char> fmt(chunk_size);
+            input.read(fmt.data(), std::streamsize(chunk_size));
             std::memcpy(&format_tag, fmt.data() + 0, 2);
             std::memcpy(&channel_count, fmt.data() + 2, 2);
             std::memcpy(&sample_rate, fmt.data() + 4, 4);

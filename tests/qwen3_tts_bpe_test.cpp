@@ -484,8 +484,9 @@ int check_assistant_turn() {
     // A fixed string, not a template the package carries.
     SYNTH_TEST_CHECK(synth::qwen3tts::qwen_assistant_turn("hi") ==
                      "<|im_start|>assistant\nhi<|im_end|>\n<|im_start|>assistant\n");
-    // The talker's layout slices the tokenized turn at these counts, and the
-    // reference slices at the same two.
+    // The talker's layout slices the tokenized turn at these counts, and
+    // upstream slices at the same two. "Upstream", not "the reference": the
+    // reference *turn* below slices at 3 and -2.
     SYNTH_TEST_CHECK(synth::qwen3tts::kAssistantRolePrefixTokens == 3);
     SYNTH_TEST_CHECK(synth::qwen3tts::kAssistantSuffixTokens == 5);
     return 0;
@@ -583,19 +584,31 @@ class ShortFrontend : public synth::TextFrontend {
 };
 
 int check_reference_turn() {
-    // 1. Two different strings for the same input, and the reference turn stops
-    //    at the closing markers.
+    // 1. The reference turn's exact string, which stops at the closing markers.
+    //
+    //    This is the only place the turn's ROLE WORD is checked, and it has to
+    //    be: measured on the real vocabulary, wrapping in "<|im_start|>user\n"
+    //    instead gives the identical sliced ids (prefix 151644, 872, 198 rather
+    //    than 151644, 77091, 198 -- three tokens either way, all three sliced
+    //    off). No id comparison anywhere, oracle included, can see a wrong role
+    //    word. A bare `!= qwen_assistant_turn("hi")` used to sit here and was
+    //    removed: with both turns pinned to exact strings it could never fail
+    //    on its own.
     SYNTH_TEST_CHECK(synth::qwen3tts::qwen_reference_turn("hi") == "<|im_start|>assistant\nhi<|im_end|>\n");
-    SYNTH_TEST_CHECK(synth::qwen3tts::qwen_reference_turn("hi") != synth::qwen3tts::qwen_assistant_turn("hi"));
     // The assistant turn is the reference turn plus a second opening; that is
-    // the whole difference, and it is what the two suffix counts price.
+    // the whole difference, and it is what the two suffix counts price. Derived
+    // from the two exact strings rather than independent of them, and kept for
+    // the same reason as the 3 + 2 arithmetic below: it names the relationship
+    // the constants encode.
     SYNTH_TEST_CHECK(synth::qwen3tts::qwen_assistant_turn("hi") ==
                      synth::qwen3tts::qwen_reference_turn("hi") + "<|im_start|>assistant\n");
 
-    // 2. The slice constants differ, and the role prefix is shared.
+    // 2. The reference turn's own suffix count. The contrast with the assistant
+    //    turn's 5 is what matters, but it is not re-asserted here: check_
+    //    assistant_turn already pins that 5, and a `kReferenceSuffixTokens !=
+    //    kAssistantSuffixTokens` beside these two exact values could only fail
+    //    when one of them already had.
     SYNTH_TEST_CHECK(synth::qwen3tts::kReferenceSuffixTokens == 2);
-    SYNTH_TEST_CHECK(synth::qwen3tts::kAssistantSuffixTokens == 5);
-    SYNTH_TEST_CHECK(synth::qwen3tts::kReferenceSuffixTokens != synth::qwen3tts::kAssistantSuffixTokens);
     return 0;
 }
 
@@ -643,6 +656,12 @@ int check_reference_transcript_ids() {
     //    is 198, 9707 (measured against models/qwen3-tts-12hz-0-6b-base with
     //    the pinned transformers 4.57.3). The integration test asserts that one
     //    against the real vocabulary; this one needs no package.
+    //
+    //    A LEADING NEWLINE IS THE ONLY INPUT THAT SHOWS THIS -- a leading
+    //    space, tab, U+00A0, U+3000, an accented letter, and even a leading
+    //    CRLF all tokenize identically wrapped and bare. The measured sweep is
+    //    in tests/qwen3_tts_reference_transcript_real.cpp; swapping "\nab" here
+    //    for any of them leaves an assertion that cannot fail.
     SYNTH_TEST_CHECK(reference("\nab") == SYNTH_OK);
     SYNTH_TEST_CHECK(tokenize_bare("\nab") == 0);
     SYNTH_TEST_CHECK(bare == std::vector<int32_t>({ 15, 2 }));

@@ -603,6 +603,17 @@ synth_status_t Model::load(const std::string &      path,
             // 0.8 %. Sharing the tables would mean reshaping BpeFrontend for
             // a saving that size, which is a change to a file omnivoice also
             // loads and is not this slice's to make.
+            //
+            // Two alternatives, so the record does not imply there was only
+            // one. Sharing the tables is the first, above. The second is
+            // building this lazily on the first tokenize_reference_transcript
+            // call, which would take the cost to zero for every preset-voice
+            // load that never clones -- but a Loaded Model is immutable and
+            // shareable across threads (see this file's header), so lazy
+            // construction needs a once_flag or a mutex on a path that is
+            // otherwise free of both. Eager and measured is the smaller
+            // change; if the 45 MB ever matters, lazy is the cheaper of the
+            // two to reach for, and Task 10 wires the first real caller.
             config.prefix.clear();
             config.suffix.clear();
             std::unique_ptr<TextFrontend> reference_frontend;

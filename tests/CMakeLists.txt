@@ -821,12 +821,28 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     # have to come from the same dump or the comparison means nothing. It goes
     # through a file rather than an argument because a transcript is arbitrary
     # text and CMake would split one containing a semicolon into two arguments.
+    #
+    # Two ways a partial dump could turn a missing artifact into a project-wide
+    # problem, both closed here rather than left to probability. The sentinel
+    # covers `alignment.json` as well as the ids, because a dump carrying ids
+    # and no alignment would have registered a test with ZERO cases -- and the
+    # binary's own argument check then FAILS it with a usage message instead of
+    # the test simply not existing, which is the opposite of what a sentinel is
+    # for. And `string(JSON GET)` aborts the whole `cmake` configure on a key it
+    # cannot find, so it carries an ERROR_VARIABLE: a locally-materialized,
+    # deliberately-uncommitted artifact must not be able to stop the project
+    # from configuring. A case that fails either check drops out with a status
+    # message, and the registration below is skipped entirely if that empties
+    # the list.
     set(_synth_qwen3_tts_icl_prompt_root
         "${CMAKE_SOURCE_DIR}/build/goldens/qwen3-tts/qwen3-tts-12hz-0-6b-base")
     set(_synth_qwen3_tts_ref_ids_sentinel
         "${_synth_qwen3_tts_icl_prompt_root}/base-icl-en/prompt/ref_text_ids.i32")
-    if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}" AND EXISTS "${_synth_qwen3_tts_ref_ids_sentinel}")
-        set(_synth_qwen3_tts_ref_args "")
+    set(_synth_qwen3_tts_ref_alignment_sentinel
+        "${_synth_qwen3_tts_icl_prompt_root}/base-icl-en/prompt/alignment.json")
+    set(_synth_qwen3_tts_ref_args "")
+    if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}" AND EXISTS "${_synth_qwen3_tts_ref_ids_sentinel}"
+            AND EXISTS "${_synth_qwen3_tts_ref_alignment_sentinel}")
         set(_synth_qwen3_tts_ref_fixtures
             "${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-reference-transcript")
         file(MAKE_DIRECTORY "${_synth_qwen3_tts_ref_fixtures}")
@@ -838,16 +854,26 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             if(EXISTS "${_synth_qwen3_tts_ref_ids}" AND EXISTS "${_synth_qwen3_tts_ref_alignment}")
                 file(READ "${_synth_qwen3_tts_ref_alignment}" _synth_qwen3_tts_ref_alignment_json)
                 string(JSON _synth_qwen3_tts_ref_text
+                    ERROR_VARIABLE _synth_qwen3_tts_ref_text_error
                     GET "${_synth_qwen3_tts_ref_alignment_json}" inputs ref_text)
-                set(_synth_qwen3_tts_ref_transcript
-                    "${_synth_qwen3_tts_ref_fixtures}/${_synth_qwen3_tts_ref_case}.txt")
-                file(WRITE "${_synth_qwen3_tts_ref_transcript}" "${_synth_qwen3_tts_ref_text}")
-                list(APPEND _synth_qwen3_tts_ref_args
-                    "${_synth_qwen3_tts_ref_case}"
-                    "${_synth_qwen3_tts_ref_transcript}"
-                    "${_synth_qwen3_tts_ref_ids}")
+                if(_synth_qwen3_tts_ref_text_error STREQUAL "NOTFOUND"
+                        AND NOT _synth_qwen3_tts_ref_text STREQUAL "")
+                    set(_synth_qwen3_tts_ref_transcript
+                        "${_synth_qwen3_tts_ref_fixtures}/${_synth_qwen3_tts_ref_case}.txt")
+                    file(WRITE "${_synth_qwen3_tts_ref_transcript}" "${_synth_qwen3_tts_ref_text}")
+                    list(APPEND _synth_qwen3_tts_ref_args
+                        "${_synth_qwen3_tts_ref_case}"
+                        "${_synth_qwen3_tts_ref_transcript}"
+                        "${_synth_qwen3_tts_ref_ids}")
+                else()
+                    message(STATUS "qwen3-tts reference-transcript case ${_synth_qwen3_tts_ref_case} "
+                        "skipped: alignment.json has no usable inputs.ref_text "
+                        "(${_synth_qwen3_tts_ref_text_error})")
+                endif()
             endif()
         endforeach()
+    endif()
+    if(_synth_qwen3_tts_ref_args)
         add_executable(synthesize-qwen3-tts-reference-transcript-real
             qwen3_tts_reference_transcript_real.cpp)
         target_include_directories(synthesize-qwen3-tts-reference-transcript-real

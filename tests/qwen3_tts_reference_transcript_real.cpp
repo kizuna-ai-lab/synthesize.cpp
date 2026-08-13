@@ -99,6 +99,27 @@ int check_case(const synth::qwen3tts::Model & model,
 // observable consequence is that two different transcripts reach the talker as
 // the same ids. Tokenizing the bare transcript instead keeps them apart, which
 // is the whole reason this port cannot take that shortcut.
+//
+// A LEADING NEWLINE IS THE ONLY INPUT THAT SHOWS THIS. Do not "simplify" it to
+// a leading space -- the sweep below is measured on this package's vocabulary
+// (transformers 4.57.3), and every candidate but the newline family tokenizes
+// identically wrapped and bare, so any of them would turn this check into one
+// that passes whatever the implementation does:
+//
+//     leading space   + "Hello"  wrapped [21927]       bare [21927]       same
+//     leading tab     + "Hello"  wrapped [197, 9707]   bare [197, 9707]   same
+//     U+00A0          + "Hello"  wrapped [4102, 9707]  bare [4102, 9707]  same
+//     U+3000          + "Hello"  wrapped [22441, 9707] bare [22441, 9707] same
+//     U+00E9 + space  + "Hello"  wrapped [963, 21927]  bare [963, 21927]  same
+//     leading CRLF    + "Hello"  wrapped [319, 9707]   bare [319, 9707]   same
+//     leading "\n"    + "Hello"  wrapped [9707]        bare [198, 9707]   DIFFER
+//     leading "\n\n"  + "Hello"  wrapped [9707]        bare [271, 9707]   DIFFER
+//
+// The same reason the three oracle cases cannot stand in for this check: their
+// one shared transcript begins with a letter, and for it wrapped and bare agree
+// id for id, all 30. Measured -- replacing this port's wrap-then-slice with
+// bare tokenization leaves all three oracle comparisons passing and fails only
+// here and at the unit test's synthetic twin.
 int check_wrapping_changes_the_ids(const synth::qwen3tts::Model & model) {
     std::vector<int32_t> with_newline;
     std::vector<int32_t> without_newline;

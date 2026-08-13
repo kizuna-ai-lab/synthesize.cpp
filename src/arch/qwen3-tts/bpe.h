@@ -32,9 +32,12 @@ std::string qwen_assistant_turn(const std::string & text);
 // `_build_ref_text`, qwen3_tts_model.py:272-273.
 std::string qwen_reference_turn(const std::string & text);
 
-// How many tokens the role prefix and the closing markers occupy, so a caller
-// can split a tokenized turn back into its parts without re-tokenizing. The
-// reference slices the same way, at 3 and -5.
+// How many tokens the *assistant* turn's role prefix and closing markers
+// occupy, so a caller can split a tokenized turn back into its parts without
+// re-tokenizing. Upstream slices the same way, at 3 and -5. "Upstream" and not
+// "the reference": kReferenceSuffixTokens below is about the reference *turn*,
+// which slices at 3 and -2, and the two senses of the word sit four lines
+// apart.
 constexpr size_t kAssistantRolePrefixTokens = 3;
 constexpr size_t kAssistantSuffixTokens     = 5;
 

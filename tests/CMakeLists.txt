@@ -904,7 +904,15 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     # The arm in particular is upstream's own executed-return reading; the test
     # must never recompute `T1 > T2` for itself, which would restate the
     # assumption instead of checking it.
+    #
+    # `trailing.token_ids` goes out as a fixture file rather than as arguments:
+    # it is 31 ids on base-ref-min and would swamp the command line. It is the
+    # ONLY published artifact that separates the two arms -- both of them emit a
+    # T2-position block -- so it is passed even when empty, which is itself the
+    # pad arm's signature.
     set(_synth_qwen3_tts_icl_args "")
+    set(_synth_qwen3_tts_icl_fixtures "${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-icl-prompt")
+    file(MAKE_DIRECTORY "${_synth_qwen3_tts_icl_fixtures}")
     if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}" AND EXISTS "${_synth_qwen3_tts_ref_alignment_sentinel}")
         foreach(_synth_qwen3_tts_icl_case base-icl-en base-ref-min base-text-short)
             set(_synth_qwen3_tts_icl_dir
@@ -916,14 +924,15 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                     AND EXISTS "${_synth_qwen3_tts_icl_dir}/text_track.f32"
                     AND EXISTS "${_synth_qwen3_tts_icl_dir}/codec_track.f32"
                     AND EXISTS "${_synth_qwen3_tts_icl_dir}/icl_embed.f32"
-                    AND EXISTS "${_synth_qwen3_tts_icl_dir}/target_text_ids.i32")
+                    AND EXISTS "${_synth_qwen3_tts_icl_dir}/target_text_ids.i32"
+                    AND EXISTS "${_synth_qwen3_tts_icl_dir}/trailing.f32")
                 file(READ "${_synth_qwen3_tts_icl_alignment}" _synth_qwen3_tts_icl_json)
                 set(_synth_qwen3_tts_icl_fields "")
                 set(_synth_qwen3_tts_icl_ok TRUE)
                 # `/` separates a nested key path; CMake would flatten `;` here.
                 foreach(_synth_qwen3_tts_icl_key
                         "inputs/language" "T1" "T2" "branch" "trailing_positions" "ref_frames" "hidden_size"
-                        "placement/prefix_positions")
+                        "placement/prefix_positions" "trailing/ends_with_tts_eos")
                     string(REPLACE "/" ";" _synth_qwen3_tts_icl_path "${_synth_qwen3_tts_icl_key}")
                     string(JSON _synth_qwen3_tts_icl_value
                         ERROR_VARIABLE _synth_qwen3_tts_icl_error
@@ -938,6 +947,35 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                     endif()
                     list(APPEND _synth_qwen3_tts_icl_fields "${_synth_qwen3_tts_icl_value}")
                 endforeach()
+                # The trailing schedule's own token ids, one per line into a
+                # fixture. LENGTH on a missing key would abort the configure,
+                # so it carries the same ERROR_VARIABLE the scalars do; an
+                # EMPTY array is legitimate and is the pad arm's own record.
+                if(_synth_qwen3_tts_icl_ok)
+                    string(JSON _synth_qwen3_tts_icl_id_count
+                        ERROR_VARIABLE _synth_qwen3_tts_icl_id_error
+                        LENGTH "${_synth_qwen3_tts_icl_json}" trailing token_ids)
+                    if(NOT _synth_qwen3_tts_icl_id_error STREQUAL "NOTFOUND")
+                        set(_synth_qwen3_tts_icl_ok FALSE)
+                        message(STATUS "qwen3-tts icl-prompt case ${_synth_qwen3_tts_icl_case} skipped: "
+                            "alignment.json has no usable trailing.token_ids "
+                            "(${_synth_qwen3_tts_icl_id_error})")
+                    else()
+                        set(_synth_qwen3_tts_icl_ids "")
+                        if(_synth_qwen3_tts_icl_id_count GREATER 0)
+                            math(EXPR _synth_qwen3_tts_icl_last "${_synth_qwen3_tts_icl_id_count} - 1")
+                            foreach(_synth_qwen3_tts_icl_index RANGE 0 ${_synth_qwen3_tts_icl_last})
+                                string(JSON _synth_qwen3_tts_icl_id
+                                    GET "${_synth_qwen3_tts_icl_json}" trailing token_ids
+                                        ${_synth_qwen3_tts_icl_index})
+                                string(APPEND _synth_qwen3_tts_icl_ids "${_synth_qwen3_tts_icl_id}\n")
+                            endforeach()
+                        endif()
+                        set(_synth_qwen3_tts_icl_ids_file
+                            "${_synth_qwen3_tts_icl_fixtures}/${_synth_qwen3_tts_icl_case}-trailing-ids.txt")
+                        file(WRITE "${_synth_qwen3_tts_icl_ids_file}" "${_synth_qwen3_tts_icl_ids}")
+                    endif()
+                endif()
                 if(_synth_qwen3_tts_icl_ok)
                     list(GET _synth_qwen3_tts_icl_fields 0 _synth_qwen3_tts_icl_language)
                     list(GET _synth_qwen3_tts_icl_fields 1 _synth_qwen3_tts_icl_t1)
@@ -947,6 +985,12 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                     list(GET _synth_qwen3_tts_icl_fields 5 _synth_qwen3_tts_icl_frames)
                     list(GET _synth_qwen3_tts_icl_fields 6 _synth_qwen3_tts_icl_hidden)
                     list(GET _synth_qwen3_tts_icl_fields 7 _synth_qwen3_tts_icl_prefix)
+                    list(GET _synth_qwen3_tts_icl_fields 8 _synth_qwen3_tts_icl_ends_with_eos)
+                    if(_synth_qwen3_tts_icl_ends_with_eos)
+                        set(_synth_qwen3_tts_icl_ends_with_eos 1)
+                    else()
+                        set(_synth_qwen3_tts_icl_ends_with_eos 0)
+                    endif()
                     list(APPEND _synth_qwen3_tts_icl_args
                         "${_synth_qwen3_tts_icl_case}"
                         "${_synth_qwen3_tts_icl_dir}"
@@ -958,7 +1002,9 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                         "${_synth_qwen3_tts_icl_trailing}"
                         "${_synth_qwen3_tts_icl_frames}"
                         "${_synth_qwen3_tts_icl_hidden}"
-                        "${_synth_qwen3_tts_icl_prefix}")
+                        "${_synth_qwen3_tts_icl_prefix}"
+                        "${_synth_qwen3_tts_icl_ids_file}"
+                        "${_synth_qwen3_tts_icl_ends_with_eos}")
                 endif()
             endif()
         endforeach()

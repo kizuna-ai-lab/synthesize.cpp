@@ -39,10 +39,22 @@ bool reference_is_well_formed(const HParams & hparams, const TalkerPromptRequest
     if (request.reference_codes.size() != size_t(request.reference_frames) * groups) {
         return false;
     }
-    for (int32_t code : request.reference_codes) {
-        // These become ggml_get_rows indices, and that op aborts on a negative
-        // id rather than returning an error the caller could map.
-        if (code < 0) {
+    // Every code becomes a ggml_get_rows index, and that op asserts
+    // `i01 >= 0 && i01 < ne01` (ggml/src/ggml-cpu/ops.cpp:4779) -- it ABORTS
+    // the process on either side of the range, so both sides have to be
+    // refused here or a malformed reference stops being a status the caller
+    // can map. The two bounds differ because the two sides of a frame read
+    // different tables: group 0 reads the talker's codec embedding, groups
+    // 1..15 the code predictor's.
+    const int64_t group_0_rows  = int64_t(hparams.talker.codec_vocab_size);
+    const int64_t acoustic_rows = int64_t(hparams.code_predictor.vocab_size);
+    if (group_0_rows <= 0 || acoustic_rows <= 0) {
+        return false;
+    }
+    for (size_t index = 0; index < request.reference_codes.size(); ++index) {
+        const int32_t code = request.reference_codes[index];
+        const int64_t rows = index % groups == 0 ? group_0_rows : acoustic_rows;
+        if (code < 0 || int64_t(code) >= rows) {
             return false;
         }
     }

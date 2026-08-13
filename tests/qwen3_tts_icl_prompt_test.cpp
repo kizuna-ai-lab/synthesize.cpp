@@ -64,21 +64,28 @@ constexpr size_t kTargetTextIds     = 15;
 constexpr size_t kTruncateArmFrames = 13;   // T2 = 14  < T1 = 46
 constexpr size_t kPadArmFrames      = 101;  // T2 = 102 > T1 = 46
 
+// The two tables a reference frame is read through, and therefore the two
+// bounds a reference code has to satisfy. The production package's own numbers.
+constexpr uint32_t kTalkerCodecVocab   = 2200;
+constexpr uint32_t kPredictorCodeVocab = 2048;
+
 synth::qwen3tts::HParams base_hparams() {
     synth::qwen3tts::HParams h;
-    h.voice_mode              = synth::qwen3tts::VoiceMode::ProfileSources;
-    h.has_speaker_encoder     = true;
-    h.talker.code_group_count = kGroups;
-    h.tokens.tts_bos          = 100;
-    h.tokens.tts_eos          = 101;
-    h.tokens.tts_pad          = 102;
-    h.tokens.codec_bos        = 2149;  // synthesize.qwen3-tts.token.codec_bos_id
-    h.tokens.codec_eos        = 201;
-    h.tokens.codec_pad        = 202;
-    h.tokens.codec_think      = 203;
-    h.tokens.codec_nothink    = 204;
-    h.tokens.codec_think_bos  = 205;
-    h.tokens.codec_think_eos  = 206;
+    h.voice_mode                = synth::qwen3tts::VoiceMode::ProfileSources;
+    h.has_speaker_encoder       = true;
+    h.talker.code_group_count   = kGroups;
+    h.talker.codec_vocab_size   = kTalkerCodecVocab;
+    h.code_predictor.vocab_size = kPredictorCodeVocab;
+    h.tokens.tts_bos            = 100;
+    h.tokens.tts_eos            = 101;
+    h.tokens.tts_pad            = 102;
+    h.tokens.codec_bos          = 2149;  // synthesize.qwen3-tts.token.codec_bos_id
+    h.tokens.codec_eos          = 201;
+    h.tokens.codec_pad          = 202;
+    h.tokens.codec_think        = 203;
+    h.tokens.codec_nothink      = 204;
+    h.tokens.codec_think_bos    = 205;
+    h.tokens.codec_think_eos    = 206;
     return h;
 }
 
@@ -128,7 +135,7 @@ synth::qwen3tts::TalkerPromptRequest icl_request(size_t frames, size_t target_id
     request.has_reference         = true;
     request.reference_text_tokens = reference_text_ids(kReferenceTextIds);
     request.reference_frames      = frames;
-    request.reference_codes       = reference_grid(frames, 2048, 2048);
+    request.reference_codes       = reference_grid(frames, int32_t(kPredictorCodeVocab), int32_t(kPredictorCodeVocab));
     return request;
 }
 
@@ -426,11 +433,13 @@ int check_the_block_is_appended_after_the_prefix() {
         SYNTH_TEST_CHECK(a.codec_token == b.codec_token);
         SYNTH_TEST_CHECK(a.acoustic_codes.empty());
     }
-    // And the arithmetic the plan states: an ICL prompt is the non-ICL one plus
-    // T2 - 1. The non-ICL prompt here is prefix + 1 text positions plus the
-    // closing tts_eos and codec_bos positions the non-streaming layout adds.
+    // The non-ICL prompt's own length, which is what "plus T2 - 1" is measured
+    // FROM: prefix, one text position, then the closing tts_eos and codec_bos
+    // positions the non-streaming layout adds. Written as its own assertion
+    // rather than as `(prefix + 1) + (t2 - 1)` on the ICL side, which is
+    // arithmetically the same statement as `prefix + t2` above and would read
+    // as a second, independent check without being one.
     SYNTH_TEST_CHECK(without_reference.positions.size() == prefix + 3);
-    SYNTH_TEST_CHECK(with_reference.positions.size() == (prefix + 1) + (t2 - 1));
     return 0;
 }
 
@@ -499,11 +508,39 @@ int check_malformed_references_are_refused() {
     short_grid.reference_codes.pop_back();
     SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_prompt(h, short_grid, prompt) == SYNTH_ERR_INVALID_ARG);
 
-    // A negative id would reach ggml_get_rows, which aborts rather than
-    // returning something a caller could map to a status.
+    // ggml_get_rows asserts `i01 >= 0 && i01 < ne01` (ggml-cpu/ops.cpp:4779)
+    // and ABORTS the process on either side, so BOTH sides have to be refused
+    // here. A blacklist of one side is the shape this project's own rule --
+    // whitelist your own format -- exists to prevent.
     synth::qwen3tts::TalkerPromptRequest negative = icl_request(kTruncateArmFrames);
     negative.reference_codes[7]                   = -1;
     SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_prompt(h, negative, prompt) == SYNTH_ERR_INVALID_ARG);
+
+    // Group 0 is read through the TALKER's codec embedding and groups 1..15
+    // through the code predictor's, and the two tables are different heights.
+    // A code that is in range for one and not the other is the case a single
+    // shared bound would wave through: 2100 is a real talker codec row and is
+    // past the end of every predictor table.
+    SYNTH_TEST_CHECK(kTalkerCodecVocab > kPredictorCodeVocab);
+    synth::qwen3tts::TalkerPromptRequest wide_group_0 = icl_request(kTruncateArmFrames);
+    wide_group_0.reference_codes[3 * kGroups]         = int32_t(kPredictorCodeVocab) + 52;
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_prompt(h, wide_group_0, prompt) == SYNTH_OK);
+
+    synth::qwen3tts::TalkerPromptRequest past_group_0 = icl_request(kTruncateArmFrames);
+    past_group_0.reference_codes[3 * kGroups]         = int32_t(kTalkerCodecVocab);
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_prompt(h, past_group_0, prompt) == SYNTH_ERR_INVALID_ARG);
+
+    synth::qwen3tts::TalkerPromptRequest past_acoustic = icl_request(kTruncateArmFrames);
+    past_acoustic.reference_codes[3 * kGroups + 9]     = int32_t(kPredictorCodeVocab);
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_prompt(h, past_acoustic, prompt) == SYNTH_ERR_INVALID_ARG);
+
+    // A package that declares no table height at all cannot be range-checked,
+    // and building a prompt whose codes nothing bounded is how the abort gets
+    // reached anyway.
+    synth::qwen3tts::HParams unbounded  = h;
+    unbounded.code_predictor.vocab_size = 0;
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_prompt(unbounded, icl_request(kTruncateArmFrames), prompt) ==
+                     SYNTH_ERR_INVALID_ARG);
 
     // A refusal must leave nothing half-built behind it.
     SYNTH_TEST_CHECK(prompt.positions.empty());
@@ -762,16 +799,21 @@ bool run_prefill(GraphFixture &                        fixture,
 // rule-5 assertion is about the real constant, and the text ids stay inside a
 // 3000-entry vocabulary.
 synth::qwen3tts::HParams graph_hparams() {
-    synth::qwen3tts::HParams h = base_hparams();
-    h.tokens.tts_bos           = 1;
-    h.tokens.tts_eos           = 2;
-    h.tokens.tts_pad           = 3;
-    h.tokens.codec_eos         = 5;
-    h.tokens.codec_pad         = 6;
-    h.tokens.codec_think       = 7;
-    h.tokens.codec_nothink     = 8;
-    h.tokens.codec_think_bos   = 9;
-    h.tokens.codec_think_eos   = 10;
+    synth::qwen3tts::HParams h  = base_hparams();
+    // The two bounds have to be the fixture's OWN table heights, not the
+    // production ones: build_talker_prompt refuses a code that ggml_get_rows
+    // would abort on, and here the tables really are this small.
+    h.talker.codec_vocab_size   = kCodecVocab;
+    h.code_predictor.vocab_size = kPredictorVocab;
+    h.tokens.tts_bos            = 1;
+    h.tokens.tts_eos            = 2;
+    h.tokens.tts_pad            = 3;
+    h.tokens.codec_eos          = 5;
+    h.tokens.codec_pad          = 6;
+    h.tokens.codec_think        = 7;
+    h.tokens.codec_nothink      = 8;
+    h.tokens.codec_think_bos    = 9;
+    h.tokens.codec_think_eos    = 10;
     return h;
 }
 

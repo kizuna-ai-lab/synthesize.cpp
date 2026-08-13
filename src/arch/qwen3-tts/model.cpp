@@ -941,6 +941,14 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     if (status != SYNTH_OK) {
         return status;
     }
+    // UNREACHABLE TODAY, AND DELIBERATELY KEPT. `prompt_request` above never
+    // sets `has_reference`, so nothing here can produce acoustic codes and no
+    // test can reach this line -- which is exactly why it is here: the moment
+    // Task 11 wires an ICL request into this entry point, the graph call below
+    // still passes `build_talker_prefill_input`'s acoustic parameters at their
+    // defaults, and without this the reference's fifteen groups would be
+    // dropped in silence rather than refused. Delete it only together with
+    // that wiring.
     if (!prompt_acoustic.empty()) {
         return SYNTH_ERR_INTERNAL;
     }

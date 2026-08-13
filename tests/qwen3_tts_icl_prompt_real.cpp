@@ -184,7 +184,38 @@ struct CaseSpec {
     size_t      reference_frames   = 0;
     size_t      hidden_size        = 0;
     size_t      prefix_positions   = 0;
+    std::string trailing_ids_path;
+    bool        trailing_ends_with_tts_eos = false;
 };
+
+// One integer per line, possibly none: alignment.json's `trailing.token_ids` is
+// empty in the pad arm and that emptiness is itself the arm's record.
+bool read_id_lines(const std::string & path, std::vector<int32_t> & out) {
+    std::string text;
+    if (!read_bytes(path, text)) {
+        return false;
+    }
+    out.clear();
+    size_t index = 0;
+    while (index < text.size()) {
+        while (index < text.size() && (text[index] == '\n' || text[index] == '\r' || text[index] == ' ')) {
+            ++index;
+        }
+        if (index >= text.size()) {
+            break;
+        }
+        char *          end   = nullptr;
+        const long long value = std::strtoll(text.c_str() + index, &end, 10);
+        const size_t    used  = size_t(end - (text.c_str() + index));
+        if (used == 0) {
+            std::printf("  %s holds something that is not an integer at byte %zu\n", path.c_str(), index);
+            return false;
+        }
+        out.push_back(int32_t(value));
+        index += used;
+    }
+    return true;
+}
 
 // The package names its languages in lower case ("english"); alignment.json
 // records upstream's own spelling of the input ("English"). Folded here rather
@@ -265,17 +296,50 @@ int check_case(const synth::qwen3tts::Model & model, ggml_backend_t backend, con
     SYNTH_TEST_CHECK(prompt.positions.size() == spec.prefix_positions + spec.t2);
     SYNTH_TEST_CHECK(prompt.trailing.size() == spec.trailing_positions);
 
-    // The arm, checked against the one upstream's own executed `return`
-    // reported. Both arms emit T2 positions, so this is the only thing that
-    // separates them.
+    // THE TRAILING SCHEDULE IS THE ONLY PUBLISHED ARTIFACT THAT SEPARATES THE
+    // TWO ARMS. Both emit a T2-position block, so `icl_embed.f32`'s size is
+    // silent about which one ran; alignment.json dumps the schedule as a
+    // first-class artifact for exactly this reason. Checking only its LENGTH
+    // here would leave its content pinned by nothing but a host-side
+    // restatement of the port's own rule -- a port that sliced `track[T2+1:]`
+    // would be caught by the unit test and by nothing independent. So the ids
+    // go against alignment.json's own `trailing.token_ids`, in order, and the
+    // embeddings against `trailing.f32`.
+    std::vector<int32_t> oracle_trailing_ids;
+    std::vector<float>   oracle_trailing;
+    SYNTH_TEST_CHECK(read_id_lines(spec.trailing_ids_path, oracle_trailing_ids));
+    SYNTH_TEST_CHECK(read_float_file(spec.prompt_dir + "/trailing.f32", oracle_trailing));
+    SYNTH_TEST_CHECK(oracle_trailing.size() == spec.trailing_positions * spec.hidden_size);
+
     if (spec.branch == "truncate") {
         SYNTH_TEST_CHECK(spec.trailing_positions == spec.t1 - spec.t2);
-        SYNTH_TEST_CHECK(prompt.trailing.back().text == synth::qwen3tts::TalkerInputPosition::Text::TtsEos);
+        // `text_embed[:, T2:]`: the recorded ids, then tts_eos closing it.
+        SYNTH_TEST_CHECK(spec.trailing_ends_with_tts_eos);
+        SYNTH_TEST_CHECK(oracle_trailing_ids.size() + 1 == spec.trailing_positions);
     } else {
         SYNTH_TEST_CHECK(spec.branch == "pad");
         SYNTH_TEST_CHECK(spec.trailing_positions == 1);
-        SYNTH_TEST_CHECK(prompt.trailing[0].text == synth::qwen3tts::TalkerInputPosition::Text::TtsPad);
+        // A bare tts_pad_embed carries no ids to corroborate, which is what
+        // alignment.json's own `token_id_margin.skipped` says.
+        SYNTH_TEST_CHECK(!spec.trailing_ends_with_tts_eos);
+        SYNTH_TEST_CHECK(oracle_trailing_ids.empty());
     }
+
+    // What the decode loop will actually read, step by step, against the ids
+    // upstream's own schedule held.
+    std::vector<int32_t> trailing_ids(spec.trailing_positions);
+    for (size_t step = 0; step < spec.trailing_positions; ++step) {
+        trailing_ids[step] = int32_t(synth::qwen3tts::talker_step_text_token(hparams, prompt, step));
+    }
+    for (size_t step = 0; step < oracle_trailing_ids.size(); ++step) {
+        if (trailing_ids[step] != oracle_trailing_ids[step]) {
+            std::printf("  %s: trailing step %zu is %d, oracle has %d\n", spec.case_id.c_str(), step,
+                        trailing_ids[step], oracle_trailing_ids[step]);
+        }
+        SYNTH_TEST_CHECK(trailing_ids[step] == oracle_trailing_ids[step]);
+    }
+    SYNTH_TEST_CHECK(trailing_ids.back() ==
+                     int32_t(spec.trailing_ends_with_tts_eos ? hparams.tokens.tts_eos : hparams.tokens.tts_pad));
 
     std::vector<int32_t> text_ids;
     std::vector<int32_t> codec_ids;
@@ -307,13 +371,15 @@ int check_case(const synth::qwen3tts::Model & model, ggml_backend_t backend, con
     ggml_tensor * t_block_codec = ggml_new_tensor_1d(gctx, GGML_TYPE_I32, int64_t(spec.t2));
     ggml_tensor * t_acoustic =
         ggml_new_tensor_2d(gctx, GGML_TYPE_I32, int64_t(spec.reference_frames), int64_t(groups) - 1);
-    ggml_backend_buffer_t inputs = ggml_backend_alloc_ctx_tensors(gctx, backend);
+    ggml_tensor *         t_trailing = ggml_new_tensor_1d(gctx, GGML_TYPE_I32, int64_t(spec.trailing_positions));
+    ggml_backend_buffer_t inputs     = ggml_backend_alloc_ctx_tensors(gctx, backend);
     SYNTH_TEST_CHECK(inputs != nullptr);
     ggml_backend_tensor_set(t_all_text, text_ids.data(), 0, ggml_nbytes(t_all_text));
     ggml_backend_tensor_set(t_all_codec, codec_ids.data(), 0, ggml_nbytes(t_all_codec));
     ggml_backend_tensor_set(t_block_text, block_text.data(), 0, ggml_nbytes(t_block_text));
     ggml_backend_tensor_set(t_block_codec, block_codec.data(), 0, ggml_nbytes(t_block_codec));
     ggml_backend_tensor_set(t_acoustic, acoustic_ids.data(), 0, ggml_nbytes(t_acoustic));
+    ggml_backend_tensor_set(t_trailing, trailing_ids.data(), 0, ggml_nbytes(t_trailing));
 
     const synth::qwen3tts::TalkerWeights &        talker    = model.talker_weights();
     const synth::qwen3tts::CodePredictorWeights & predictor = model.code_predictor_weights();
@@ -330,12 +396,19 @@ int check_case(const synth::qwen3tts::Model & model, ggml_backend_t backend, con
     codec_track = ggml_acc(gctx, codec_track, acoustic_sum, codec_track->nb[1], codec_track->nb[2], codec_track->nb[3],
                            codec_track->nb[1]);
 
+    // The trailing schedule, through the same text tower. Both arms are pure
+    // text-projection output -- `text_embed[:, T2:]` in one, a bare
+    // tts_pad_embed in the other -- so one construction covers both, and which
+    // one it lands on is decided entirely by the ids above.
+    ggml_tensor * trailing_track = synth::qwen3tts::build_text_projection(gctx, talker, t_trailing);
+    SYNTH_TEST_CHECK(trailing_track != nullptr);
+
     // And the production entry point, whole: the block must be its tail.
     ggml_tensor * prefill = synth::qwen3tts::build_talker_prefill_input(
         gctx, talker, t_all_text, t_all_codec, codec_offset, nullptr, -1, acoustic_sum, acoustic_offset);
     SYNTH_TEST_CHECK(prefill != nullptr);
 
-    for (ggml_tensor * output : { text_track, codec_track, prefill }) {
+    for (ggml_tensor * output : { text_track, codec_track, trailing_track, prefill }) {
         ggml_set_output(output);
         ggml_build_forward_expand(graph, output);
     }
@@ -346,15 +419,18 @@ int check_case(const synth::qwen3tts::Model & model, ggml_backend_t backend, con
 
     std::vector<float> got_text;
     std::vector<float> got_codec;
+    std::vector<float> got_trailing;
     std::vector<float> got_prefill;
     SYNTH_TEST_CHECK(fetch(text_track, got_text));
     SYNTH_TEST_CHECK(fetch(codec_track, got_codec));
+    SYNTH_TEST_CHECK(fetch(trailing_track, got_trailing));
     SYNTH_TEST_CHECK(fetch(prefill, got_prefill));
     ggml_gallocr_free(allocator);
     ggml_backend_buffer_free(inputs);
 
     SYNTH_TEST_CHECK(got_text.size() == oracle_text.size());
     SYNTH_TEST_CHECK(got_codec.size() == oracle_codec.size());
+    SYNTH_TEST_CHECK(got_trailing.size() == oracle_trailing.size());
     SYNTH_TEST_CHECK(got_prefill.size() == prompt.positions.size() * spec.hidden_size);
 
     // The port's own two tracks, for the float32 decomposition. Off unless
@@ -386,9 +462,17 @@ int check_case(const synth::qwen3tts::Model & model, ggml_backend_t backend, con
     }
     const Deviation tail_deviation = compare(tail, oracle_block);
 
-    std::printf("  %s (%s, T1=%zu T2=%zu, block at %zu): text %.3e  codec %.3e  block %.3e  prefill-tail %.3e\n",
-                spec.case_id.c_str(), spec.branch.c_str(), spec.t1, spec.t2, block_start, text_deviation.relative(),
-                codec_deviation.relative(), block_deviation.relative(), tail_deviation.relative());
+    // 5. The trailing schedule, against the artifact that is the only published
+    //    thing separating the two arms. The ids above pin it discretely; this
+    //    pins the embeddings the decode loop will actually add.
+    const Deviation trailing_deviation = compare(got_trailing, oracle_trailing);
+
+    std::printf(
+        "  %s (%s, T1=%zu T2=%zu, block at %zu): text %.3e  codec %.3e  block %.3e  prefill-tail %.3e"
+        "  trailing %.3e (%zu positions, %zu oracle ids)\n",
+        spec.case_id.c_str(), spec.branch.c_str(), spec.t1, spec.t2, block_start, text_deviation.relative(),
+        codec_deviation.relative(), block_deviation.relative(), tail_deviation.relative(),
+        trailing_deviation.relative(), spec.trailing_positions, oracle_trailing_ids.size());
 
     // bfloat16's unit roundoff is 2**-8 = 3.90625e-3 and is what
     // prompt_conventions.json's `numerics` block measures the raw-float32 gap
@@ -401,23 +485,24 @@ int check_case(const synth::qwen3tts::Model & model, ggml_backend_t backend, con
     SYNTH_TEST_CHECK(codec_deviation.relative() < 2.0e-2);
     SYNTH_TEST_CHECK(block_deviation.relative() < 2.0e-2);
     SYNTH_TEST_CHECK(tail_deviation.relative() < 2.0e-2);
+    SYNTH_TEST_CHECK(trailing_deviation.relative() < 2.0e-2);
     return 0;
 }
 
 }  // namespace
 
 int main(int argc, char ** argv) {
-    // <model> then ten-field records per case:
+    // <model> then thirteen-field records per case:
     //   <case-id> <prompt-dir> <codes> <language> <T1> <T2> <branch>
-    //   <trailing> <frames> <hidden> <prefix>
-    // The numeric fields come out of alignment.json at configure time, so the
-    // arm this test checks against is the one upstream's own executed return
-    // reported -- never something recomputed here.
-    constexpr int kFields = 11;
+    //   <trailing> <frames> <hidden> <prefix> <trailing-ids-file> <ends-eos>
+    // The fields come out of alignment.json at configure time, so the arm this
+    // test checks against is the one upstream's own executed return reported --
+    // never something recomputed here.
+    constexpr int kFields = 13;
     if (argc < 2 + kFields || (argc - 2) % kFields != 0) {
         std::printf(
             "usage: %s <model> (<case-id> <prompt-dir> <codes> <language> <T1> <T2> <branch> <trailing> "
-            "<frames> <hidden> <prefix>)...\n",
+            "<frames> <hidden> <prefix> <trailing-ids-file> <ends-with-tts-eos>)...\n",
             argv[0]);
         return 1;
     }
@@ -434,17 +519,19 @@ int main(int argc, char ** argv) {
     int status = 0;
     for (int index = 2; index + kFields - 1 < argc; index += kFields) {
         CaseSpec spec;
-        spec.case_id            = argv[index];
-        spec.prompt_dir         = argv[index + 1];
-        spec.codes_path         = argv[index + 2];
-        spec.language           = argv[index + 3];
-        spec.t1                 = size_t(std::strtoull(argv[index + 4], nullptr, 10));
-        spec.t2                 = size_t(std::strtoull(argv[index + 5], nullptr, 10));
-        spec.branch             = argv[index + 6];
-        spec.trailing_positions = size_t(std::strtoull(argv[index + 7], nullptr, 10));
-        spec.reference_frames   = size_t(std::strtoull(argv[index + 8], nullptr, 10));
-        spec.hidden_size        = size_t(std::strtoull(argv[index + 9], nullptr, 10));
-        spec.prefix_positions   = size_t(std::strtoull(argv[index + 10], nullptr, 10));
+        spec.case_id                    = argv[index];
+        spec.prompt_dir                 = argv[index + 1];
+        spec.codes_path                 = argv[index + 2];
+        spec.language                   = argv[index + 3];
+        spec.t1                         = size_t(std::strtoull(argv[index + 4], nullptr, 10));
+        spec.t2                         = size_t(std::strtoull(argv[index + 5], nullptr, 10));
+        spec.branch                     = argv[index + 6];
+        spec.trailing_positions         = size_t(std::strtoull(argv[index + 7], nullptr, 10));
+        spec.reference_frames           = size_t(std::strtoull(argv[index + 8], nullptr, 10));
+        spec.hidden_size                = size_t(std::strtoull(argv[index + 9], nullptr, 10));
+        spec.prefix_positions           = size_t(std::strtoull(argv[index + 10], nullptr, 10));
+        spec.trailing_ids_path          = argv[index + 11];
+        spec.trailing_ends_with_tts_eos = std::strtoull(argv[index + 12], nullptr, 10) != 0;
         if (check_case(*model, backend, spec) != 0) {
             status = 1;
             break;

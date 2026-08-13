@@ -527,7 +527,7 @@ int run_base_package_rejections() {
                          [](gguf_context * g) { gguf_set_val_u32(g, "synthesize.reference.target_sample_rate", 0); },
                          "a zero reference sample rate is refused") == 0);
 
-    // --- Profile contract: min <= max <= total, and max_reference_count != 0 ---
+    // --- Profile contract: min <= max <= total, and max_reference_count == 1 ---
     SYNTH_TEST_CHECK(
         expect_base_rejected(
             [](gguf_context * g) { gguf_set_val_u64(g, "synthesize.reference.min_frames_per_clip", 800000); },
@@ -540,6 +540,37 @@ int run_base_package_rejections() {
     SYNTH_TEST_CHECK(expect_base_rejected(
                          [](gguf_context * g) { gguf_set_val_u64(g, "synthesize.reference.max_reference_count", 0); },
                          "a zero reference count admits no clip") == 0);
+
+    // The other side of the same rule, which nothing pinned until
+    // 2026-08-13: this runtime reads references[0] and nothing else, so a
+    // package declaring a HIGHER ceiling would publish a capability that
+    // create_qwen3_tts_profile_from_reference then refuses every call for
+    // (src/voice-profile.cpp's `reference_count != 1` gate). Two cases, both
+    // above the ceiling and neither reachable by the zero check above:
+    //
+    // - 2, the smallest over-declaration, which nothing else in
+    //   read_profile_contract has any opinion about (max_total_frames and
+    //   max_frames_per_clip are untouched and still consistent, so this case
+    //   isolates the reference-count rule as the one doing the rejecting);
+    // - 2^32, historically the worst over-declaration, kept as a regression
+    //   value rather than as its own mechanism. It takes the same `!= 1`
+    //   branch as the 2 above -- the label below says only that it is
+    //   refused, which is all this arm checks. What it used to do (arrive in
+    //   the capability snapshot as 0, from a package that had just been
+    //   accepted for declaring a NON-zero count) is a property of the
+    //   internal field width, and pinning that is
+    //   qwen3_tts_voice_required_test.cpp's
+    //   test_a_declared_reference_count_is_published_unnarrowed, which
+    //   asserts the value rather than a rejection.
+    SYNTH_TEST_CHECK(expect_base_rejected(
+                         [](gguf_context * g) { gguf_set_val_u64(g, "synthesize.reference.max_reference_count", 2); },
+                         "this runtime reads exactly one reference clip") == 0);
+
+    SYNTH_TEST_CHECK(expect_base_rejected(
+                         [](gguf_context * g) {
+                             gguf_set_val_u64(g, "synthesize.reference.max_reference_count", uint64_t(1) << 32);
+                         },
+                         "a reference count of 2^32 is over the ceiling like any other") == 0);
 
     // --- Profile contract: the reference target rate is the encoder's rate ---
     // The one mismatch in this file that changes no shape and so could only

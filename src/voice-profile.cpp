@@ -245,6 +245,14 @@ synth_status_t create_omnivoice_profile_from_reference(const synth_model_t *    
     // clip past the first rather than fusing or refusing them by name. This
     // refusal names the real limitation in the code itself, rather than
     // leaning on every future package happening to agree with it.
+    //
+    // Since 2026-08-13 weights.cpp's read_profile_contract refuses a package
+    // declaring anything but 1, so such a package can no longer load and this
+    // branch is unreachable from a loaded Model. Kept anyway, and deliberately:
+    // the load rule is the thing that would move first when this family learns
+    // to fuse clips, and this refusal is what makes that a two-line change
+    // someone must make on purpose rather than a silent behaviour shift. The
+    // two now back each other -- one refuses the package, one refuses the call.
     if (reference_count != 1) {
         emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.multi_reference_unsupported",
                         "this package's Voice Profile creation reads a single Reference Audio clip; it does not fuse "
@@ -438,7 +446,10 @@ synth_status_t create_qwen3_tts_profile_from_reference(const synth_model_t *    
     // than "read references[0] only" would otherwise silently drop every
     // clip past the first, and this family's real packages all declare
     // max_reference_count == 1 too, so this is currently unreachable in
-    // practice for the same reason it is there.)
+    // practice for the same reason it is there.) Since 2026-08-13 it is
+    // unreachable for a second, stronger reason as well: this family's
+    // read_profile_contract refuses a package declaring anything but 1, so no
+    // such package loads. Kept for the reason the twin states.
     if (reference_count != 1) {
         emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.multi_reference_unsupported",
                         "this package's Voice Profile creation reads a single Reference Audio clip; it does not fuse "
@@ -892,9 +903,8 @@ synth_status_t synth_model_get_voice_profile_capabilities(const synth_model_t * 
                   &profile.reference_language, sizeof(profile.reference_language));
     write_visible(out_capabilities, offsetof(synth_voice_profile_capabilities_t, description_language),
                   &profile.description_language, sizeof(profile.description_language));
-    const uint64_t max_reference_count = profile.max_reference_count;
     write_visible(out_capabilities, offsetof(synth_voice_profile_capabilities_t, max_reference_count),
-                  &max_reference_count, sizeof(max_reference_count));
+                  &profile.max_reference_count, sizeof(profile.max_reference_count));
     write_visible(out_capabilities, offsetof(synth_voice_profile_capabilities_t, reference_target_sample_rate),
                   &profile.reference_target_sample_rate, sizeof(profile.reference_target_sample_rate));
     write_visible(out_capabilities, offsetof(synth_voice_profile_capabilities_t, reference_target_channel_count),

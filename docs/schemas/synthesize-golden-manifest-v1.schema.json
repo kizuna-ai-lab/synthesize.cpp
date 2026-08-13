@@ -294,7 +294,8 @@
             },
             "max_reference_count": {
               "type": "integer",
-              "minimum": 1
+              "const": 1,
+              "description": "Exactly 1, not merely at least 1. Every family that declares a `profile.reference` block builds a Voice Profile from references[0] and nothing else, and since 2026-08-13 both loaders (weights.cpp's read_profile_contract, in arch/qwen3-tts and arch/omnivoice) refuse a package declaring anything else -- so a manifest permitted to say 2 here would convert without complaint into a package that fails to load. A family that genuinely fuses or selects among several clips widens this in the same change that widens its loader rule, never before it."
             }
           }
         }

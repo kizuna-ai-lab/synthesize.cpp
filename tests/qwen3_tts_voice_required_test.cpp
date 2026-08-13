@@ -209,6 +209,33 @@ int test_base_capability_publishes_both_sources_together() {
     return 0;
 }
 
+// The reference count reaches the snapshot at its declared width.
+//
+// fill_voice_profile_capability is a pure function of HParams with no load
+// rule in front of it -- that is exactly why this file exists (model-info.h's
+// own comment on the two routes into VoiceProfileInfo) -- so it can be handed
+// a value read_profile_contract would refuse, and that is the point here.
+// 2^32 is the specific value that used to be destroyed: VoiceProfileInfo held
+// this field as a uint32_t until 2026-08-13, so a package declaring it landed
+// in the snapshot as 0, which docs/c-interface.md reads as "no Reference
+// Audio clip may be used at all". Both families now refuse anything but 1 at
+// load, and this pins the hop underneath that rule rather than through it, so
+// widening the rule later cannot silently reintroduce the narrowing.
+//
+// The 2 case is here for the same reason at a value a caller might plausibly
+// see if the load rule ever widens: it is not a boundary of any integer type,
+// so only a faithful copy produces it.
+int test_a_declared_reference_count_is_published_unnarrowed() {
+    for (uint64_t declared : { uint64_t(2), uint64_t(1) << 32, ~uint64_t(0) }) {
+        synth::qwen3tts::HParams h    = base_hparams();
+        h.profile.max_reference_count = declared;
+        synth::VoiceProfileInfo info;
+        synth::qwen3tts::fill_voice_profile_capability(h, info);
+        SYNTH_TEST_CHECK(info.max_reference_count == declared);
+    }
+    return 0;
+}
+
 // The public-seam counterpart of the rule above: a `synth_model` whose family
 // is Qwen3Tts but whose capability snapshot is the CustomVoice all-zero shape
 // must take the SAME generic "unsupported" fallback every non-participating
@@ -253,6 +280,7 @@ int main() {
     SYNTH_TEST_CHECK(test_speaker_encoder_without_profile_sources_advertises_nothing() == 0);
     SYNTH_TEST_CHECK(test_base_package_carries_no_preset_voice_catalog() == 0);
     SYNTH_TEST_CHECK(test_base_capability_publishes_both_sources_together() == 0);
+    SYNTH_TEST_CHECK(test_a_declared_reference_count_is_published_unnarrowed() == 0);
     SYNTH_TEST_CHECK(test_customvoice_model_refuses_public_profile_calls() == 0);
     return 0;
 }

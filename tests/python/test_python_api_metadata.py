@@ -11,6 +11,17 @@ PACKAGE_SOURCE = REPO / "bindings/python/src/synthesize_cpp"
 
 
 def sample_metadata():
+    """A synthetic native payload, deliberately unlike any real package.
+
+    Every value here exists to be distinctive, so that a binding which
+    hardcoded or dropped a field fails the pass-through assertions below
+    rather than coinciding with the truth. `max_reference_count` is 4 for
+    exactly that reason, even though since 2026-08-13 both loaders refuse a
+    package declaring anything but 1 -- this dict is handed to a FakeNative
+    module and never reaches read_profile_contract, and setting it to 1 would
+    let a binding that hardcoded 1 pass. It models the C struct's range, not
+    a shippable package.
+    """
     return {
         "device": {
             "index": None,

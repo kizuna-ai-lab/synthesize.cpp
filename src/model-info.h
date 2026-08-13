@@ -124,7 +124,18 @@ struct VoiceProfileInfo {
     uint64_t            min_frames_per_clip          = 0;
     uint64_t            max_frames_per_clip          = 0;
     uint64_t            max_total_frames             = 0;
-    uint32_t            max_reference_count          = 0;
+    // uint64_t, matching both ends it sits between: the package's own
+    // `synthesize.reference.max_reference_count` (a GGUF u64, so a
+    // ProfileContract u64) and the public
+    // `synth_voice_profile_capabilities_t::max_reference_count`. It was
+    // uint32_t until 2026-08-13, which made this the one narrowing hop in an
+    // otherwise 64-bit path -- a declared 2^32 arrived here as 0, the value
+    // that means "no Reference Audio clip may be used at all". Both families
+    // now refuse anything but 1 at load (weights.cpp's
+    // read_profile_contract), so nothing reaches this field that a uint32_t
+    // could not have held either; the type simply stops being the place a
+    // future widening of that rule would have to remember to look.
+    uint64_t            max_reference_count          = 0;
     uint8_t             compatibility_id[32]         = {};  // decoded from the package hex
     // The package's own declared Serialized Profile schema identity (the
     // same "synthesize.profile.schema"/"schema_version" ProfileContract pair

@@ -1,18 +1,19 @@
 # Qwen3-TTS Stage 2 — Reference Audio Voice Cloning — Design
 
 Status: Approved in discussion with jiangzhuo on 2026-08-11; three errata added
-2026-08-12 after Plan 1 (the Base package) was executed. This is the design
-record for the second rung of the Qwen3-TTS Reference Model Variant Ladder
-(`docs/porting/families/qwen3-tts.md`, "Reference Model Variant Ladder"). The
-family record itself is extended at intake, per `docs/model-porting.md`.
+2026-08-12 after Plan 1 (the Base package) was executed, and a fourth added
+2026-08-13 from a measurement taken while Plan 3 (the ICL path) was scoped. This
+is the design record for the second rung of the Qwen3-TTS Reference Model Variant
+Ladder (`docs/porting/families/qwen3-tts.md`, "Reference Model Variant Ladder").
+The family record itself is extended at intake, per `docs/model-porting.md`.
 
 Plans 2–4 are written from this document, so where execution contradicted it
-the correction lives here rather than only in the plan that found it. All three
+the correction lives here rather than only in the plan that found it. All four
 errata are marked in bold in the section they correct: section 3 on the Voice
-Profile capability advertisement, section 4 on codec deduplication, section 6 on
-greedy oracle decoding. Nothing else in this document has been rewritten — the
-original prescription is left standing above each erratum so the change is
-legible.
+Profile capability advertisement, section 4 on codec deduplication, and two in
+section 6 — greedy oracle decoding, and the plain-equality gate on reference
+codes. Nothing else in this document has been rewritten — the original
+prescription is left standing above each erratum so the change is legible.
 
 ## 1. Context
 
@@ -372,6 +373,112 @@ different configuration, each pinned by `sha256`. Intake measures the actual
 tie margin on the reference clips before the gate's final form is committed:
 if flips do not occur, the gate is plain equality; if they do, admissible
 grids are enumerated by that mechanism and never by relaxing the comparison.
+
+**Erratum, 2026-08-13 — the plain-equality gate on reference codes is dropped.
+The gate is the codec encoder's stage-wise F32 artifacts compared at a
+bf16-derived tolerance, plus the dequantized reconstruction; the discrete code
+indices are no longer a gate.** The paragraph above prescribes equality with
+`oracle.alternate_grids` as the escape, and sends intake to measure the tie
+margin first. That measurement was taken on 2026-08-13, before Plan 3's Task 5
+was written, and it answers a question the prescription never asked: what the
+codes would be equal *to*. jiangzhuo ruled on the result the same day.
+
+**The two tables.** `MimiEuclideanCodebook.embed` derives the codebook as
+`embed_sum / cluster_usage` at the dtype the tokenizer was loaded with
+(`modeling_mimi.py:1195-1202`), and the tokenizer inherits the talker's dtype,
+so the model card's own `dtype=torch.bfloat16` makes the division and the table
+**bfloat16**. The converter reads the f32 safetensors and bakes an **f32** table
+(`scripts/convert-qwen3-tts.py:376-388`) — deliberately, and it is the more
+accurate of the two. They differ on all 2048 entries of every one of the 16 live
+codebooks: mean relative difference 2.28e-3 to 2.52e-3, max 1.06e-2.
+
+**What that costs**, over 146 clips / 49,507 encoder frames / 792,112
+frame-stage decisions. Substituting the f32 table into the argmin alone changes
+**4.04%** of emitted codes; carrying it through the whole RVQ changes **12.73%**;
+the pure per-decision flip rate, recomputed in float64 from identical residuals,
+is **0.624%**. **136 of the 146 clips** differ, including both of the manifest's
+own materialized cases (`base-icl-en`: 59 of 1616; `base-ref-min`: 10 of 208).
+Every stage flips, the semantic one included, at 0.382%. Not one of the 792,112
+decisions was an exact tie. The rate is uniform across speech, prefixes,
+transforms, tones, noise and 120 s clips — 0.437% to 0.849% — so it is not a
+tail a lucky case avoids. The shortest clip that flips is 0.8 s.
+
+Three findings make plain equality untestable rather than merely strict:
+
+- **Upstream does not agree with itself.** Loading with `dtype=torch.bfloat16`
+  — what the model card (`README.md:49-53`) and the shipped demo
+  (`qwen_tts/cli/demo.py:98-101`) both do — reproduces the committed
+  `codes/reference.i32` exactly. Omitting `dtype`, which `transformers` resolves
+  to float32 "for BC" (`modeling_utils.py:1288-1294`), disagrees with it on
+  **794 of 1616 codes — 49%** — on `base-icl-en`. A gate that one of those two
+  runs of the reference implementation passes and the other fails is testing a
+  load-time keyword argument, not the port.
+- **The observation the gate rested on was never about the table.** Plan 1's
+  Task 1 found the emitted codes byte-identical to the Base oracle's. Both
+  scripts load `dtype=torch.bfloat16` (`dump_reference_qwen3_tts_base.py:572-575`,
+  `dump_reference_qwen3_tts_codec_encoder.py:1524-1529`), so that comparison
+  measured determinism between two bf16 runs. No f32 table had ever been
+  instantiated when it was made; there was no second fact to reconcile.
+- **The cancellation hypothesis is refuted by measurement.** The reason a tight
+  margin was expected to survive rounding — competing entries moving together —
+  does not hold. The pairwise perturbation is the same size as the individual one
+  (ratio 1.0), and ‖δᵢ−δⱼ‖/‖δᵢ‖ ≈ √2, the signature of independent errors. Of
+  the 1.238% of decisions whose perturbation exceeds their own margin, **0.504
+  flip** — the half expected from a perturbation of random sign.
+
+**Two alternatives were considered and rejected.**
+
+*Baking bf16 codebooks in the converter, to match upstream's documented load.*
+Rejected because it would not have reached equality either. This measurement
+isolates the **codebook**; the port's F32 SEANet and F32 encoder transformer hand
+the quantizer latents the oracle's bf16 stack never produced. The all-f32
+upstream load, where stack and table move together, disagrees on 794 of 1616
+codes against 278 for the table alone — so the stack's contribution is the larger
+one, and 0.624% / 4.04% are a **floor** on divergence rather than a budget the
+port can be held to. The price would have been shipping a deliberately less
+accurate table to satisfy a test that still failed.
+
+*Keeping plain equality and absorbing the flips through `oracle.alternate_grids`.*
+Rejected on what that mechanism is. An alternate grid is a further grid the
+reference itself produced under a different configuration, enumerated and pinned
+by `sha256`. These flips are not a second configuration's output: they are ~4% of
+codes on 136 of 146 inputs, per-clip and per-input, so every case — and every
+case ever added — would need its own committed grid, generated by the very table
+the converter does not bake. That is not an escape hatch; it is maintaining a
+second oracle in the manifest.
+
+What governs instead: **the codec encoder is gated on its continuous artifacts —
+`waveform` → `seanet_stage0..3` → `seanet_tail` → `downsample` → `transformer_l0..l7`
+→ `latents` → `rvq_residual_s00..s15` — each compared at a tolerance derived from
+the bf16 scale the oracle's own activations carry, together with the dequantized
+RVQ reconstruction: the sum of the selected codebook rows in the 256-wide
+projected space, compared as F32 at that same scale.** A stage whose measured
+deviation exceeds the bf16-derived expectation is a defect to be found, never a
+gate to be widened. The reference codes are still emitted and still compared, and
+their agreement rate against the oracle is **recorded** with each case — but it
+gates nothing, and no threshold is derived from the numbers above, which bound
+the codebook's contribution alone.
+
+**This buys a weaker claim than equality did, and that must not be papered over.
+Nothing here says a port whose codes differ by a few percent is correct.** The
+ruling is about what a gate can meaningfully test. A flipped code is not a small
+error downstream — it selects a different embedding row in the ICL prompt — and
+the continuous gate cannot see that. What the continuous gate can do, and
+equality could not, is separate a near-tie from a wrong stride, a wrong padding
+mode, or a chained acoustic branch, each of which moves the F32 artifacts by
+orders of magnitude more than rounding does. Establishing that this port is
+right is now the stage-wise comparison's whole job, and it has to carry it.
+
+Provenance, since the measurement's scripts were throwaway and nothing was
+committed: run 2026-08-13 in the locked `scripts/envs/qwen3-tts` environment
+(`transformers==4.57.3`, `qwen-tts @ QwenLM/Qwen3-TTS@022e286`), one GB10, 47.5 s
+of compute, scripts and raw JSON under the ignored `build/`. The numbers above
+are the record.
+
+The rule generalizes past this rung, as the other three errata do: **where the
+port's arithmetic is deliberately more precise than the oracle's, the discrete
+output of a rounding-sensitive decision is not a gate — the continuous quantity
+it was rounded from is.**
 
 The autoregressive half keeps Stage 1's replay rule: the oracle records its
 sampled sequence and a validation-only seam replays it into both graphs.

@@ -3,6 +3,7 @@
 #include "arch/kokoro/kokoro.h"
 #include "arch/omnivoice/omnivoice.h"
 #include "arch/omnivoice/profile.h"
+#include "arch/qwen3-tts/profile.h"
 #include "arch/qwen3-tts/qwen3-tts.h"
 #include "arch/vits/vits.h"
 #include "audio-delivery.h"
@@ -328,10 +329,13 @@ synth::ModelInfo shared_info(const synth::qwen3tts::ModelInfo &         info,
     shared.max_speaking_rate    = info.max_speaking_rate;
     // This family routes its Voice Profile capability snapshot through its own
     // layer (src/arch/qwen3-tts/weights.cpp's fill_voice_profile_capability),
-    // but deliberately reports zero source flags for both package variants
-    // until it can actually prepare a Profile. The package still carries and
-    // validates its Voice Profile contract; the runtime just advertises no
-    // capability yet. Plan 2 flips this once preparation exists.
+    // gated there on `voice_mode` rather than here: CustomVoice (PresetCatalog)
+    // still reports zero source flags -- it has no speaker encoder to prepare
+    // anything from -- while Base (ProfileSources) reports
+    // REFERENCE_AUDIO | SERIALIZED_PROFILE now that Stage 2 Plan 2 landed
+    // preparation. tests/qwen3_tts_base_load_real.cpp's check_capabilities is
+    // this line's own coverage: deleting it collapses Base's answer to the
+    // same all-zero shape CustomVoice reports, which that test now catches.
     shared.voice_profile        = info.voice_profile;
     return shared;
 }
@@ -995,22 +999,6 @@ synth_status_t synth_synthesize(synth_context_t *          context,
     }
 
     if (context->model->info.family == synth::ModelFamily::Qwen3Tts) {
-        // This family cannot consume a Voice Profile yet. Its Base package
-        // does carry a Voice Profile contract -- `synthesize.profile.*`, read
-        // and validated at load time -- but nothing in the runtime can
-        // prepare or consume one: src/voice-profile.cpp dispatches every
-        // source for OmniVoice alone, and the family's own capability
-        // snapshot therefore advertises zero sources
-        // (src/arch/qwen3-tts/weights.cpp's fill_voice_profile_capability).
-        // So a profile reaching here would either be a defect in the
-        // cross-model check above (see the omnivoice branch) or a future
-        // family's own profile presented to the wrong one. Either way,
-        // silently ignoring
-        // `prepared.voice_profile` and synthesizing anyway would answer with
-        // the wrong Voice rather than the refusal the caller asked for.
-        if (prepared.voice_profile != nullptr) {
-            return SYNTH_ERR_UNSUPPORTED_VOICE;
-        }
         try {
             synth::qwen3tts::SynthesisRequest family_request;
             family_request.token_ids = prepared.token_ids;
@@ -1019,6 +1007,94 @@ synth_status_t synth_synthesize(synth_context_t *          context,
             family_request.language.assign(
                 prepared.resolved_language_tag != nullptr ? prepared.resolved_language_tag : "",
                 size_t(prepared.resolved_language_size));
+            // Creation, serialization, and loading of a Qwen3-TTS Voice
+            // Profile all work (Stage 2 Plan 2 Task 9's src/voice-profile.cpp
+            // dispatch, gated on Base's own
+            // SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO/SERIALIZED_PROFILE bits --
+            // see fill_voice_profile_capability, src/arch/qwen3-tts/weights.cpp).
+            // This is the SYNTHESIS-TIME consumption half Task 11 adds: a
+            // prepared XVectorProfile's x-vector substitutes for the prompt's
+            // speaker embedding (SynthesisRequest::x_vector, Task 10's
+            // speaker-slot wiring), the same way the OmniVoice branch above
+            // reads its own `clone`/`instruct` payloads out of
+            // `prepared.voice_profile`.
+            //
+            // A non-null `prepared.voice_profile` reaching here is exactly one
+            // of three cases: legitimately created against THIS Model (the
+            // only case that reaches `family_request.x_vector` below), created
+            // against a DIFFERENT Model, or -- structurally impossible today,
+            // guarded anyway -- a different family's profile misread as this
+            // one's. Unlike the OmniVoice arm's own silent model-identity
+            // return, every refusal below names itself through
+            // `emit_diagnostic` with "synthesis.voice_unsupported": this
+            // family's OTHER Voice refusal (the Catalog-less case further
+            // down) already does, and a caller reading only the diagnostic
+            // sink should not find one Voice refusal explained and the other
+            // left silent.
+            if (prepared.voice_profile != nullptr) {
+                // A Voice Profile is bound to the Model that prepared it, not
+                // to any Model with a compatible shape. The Profile
+                // Compatibility ID (docs/c-interface.md) is what makes a
+                // SERIALIZED Profile portable between two compatible
+                // packages -- load_profile_from_memory checks it explicitly
+                // against the LOADING Model's own id -- but an in-memory
+                // `synth_voice_profile_t*`, never serialized, carries no such
+                // id to re-check here; it carries only the pointer to the
+                // Model that produced it. Handing it to a synthesis request
+                // bound to a DIFFERENT Loaded Model is a caller error, not a
+                // portability case: nothing downstream re-validates
+                // model.cpp's own enc_dim == hidden_size invariant (enforced
+                // once, between THIS Model's weights, at load) against a
+                // second, unrelated Model, so admitting a cross-model Profile
+                // would let a structurally different package's x-vector reach
+                // the talker at all -- caught, if at all, by model.cpp's own
+                // length check as an INVALID_ARG graph-shape defect the
+                // caller could not have predicted, rather than the Voice
+                // refusal a mismatched Model actually is. Same pointer-identity
+                // check as the OmniVoice arm above, same reasoning.
+                if (prepared.voice_profile->model != context->model) {
+                    emit_diagnostic(prepared.diagnostics, SYNTH_ERR_UNSUPPORTED_VOICE, "synthesis.voice_unsupported",
+                                    "this Voice Profile was prepared for a different Loaded Model");
+                    return SYNTH_ERR_UNSUPPORTED_VOICE;
+                }
+                // The Model-pointer match above already rules this out in
+                // practice: one Loaded Model's family fixes which
+                // `family_tag` its own profiles ever carry, so `model ==
+                // context->model` and a foreign `family_tag` can never both
+                // hold today. Checked anyway, the same defensive shape the
+                // OmniVoice arm's own two-tag `else` above uses -- a future
+                // family_tag added under a shared Model type must not fall
+                // through and have its payload misread as an XVectorProfile.
+                if (prepared.voice_profile->family_tag != synth::ProfileFamilyTag::Qwen3TtsClone) {
+                    emit_diagnostic(prepared.diagnostics, SYNTH_ERR_UNSUPPORTED_VOICE, "synthesis.voice_unsupported",
+                                    "this Voice Profile belongs to a different Model Family");
+                    return SYNTH_ERR_UNSUPPORTED_VOICE;
+                }
+                const auto & clone =
+                    *static_cast<const synth::qwen3tts::XVectorProfile *>(prepared.voice_profile->payload.get());
+                // Plan 3 adds CloneMode::Icl; until then, D4 (this plan's own
+                // ruling) fixes the mode at preparation and every Profile this
+                // family can create or load carries CloneMode::XVector, so
+                // this is unreachable today -- guarded now so that landing
+                // Icl does not also have to remember to add this refusal. A
+                // Profile whose payload says otherwise is refused rather than
+                // silently downgraded to the mode it did not ask for.
+                if (clone.mode != synth::qwen3tts::CloneMode::XVector) {
+                    emit_diagnostic(prepared.diagnostics, SYNTH_ERR_UNSUPPORTED_VOICE, "synthesis.voice_unsupported",
+                                    "this build supports x-vector Voice Profiles only");
+                    return SYNTH_ERR_UNSUPPORTED_VOICE;
+                }
+                // request.voice_id stays empty above, so model.cpp's own
+                // external/voice_id mutual-exclusivity check is always
+                // satisfied here. The guarantee is
+                // src/synthesis-request.cpp:201, which refuses a request
+                // carrying voice_id AND voice_profile together for EVERY
+                // family before it ever reaches this dispatch -- not this
+                // variant's empty Preset Voice Catalog, which happens to hold
+                // as well and would stop holding the day a Base-shaped
+                // package shipped a catalog.
+                family_request.x_vector = &clone.x_vector;
+            }
             family_request.seed              = actual_seed;
             family_request.threads           = context->threads;
             // The core's limit is in native frames, which for this family is the

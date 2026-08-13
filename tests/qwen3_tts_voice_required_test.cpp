@@ -14,25 +14,36 @@
 //
 //   2. weights.h's fill_voice_profile_capability, which Model::get_info
 //      (model.cpp) uses to build the capability snapshot a caller reads
-//      before ever trying to synthesize. As of Plan 1 that snapshot is
-//      all-zero for EVERY variant of this family -- no preset voices on Base,
-//      and no advertised Voice Profile source on either -- because nothing in
-//      the runtime can create or consume a Profile yet
-//      (src/voice-profile.cpp dispatches OmniVoice only). The Base package's
-//      own ProfileContract is still read and validated at load time; what is
-//      withheld is the runtime's claim, not the package's declaration.
+//      before ever trying to synthesize. As of Stage 2 Plan 2, Base
+//      (ProfileSources) publishes SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO |
+//      SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE with the six reference limits;
+//      CustomVoice (PresetCatalog) still reports nothing, because it has no
+//      speaker encoder and nothing in the runtime can prepare anything from
+//      it. The gate is `voice_mode`, not `has_preset_voice_catalog` -- see
+//      that predicate's own header comment and
+//      test_base_capability_publishes_both_sources_together below for why
+//      the inverse would have been a real bug, caught here.
 //
 // A `unit`-labelled test cannot depend on the real ~2.5 GB Base package
 // (docs/testing.md), so both rules are exercised here directly against
 // synthetic HParams, the way qwen3_tts_metadata_test.cpp and
 // qwen3_tts_catalog_test.cpp already do -- no GGUF file and no loaded Model
-// involved. The end-to-end refusal through synth_synthesize on a real loaded
-// package is Task 10's integration step.
+// involved. Proving the real on-disk metadata reaches the public struct is
+// tests/qwen3_tts_base_load_real.cpp's job instead (see that file's own
+// header comment for why a synthetic fixture cannot substitute for it); the
+// public-seam dispatch gate that keeps a CustomVoice Loaded Model out of this
+// family's new create/load handlers is exercised here too
+// (test_customvoice_model_refuses_public_profile_calls below), since it needs
+// no GGUF either -- only a hand-built `synth_model` with its family pointer
+// left null, the same pattern tests/omnivoice_serialize_test.cpp's own
+// cross-family guard arm already uses.
 
 #include "arch/qwen3-tts/weights.h"
+#include "model-handle.h"
 #include "synthesize.h"
 #include "test-assert.h"
 
+#include <cstdint>
 #include <string>
 
 namespace {
@@ -157,32 +168,80 @@ int test_base_package_carries_no_preset_voice_catalog() {
     return 0;
 }
 
-// The Critical finding of this branch's whole-branch review, inverted into a
-// test. base_hparams() carries a fully populated, load-time-validated
-// ProfileContract -- 24 kHz mono, real per-clip and total limits, a real
-// schema and compatibility id -- and the capability snapshot still advertises
-// NOTHING, because src/voice-profile.cpp cannot prepare, consume or
-// serialize a Profile for this family: every source there is guarded on
-// `family != ModelFamily::Omnivoice`. docs/c-interface.md is the contract
-// that decides this ("A Model without runtime Voice Profile support reports
-// zero flags"), and a package that carries a contract nothing can honour is
-// not a Model with runtime support.
-//
-// Plan 2 is what flips this: when preparation exists, this same fixture must
-// report SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SERIALIZED_PROFILE and the
-// six limits below, and this test is expected to be rewritten there rather
-// than deleted.
-int test_base_capability_advertises_nothing_until_preparation_exists() {
+// Plan 2 landed preparation, so the advertisement is now true. The gate is
+// the voice mode, not has_preset_voice_catalog: that predicate is true only
+// for PresetCatalog -- CustomVoice, the variant with no speaker encoder --
+// and gating on it would advertise Reference Audio on the variant that cannot
+// prepare anything. The carryover records the correction; the assertion below
+// is what would have caught it.
+int test_base_capability_publishes_both_sources_together() {
     const synth::qwen3tts::HParams h = base_hparams();
-    // The contract really is there to publish, which is what makes the
-    // all-zero answer a decision rather than an empty struct.
-    SYNTH_TEST_CHECK(h.profile.schema == "qwen3-tts-voice-clone");
-    SYNTH_TEST_CHECK(h.profile.reference_sample_rate == 24000);
-    SYNTH_TEST_CHECK(h.profile.max_reference_count == 1);
-
-    synth::VoiceProfileInfo info;
+    synth::VoiceProfileInfo        info;
     synth::qwen3tts::fill_voice_profile_capability(h, info);
-    return check_reports_no_voice_profile_support(info);
+
+    SYNTH_TEST_CHECK((info.source_flags & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) != 0);
+    SYNTH_TEST_CHECK((info.source_flags & SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE) != 0);
+    // Description Text is Stage 3's and Random Seed is nobody's: exactly two
+    // bits, not "at least these two".
+    SYNTH_TEST_CHECK(info.source_flags ==
+                     (SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE));
+
+    // Plan 2 implements one of two modes, so a transcript names a mode with no
+    // implementation behind it. Plan 3 flips both of these to OPTIONAL in the
+    // same change that lands ICL.
+    SYNTH_TEST_CHECK(info.reference_transcript == SYNTH_REQUIREMENT_UNSUPPORTED);
+    SYNTH_TEST_CHECK(info.reference_language == SYNTH_REQUIREMENT_UNSUPPORTED);
+    SYNTH_TEST_CHECK(info.description_language == SYNTH_REQUIREMENT_UNSUPPORTED);
+
+    SYNTH_TEST_CHECK(info.reference_target_sample_rate == 24000);
+    SYNTH_TEST_CHECK(info.reference_target_channels == 1);
+    SYNTH_TEST_CHECK(info.min_frames_per_clip == 24000);
+    SYNTH_TEST_CHECK(info.max_frames_per_clip == 720000);
+    SYNTH_TEST_CHECK(info.max_total_frames == 720000);
+    SYNTH_TEST_CHECK(info.max_reference_count == 1);
+    SYNTH_TEST_CHECK(info.schema == "qwen3-tts-voice-clone");
+    SYNTH_TEST_CHECK(info.schema_version == 1);
+    bool any_nonzero = false;
+    for (uint8_t byte : info.compatibility_id) {
+        any_nonzero = any_nonzero || byte != 0;
+    }
+    SYNTH_TEST_CHECK(any_nonzero);
+    return 0;
+}
+
+// The public-seam counterpart of the rule above: a `synth_model` whose family
+// is Qwen3Tts but whose capability snapshot is the CustomVoice all-zero shape
+// must take the SAME generic "unsupported" fallback every non-participating
+// family already takes at src/voice-profile.cpp's three dispatchers -- both
+// before this family had ANY dispatch arm (an unconditional
+// `family != Omnivoice` check) and after (a per-model check on
+// `info.voice_profile.source_flags`, added alongside the family check by this
+// same task). This is the trap the brief warns about made concrete: gating
+// solely on `family == Qwen3Tts` -- the natural first draft once a Qwen3Tts
+// branch exists at all -- would route a CustomVoice Loaded Model into a
+// handler that dereferences `model->qwen3_tts`, which a hand-built
+// `synth_model` like this one leaves null, exactly as
+// tests/omnivoice_serialize_test.cpp's own cross-family guard arm relies on
+// for `ModelFamily::Vits`.
+int test_customvoice_model_refuses_public_profile_calls() {
+    synth_model fake_model;
+    fake_model.info.family        = synth::ModelFamily::Qwen3Tts;
+    fake_model.info.voice_profile = synth::VoiceProfileInfo{};  // all-zero: CustomVoice's own shape
+
+    synth_voice_reference_params_t reference_params;
+    synth_voice_reference_params_init(&reference_params, sizeof(reference_params));
+    synth_voice_profile_t * profile = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+    SYNTH_TEST_CHECK(synth_voice_profile_create_from_reference(&fake_model, &reference_params, &profile) ==
+                     SYNTH_ERR_UNSUPPORTED_VOICE);
+    SYNTH_TEST_CHECK(profile == nullptr);
+
+    synth_voice_profile_load_params_t load_params;
+    synth_voice_profile_load_params_init(&load_params, sizeof(load_params));
+    profile = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+    SYNTH_TEST_CHECK(synth_voice_profile_load_from_memory(&fake_model, &load_params, &profile) ==
+                     SYNTH_ERR_UNSUPPORTED_VOICE);
+    SYNTH_TEST_CHECK(profile == nullptr);
+    return 0;
 }
 
 }  // namespace
@@ -193,6 +252,7 @@ int main() {
     SYNTH_TEST_CHECK(test_customvoice_capability_reports_no_voice_profile_support() == 0);
     SYNTH_TEST_CHECK(test_speaker_encoder_without_profile_sources_advertises_nothing() == 0);
     SYNTH_TEST_CHECK(test_base_package_carries_no_preset_voice_catalog() == 0);
-    SYNTH_TEST_CHECK(test_base_capability_advertises_nothing_until_preparation_exists() == 0);
+    SYNTH_TEST_CHECK(test_base_capability_publishes_both_sources_together() == 0);
+    SYNTH_TEST_CHECK(test_customvoice_model_refuses_public_profile_calls() == 0);
     return 0;
 }

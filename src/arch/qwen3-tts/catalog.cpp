@@ -454,39 +454,47 @@ constexpr uint32_t               kCodecEncoderAcousticQuantizerCount = 31;
 // 768-wide forward case). If a variant with a genuinely different encoder
 // topology arrives, the migration is to add the keys then, with a real
 // source for their values.
-bool resolve_speaker_encoder(Resolver & resolver, const SpeakerEncoderParams & params) {
+bool resolve_speaker_encoder(Resolver & resolver, const SpeakerEncoderParams & params, SpeakerEncoderWeights & target) {
     constexpr int64_t kRes2NetWidth = kSpeakerEncoderChannels / kSpeakerEncoderRes2NetScale;
     // The multi-layer feature aggregator concatenates the three blocks'
     // channel-`kSpeakerEncoderChannels` outputs before its own 1x1 convolution.
     const int64_t     mfa_channels  = 3 * kSpeakerEncoderChannels;
 
-    Conv1dWeights scratch;
-    resolver.conv("speaker_encoder.blocks.0.conv", 5, int64_t(params.mel_bins), kSpeakerEncoderChannels, scratch);
+    resolver.conv("speaker_encoder.blocks.0.conv", 5, int64_t(params.mel_bins), kSpeakerEncoderChannels, target.stem);
 
+    target.blocks.assign(kSpeakerEncoderBlockCount, SpeakerEncoderBlockWeights{});
     for (uint32_t block = 1; block <= kSpeakerEncoderBlockCount; ++block) {
-        const std::string base = index_of("speaker_encoder.blocks.", block, ".");
-        resolver.conv(base + "tdnn1.conv", 1, kSpeakerEncoderChannels, kSpeakerEncoderChannels, scratch);
-        // Res2Net at scale 8 applies a 3x3 convolution to 7 of its 8 equal
-        // splits; the eighth passes through unconvolved, which is why this
-        // block carries `kSpeakerEncoderRes2NetScale - 1` convolutions rather
-        // than 8.
+        SpeakerEncoderBlockWeights & into = target.blocks[block - 1];
+        const std::string            base = index_of("speaker_encoder.blocks.", block, ".");
+        resolver.conv(base + "tdnn1.conv", 1, kSpeakerEncoderChannels, kSpeakerEncoderChannels, into.tdnn1);
+        // Res2Net at scale 8 convolves 7 of its 8 equal splits with a 3-wide
+        // kernel; the FIRST split passes through unconvolved and leads the
+        // concatenation, which is why this block carries
+        // `kSpeakerEncoderRes2NetScale - 1` convolutions rather than 8.
+        // Which split passes through changes neither the tensor count nor
+        // what this resolver names, but it does change the forward pass --
+        // see SpeakerEncoderBlockWeights in catalog.h and
+        // modeling_qwen3_tts.py:115-126, where split 0 is
+        // `output_part = hidden_part`.
+        into.res2net.assign(kSpeakerEncoderRes2NetScale - 1, Conv1dWeights{});
         for (int64_t sub = 0; sub < kSpeakerEncoderRes2NetScale - 1; ++sub) {
             resolver.conv(index_of(base + "res2net_block.blocks.", sub, ".conv"), 3, kRes2NetWidth, kRes2NetWidth,
-                          scratch);
+                          into.res2net[size_t(sub)]);
         }
-        resolver.conv(base + "se_block.conv1", 1, kSpeakerEncoderChannels, kSpeakerEncoderSeChannels, scratch);
-        resolver.conv(base + "se_block.conv2", 1, kSpeakerEncoderSeChannels, kSpeakerEncoderChannels, scratch);
-        resolver.conv(base + "tdnn2.conv", 1, kSpeakerEncoderChannels, kSpeakerEncoderChannels, scratch);
+        resolver.conv(base + "se_block.conv1", 1, kSpeakerEncoderChannels, kSpeakerEncoderSeChannels, into.se1);
+        resolver.conv(base + "se_block.conv2", 1, kSpeakerEncoderSeChannels, kSpeakerEncoderChannels, into.se2);
+        resolver.conv(base + "tdnn2.conv", 1, kSpeakerEncoderChannels, kSpeakerEncoderChannels, into.tdnn2);
     }
 
-    resolver.conv("speaker_encoder.mfa.conv", 1, mfa_channels, mfa_channels, scratch);
+    resolver.conv("speaker_encoder.mfa.conv", 1, mfa_channels, mfa_channels, target.mfa);
     // Attentive statistics pooling: a bottleneck over [features, mean, std]
     // (3x the aggregated width) produces per-frame attention logits, which
     // then weight the mean and std (2x the aggregated width) that `fc` maps
     // onto the speaker embedding the talker's prompt slot expects.
-    resolver.conv("speaker_encoder.asp.tdnn.conv", 1, 3 * mfa_channels, kSpeakerEncoderAttentionChannels, scratch);
-    resolver.conv("speaker_encoder.asp.conv", 1, kSpeakerEncoderAttentionChannels, mfa_channels, scratch);
-    resolver.conv("speaker_encoder.fc", 1, 2 * mfa_channels, int64_t(params.enc_dim), scratch);
+    resolver.conv("speaker_encoder.asp.tdnn.conv", 1, 3 * mfa_channels, kSpeakerEncoderAttentionChannels,
+                  target.asp_tdnn);
+    resolver.conv("speaker_encoder.asp.conv", 1, kSpeakerEncoderAttentionChannels, mfa_channels, target.asp);
+    resolver.conv("speaker_encoder.fc", 1, 2 * mfa_channels, int64_t(params.enc_dim), target.fc);
     return resolver.ok();
 }
 
@@ -498,6 +506,13 @@ bool resolve_speaker_encoder(Resolver & resolver, const SpeakerEncoderParams & p
 // its downsampling stem and transformer widths are independent of the
 // decoder's, so those are literals rather than derived. See this task's
 // report for the exact per-tensor shapes this was checked against.
+//
+// Still Plan 1's discard-into-scratch shape: every resolved pointer below is
+// written into a local that nothing reads, on purpose, because no graph
+// reaches this encoder yet. Do not read the sibling resolve_speaker_encoder
+// above as evidence that this one was converted too -- Plan 3 owns that, and
+// its signature will need to change the same way this task changed
+// resolve_speaker_encoder's.
 bool resolve_codec_encoder(Resolver & resolver, const HParams & hparams) {
     const CodecDecoderParams & p = hparams.codec.decoder;
 
@@ -634,12 +649,14 @@ synth_status_t build_model_weights(ggml_context *  context,
         return SYNTH_ERR_GGUF;
     }
     // Base carries the ECAPA-TDNN speaker encoder and the codec's encoder half
-    // alongside the decoder; neither has a graph yet (Plans 2 and 3 add them),
-    // so they are resolved here only to bring their names into the sweep
-    // below -- a package that carries them uncatalogued is refused, not
-    // silently accepted.
+    // alongside the decoder. The speaker encoder's pointers are kept in
+    // weights.speaker_encoder for speaker-encoder.cpp's graph (Plan 2); the
+    // codec encoder still has no graph (Plan 3 adds one), so it is resolved
+    // here only to bring its names into the sweep below -- a package that
+    // carries either uncatalogued is refused, not silently accepted.
     if (hparams.has_speaker_encoder &&
-        (!resolve_speaker_encoder(resolver, hparams.speaker_encoder) || !resolve_codec_encoder(resolver, hparams))) {
+        (!resolve_speaker_encoder(resolver, hparams.speaker_encoder, weights.speaker_encoder) ||
+         !resolve_codec_encoder(resolver, hparams))) {
         return SYNTH_ERR_GGUF;
     }
     if (codec_context != nullptr) {

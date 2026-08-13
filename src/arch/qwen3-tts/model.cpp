@@ -25,11 +25,13 @@
 #include "gguf.h"
 #include "qwen3-tts.h"
 #include "random-stream.h"
+#include "speaker-encoder-host.h"
 #include "talker-host.h"
 #include "talker.h"
 #include "weights.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cctype>
 #include <chrono>
 #include <cstring>
@@ -223,6 +225,44 @@ void read_floats(const ggml_tensor * tensor, std::vector<float> & output) {
     ggml_backend_tensor_get(tensor, output.data(), 0, ggml_nbytes(tensor));
 }
 
+// The language-resolution rule shared by Model::resolve_voice and
+// Model::resolve_language_only. `voice` carries the dialect override to defer
+// to, or is a default-constructed PresetVoice (empty override) when the
+// request's speaker is an external Voice Profile rather than a catalog entry
+// -- there is then nothing to defer to, and "auto" resolves no language token
+// at all, exactly like an ordinary speaker with no override of its own.
+synth_status_t resolve_language(const HParams &     hparams,
+                                const std::string & language,
+                                const PresetVoice & voice,
+                                bool &              has_language,
+                                uint32_t &          language_token) {
+    has_language   = false;
+    language_token = 0;
+
+    // "auto" is the no-think prompt, which carries no language token at all
+    // rather than a default one.
+    const std::string requested = language == "auto" ? std::string() : language_name_for_tag(language);
+    if (language.empty() || language == "auto") {
+        std::string resolved;
+        // A speaker pinning a dialect still contributes its token under auto,
+        // because the reference resolves the override before the request.
+        if (!voice.dialect_override.empty() &&
+            resolve_language_token(hparams, requested, voice, language_token, resolved)) {
+            has_language = true;
+        }
+        return SYNTH_OK;
+    }
+    if (requested.empty()) {
+        return SYNTH_ERR_UNSUPPORTED_LANGUAGE;
+    }
+    std::string resolved;
+    if (!resolve_language_token(hparams, requested, voice, language_token, resolved)) {
+        return SYNTH_ERR_UNSUPPORTED_LANGUAGE;
+    }
+    has_language = true;
+    return SYNTH_OK;
+}
+
 }  // namespace
 
 struct Model::Impl {
@@ -346,6 +386,14 @@ std::shared_ptr<const TextFrontend> Model::text_frontend() const {
     return implementation_->frontend;
 }
 
+const HParams & Model::hparams() const {
+    return implementation_->hparams;
+}
+
+const SpeakerEncoderWeights & Model::speaker_encoder_weights() const {
+    return implementation_->weights.speaker_encoder;
+}
+
 uint32_t Model::samples_per_frame() const {
     return implementation_->hparams.codec.hop_length;
 }
@@ -394,28 +442,19 @@ synth_status_t Model::resolve_voice(const std::string & voice_id,
     }
     speaker_token = voice.token_id;
 
-    // "auto" is the no-think prompt, which carries no language token at all
-    // rather than a default one.
-    const std::string requested = language == "auto" ? std::string() : language_name_for_tag(language);
-    if (language.empty() || language == "auto") {
-        std::string resolved;
-        // A speaker pinning a dialect still contributes its token under auto,
-        // because the reference resolves the override before the request.
-        if (!voice.dialect_override.empty() &&
-            resolve_language_token(implementation_->hparams, requested, voice, language_token, resolved)) {
-            has_language = true;
-        }
-        return SYNTH_OK;
-    }
-    if (requested.empty()) {
-        return SYNTH_ERR_UNSUPPORTED_LANGUAGE;
-    }
-    std::string resolved;
-    if (!resolve_language_token(implementation_->hparams, requested, voice, language_token, resolved)) {
-        return SYNTH_ERR_UNSUPPORTED_LANGUAGE;
-    }
-    has_language = true;
-    return SYNTH_OK;
+    return resolve_language(implementation_->hparams, language, voice, has_language, language_token);
+}
+
+synth_status_t Model::resolve_language_only(const std::string & language,
+                                            bool &              has_language,
+                                            uint32_t &          language_token) const {
+    // No preset Voice is consulted here -- the speaker's embedding came from a
+    // Profile, not the catalog, so there is no PresetVoice::dialect_override to
+    // defer to. A default-constructed PresetVoice's override is empty, which
+    // resolve_language already treats as "nothing to defer to" for an ordinary
+    // speaker with no override of its own.
+    const PresetVoice none;
+    return resolve_language(implementation_->hparams, language, none, has_language, language_token);
 }
 
 synth_status_t Model::load_cpu(const std::string & path, std::unique_ptr<Model> & output) {
@@ -695,6 +734,27 @@ synth_status_t Model::decode_codes(const std::vector<int32_t> & codes,
     return SYNTH_OK;
 }
 
+synth_status_t Model::prepare_x_vector(const std::vector<float> & pcm_24k,
+                                       int                        threads,
+                                       XVectorEncoding &          output,
+                                       const char *&              out_diagnostic_code,
+                                       const char *&              out_diagnostic_message) const {
+    output                  = XVectorEncoding{};
+    out_diagnostic_code     = nullptr;
+    out_diagnostic_message  = nullptr;
+    const Impl &    impl    = *implementation_;
+    const HParams & hparams = impl.hparams;
+    // A CustomVoice package resolves no SpeakerEncoderWeights at all
+    // (build_model_weights leaves weights.speaker_encoder default-constructed
+    // for it), so this refuses before encode_speaker_reference ever sees a
+    // weights struct with every pointer null.
+    if (!hparams.has_speaker_encoder) {
+        return SYNTH_ERR_UNSUPPORTED_VOICE;
+    }
+    return encode_speaker_reference(hparams, impl.weights.speaker_encoder, pcm_24k, threads, output,
+                                    out_diagnostic_code, out_diagnostic_message);
+}
+
 synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisOutput & output) const {
     output                  = SynthesisOutput{};
     const Impl &    impl    = *implementation_;
@@ -707,13 +767,53 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         return SYNTH_ERR_INVALID_ARG;
     }
 
+    // A preset Voice and an external embedding are mutually exclusive at this
+    // rung: a request carries one speaker source or the other, never both. A
+    // caller that supplies an x-vector and also names a voice_id gets no
+    // guess at which one wins -- it is refused outright, the way an unknown
+    // voice_id or an unsupported language already is.
+    const bool external = request.x_vector != nullptr;
+    if (external && !request.voice_id.empty()) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
     uint32_t       speaker_token  = 0;
     bool           has_language   = false;
     uint32_t       language_token = 0;
+    // A profile-sources package has an empty Preset Voice Catalog, so
+    // resolve_voice refuses every request on it -- named or not. That refusal
+    // is correct when no Profile was supplied and wrong when one was: the
+    // Voice arrived as conditioning rather than as a name. Language
+    // resolution still has to happen, so this splits the two rather than
+    // skipping the call.
     synth_status_t status =
-        resolve_voice(request.voice_id, request.language, speaker_token, has_language, language_token);
+        external ? resolve_language_only(request.language, has_language, language_token) :
+                   resolve_voice(request.voice_id, request.language, speaker_token, has_language, language_token);
     if (status != SYNTH_OK) {
         return status;
+    }
+    if (external) {
+        // This is the real enforcement, not the graph's. t_speaker_embedding
+        // below is always constructed at hparams.talker.hidden_size,
+        // independent of request.x_vector's actual length, so
+        // build_talker_prefill_input's own width check (talker.cpp, comparing
+        // speaker_embedding->ne[0] against text->ne[0]) can never see a
+        // mismatch from this call site -- it guards a tensor built the wrong
+        // width some other way, not a short vector reaching here. Without
+        // this check, ggml_backend_tensor_set below (`ggml_nbytes(t_speaker_embedding)
+        // = hidden_size * 4 bytes`, read out of `*request.x_vector`
+        // regardless of its actual size) is an unchecked heap over-read for a
+        // short vector.
+        if (request.x_vector->size() != hparams.talker.hidden_size) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        // Documents the same invariant at the point it is established, for a
+        // reader stepping through in a debugger. Not what protects a release
+        // build: NDEBUG is defined in both trees this project ships (Release
+        // and RelWithDebInfo -- see arch/omnivoice/frontend-host.cpp's
+        // tokenize-marker comment), which makes this inert there. The check
+        // above is what actually refuses a malformed request.
+        assert(request.x_vector->size() == hparams.talker.hidden_size);
     }
 
     TalkerPromptRequest prompt_request;
@@ -721,10 +821,14 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
                                       request.token_ids.begin() + kAssistantRolePrefixTokens);
     prompt_request.text_tokens.assign(request.token_ids.begin() + kAssistantRolePrefixTokens,
                                       request.token_ids.end() - kAssistantSuffixTokens);
-    prompt_request.has_speaker    = true;
-    prompt_request.speaker_token  = speaker_token;
-    prompt_request.has_language   = has_language;
-    prompt_request.language_token = language_token;
+    // The slot exists either way -- upstream substitutes the embedding, it
+    // does not remove the position -- so has_speaker stays true regardless of
+    // which source fills it.
+    prompt_request.has_speaker         = true;
+    prompt_request.speaker_token       = speaker_token;
+    prompt_request.speaker_is_external = external;
+    prompt_request.has_language        = has_language;
+    prompt_request.language_token      = language_token;
 
     TalkerPrompt prompt;
     status = build_talker_prompt(hparams, prompt_request, prompt);
@@ -770,12 +874,20 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     ggml_tensor *  t_pair_pos     = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, 2);
     ggml_tensor *  t_pair_mask    = ggml_new_tensor_2d(ictx, GGML_TYPE_F32, 2, 2);
     ggml_tensor *  t_one_pos      = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, 1);
+    // Null for an ordinary Voice: build_talker_prefill_input's defaults then
+    // take the single-accumulation path it always has, byte-identical to
+    // before this parameter pair existed.
+    ggml_tensor *  t_speaker_embedding =
+        external ? ggml_new_tensor_2d(ictx, GGML_TYPE_F32, int64_t(hparams.talker.hidden_size), 1) : nullptr;
     if (!inputs.commit(impl.backend_plan->cpu_backend())) {
         return SYNTH_ERR_OOM;
     }
 
     ggml_backend_tensor_set(t_prompt_text, prompt_text.data(), 0, ggml_nbytes(t_prompt_text));
     ggml_backend_tensor_set(t_prompt_codec, prompt_codec.data(), 0, ggml_nbytes(t_prompt_codec));
+    if (external) {
+        ggml_backend_tensor_set(t_speaker_embedding, request.x_vector->data(), 0, ggml_nbytes(t_speaker_embedding));
+    }
     {
         std::vector<int32_t> sequential(size_t(prefill), 0);
         for (int64_t index = 0; index < prefill; ++index) {
@@ -866,7 +978,8 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         ggml_tensor * positions = nullptr;
         ggml_tensor * mask      = nullptr;
         if (frame == 0) {
-            input = build_talker_prefill_input(tctx, impl.weights.talker, t_prompt_text, t_prompt_codec, codec_offset);
+            input = build_talker_prefill_input(tctx, impl.weights.talker, t_prompt_text, t_prompt_codec, codec_offset,
+                                               t_speaker_embedding, prompt.external_speaker_index);
             positions = t_prompt_pos;
             mask      = t_prompt_mask;
         } else {

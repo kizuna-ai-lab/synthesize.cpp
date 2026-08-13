@@ -123,7 +123,19 @@ advertising a capability are different statements; only the second was false.
 - Publish `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO` on the day
   `synth_voice_profile_create_from_reference` can actually prepare a Profile
   for this family, from `hparams.profile`'s already-validated limits, gated on
-  `has_preset_voice_catalog(hparams)`.
+  `hparams.voice_mode == VoiceMode::ProfileSources`.
+
+  **Corrected 2026-08-12, before Plan 2 was written.** This line first said
+  "gated on `has_preset_voice_catalog(hparams)`", which is inverted: that
+  predicate returns true only for `VoiceMode::PresetCatalog`
+  (`src/arch/qwen3-tts/weights.h:243-245`), i.e. for CustomVoice — the variant
+  that has no speaker encoder and cannot prepare anything. Implemented
+  literally, Plan 2 would have advertised Reference Audio on the wrong variant
+  and left Base advertising nothing.
+  `tests/qwen3_tts_voice_required_test.cpp:155` already asserts the predicate is
+  **false** for Base, so the trap was sitting in front of a test that names it.
+  The mistake came from reusing the nearest existing predicate rather than
+  naming the condition; the condition is the voice mode.
 - Publish `SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` **with it**, not as a
   separate decision: `docs/c-interface.md` requires that any Model which can
   create a v1 Profile also sets that bit, because every successfully prepared
@@ -155,6 +167,10 @@ again. Expect to change the resolver signatures, not to add to them.
 
 ### 2.2 The reference-duration bounds are safety ceilings with no listening pass
 
+**RESOLVED 2026-08-13 by the Stage 2 Listening Audit. Both halves of this item
+closed, and the second one closed in an unexpected way. The original text is
+kept below unchanged; the resolution follows it.**
+
 Task 6 shipped `min_frames_per_clip 24000` (1 s) and
 `max_frames_per_clip`/`max_total_frames 720000` (30 s) at 24 kHz, with
 `max_reference_count 1`. These are **safety ceilings taken from the plan, not
@@ -175,6 +191,33 @@ can be described as validated, and it is owed **before Stage 2 ships**, not
 before Plan 2 starts. See the user memory note "Offer the listening pass before
 shipping": a tolerance grid is not audible evidence.
 
+#### Resolution, 2026-08-13
+
+**The bounds.** The audit's labelled duration sweep found 1 s, 3 s, 10 s and
+30 s references all **usable**, and the 0.5 s case **refused by the library**
+(`voice_profile.reference_too_short`) rather than synthesized badly. The
+shipped ceilings therefore produce usable speech across their whole declared
+range and fail closed below it. They are no longer "safety ceilings with no
+listening pass"; they are safety ceilings that a listener has since heard the
+ends of.
+
+**The 30 s undershoot, and why it is the interesting half.** It did not
+reproduce. Regenerating that case **in x-vector mode** — the only mode this
+port implements — gave **46 codec frames**, in line with every other duration
+in the audit's sweep. The 9-frame figure recorded above came from a
+**transcript-assisted (ICL) dump**. The observation was real and correctly
+recorded; what was wrong was the implicit assumption that it described the path
+Plan 2 built. Nothing in the shipped x-vector path could have produced it.
+
+**Consequence.** The anomaly is not closed, it is **reassigned to Plan 3**,
+which builds the ICL path and is the first plan that can drive the case that
+produced it end to end. Do not treat this as a defect of the shipped bounds,
+and do not treat the 46-frame result as evidence about ICL: they are two
+different modes and only one of them has been listened to.
+
+Full record, including the audit's method and what it deliberately does not
+cover, is in `docs/porting/families/qwen3-tts.md` under "Listening Audits".
+
 ## 3. Deferred minors, by task
 
 Carried verbatim in substance from the branch ledger. None were judged worth a
@@ -190,8 +233,15 @@ a manifest — now exercised, effectively closed.
 array where sibling schemas use enums; it now carries
 `"enum": ["reference_audio", "serialized_profile"]`. (b)
 `resolve_reference_locator` hardcodes its cache directory where the OmniVoice
-pattern exposes a flag. (c) The Base variant's provisional tolerance stages
-copy `talker.*` probe names the Base oracle never dumps.
+pattern exposes a flag. (c) **Closed in this commit (Plan 2 Task 6)** — the
+provisional `speaker_encoder` stage that copied `talker.*` probe names the
+Base oracle never dumps was retired from
+`tests/tolerances/qwen3-tts.json`'s `provisional_variants`; a real
+`speaker.x_vector` probe now lives in
+`variants.qwen3-tts-12hz-0-6b-base.profiles.BF16.stages.replay` instead.
+`provisional_variants`'s sibling `codec_encoder` stage still carries the same
+copied `talker.*` names — Plan 3's to close the same way, once it gives the
+codec encoder a real measurement to replace it with.
 
 **Task 4.** The "CustomVoice with a `speaker_encoder_config`" rejection branch
 in `variant_profile` has no covering test; `display_name` / `size_label` are

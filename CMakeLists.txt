@@ -135,6 +135,17 @@ set(SYNTH_QWEN3_TTS_TEST_MODEL
 set(SYNTH_QWEN3_TTS_BASE_TEST_MODEL
     "${CMAKE_SOURCE_DIR}/models/qwen3-tts-12hz-0-6b-base/qwen3-tts-12hz-0-6b-base-BF16.gguf"
     CACHE FILEPATH "Local Qwen3-TTS Base BF16 GGUF used by integration tests")
+# The Base variant's clone path needs a second locally-materialized artifact
+# besides the package: the Reference Audio it enrolls from. It is a cache
+# variable for the same reason every model path above is -- `models/` is
+# gitignored, the file is fetched rather than committed, and a checkout that
+# keeps it somewhere else must be able to say so instead of editing
+# tests/CMakeLists.txt. It is the same clip
+# scripts/dump_reference_qwen3_tts_speaker.py caches, keyed by the Golden
+# Manifest's own reference locator.
+set(SYNTH_QWEN3_TTS_REFERENCE_WAV
+    "${CMAKE_SOURCE_DIR}/models/qwen3-tts-reference-audio/clone.wav"
+    CACHE FILEPATH "Local 24 kHz mono Reference Audio clip used by Qwen3-TTS Base clone tests")
 # F32 is this family's source profile: the checkpoint stores F32 in both the
 # generator and the codec halves, so it is the package a port is checked
 # against. Plan 4 Task 3 measured both Q8_CODEC_MIXED and F16_CODEC codec-only

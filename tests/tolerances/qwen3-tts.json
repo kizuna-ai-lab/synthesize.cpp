@@ -325,8 +325,8 @@
     "qwen3-tts-12hz-0-6b-base": {
       "case_count": 12,
       "suite_version": 1,
-      "status": "provisional-placeholders-nothing-measured",
-      "note": "case_count (12) tracks this variant's manifest (tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json), not a measurement -- nothing below this line has actually been run yet. `public` and `replay` are honest empty placeholders (see each one's own `description`): `checks: 0` / `all_passed: null` / `probes: {}` rather than copies of customvoice's real content, so this entry does not claim a public-seam run or a replay comparison that has never happened. Their only job is to make this variant's checked stage set equal to scripts/validate-qwen3-tts-*.py's family-wide validator set ({public, replay}), exactly the way qwen3-tts-12hz-0-6b-customvoice's real entry already does, which is what tests/python/test_tolerance_coverage.py's test_every_registered_validator_has_a_measured_stage enforces (equality, not a superset) -- this variant carries no other stage here. `provisional_variants.qwen3-tts-12hz-0-6b-base` (a sibling of `variants`, not read by measured_variants() or either coverage check) is where `speaker_encoder` and `codec_encoder` actually live; see that entry's own note for what they are.",
+      "status": "partial-measurement-speaker-path-only",
+      "note": "case_count (12) tracks this variant's manifest (tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json), not a measurement. `public` is still an honest empty placeholder (see its own `description`): `checks: 0` / `all_passed: null`, because no public-seam run exists yet for this variant (Tasks 7 through 10 build what that would exercise). `replay` is no longer entirely a placeholder as of 2026-08-12: its `speaker.x_vector` probe is a real measurement, over the two cases (base-xvector-en, base-xvector-zh) whose oracle dump and C++ port both exist -- see that probe's own `note`. The deep talker/audio probes customvoice's `replay` carries (`talker.hidden_l*`, `talker.final`, `talker.logits`, `audio.pcm`) are still unmeasured here: this variant has no autoregressive replay yet, only the deterministic conditioning half (reference audio to mel to ECAPA to x-vector). Both stages' checked *set* still equals scripts/validate-qwen3-tts-*.py's family-wide validator set ({public, replay}), which is what tests/python/test_tolerance_coverage.py's test_every_registered_validator_has_a_measured_stage enforces (equality, not a superset) -- the completeness of what is measured *inside* the replay stage is a different question from whether the stage itself exists, and this file makes no claim about the former beyond what `speaker.x_vector`'s own note says. `provisional_variants.qwen3-tts-12hz-0-6b-base` (a sibling of `variants`, not read by measured_variants() or either coverage check) is where `codec_encoder` still lives; `speaker_encoder` was retired from there on 2026-08-12 -- a real cell now exists above instead of a copied placeholder, so keeping both would have described the same measurement twice, once honestly and once as a stale copy of a different model's talker probes.",
       "profiles": {
         "BF16": {
           "stages": {
@@ -338,10 +338,17 @@
             },
             "replay": {
               "phase": "oracle_replay",
+              "description": "The Base variant's deterministic conditioning half on CPU: reference audio through the mel front end and the ECAPA-TDNN speaker encoder, compared against the oracle's own x-vector. The autoregressive half is not yet replayed here -- only the two x-vector-only cases can be driven end to end until Plan 3 lands ICL.",
+              "cases": 2,
+              "probes": {
+                "speaker.x_vector": {
+                  "min_cosine": 0.9999767764206815,
+                  "observed_min_cosine": 0.9999953552841363,
+                  "observed_max_abs": 0.021114349365234375
+                }
+              },
               "backend": "CPU",
-              "description": "PROVISIONAL placeholder, not yet measured. No replay comparison has ever been run for qwen3-tts-12hz-0-6b-base: no C++ port exists yet (Tasks 4 through 10 build it). This key exists only so this variant's stage set satisfies tests/python/test_tolerance_coverage.py's family-wide validator check (scripts/validate-qwen3-tts-replay.py is family-wide, not per-variant) ahead of any real run. Left with no probes, rather than customvoice's copied numbers, because a talker-hidden-state cosine threshold from a different model's replay would not describe anything about this variant.",
-              "cases": 0,
-              "probes": {}
+              "note": "Measured 2026-08-12 on CPU (build/, CMAKE_BUILD_TYPE=Release) over base-xvector-en and base-xvector-zh, via scripts/validate-qwen3-tts-replay.py --compare-x-vector against the real qwen3-tts-12hz-0-6b-base-BF16.gguf and models/qwen3-tts-reference-audio/clone.wav. The gate is 5x the measured deviation in (1 - cosine), the rule this file's own top-level note states for every other probe here. max_abs is recorded but does not gate: an x-vector is a direction consumed by a dot product against the prompt, so cosine is the quantity that matters, the same reasoning that leaves max_abs ungated on the talker probes above and gating only on audio.pcm.\n\nOnly one independent measurement, not two: both cases point at the identical reference clip with no trim, and every file under speaker/ is byte-identical between them (conventions.json's own measurement_coverage note) -- only the synthesis text and language differ, which the speaker path never reads. Running both is what shows the whole pipeline (load, resample, encode, mel, ECAPA, x-vector) is deterministic case to case, not a second data point on the residual.\n\nThe residual is bfloat16 quantization of the *oracle*, not a port defect. The oracle's own speaker_encoder weights run in torch.bfloat16 and its dumped tensors round-trip through bfloat16 exactly for seven of the eight speaker/*.f32 files -- verified directly, max abs diff 0.0 -- everything except mel.f32, whose bf16 round-trip differs by up to ~0.031 (conventions.json's own artifact_dtypes note). At the x-vector's own largest element (|ref| = 7.28), 0.02111 is 0.68 of one bfloat16 ulp; recomputing the oracle's own final ASP/FC layer directly in float64 disagrees with the oracle's recorded x_vector by more (0.022367) than this port does. A tolerance whose story was 'the filterbank rounds differently' would be wrong: the mel front end that feeds this graph is essentially exact on its own (max_abs 3.31e-4 against the oracle, and against a float64 truth the port's own mel is *closer* -- 1.14e-4 against the oracle's 2.21e-4). The budget spent here is almost entirely the ECAPA graph's bf16-quantized-weights arithmetic across 38 convolutions, not the mel stage -- the mel comparison above was run specifically to rule the mel stage out before this number was committed, not merely alongside it."
             }
           }
         }
@@ -350,59 +357,10 @@
   },
   "provisional_variants": {
     "qwen3-tts-12hz-0-6b-base": {
-      "note": "Deliberately outside `variants`/`profiles`: tests/python/test_tolerance_coverage.py's measured_variants() only reads those two top-level keys, and this file's coverage/validator checks would otherwise have to treat `speaker_encoder`/`codec_encoder` as measured stages needing their own validator script -- which do not exist yet (scripts/validate-qwen3-tts-speaker_encoder.py and ...-codec_encoder.py are not written; Task 5 gives the Base converter the graphs that would make them meaningful, and Plans 2/3 measure them for real). This is not a temporary parking spot pending promotion into `variants` on some later date -- it moves there only once a validator exists to check it, the same rule every other stage in this file already follows. Until then, each stage's own `description` says plainly that its numbers are a copy of qwen3-tts-12hz-0-6b-customvoice's BF16 `replay` stage, not a measurement of a speaker or codec encoder.",
+      "note": "Deliberately outside `variants`/`profiles`: tests/python/test_tolerance_coverage.py's measured_variants() only reads those two top-level keys, and this file's coverage/validator checks would otherwise have to treat `codec_encoder` as a measured stage needing its own validator script -- which does not exist yet (scripts/validate-qwen3-tts-codec_encoder.py is not written; Plan 3 gives the Base converter the codec encoder graph that would make it meaningful, and measures it for real). This is not a temporary parking spot pending promotion into `variants` on some later date -- it moves there only once a validator exists to check it, the same rule every other stage in this file already follows. Until then, `codec_encoder`'s own `description` says plainly that its numbers are a copy of qwen3-tts-12hz-0-6b-customvoice's BF16 `replay` stage, not a measurement of a codec encoder.\n\n`speaker_encoder` lived here beside `codec_encoder` until 2026-08-12, with the identical caveat and the identical copied numbers. It was retired the day Task 6 gave the speaker path a real cell (`variants.qwen3-tts-12hz-0-6b-base.profiles.BF16.stages.replay.probes.speaker.x_vector`): keeping both would have described the same subsystem twice, once as an honest placeholder and once as an actual measurement, and the placeholder is the one with nothing left to say.",
       "profiles": {
         "BF16": {
           "stages": {
-            "speaker_encoder": {
-              "phase": "oracle_replay",
-              "description": "PROVISIONAL placeholder, not yet measured. Probe numbers are copied verbatim from this file's qwen3-tts-12hz-0-6b-customvoice BF16 replay stage above so the key exists ahead of Task 5's speaker encoder graph and Plans 2/3's real measurement against it. Do not read these as validated tolerances for the speaker encoder: they describe a different model's talker prefill probes, not this stage's own tensors.",
-              "cases": 0,
-              "probes": {
-                "talker.hidden_l0": {
-                  "min_cosine": 0.99996,
-                  "observed_min_cosine": 0.999992,
-                  "observed_max_abs": 0.0837879
-                },
-                "talker.hidden_l7": {
-                  "min_cosine": 0.99993,
-                  "observed_min_cosine": 0.999986,
-                  "observed_max_abs": 4.5256
-                },
-                "talker.hidden_l14": {
-                  "min_cosine": 0.999855,
-                  "observed_min_cosine": 0.999971,
-                  "observed_max_abs": 7.62683
-                },
-                "talker.hidden_l21": {
-                  "min_cosine": 0.99971,
-                  "observed_min_cosine": 0.999942,
-                  "observed_max_abs": 12.0525
-                },
-                "talker.hidden_l27": {
-                  "min_cosine": 0.999575,
-                  "observed_min_cosine": 0.999915,
-                  "observed_max_abs": 17.3939
-                },
-                "talker.final": {
-                  "min_cosine": 0.99726,
-                  "observed_min_cosine": 0.999452,
-                  "observed_max_abs": 3.83554
-                },
-                "talker.logits": {
-                  "min_cosine": 0.99761,
-                  "observed_min_cosine": 0.999522,
-                  "observed_max_abs": 1.44078
-                },
-                "audio.pcm": {
-                  "min_cosine": 0.997135,
-                  "max_abs": 0.5,
-                  "observed_min_cosine": 0.999427,
-                  "observed_max_abs": 0.154108
-                }
-              },
-              "backend": "CPU"
-            },
             "codec_encoder": {
               "phase": "oracle_replay",
               "description": "PROVISIONAL placeholder, not yet measured. Probe numbers are copied verbatim from this file's qwen3-tts-12hz-0-6b-customvoice BF16 replay stage above so the key exists ahead of Task 5's codec encoder graph and Plans 2/3's real measurement against it. Do not read these as validated tolerances for the codec encoder: they describe a different model's talker prefill probes, not this stage's own tensors.",

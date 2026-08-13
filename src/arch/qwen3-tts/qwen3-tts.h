@@ -1,6 +1,7 @@
 #pragma once
 
 #include "model-info.h"
+#include "speaker-encoder-host.h"
 #include "synthesize.h"
 #include "text-frontend.h"
 
@@ -12,6 +13,10 @@
 struct ggml_backend_device;
 
 namespace synth::qwen3tts {
+
+// SpeakerEncoderWeights is already forward-declared by speaker-encoder-host.h
+// above; HParams needs its own declaration for Model::hparams() below.
+struct HParams;
 
 struct ModelInfo {
     std::string family = "qwen3-tts";
@@ -120,6 +125,17 @@ struct SynthesisRequest {
     // Talker layers whose output is captured per frame, for comparison against
     // the oracle's probes. Empty captures nothing and leaves the graph alone.
     std::vector<uint32_t> probe_layers;
+
+    // Non-null selects the x-vector path: the speaker slot's embedding comes
+    // from a prepared Voice Profile instead of a preset Voice's codec token,
+    // and `voice_id` is not consulted. Mutually exclusive with naming a
+    // preset Voice at this rung -- a request carries one speaker source or
+    // the other, never both -- which is why this is a separate field rather
+    // than an alternate meaning for `voice_id`. Its length must equal
+    // hparams.talker.hidden_size; enc_dim == hidden_size is enforced at load
+    // (weights.cpp), so a Profile prepared against this same Model always
+    // satisfies it.
+    const std::vector<float> * x_vector = nullptr;
 };
 
 // The talker attends over the whole utterance, so its cache grows with it: at
@@ -177,7 +193,39 @@ class Model {
                                 int                          threads,
                                 std::vector<float> &         audio) const;
 
+    // Reference audio to a speaker embedding. Split out from Voice Profile
+    // preparation the way decode_codes is split from run_synthesis: this half
+    // is deterministic and is compared against the oracle on its own.
+    synth_status_t prepare_x_vector(const std::vector<float> & pcm_24k,
+                                    int                        threads,
+                                    XVectorEncoding &          output,
+                                    const char *&              out_diagnostic_code,
+                                    const char *&              out_diagnostic_message) const;
+
+    // What arch/qwen3-tts/profile.h's create_x_vector_profile needs from a
+    // live Model, exposed as two small accessors rather than that function
+    // taking a `Model &` directly -- see its own header comment for why:
+    // `synth::qwen3tts::Model` has a private constructor reachable only
+    // through `load`/`load_cpu`, both of which need a real GGUF on disk, and
+    // this family has no synthetic-package test harness yet, so a `Model &`
+    // parameter there would force create_x_vector_profile's own unit tests to
+    // depend on the ~2.5 GB real package. src/voice-profile.cpp's
+    // create_qwen3_tts_profile_from_reference is the one caller that needs
+    // these from a REAL Loaded Model rather than a synthetic HParams fixture.
+    const HParams &               hparams() const;
+    const SpeakerEncoderWeights & speaker_encoder_weights() const;
+
   private:
+    // The language half of resolve_voice, for a request whose speaker is an
+    // external Voice Profile rather than a preset Voice: there is no
+    // PresetVoice to consult, so no dialect override can win over the
+    // requested language. Factored out rather than duplicated so the two
+    // paths share one implementation of that rule instead of a second copy
+    // free to drift from it.
+    synth_status_t resolve_language_only(const std::string & language,
+                                         bool &              has_language,
+                                         uint32_t &          language_token) const;
+
     struct Impl;
     explicit Model(std::unique_ptr<Impl> implementation);
     std::unique_ptr<Impl> implementation_;

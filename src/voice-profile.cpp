@@ -1,4 +1,6 @@
 #include "arch/omnivoice/profile.h"
+#include "arch/qwen3-tts/profile.h"
+#include "arch/qwen3-tts/weights.h"
 #include "audio-normalizer.h"
 #include "bcp47.h"
 #include "model-handle.h"
@@ -372,6 +374,209 @@ synth_status_t create_omnivoice_profile_from_reference(const synth_model_t *    
 }
 
 // ---------------------------------------------------------------------------
+// Qwen3-TTS's create_from_reference handler (Stage 2 Plan 2 Task 9): the
+// x-vector Voice Profile source this family's Base variant implements.
+// `model`/`params` are already known non-null with a params struct_size of at
+// least sizeof(uint64_t) by the caller below, which also already confirmed
+// this Loaded Model's own capability snapshot advertises Reference Audio --
+// see that caller's own comment for why a CustomVoice Loaded Model (this
+// family's OTHER variant, sharing the same `ModelFamily::Qwen3Tts` tag) never
+// reaches this function at all.
+//
+// Steps 1-4 below mirror create_omnivoice_profile_from_reference's own Steps
+// 1, 4 in order -- there is no shared helper for them (family internals are
+// private, CLAUDE.md) -- with TWO family-specific substitutions in place of
+// that function's Steps 2-3: a non-null transcript (Step 2) and a non-null
+// reference_language tag (Step 3) are both refused BY NAME here, before
+// normalization, rather than required/matched. D4 (this plan's own ruling)
+// fixes the clone mode at preparation; this rung implements the x-vector
+// mode only, so accepting a transcript and silently building the x-vector
+// Profile anyway would hand back a weaker clone than the caller asked for --
+// the same capability lie the carryover's erratum removed from the source
+// flags. A language tag has no meaning without the transcript it would
+// qualify (2026-08-11-qwen3-tts-stage-2-design.md:174: "reference_language
+// follows the transcript: it qualifies a transcript this rung cannot use"),
+// so it is refused for the identical reason rather than silently accepted,
+// shape-checked, and persisted into a payload the capability snapshot says
+// this rung cannot describe -- docs/c-interface.md is explicit that
+// supplying a field declared unsupported must fail rather than being
+// silently ignored.
+synth_status_t create_qwen3_tts_profile_from_reference(const synth_model_t *                  model,
+                                                       const synth_voice_reference_params_t * params,
+                                                       synth_voice_profile_t **               out_profile) {
+    const synth_diagnostic_sink_t * diagnostics =
+        read_visible(params, offsetof(synth_voice_reference_params_t, diagnostics),
+                     static_cast<const synth_diagnostic_sink_t *>(nullptr));
+    if (!valid_diagnostic_sink(diagnostics)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    const uint64_t reference_count =
+        read_visible(params, offsetof(synth_voice_reference_params_t, reference_count), uint64_t(0));
+    const uint64_t reference_stride =
+        read_visible(params, offsetof(synth_voice_reference_params_t, reference_stride), uint64_t(0));
+    const synth_voice_reference_t * references =
+        read_visible(params, offsetof(synth_voice_reference_params_t, references),
+                     static_cast<const synth_voice_reference_t *>(nullptr));
+
+    const synth::VoiceProfileInfo & capabilities = model->info.voice_profile;
+
+    if (references == nullptr || reference_count == 0) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    // Step 1 (OmniVoice's own numbering): exactly one clip. `max_reference_count`
+    // is this package's declared ceiling (1 for this family's Base variant too);
+    // more than that is refused by name rather than silently fused or
+    // truncated to the first one.
+    if (reference_count > capabilities.max_reference_count) {
+        emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.too_many_references",
+                        "this package accepts at most one Reference Audio clip per Voice Profile");
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    // Mirrors create_omnivoice_profile_from_reference's own defensive check
+    // (its own comment explains why: a package declaring a higher ceiling
+    // than "read references[0] only" would otherwise silently drop every
+    // clip past the first, and this family's real packages all declare
+    // max_reference_count == 1 too, so this is currently unreachable in
+    // practice for the same reason it is there.)
+    if (reference_count != 1) {
+        emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.multi_reference_unsupported",
+                        "this package's Voice Profile creation reads a single Reference Audio clip; it does not fuse "
+                        "or select among multiple clips");
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    const auto * reference = reinterpret_cast<const synth_voice_reference_t *>(references);
+    if (reference->struct_size < sizeof(uint64_t)) {
+        return SYNTH_ERR_BAD_STRUCT_SIZE;
+    }
+    // docs/c-interface.md: reference_stride "must cover every descriptor's
+    // declared struct_size".
+    if (reference_stride < reference->struct_size) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    const float * samples =
+        read_visible(reference, offsetof(synth_voice_reference_t, samples), static_cast<const float *>(nullptr));
+    const uint64_t frame_count = read_visible(reference, offsetof(synth_voice_reference_t, frame_count), uint64_t(0));
+    const uint32_t sample_rate = read_visible(reference, offsetof(synth_voice_reference_t, sample_rate), uint32_t(0));
+    const uint32_t channel_count =
+        read_visible(reference, offsetof(synth_voice_reference_t, channel_count), uint32_t(0));
+    const char * transcript =
+        read_visible(reference, offsetof(synth_voice_reference_t, transcript), static_cast<const char *>(nullptr));
+    const uint64_t transcript_size =
+        read_visible(reference, offsetof(synth_voice_reference_t, transcript_size), uint64_t(0));
+    const char * language_tag =
+        read_visible(reference, offsetof(synth_voice_reference_t, language_tag), static_cast<const char *>(nullptr));
+    const uint64_t language_size =
+        read_visible(reference, offsetof(synth_voice_reference_t, language_tag_size), uint64_t(0));
+
+    if ((transcript == nullptr) != (transcript_size == 0) || (language_tag == nullptr) != (language_size == 0)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if (transcript_size > std::numeric_limits<size_t>::max() || language_size > std::numeric_limits<size_t>::max()) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // Step 2: the one family-specific difference from OmniVoice's own
+    // handler. The capability says reference_transcript is UNSUPPORTED, and
+    // the runtime has to agree with what it advertises. Checked before
+    // normalization ever runs, the same way create_x_vector_profile's own
+    // transcript check runs before its (expensive) encode chain: there is no
+    // reason to resample reference audio for a request this function is
+    // about to refuse anyway.
+    if (transcript != nullptr && transcript_size != 0) {
+        emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.transcript_unsupported",
+                        "this package's Voice Profile creation implements x-vector cloning only; a reference "
+                        "transcript names the transcript-assisted mode, which has no implementation yet");
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // Step 3: the same UNSUPPORTED/refuse-by-name reasoning Step 2 applies to
+    // the transcript applies here (see this function's own header comment).
+    // A reviewer measured the defect this closes: before this check existed,
+    // `language_tag="en"` returned SYNTH_OK and was written verbatim into
+    // the serialized envelope, and `language_tag="zz-ZZ"` -- a tag this
+    // package does not even declare -- also returned SYNTH_OK, where
+    // OmniVoice's own equivalent check (this file's `declared_language`)
+    // would have refused it with SYNTH_ERR_UNSUPPORTED_LANGUAGE. Checked
+    // before normalization, the same reason Step 2 is.
+    if (language_tag != nullptr && language_size != 0) {
+        emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.reference_language_unsupported",
+                        "this package's Voice Profile creation does not accept a Reference Audio language tag at "
+                        "this rung; the tag would qualify a transcript this rung cannot use");
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // Step 4: the Audio Normalizer, RFE-prechecked against this package's
+    // declared limits before any resample allocation (docs/c-interface.md:
+    // 486-496). `synth::validate_reference_format` runs BEFORE
+    // `reference_frame_equivalent` -- that function does not itself validate
+    // `input_rate` (src/audio-normalizer.h), so a caller deriving a length
+    // decision first would shadow an out-of-contract rate with a
+    // length-derived status instead (the same ordering
+    // create_omnivoice_profile_from_reference's own Step 4 pins, for the same
+    // reason).
+    if (samples == nullptr || frame_count == 0) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    const synth_status_t format_status = synth::validate_reference_format(sample_rate, channel_count);
+    if (format_status != SYNTH_OK) {
+        return format_status;
+    }
+    const uint64_t rfe =
+        synth::reference_frame_equivalent(frame_count, sample_rate, capabilities.reference_target_sample_rate);
+    if (rfe > capabilities.max_frames_per_clip || rfe > capabilities.max_total_frames) {
+        emit_diagnostic(diagnostics, SYNTH_ERR_INPUT_TOO_LONG, "voice_profile.reference_too_long",
+                        "the reference clip exceeds this package's maximum Reference Audio length");
+        return SYNTH_ERR_INPUT_TOO_LONG;
+    }
+    if (rfe < capabilities.min_frames_per_clip) {
+        emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.reference_too_short",
+                        "the reference clip is shorter than this package's minimum Reference Audio length");
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    synth::NormalizedReference normalized;
+    const synth_status_t       normalize_status = synth::normalize_reference(
+        samples, frame_count, sample_rate, channel_count, capabilities.reference_target_sample_rate,
+        capabilities.reference_target_channels, normalized);
+    if (normalize_status != SYNTH_OK) {
+        return normalize_status;
+    }
+
+    // Step 5: the family's own encode chain (arch/qwen3-tts/profile.h's
+    // create_x_vector_profile), fed the two pieces of the live Model it needs
+    // through Model::hparams()/speaker_encoder_weights() rather than a
+    // `Model &` -- see that function's own header comment, and
+    // qwen3-tts.h's own comment on those two accessors, for why. `transcript`
+    // and `language_tag` are always empty here: Steps 2-3 above already
+    // refused any non-empty one of either, so create_x_vector_profile's own
+    // identical transcript check can never fire; it stays in that function
+    // as the defense-in-depth for any future caller that reaches it a
+    // different way. `XVectorProfile::language_tag` (arch/qwen3-tts/profile.h)
+    // exists for Plan 3's ICL payload, which pairs a transcript with a
+    // language; nothing populates it at this rung.
+    std::shared_ptr<const synth::qwen3tts::XVectorProfile> x_vector_profile;
+    const char *                                           diagnostic_code    = nullptr;
+    const char *                                           diagnostic_message = nullptr;
+    const synth_status_t                                   create_status = synth::qwen3tts::create_x_vector_profile(
+        model->qwen3_tts->hparams(), model->qwen3_tts->speaker_encoder_weights(), normalized.pcm, std::string(),
+        std::string(), 0, x_vector_profile, diagnostic_code, diagnostic_message);
+    if (create_status != SYNTH_OK) {
+        emit_diagnostic(diagnostics, create_status, diagnostic_code, diagnostic_message);
+        return create_status;
+    }
+
+    auto profile        = std::make_unique<synth_voice_profile>();
+    profile->model      = model;
+    profile->family_tag = synth::ProfileFamilyTag::Qwen3TtsClone;
+    profile->payload    = std::move(x_vector_profile);
+    *out_profile        = profile.release();
+    return SYNTH_OK;
+}
+
+// ---------------------------------------------------------------------------
 // OmniVoice's create_from_description handler (Task 15): the second Voice
 // Profile source this family implements for real. `model`/`params` are
 // already known non-null with a params struct_size of at least
@@ -573,6 +778,88 @@ synth_status_t load_omnivoice_profile_from_memory(const synth_model_t *         
     return SYNTH_OK;
 }
 
+// ---------------------------------------------------------------------------
+// Qwen3-TTS's serialize / load_from_memory dispatch (Stage 2 Plan 2 Task 9):
+// the same v1 Serialized Profile envelope contract OmniVoice's own pair
+// above implements, this family's writer/reader living in
+// arch/qwen3-tts/profile.cpp instead. As with OmniVoice, this file only owns
+// dispatch and the public `synth_byte_buffer_t` allocation.
+// ---------------------------------------------------------------------------
+
+synth_status_t serialize_qwen3_tts_profile(const synth_voice_profile *                    profile,
+                                           const synth_voice_profile_serialize_params_t * params,
+                                           synth_byte_buffer_t **                         out_data) {
+    const synth_diagnostic_sink_t * diagnostics =
+        read_visible(params, offsetof(synth_voice_profile_serialize_params_t, diagnostics),
+                     static_cast<const synth_diagnostic_sink_t *>(nullptr));
+    if (!valid_diagnostic_sink(diagnostics)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    const uint8_t (&compatibility_id)[32] = profile->model->info.voice_profile.compatibility_id;
+    const auto & x_vector_profile = *static_cast<const synth::qwen3tts::XVectorProfile *>(profile->payload.get());
+
+    std::vector<uint8_t> bytes;
+    const synth_status_t status =
+        synth::qwen3tts::serialize_x_vector_profile(x_vector_profile, compatibility_id, bytes);
+    if (status != SYNTH_OK) {
+        return status;
+    }
+
+    auto storage  = std::make_unique<ByteBufferStorage>();
+    storage->data = std::make_unique<uint8_t[]>(bytes.size());
+    if (!bytes.empty()) {
+        std::memcpy(storage->data.get(), bytes.data(), bytes.size());
+    }
+    storage->public_value.struct_size = sizeof(storage->public_value);
+    storage->public_value.data        = storage->data.get();
+    storage->public_value.data_size   = bytes.size();
+    *out_data                         = reinterpret_cast<synth_byte_buffer_t *>(storage.release());
+    return SYNTH_OK;
+}
+
+synth_status_t load_qwen3_tts_profile_from_memory(const synth_model_t *                     model,
+                                                  const synth_voice_profile_load_params_t * params,
+                                                  synth_voice_profile_t **                  out_profile) {
+    const synth_diagnostic_sink_t * diagnostics =
+        read_visible(params, offsetof(synth_voice_profile_load_params_t, diagnostics),
+                     static_cast<const synth_diagnostic_sink_t *>(nullptr));
+    if (!valid_diagnostic_sink(diagnostics)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    const uint8_t * data =
+        read_visible(params, offsetof(synth_voice_profile_load_params_t, data), static_cast<const uint8_t *>(nullptr));
+    const uint64_t data_size =
+        read_visible(params, offsetof(synth_voice_profile_load_params_t, data_size), uint64_t(0));
+    // docs/c-interface.md: "Loading requires non-null, non-empty bytes."
+    if (data == nullptr || data_size == 0) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if (data_size > std::numeric_limits<size_t>::max()) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> payload;
+    const char *                diagnostic_code    = nullptr;
+    const char *                diagnostic_message = nullptr;
+    const synth_status_t        status             = synth::qwen3tts::load_profile_from_memory(
+        model->qwen3_tts->hparams().speaker_encoder.enc_dim, data, static_cast<size_t>(data_size),
+        model->info.voice_profile.compatibility_id, family_tag, payload, diagnostic_code, diagnostic_message);
+    if (status != SYNTH_OK) {
+        emit_diagnostic(diagnostics, status, diagnostic_code, diagnostic_message);
+        return status;
+    }
+
+    auto profile        = std::make_unique<synth_voice_profile>();
+    profile->model      = model;
+    profile->family_tag = family_tag;
+    profile->payload    = std::move(payload);
+    *out_profile        = profile.release();
+    return SYNTH_OK;
+}
+
 }  // namespace
 
 void synth_voice_profile_capabilities_init(synth_voice_profile_capabilities_t * capabilities, uint64_t struct_size) {
@@ -663,10 +950,23 @@ synth_status_t synth_voice_profile_create_from_reference(const synth_model_t *  
     if (model == nullptr) {
         return SYNTH_ERR_INVALID_ARG;
     }
+    // Qwen3-TTS carries two variants under one `ModelFamily::Qwen3Tts` tag,
+    // and only one of them -- Base, ProfileSources -- can prepare anything;
+    // CustomVoice has no speaker encoder and its capability snapshot is the
+    // all-zero shape fill_voice_profile_capability produces for it. So the
+    // family check alone is not enough here the way it is for OmniVoice
+    // (which has no such split): a CustomVoice Loaded Model must take the
+    // SAME generic "unsupported" fallback every non-participating family
+    // already does, which is exactly what checking this Model's own
+    // published SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO bit (rather than just
+    // `family == Qwen3Tts`) preserves.
+    const bool qwen3_tts_supports_reference =
+        model->info.family == synth::ModelFamily::Qwen3Tts &&
+        (model->info.voice_profile.source_flags & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) != 0;
     // Every other family still takes the generic "unsupported" fallback
     // (struct_size/null checks plus the valid-sink UNSUPPORTED_VOICE-or-
     // INVALID_ARG split), unchanged from before Task 14.
-    if (model->info.family != synth::ModelFamily::Omnivoice) {
+    if (model->info.family != synth::ModelFamily::Omnivoice && !qwen3_tts_supports_reference) {
         return validate_unsupported_params(params, offsetof(synth_voice_reference_params_t, diagnostics));
     }
     if (params == nullptr) {
@@ -676,6 +976,9 @@ synth_status_t synth_voice_profile_create_from_reference(const synth_model_t *  
         return SYNTH_ERR_BAD_STRUCT_SIZE;
     }
     try {
+        if (qwen3_tts_supports_reference) {
+            return create_qwen3_tts_profile_from_reference(model, params, out_profile);
+        }
         return create_omnivoice_profile_from_reference(model, params, out_profile);
     } catch (const std::bad_alloc &) {
         return SYNTH_ERR_OOM;
@@ -765,14 +1068,29 @@ synth_status_t synth_voice_profile_load_from_memory(const synth_model_t *       
     // this exact function with a dummy, never-dereferenced
     // `(synth_model_t *) 1` specifically to pin a too-small params struct
     // returning BAD_STRUCT_SIZE without needing a real model behind it; that
-    // ordering has to survive Task 16 wiring a real family dispatch in here.
-    if (model->info.family != synth::ModelFamily::Omnivoice) {
+    // ordering has to survive Task 16 (and, here, Stage 2 Plan 2 Task 9)
+    // wiring a real family dispatch in here.
+    //
+    // The same per-model (not just per-family) check
+    // synth_voice_profile_create_from_reference above needs, and for the
+    // same reason: a CustomVoice Loaded Model shares `ModelFamily::Qwen3Tts`
+    // with Base but publishes no SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE bit,
+    // so it must fall through to the same generic "unsupported" path any
+    // other non-participating family takes rather than reach
+    // load_qwen3_tts_profile_from_memory, which dereferences `model->qwen3_tts`.
+    const bool qwen3_tts_supports_serialized_profile =
+        model->info.family == synth::ModelFamily::Qwen3Tts &&
+        (model->info.voice_profile.source_flags & SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE) != 0;
+    if (model->info.family != synth::ModelFamily::Omnivoice && !qwen3_tts_supports_serialized_profile) {
         // Every other family still takes the generic "unsupported" fallback,
         // the same one synth_voice_profile_create_from_reference/
         // create_from_description use for a non-OmniVoice model.
         return validate_unsupported_params(params, offsetof(synth_voice_profile_load_params_t, diagnostics));
     }
     try {
+        if (qwen3_tts_supports_serialized_profile) {
+            return load_qwen3_tts_profile_from_memory(model, params, out_profile);
+        }
         return load_omnivoice_profile_from_memory(model, params, out_profile);
     } catch (const std::bad_alloc &) {
         return SYNTH_ERR_OOM;
@@ -809,10 +1127,25 @@ synth_status_t synth_voice_profile_serialize(const synth_voice_profile_t *      
             return SYNTH_ERR_INTERNAL;
         }
     }
-    // No family currently produces any other tag, but the generic fallback
-    // stays here rather than being narrowed to an assert: a Voice Profile's
-    // own family_tag is the one thing this dispatcher must never
-    // misinterpret as OmniVoice's.
+    // Branches on the PROFILE's own family_tag, not the model's family --
+    // the same reason the two conditions above do. A profile carrying this
+    // tag can only have been produced by create_qwen3_tts_profile_from_reference
+    // or load_qwen3_tts_profile_from_memory, both of which already required a
+    // Loaded Model that supports this family's Reference Audio / Serialized
+    // Profile sources, so no further per-model gate belongs here.
+    if (profile->family_tag == synth::ProfileFamilyTag::Qwen3TtsClone) {
+        try {
+            return serialize_qwen3_tts_profile(profile, params, out_data);
+        } catch (const std::bad_alloc &) {
+            return SYNTH_ERR_OOM;
+        } catch (...) {
+            return SYNTH_ERR_INTERNAL;
+        }
+    }
+    // No other family currently produces any other tag, but the generic
+    // fallback stays here rather than being narrowed to an assert: a Voice
+    // Profile's own family_tag is the one thing this dispatcher must never
+    // misinterpret as OmniVoice's or Qwen3-TTS's.
     const synth_diagnostic_sink_t * diagnostics =
         read_visible(params, offsetof(synth_voice_profile_serialize_params_t, diagnostics),
                      static_cast<const synth_diagnostic_sink_t *>(nullptr));

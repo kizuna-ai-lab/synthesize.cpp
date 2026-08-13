@@ -125,10 +125,43 @@ struct CodecDecoderWeights {
     Conv1dWeights                   output_conv;
 };
 
+// One SE-Res2Net block: a TDNN 1x1 in, a scale-8 res2net body whose FIRST
+// split passes through unconvolved and leads the concatenation (hence seven
+// convolutions, not eight), a squeeze-excite bottleneck pair, and a TDNN 1x1
+// out. The block's own input is then added back as a residual.
+//
+// Which split passes through does not change the tensor count, so it does not
+// change what this struct resolves -- but it does change the forward pass, and
+// speaker-encoder.cpp is the file that reads these pointers. See
+// modeling_qwen3_tts.py:115-126, where split 0 is `output_part = hidden_part`
+// and the outputs are concatenated in split order.
+struct SpeakerEncoderBlockWeights {
+    Conv1dWeights              tdnn1;
+    std::vector<Conv1dWeights> res2net;
+    Conv1dWeights              se1;
+    Conv1dWeights              se2;
+    Conv1dWeights              tdnn2;
+};
+
+// The ECAPA-TDNN speaker encoder Base variants carry. Plan 1 resolved these
+// 76 names into a discarded scratch struct because no graph could reach them;
+// Plan 2's speaker-encoder.cpp is that graph, so the pointers are kept.
+struct SpeakerEncoderWeights {
+    Conv1dWeights                           stem;      // blocks.0.conv, kernel 5
+    std::vector<SpeakerEncoderBlockWeights> blocks;    // three
+    Conv1dWeights                           mfa;       // multi-layer feature aggregation
+    Conv1dWeights                           asp_tdnn;  // attention bottleneck
+    Conv1dWeights                           asp;       // attention logits
+    Conv1dWeights                           fc;        // pooled statistics -> enc_dim
+};
+
 struct ModelWeights {
-    TalkerWeights        talker;
-    CodePredictorWeights code_predictor;
-    CodecDecoderWeights  codec;
+    TalkerWeights         talker;
+    CodePredictorWeights  code_predictor;
+    CodecDecoderWeights   codec;
+    // Empty (default-constructed) for a CustomVoice package -- see
+    // build_model_weights's doc comment below.
+    SpeakerEncoderWeights speaker_encoder;
 };
 
 // Resolves the whole catalog against a loaded package.
@@ -141,10 +174,12 @@ struct ModelWeights {
 //
 // When `hparams.has_speaker_encoder` is set (Base variants), the catalog also
 // covers `speaker_encoder.*` and `codec.encoder.*`: the ECAPA-TDNN speaker
-// encoder and the speech tokenizer's encoder half. Neither has a graph builder
-// yet -- Plans 2 and 3 add those -- so they are resolved here purely to bring
-// their names into the sweep; a Base package that carries them uncatalogued is
-// refused rather than silently accepted.
+// encoder and the speech tokenizer's encoder half. The speaker encoder is
+// resolved into `ModelWeights::speaker_encoder` and read by
+// speaker-encoder.cpp's graph (Plan 2); the codec encoder still has no graph
+// builder -- Plan 3 adds one -- so it is resolved here purely to bring its
+// names into the sweep. Either way, a Base package that carries these
+// uncatalogued is refused rather than silently accepted.
 // `codec_context`, when non-null, holds same-named twins of the codec half and
 // the codec is bound against those instead. That is what lets the codec run on
 // an accelerator while the talker and the code predictor stay on the CPU, which

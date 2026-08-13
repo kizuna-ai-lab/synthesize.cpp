@@ -34,7 +34,9 @@ ggml_tensor * build_talker_prefill_input(ggml_context *        context,
                                          const TalkerWeights & weights,
                                          ggml_tensor *         text_tokens,
                                          ggml_tensor *         codec_tokens,
-                                         int64_t               codec_offset) {
+                                         int64_t               codec_offset,
+                                         ggml_tensor *         speaker_embedding,
+                                         int64_t               speaker_index) {
     if (context == nullptr || codec_tokens == nullptr || codec_tokens->type != GGML_TYPE_I32 ||
         weights.codec_embedding == nullptr || codec_offset < 0) {
         return nullptr;
@@ -47,10 +49,37 @@ ggml_tensor * build_talker_prefill_input(ggml_context *        context,
         return nullptr;
     }
     ggml_tensor * codec = ggml_get_rows(context, weights.codec_embedding, codec_tokens);
-    // The codec stream is a tail of the text stream, so it is accumulated into it
-    // at an offset rather than scattered row by row.
-    return ggml_acc(context, text, codec, text->nb[1], text->nb[2], text->nb[3],
-                    static_cast<size_t>(codec_offset) * text->nb[1]);
+    if (speaker_embedding == nullptr) {
+        // The codec stream is a tail of the text stream, so it is accumulated
+        // into it at an offset rather than scattered row by row.
+        return ggml_acc(context, text, codec, text->nb[1], text->nb[2], text->nb[3],
+                        static_cast<size_t>(codec_offset) * text->nb[1]);
+    }
+    if (speaker_index < 0 || speaker_index >= codec_tokens->ne[0] || speaker_embedding->ne[0] != text->ne[0]) {
+        return nullptr;
+    }
+    // The x-vector substitutes for one row of the codec embedding at the
+    // position the speaker token occupies. enc_dim equals the talker's hidden
+    // size -- weights.h:26-28: "there is no projection between them" -- so it
+    // is literally a row of this [hidden_size, N] F32 tensor. Splitting the
+    // accumulation around that index is what leaves the placeholder row
+    // computed but never read; zeroing it in place would need a second pass
+    // over a tensor ggml_acc has already consumed.
+    ggml_tensor * head = ggml_view_2d(context, codec, codec->ne[0], speaker_index, codec->nb[1], 0);
+    ggml_tensor * tail = ggml_view_2d(context, codec, codec->ne[0], codec->ne[1] - speaker_index - 1, codec->nb[1],
+                                      static_cast<size_t>(speaker_index + 1) * codec->nb[1]);
+    ggml_tensor * out  = text;
+    if (speaker_index > 0) {
+        out = ggml_acc(context, out, head, out->nb[1], out->nb[2], out->nb[3],
+                       static_cast<size_t>(codec_offset) * out->nb[1]);
+    }
+    out = ggml_acc(context, out, speaker_embedding, out->nb[1], out->nb[2], out->nb[3],
+                   static_cast<size_t>(codec_offset + speaker_index) * out->nb[1]);
+    if (tail->ne[1] > 0) {
+        out = ggml_acc(context, out, tail, out->nb[1], out->nb[2], out->nb[3],
+                       static_cast<size_t>(codec_offset + speaker_index + 1) * out->nb[1]);
+    }
+    return out;
 }
 
 ggml_tensor * build_talker_step_input(ggml_context *        context,

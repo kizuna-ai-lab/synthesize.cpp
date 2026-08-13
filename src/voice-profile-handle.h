@@ -18,6 +18,12 @@ enum class ProfileFamilyTag : uint32_t {
     // Description Text ("voice design"): wraps a
     // synth::omnivoice::DesignInstruct payload (profile.h, Task 15).
     OmnivoiceDesign,
+    // Wraps a synth::qwen3tts::XVectorProfile payload
+    // (arch/qwen3-tts/profile.h). One tag covers both of this family's clone
+    // modes: the payload's own CloneMode discriminates, so Plan 3's ICL
+    // Profiles reuse this tag rather than adding a second one that every
+    // switch would have to learn.
+    Qwen3TtsClone,
 };
 
 }  // namespace synth

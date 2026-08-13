@@ -10,6 +10,28 @@
 // ggml_conv_transpose_1d, whose CUDA kernel is quadratic in the kernel width;
 // see ggml-patches/README.md.
 //
+// THIS FILE ASSUMES ITS WEIGHTS ARE F32, in more places than the two obvious
+// ones. Both ggml_im2col calls below request a destination of
+// `weights.weight->type`, and add_channel_bias adds a raw bias to an F32
+// signal; ggml_compute_forward_im2col's CPU switch implements only an F16 or
+// F32 destination and the CPU binary_op has no F32+BF16 case, so either one
+// ABORTS rather than degrades on a lower-precision weight. The same latent
+// assumption is at roughly a dozen sites here, not two -- add_channel_bias
+// itself plus every ggml_mul_mat whose second operand is weight-derived --
+// so whoever wakes this must sweep the file rather than patch the pair.
+//
+// It is dormant, not fixed. The quantization policy holds every `codec.*`
+// tensor at the package's reference dtype under every profile
+// (tools/synthesize-quantize/policy.cpp, pinned by
+// tests/qwen3_tts_quantization_policy_test.cpp), and that reference dtype is
+// F32 for this checkpoint's codec half: all 416 `codec.*` tensors in the real
+// Base package are F32, measured with a GGUF read rather than assumed. What
+// would wake it is a package -- or a future profile -- that stores a codec
+// weight as anything else. That is exactly what the speaker encoder's BF16
+// tensors did to the same two assumptions in speaker-encoder.cpp, where they
+// were found by aborting during Task 5 rather than by reading; see that
+// file's own add_channel_bias and same_conv1d for the shape of the fix.
+//
 // Causality is the recurring hazard: every convolution here sees only the
 // present and the past, which is left-only padding. im2col pads symmetrically,
 // so each one pads wide and keeps the prefix. An off-by-one there shifts the

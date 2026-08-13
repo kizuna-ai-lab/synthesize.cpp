@@ -507,6 +507,27 @@ bool read_profile_contract(const GgufMetadata & meta, HParams & hparams) {
                      profile.reference_channels, profile.reference_sample_rate);
         return false;
     }
+    // ...and "before it reaches the speaker encoder" is the whole point: this
+    // rate is what create_qwen3_tts_profile_from_reference resamples the
+    // caller's clip to (src/voice-profile.cpp, via
+    // capabilities.reference_target_sample_rate), while the mel filterbank
+    // that then consumes the clip derives its FFT bin frequencies from the
+    // ENCODER's own rate (src/arch/qwen3-tts/mel.cpp). Two independently
+    // declared package fields describing one physical signal, so they are
+    // tied here the way enc_dim is tied to the talker's hidden size in
+    // read_speaker_encoder below -- and for a sharper reason: a package
+    // declaring 16000 here against a 24000 Hz encoder changes no shape
+    // anywhere (the mel's geometry is n_fft/hop_length, the x-vector's width
+    // is enc_dim, and the frame bounds are self-consistent against whichever
+    // rate they were computed for), so nothing downstream can notice. It
+    // would return SYNTH_OK and a frequency-scaled x-vector -- a silent
+    // mis-clone. read_speaker_encoder runs before this function so the
+    // comparison has something to make; see read_profile_and_speaker_encoder.
+    if (profile.reference_sample_rate != hparams.speaker_encoder.sample_rate) {
+        std::fprintf(stderr, "qwen3-tts: reference audio is resampled to %u Hz but the speaker encoder runs at %u Hz\n",
+                     profile.reference_sample_rate, hparams.speaker_encoder.sample_rate);
+        return false;
+    }
     // A reference bound of zero would let a Profile be prepared from no audio.
     if (profile.min_frames_per_clip == 0 || profile.min_frames_per_clip > profile.max_frames_per_clip) {
         std::fprintf(stderr, "qwen3-tts: a clip is between %llu and %llu frames, which admits nothing\n",
@@ -548,6 +569,26 @@ bool read_speaker_encoder(const GgufMetadata & meta, HParams & hparams) {
     // against zero. A rule nobody can see work is not a rule.
     if (encoder.mel_bins == 0 || encoder.n_fft == 0 || encoder.hop_length == 0) {
         std::fprintf(stderr, "qwen3-tts: speaker encoder mel front end has a zero mel_bins/n_fft/hop_length\n");
+        return false;
+    }
+    // The mel front end's FFT is an iterative radix-2 Cooley-Tukey
+    // (src/arch/qwen3-tts/mel.cpp), which only accepts a power of two. A
+    // load-time contract rather than a runtime surprise mid-enrollment.
+    if ((encoder.n_fft & (encoder.n_fft - 1)) != 0) {
+        std::fprintf(stderr, "qwen3-tts: speaker encoder n_fft %u is not a power of two\n", encoder.n_fft);
+        return false;
+    }
+    // The other structural constraint the radix-2 transform imposes: the
+    // zero-padded-centred window rule (mel.cpp) has no meaning for a window
+    // wider than the transform itself. compute_log_mel's own runtime guard
+    // for this is the belt to this braces -- the same relationship the
+    // power-of-two check above has with compute_log_mel's is_power_of_two
+    // check. Without this, hop_length < win_length (checked further down)
+    // does not catch it: a win_length past n_fft can still be comfortably
+    // past a small hop_length.
+    if (encoder.win_length > encoder.n_fft) {
+        std::fprintf(stderr, "qwen3-tts: speaker encoder win_length %u exceeds n_fft %u\n", encoder.win_length,
+                     encoder.n_fft);
         return false;
     }
     if (encoder.enc_dim != hparams.talker.hidden_size) {
@@ -637,9 +678,18 @@ bool read_frontend(const GgufMetadata & meta, HParams & hparams) {
 // profile-sources comment above claims to rule out; gating on the mode
 // closes the gap because a truncated package still fails inside
 // read_profile_contract/read_speaker_encoder on their own missing keys.
+//
+// The speaker encoder is read FIRST, though the contract is the more
+// externally visible half: read_profile_contract ties the declared reference
+// target rate to the encoder's own rate, and cannot do that against a
+// SpeakerEncoderParams nobody has filled in yet. Same ordering rule the rest
+// of read_hparams follows -- read_speaker_encoder itself only checks enc_dim
+// against the talker and its rate against the codec because read_talker and
+// read_codec already ran. Nothing in read_speaker_encoder reads
+// hparams.profile, so the pair has exactly one valid order.
 bool read_profile_and_speaker_encoder(const GgufMetadata & meta, HParams & hparams) {
     hparams.has_speaker_encoder = true;
-    return read_profile_contract(meta, hparams) && read_speaker_encoder(meta, hparams);
+    return read_speaker_encoder(meta, hparams) && read_profile_contract(meta, hparams);
 }
 
 }  // namespace
@@ -689,38 +739,39 @@ bool resolve_language_token(const HParams &     hparams,
 }
 
 void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & info) {
-    // Every variant of this family reports zero source flags, and therefore
-    // -- per docs/c-interface.md -- zero in every field that describes a
-    // source: "A Model without runtime Voice Profile support reports zero
-    // flags", "for an unsupported source, all fields that describe that
-    // source are SYNTH_REQUIREMENT_UNSUPPORTED or zero", and, for Serialized
-    // Profile specifically, "profile_schema is null with zero size, its
-    // version is zero, and the 32 ID bytes are zero". VoiceProfileInfo's own
-    // default member initializers already ARE that shape, so this function
-    // writes nothing.
-    //
-    // That is a statement about the RUNTIME, not about the package. A Base
-    // package really does carry a ProfileContract and a speaker encoder, and
-    // read_profile_contract/read_speaker_encoder still read and validate
-    // every one of those keys at load time (see read_hparams) -- a package
-    // that declares the contract badly is still refused. What does not exist
-    // yet is any code that can act on it: src/voice-profile.cpp dispatches
-    // Profile preparation, consumption and serialization for OmniVoice only,
-    // so a caller told "Reference Audio supported" would be refused by the
-    // very next call it made. The package declaring a contract and the
-    // runtime advertising a capability are different statements; only the
-    // second would be false today, so only the second is withheld.
-    //
-    // Plan 2 is what flips this: when the ECAPA-TDNN speaker encoder, the mel
-    // front end and Profile preparation land, this function publishes
-    // SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO -- with
-    // SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE alongside it, under the
-    // c-interface rule that any Model which can create a v1 Profile can
-    // serialize it -- from hparams.profile's already-validated limits, gated
-    // on has_preset_voice_catalog(hparams). Description Text and Random Seed
-    // stay unadvertised at every stage of this family's ladder.
-    (void) hparams;
     info = VoiceProfileInfo{};
+    // The gate is the voice mode. `has_speaker_encoder` alone is not enough:
+    // an encoder flag says the package carries weights, not that the runtime
+    // can prepare anything, and a PresetCatalog package that somehow carried
+    // one must still advertise nothing (see
+    // qwen3_tts_voice_required_test.cpp's adversarial case). And
+    // `has_preset_voice_catalog` is the INVERSE of this condition -- it is
+    // true only for CustomVoice -- which is the trap the Plan 1 carryover
+    // corrected before Plan 2 was written.
+    if (hparams.voice_mode != VoiceMode::ProfileSources) {
+        return;
+    }
+    // Reference Audio and Serialized Profile publish together, never
+    // separately: docs/c-interface.md requires the second bit of any Model
+    // that can create a v1 Profile, because every successfully prepared v1
+    // Profile can be serialized.
+    info.source_flags         = SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE;
+    // UNSUPPORTED, not OPTIONAL: this rung implements the x-vector mode only.
+    // D4 fixes the clone mode at preparation, so an optional transcript would
+    // invite a caller to pass one and receive the weaker clone it did not ask
+    // for. Plan 3 flips both in the change that lands ICL.
+    info.reference_transcript = SYNTH_REQUIREMENT_UNSUPPORTED;
+    info.reference_language   = SYNTH_REQUIREMENT_UNSUPPORTED;
+
+    info.reference_target_sample_rate = hparams.profile.reference_sample_rate;
+    info.reference_target_channels    = hparams.profile.reference_channels;
+    info.min_frames_per_clip          = hparams.profile.min_frames_per_clip;
+    info.max_frames_per_clip          = hparams.profile.max_frames_per_clip;
+    info.max_total_frames             = hparams.profile.max_total_frames;
+    info.max_reference_count          = uint32_t(hparams.profile.max_reference_count);
+    info.schema                       = hparams.profile.schema;
+    info.schema_version               = hparams.profile.schema_version;
+    decode_profile_compatibility_id(hparams.profile.compatibility_id_hex, info.compatibility_id);
 }
 
 }  // namespace synth::qwen3tts

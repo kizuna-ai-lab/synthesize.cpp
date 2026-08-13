@@ -167,10 +167,15 @@ synth_add_unit_test(synthesize-qwen3-tts-catalog-test qwen3_tts_catalog_test.cpp
 synth_add_unit_test(synthesize-qwen3-tts-voice-required-test qwen3_tts_voice_required_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-decoder-layer-test qwen3_tts_decoder_layer_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-talker-test qwen3_tts_talker_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-prompt-slot-test qwen3_tts_prompt_slot_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-codec-ops-test qwen3_tts_codec_ops_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-codec-test qwen3_tts_codec_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-code-predictor-test qwen3_tts_code_predictor_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-sampling-test qwen3_tts_sampling_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-mel-test qwen3_tts_mel_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-speaker-encoder-test qwen3_tts_speaker_encoder_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-speaker-encoder-host-test qwen3_tts_speaker_encoder_host_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-profile-test qwen3_tts_profile_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-metadata-test omnivoice_metadata_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-catalog-test omnivoice_catalog_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-frontend-test omnivoice_frontend_test.cpp)
@@ -466,6 +471,25 @@ target_include_directories(synthesize-qwen3-tts-replay-real PRIVATE ${CMAKE_SOUR
 target_link_libraries(synthesize-qwen3-tts-replay-real PRIVATE synthesize ggml)
 synth_register_integration_target(synthesize-qwen3-tts-replay-real)
 
+# A tiny driver, not a test: runs compute_log_mel over a real WAV file so
+# scripts/validate-qwen3-tts-replay.py --compare-mel can diff it against Task
+# 1's oracle dump. No GGUF and no Model -- host DSP alone -- so unlike the
+# graph-building drivers above it needs no link against ggml.
+add_executable(synthesize-qwen3-tts-mel-driver qwen3_tts_mel_driver.cpp)
+target_include_directories(synthesize-qwen3-tts-mel-driver PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(synthesize-qwen3-tts-mel-driver PRIVATE synthesize)
+synth_register_integration_target(synthesize-qwen3-tts-mel-driver)
+
+# A tiny driver, not a test: runs Model::prepare_x_vector over a real WAV file
+# against a real package so scripts/validate-qwen3-tts-replay.py
+# --compare-x-vector can diff it against Task 1's oracle dump. Needs a real
+# GGUF and a Model, unlike the mel driver above -- the ECAPA graph is resolved
+# against the package's own speaker_encoder weights.
+add_executable(synthesize-qwen3-tts-xvector-driver qwen3_tts_xvector_driver.cpp)
+target_include_directories(synthesize-qwen3-tts-xvector-driver PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(synthesize-qwen3-tts-xvector-driver PRIVATE synthesize)
+synth_register_integration_target(synthesize-qwen3-tts-xvector-driver)
+
 add_executable(synthesize-omnivoice-replay-real omnivoice_replay_real.cpp)
 target_include_directories(synthesize-omnivoice-replay-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(synthesize-omnivoice-replay-real PRIVATE synthesize ggml)
@@ -728,6 +752,139 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         set_tests_properties(synthesize-qwen3-tts-base-load-real PROPERTIES
             LABELS "integration;abi;qwen3-tts"
             TIMEOUT 300)
+    endif()
+
+    # Task 10 review, IMPORTANT 1: Model::run_synthesis's x_vector length check
+    # (model.cpp) is family-layer code reachable only through a loaded Model,
+    # and the one correct length is hparams.talker.hidden_size -- a real
+    # package's own metadata, not a fixture's guess -- so this needs the real
+    # Base package rather than a synthetic HParams fixture.
+    if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}")
+        add_executable(synthesize-qwen3-tts-xvector-length-test qwen3_tts_xvector_length_test.cpp)
+        target_include_directories(synthesize-qwen3-tts-xvector-length-test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+        target_link_libraries(synthesize-qwen3-tts-xvector-length-test PRIVATE synthesize)
+        synth_register_integration_target(synthesize-qwen3-tts-xvector-length-test)
+        add_test(NAME synthesize-qwen3-tts-xvector-length-test
+            COMMAND synthesize-qwen3-tts-xvector-length-test ${SYNTH_QWEN3_TTS_BASE_TEST_MODEL})
+        set_tests_properties(synthesize-qwen3-tts-xvector-length-test PROPERTIES
+            LABELS "integration;qwen3-tts"
+            TIMEOUT 300)
+    endif()
+
+    # Stage 2 Plan 2's completion gate: reference audio in, cloned audio out,
+    # entirely through the public seam, against the real Base package and its
+    # pinned reference clip. Guarded on the wav too -- a locally-materialized
+    # asset like the model itself (models/ is gitignored), the same double
+    # guard tests/omnivoice_profile_test.cpp's own registration below uses.
+    #
+    # Guarded on the oracle x-vector as well, and that third guard is the
+    # point. This test's first assertion is the only consumer anywhere of the
+    # min_cosine Task 6 committed to tests/tolerances/qwen3-tts.json. It used
+    # to print to stderr and pass when the (deliberately uncommitted) payload
+    # was absent, so on any machine without the dump the whole
+    # mel/ECAPA/x-vector numerical claim went unchecked and the suite was
+    # green. docs/testing.md states the rule for exactly this: a gate against
+    # committed tolerances "is not registered without it", so an absent
+    # payload shows up as a MISSING test rather than a passing one. The test
+    # binary now refuses the missing or mismatched payload outright (it no
+    # longer has a skip branch), and this guard is what keeps that refusal
+    # from being a failure a fresh checkout cannot avoid.
+    set(_synth_qwen3_tts_base_xvector_sentinel
+        "${CMAKE_SOURCE_DIR}/build/goldens/qwen3-tts/qwen3-tts-12hz-0-6b-base/base-xvector-en/speaker/x_vector.f32")
+    if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}" AND EXISTS "${SYNTH_QWEN3_TTS_REFERENCE_WAV}"
+            AND EXISTS "${_synth_qwen3_tts_base_xvector_sentinel}")
+        add_executable(synthesize-qwen3-tts-clone-real qwen3_tts_clone_real.cpp)
+        target_include_directories(synthesize-qwen3-tts-clone-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
+        target_link_libraries(synthesize-qwen3-tts-clone-real PRIVATE synthesize)
+        synth_register_integration_target(synthesize-qwen3-tts-clone-real)
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-clone-real")
+        add_test(NAME synthesize-qwen3-tts-clone-real
+            COMMAND synthesize-qwen3-tts-clone-real
+                ${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}
+                ${SYNTH_QWEN3_TTS_REFERENCE_WAV}
+                ${_synth_qwen3_tts_base_xvector_sentinel}
+                ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-clone-real)
+        set_tests_properties(synthesize-qwen3-tts-clone-real PROPERTIES
+            LABELS "integration;qwen3-tts;abi;golden"
+            # Four full autoregressive synthesis passes over a two-word
+            # sentence (assertions 2/3, 4, and 5) plus two ECAPA-TDNN
+            # encode passes (assertion 1's direct call and assertion 4's
+            # second Profile) against the real ~2.5 GB Base package -- the
+            # same per-call budget tests/qwen3_tts_base_load_real.cpp's own
+            # TIMEOUT reasoning already sizes for a single such call, times
+            # roughly four, with headroom for the sanitizer build.
+            TIMEOUT 3600)
+    endif()
+
+    # The Base variant's two standalone speaker-path validator modes. Both
+    # drivers were built by synth_register_integration_target and then invoked
+    # by nothing: that function only appends to the check target's build list,
+    # so a registered *target* is not a registered *test*, and neither mode had
+    # ever run under CTest.
+    #
+    # --compare-x-vector --check is the one that matters: it is the gate
+    # against tests/tolerances/qwen3-tts.json's speaker.x_vector min_cosine,
+    # run over every x_vector_only case in the Base manifest rather than the
+    # single case the clone test compares. Sentinel-gated on the same oracle
+    # dump, for the reason above the clone test.
+    if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}" AND EXISTS "${SYNTH_QWEN3_TTS_REFERENCE_WAV}"
+            AND EXISTS "${_synth_qwen3_tts_base_xvector_sentinel}")
+        # Both modes resolve the manifest's http(s) reference locator against a
+        # local cache directory. Derive that directory from
+        # SYNTH_QWEN3_TTS_REFERENCE_WAV rather than letting the script's own
+        # default win, or the cache variable would be shadowed here and a
+        # checkout that keeps the clip elsewhere would satisfy the guard above
+        # and then fail inside the validator.
+        get_filename_component(_synth_qwen3_tts_reference_dir
+            "${SYNTH_QWEN3_TTS_REFERENCE_WAV}" DIRECTORY)
+        add_test(
+            NAME synthesize-qwen3-tts-base-xvector-golden
+            COMMAND ${SYNTH_UV_EXECUTABLE} run
+                --project ${CMAKE_SOURCE_DIR}/scripts/envs/qwen3-tts
+                --locked python ${CMAKE_SOURCE_DIR}/scripts/validate-qwen3-tts-replay.py
+                --manifest ${CMAKE_SOURCE_DIR}/tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json
+                --compare-x-vector --check
+                --xvector-model ${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}
+                --xvector-driver $<TARGET_FILE:synthesize-qwen3-tts-xvector-driver>
+                --reference-audio-dir ${_synth_qwen3_tts_reference_dir}
+                --profile BF16 --backend CPU --stage replay)
+        set_tests_properties(synthesize-qwen3-tts-base-xvector-golden PROPERTIES
+            LABELS "integration;qwen3-tts;golden"
+            TIMEOUT 1800
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+        # --compare-mel carries no committed tolerance -- there is no
+        # speaker.mel probe in tests/tolerances/qwen3-tts.json, and this fix
+        # deliberately did not invent one: the measured 3.31e-4 is recorded in
+        # docs/porting/families/qwen3-tts.md as evidence, not as a reviewed
+        # gate. So this registration enforces what the mode can actually
+        # decide -- that the driver runs, and that the port's mel has the same
+        # shape as the oracle's in BOTH axes (the driver's reported bins and
+        # frames against the oracle conventions.json's mel_bins and
+        # frames_observed), which is what a wrong frame-count or bin-count
+        # convention would break -- and NOT the values.
+        #
+        # Both axes, deliberately: until 2026-08-12 the mode compared two flat
+        # float32 buffers, so "shape" meant total element count and a
+        # compensating pair of wrong axes passed a test named -mel-shape. Four
+        # integers need no tolerance, so tightening it decided nothing the
+        # missing speaker.mel probe was left to decide. What stays ungated is
+        # the on-disk layout -- a transposed buffer with the right axes is a
+        # values question. Say all of this rather than let a reader assume the
+        # front end is numerically gated here.
+        add_test(
+            NAME synthesize-qwen3-tts-base-mel-shape
+            COMMAND ${SYNTH_UV_EXECUTABLE} run
+                --project ${CMAKE_SOURCE_DIR}/scripts/envs/qwen3-tts
+                --locked python ${CMAKE_SOURCE_DIR}/scripts/validate-qwen3-tts-replay.py
+                --manifest ${CMAKE_SOURCE_DIR}/tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json
+                --compare-mel --mel-case base-xvector-en
+                --mel-driver $<TARGET_FILE:synthesize-qwen3-tts-mel-driver>
+                --reference-audio-dir ${_synth_qwen3_tts_reference_dir})
+        set_tests_properties(synthesize-qwen3-tts-base-mel-shape PROPERTIES
+            LABELS "integration;qwen3-tts"
+            TIMEOUT 600
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
     endif()
 
     # The foundation slice's closing check: the real OmniVoice package through

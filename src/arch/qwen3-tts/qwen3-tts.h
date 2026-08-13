@@ -16,10 +16,13 @@ struct ggml_backend_device;
 namespace synth::qwen3tts {
 
 // SpeakerEncoderWeights and CodecEncoderWeights are already forward-declared by
-// speaker-encoder-host.h and codec-encoder-host.h above; HParams needs its own
-// declaration for Model::hparams() below. Declared rather than included:
-// catalog.h pulls in ggml types this header keeps out of its callers.
+// speaker-encoder-host.h and codec-encoder-host.h above; HParams, TalkerWeights
+// and CodePredictorWeights need their own declarations for the accessors below.
+// Declared rather than included: catalog.h pulls in ggml types this header keeps
+// out of its callers.
 struct HParams;
+struct TalkerWeights;
+struct CodePredictorWeights;
 
 struct ModelInfo {
     std::string family = "qwen3-tts";
@@ -247,6 +250,15 @@ class Model {
     // takes a weights struct rather than a Model, so a synthetic fixture can
     // drive it, and only a caller holding a REAL Loaded Model needs this.
     const CodecEncoderWeights &   codec_encoder_weights() const;
+    // The two tables the ICL prompt's codec track reads: group 0 through the
+    // talker's own codec embedding, groups 1..15 through the code predictor's.
+    // Exposed on the same reasoning as the two accessors above -- the graph
+    // seam (talker.h's build_talker_prefill_input, code-predictor.h's
+    // sum_code_embeddings) takes weights structs, so a synthetic fixture drives
+    // it, and only a caller comparing against the real package's own embedding
+    // rows needs these.
+    const TalkerWeights &         talker_weights() const;
+    const CodePredictorWeights &  code_predictor_weights() const;
 
   private:
     // The language half of resolve_voice, for a request whose speaker is an

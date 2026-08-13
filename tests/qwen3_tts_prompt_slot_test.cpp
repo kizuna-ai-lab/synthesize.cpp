@@ -164,10 +164,14 @@ int test_the_substitution_index_follows_the_language_token() {
 
     std::vector<int32_t> text;
     std::vector<int32_t> codec;
-    int64_t              offset = 0;
-    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, named, text, codec, offset) == SYNTH_OK);
+    std::vector<int32_t> acoustic;
+    int64_t              offset          = 0;
+    int64_t              acoustic_offset = 0;
+    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, named, text, codec, offset, acoustic, acoustic_offset) ==
+                     SYNTH_OK);
     SYNTH_TEST_CHECK(named.external_speaker_index == 4);
-    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, automatic, text, codec, offset) == SYNTH_OK);
+    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, automatic, text, codec, offset, acoustic,
+                                                            acoustic_offset) == SYNTH_OK);
     SYNTH_TEST_CHECK(automatic.external_speaker_index == 3);
     return 0;
 }

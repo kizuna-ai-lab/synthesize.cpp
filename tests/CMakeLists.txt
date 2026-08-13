@@ -168,6 +168,7 @@ synth_add_unit_test(synthesize-qwen3-tts-voice-required-test qwen3_tts_voice_req
 synth_add_unit_test(synthesize-qwen3-tts-decoder-layer-test qwen3_tts_decoder_layer_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-talker-test qwen3_tts_talker_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-prompt-slot-test qwen3_tts_prompt_slot_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-icl-prompt-test qwen3_tts_icl_prompt_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-codec-ops-test qwen3_tts_codec_ops_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-codec-test qwen3_tts_codec_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-codec-encoder-test qwen3_tts_codec_encoder_test.cpp)
@@ -890,6 +891,90 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             # budget is the load, and it is the same one the load test above
             # sizes for.
             TIMEOUT 300)
+    endif()
+
+    # The ICL prompt block against the two tracks upstream actually summed,
+    # per track and then summed. Guarded exactly the way the block above is,
+    # and for the same two reasons: a partial dump must neither register a
+    # zero-case test (which the binary's own usage check would then FAIL) nor
+    # abort the configure through `string(JSON GET)` on a missing key.
+    #
+    # T1, T2, the arm, the trailing length, the frame count, the hidden size
+    # and the prefix length are read OUT OF alignment.json here and passed in.
+    # The arm in particular is upstream's own executed-return reading; the test
+    # must never recompute `T1 > T2` for itself, which would restate the
+    # assumption instead of checking it.
+    set(_synth_qwen3_tts_icl_args "")
+    if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}" AND EXISTS "${_synth_qwen3_tts_ref_alignment_sentinel}")
+        foreach(_synth_qwen3_tts_icl_case base-icl-en base-ref-min base-text-short)
+            set(_synth_qwen3_tts_icl_dir
+                "${_synth_qwen3_tts_icl_prompt_root}/${_synth_qwen3_tts_icl_case}/prompt")
+            set(_synth_qwen3_tts_icl_codes
+                "${_synth_qwen3_tts_icl_prompt_root}/${_synth_qwen3_tts_icl_case}/codes/reference.i32")
+            set(_synth_qwen3_tts_icl_alignment "${_synth_qwen3_tts_icl_dir}/alignment.json")
+            if(EXISTS "${_synth_qwen3_tts_icl_alignment}" AND EXISTS "${_synth_qwen3_tts_icl_codes}"
+                    AND EXISTS "${_synth_qwen3_tts_icl_dir}/text_track.f32"
+                    AND EXISTS "${_synth_qwen3_tts_icl_dir}/codec_track.f32"
+                    AND EXISTS "${_synth_qwen3_tts_icl_dir}/icl_embed.f32"
+                    AND EXISTS "${_synth_qwen3_tts_icl_dir}/target_text_ids.i32")
+                file(READ "${_synth_qwen3_tts_icl_alignment}" _synth_qwen3_tts_icl_json)
+                set(_synth_qwen3_tts_icl_fields "")
+                set(_synth_qwen3_tts_icl_ok TRUE)
+                # `/` separates a nested key path; CMake would flatten `;` here.
+                foreach(_synth_qwen3_tts_icl_key
+                        "inputs/language" "T1" "T2" "branch" "trailing_positions" "ref_frames" "hidden_size"
+                        "placement/prefix_positions")
+                    string(REPLACE "/" ";" _synth_qwen3_tts_icl_path "${_synth_qwen3_tts_icl_key}")
+                    string(JSON _synth_qwen3_tts_icl_value
+                        ERROR_VARIABLE _synth_qwen3_tts_icl_error
+                        GET "${_synth_qwen3_tts_icl_json}" ${_synth_qwen3_tts_icl_path})
+                    if(NOT _synth_qwen3_tts_icl_error STREQUAL "NOTFOUND"
+                            OR _synth_qwen3_tts_icl_value STREQUAL "")
+                        set(_synth_qwen3_tts_icl_ok FALSE)
+                        message(STATUS "qwen3-tts icl-prompt case ${_synth_qwen3_tts_icl_case} skipped: "
+                            "alignment.json has no usable ${_synth_qwen3_tts_icl_key} "
+                            "(${_synth_qwen3_tts_icl_error})")
+                        break()
+                    endif()
+                    list(APPEND _synth_qwen3_tts_icl_fields "${_synth_qwen3_tts_icl_value}")
+                endforeach()
+                if(_synth_qwen3_tts_icl_ok)
+                    list(GET _synth_qwen3_tts_icl_fields 0 _synth_qwen3_tts_icl_language)
+                    list(GET _synth_qwen3_tts_icl_fields 1 _synth_qwen3_tts_icl_t1)
+                    list(GET _synth_qwen3_tts_icl_fields 2 _synth_qwen3_tts_icl_t2)
+                    list(GET _synth_qwen3_tts_icl_fields 3 _synth_qwen3_tts_icl_branch)
+                    list(GET _synth_qwen3_tts_icl_fields 4 _synth_qwen3_tts_icl_trailing)
+                    list(GET _synth_qwen3_tts_icl_fields 5 _synth_qwen3_tts_icl_frames)
+                    list(GET _synth_qwen3_tts_icl_fields 6 _synth_qwen3_tts_icl_hidden)
+                    list(GET _synth_qwen3_tts_icl_fields 7 _synth_qwen3_tts_icl_prefix)
+                    list(APPEND _synth_qwen3_tts_icl_args
+                        "${_synth_qwen3_tts_icl_case}"
+                        "${_synth_qwen3_tts_icl_dir}"
+                        "${_synth_qwen3_tts_icl_codes}"
+                        "${_synth_qwen3_tts_icl_language}"
+                        "${_synth_qwen3_tts_icl_t1}"
+                        "${_synth_qwen3_tts_icl_t2}"
+                        "${_synth_qwen3_tts_icl_branch}"
+                        "${_synth_qwen3_tts_icl_trailing}"
+                        "${_synth_qwen3_tts_icl_frames}"
+                        "${_synth_qwen3_tts_icl_hidden}"
+                        "${_synth_qwen3_tts_icl_prefix}")
+                endif()
+            endif()
+        endforeach()
+    endif()
+    if(_synth_qwen3_tts_icl_args)
+        add_executable(synthesize-qwen3-tts-icl-prompt-real qwen3_tts_icl_prompt_real.cpp)
+        target_include_directories(synthesize-qwen3-tts-icl-prompt-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
+        target_link_libraries(synthesize-qwen3-tts-icl-prompt-real PRIVATE synthesize ggml)
+        synth_register_integration_target(synthesize-qwen3-tts-icl-prompt-real)
+        add_test(NAME synthesize-qwen3-tts-icl-prompt-real
+            COMMAND synthesize-qwen3-tts-icl-prompt-real
+                ${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}
+                ${_synth_qwen3_tts_icl_args})
+        set_tests_properties(synthesize-qwen3-tts-icl-prompt-real PROPERTIES
+            LABELS "integration;qwen3-tts;golden"
+            TIMEOUT 600)
     endif()
 
     # Stage 2 Plan 2's completion gate: reference audio in, cloned audio out,

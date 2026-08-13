@@ -40,16 +40,30 @@ ggml_tensor * build_text_projection(ggml_context * context, const TalkerWeights 
 // defaults, the Stage 1 path is byte-identical to before this parameter pair
 // existed.
 //
+// `acoustic_embedding` and `acoustic_offset` are the transcript-assisted (ICL)
+// path: the reference block's groups 1..15, already summed per position by
+// sum_code_embeddings (code-predictor.h) into a [hidden_size, frames] tensor,
+// accumulated on top of the two streams starting at POSITION `acoustic_offset`
+// -- a position index like `codec_offset`, not an index into `codec_tokens`
+// like `speaker_index`. Group 0 is not in it: it reads the talker's own codec
+// embedding and therefore travels as an ordinary entry of `codec_tokens`.
+// The run must reach the last position, because it is accumulated as a tail.
+// Left at their defaults, the Stage 1 and Plan 2 paths are byte-identical to
+// before this parameter pair existed.
+//
 // Returns nullptr rather than aborting on anything it cannot build, including
-// a `speaker_index` outside `[0, codec_tokens->ne[0])` or a `speaker_embedding`
-// whose width is not the talker's hidden size.
+// a `speaker_index` outside `[0, codec_tokens->ne[0])`, a `speaker_embedding`
+// whose width is not the talker's hidden size, or an `acoustic_embedding` whose
+// width or placement does not make it a tail.
 ggml_tensor * build_talker_prefill_input(ggml_context *        context,
                                          const TalkerWeights & weights,
                                          ggml_tensor *         text_tokens,
                                          ggml_tensor *         codec_tokens,
                                          int64_t               codec_offset,
-                                         ggml_tensor *         speaker_embedding = nullptr,
-                                         int64_t               speaker_index     = -1);
+                                         ggml_tensor *         speaker_embedding  = nullptr,
+                                         int64_t               speaker_index      = -1,
+                                         ggml_tensor *         acoustic_embedding = nullptr,
+                                         int64_t               acoustic_offset    = -1);
 
 // A decode step's input, [hidden_size, 1]: the frame's summed code embeddings
 // plus the text this step contributes. The sum comes from the code predictor's

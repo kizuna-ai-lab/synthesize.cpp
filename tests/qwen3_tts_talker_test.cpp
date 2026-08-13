@@ -471,8 +471,16 @@ int check_flatten() {
 
     std::vector<int32_t> text;
     std::vector<int32_t> codec;
-    int64_t              offset = -1;
-    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, prompt, text, codec, offset) == SYNTH_OK);
+    // A Stage 1 prompt carries no reference, so these come back empty and at
+    // -1 -- asserted below rather than ignored, because a flattener that
+    // manufactured acoustic codes here would change the graph.
+    std::vector<int32_t> acoustic;
+    int64_t              offset          = -1;
+    int64_t              acoustic_offset = 0;
+    SYNTH_TEST_CHECK(
+        synth::qwen3tts::flatten_talker_prompt(h, prompt, text, codec, offset, acoustic, acoustic_offset) == SYNTH_OK);
+    SYNTH_TEST_CHECK(acoustic.empty());
+    SYNTH_TEST_CHECK(acoustic_offset == -1);
 
     // Every position carries a text token, the specials resolved to their
     // text-vocabulary ids, and the codec stream is everything after the role
@@ -489,16 +497,19 @@ int check_flatten() {
     // tail, and the graph adds it as one.
     synth::qwen3tts::TalkerPrompt gapped = prompt;
     gapped.positions[5].has_codec        = false;
-    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, gapped, text, codec, offset) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, gapped, text, codec, offset, acoustic,
+                                                            acoustic_offset) == SYNTH_ERR_INVALID_ARG);
 
     // A position with no text side at all is a layout defect: the graph reads one
     // text token per position.
     synth::qwen3tts::TalkerPrompt textless = prompt;
     textless.positions[4].text             = Position::Text::None;
-    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, textless, text, codec, offset) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, textless, text, codec, offset, acoustic,
+                                                            acoustic_offset) == SYNTH_ERR_INVALID_ARG);
 
     synth::qwen3tts::TalkerPrompt empty;
-    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, empty, text, codec, offset) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, empty, text, codec, offset, acoustic, acoustic_offset) ==
+                     SYNTH_ERR_INVALID_ARG);
     return 0;
 }
 

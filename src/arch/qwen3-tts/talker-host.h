@@ -16,6 +16,14 @@ struct HParams;
 // text projection, or one of three projected specials. The codec side is a row of
 // the talker's own codec embedding. Most prompt positions carry both; the role
 // prefix carries only text, and nothing carries only codec.
+//
+// A transcript-assisted (ICL) reference position carries a whole FRAME on its
+// codec side rather than a single token: `code_group_count` codes, summed.
+// Group 0 reads the talker's own codec embedding -- the same table an ordinary
+// codec token reads -- so it stays in `codec_token`, and only groups 1..15 need
+// somewhere new to live. That is why widening this struct left the x-vector
+// path, `codec_offset` and the contiguous-run invariant untouched: to every
+// existing consumer an ICL position still looks like one codec token.
 struct TalkerInputPosition {
     enum class Text : uint8_t {
         None,
@@ -25,10 +33,15 @@ struct TalkerInputPosition {
         TtsPad,
     };
 
-    Text     text        = Text::None;
-    uint32_t text_token  = 0;  // meaningful when text == Text::Token
-    bool     has_codec   = false;
-    uint32_t codec_token = 0;
+    Text                  text        = Text::None;
+    uint32_t              text_token  = 0;  // meaningful when text == Text::Token
+    bool                  has_codec   = false;
+    uint32_t              codec_token = 0;  // group 0, through the talker's codec embedding
+    // Groups 1..code_group_count-1 of a reference frame, IN GROUP ORDER, each
+    // read from the code predictor's own table for that group. Empty at every
+    // position of a non-ICL prompt and at the ICL block's opening codec_bos
+    // position, which is a lone token like any other.
+    std::vector<uint32_t> acoustic_codes;
 };
 
 // The talker's prefill, plus what each later step adds to its frame's codes.
@@ -69,6 +82,24 @@ struct TalkerPromptRequest {
     // `has_speaker` must also be set and `speaker_token` is written into the
     // stream as an inert placeholder whose row the graph never reads.
     bool                  speaker_is_external = false;
+
+    // Transcript-assisted (In-Context Learning) cloning. The three fields move
+    // together: absent, the prompt is exactly what it was before this existed.
+    //
+    // `reference_codes` is the reference audio's code grid in the layout
+    // CodecEncoding settled -- `code_group_count * reference_frames` values,
+    // GROUP-FASTEST, so frame `f`'s sixteen codes are contiguous at
+    // `f * code_group_count`. There is no transpose at this boundary and none
+    // is wanted: a stage-major grid has the right element count, the right
+    // value range and the wrong order.
+    //
+    // `reference_text_tokens` is what upstream calls `ref_id` -- the reference
+    // transcript through its own turn wrapper and slice (Task 6's
+    // Model::tokenize_reference_transcript), NOT the target text.
+    bool                  has_reference = false;
+    std::vector<uint32_t> reference_text_tokens;
+    std::vector<int32_t>  reference_codes;
+    uint64_t              reference_frames = 0;
 };
 
 // Lays out the prefill and the trailing schedule.
@@ -79,10 +110,29 @@ struct TalkerPromptRequest {
 // stream's single tts_bos sits at the position before that. A prompt off by one
 // still synthesizes speech, in the wrong voice or the wrong language.
 //
-// Returns SYNTH_ERR_INVALID_ARG for a request with no text to speak.
+// With `request.has_reference`, the tail after the shared prefix is instead the
+// two-track ICL block (modeling_qwen3_tts.py:1968-2019 `generate_icl_prompt`,
+// concatenated at :2197 in place of the single first-text-token position the
+// non-ICL branch appends at :2200-2202). Two tracks of different lengths are
+// summed position by position:
+//
+//   T1 = reference_text_tokens + text_tokens + 1 (a closing tts_eos)
+//   T2 = 1 + reference_frames  (a leading codec_bos)
+//
+// and the block is T2 positions in BOTH arms, so its length never says which
+// arm ran -- only the trailing schedule does:
+//
+//   T1 >  T2  "truncate": the block takes the text track's first T2 entries and
+//             the trailing schedule is the remaining T1 - T2, tts_eos last.
+//   T1 <= T2  "pad":      the text track is padded to T2 with tts_pad and the
+//             trailing schedule is a single tts_pad.
+//
+// Returns SYNTH_ERR_INVALID_ARG for a request with no text to speak, or for a
+// reference whose code grid is not `code_group_count * reference_frames`
+// non-negative values with at least one frame.
 synth_status_t build_talker_prompt(const HParams & hparams, const TalkerPromptRequest & request, TalkerPrompt & out);
 
-// Flattens a layout into the two token streams the graph reads, resolving each
+// Flattens a layout into the token streams the graph reads, resolving each
 // special to its text-vocabulary id.
 //
 // Also checks what the graph then relies on: every position carries a text token,
@@ -90,11 +140,22 @@ synth_status_t build_talker_prompt(const HParams & hparams, const TalkerPromptRe
 // last position. `codec_offset` is where that run starts. Checking rather than
 // assuming it is what lets the graph add one tensor into the tail of another
 // instead of scattering rows.
+//
+// `acoustic_codes` is the same for the ICL block's groups 1..15: the positions
+// carrying acoustic codes must themselves be a contiguous run ending at the last
+// position, and `acoustic_offset` is where it starts (-1 when there is none).
+// The layout is GROUP-MAJOR -- `acoustic_codes[group * frames + frame]`, i.e.
+// GGML `[frames, code_group_count - 1]` with the frame index fastest -- because
+// that is what lets sum_code_embeddings take each group's ids as a contiguous
+// 1-D view. `ggml_get_rows` cannot read a strided index tensor, so the choice is
+// this gather or a copy in the graph, and the gather is the one a test can see.
 synth_status_t flatten_talker_prompt(const HParams &        hparams,
                                      const TalkerPrompt &   prompt,
                                      std::vector<int32_t> & text_tokens,
                                      std::vector<int32_t> & codec_tokens,
-                                     int64_t &              codec_offset);
+                                     int64_t &              codec_offset,
+                                     std::vector<int32_t> & acoustic_codes,
+                                     int64_t &              acoustic_offset);
 
 // The text token a decode step contributes on top of its frame's codes: the
 // schedule's entry while it lasts, then tts_pad forever.

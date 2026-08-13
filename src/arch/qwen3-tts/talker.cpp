@@ -15,6 +15,25 @@
 
 namespace synth::qwen3tts {
 
+namespace {
+
+// The ICL block's groups 1..15, already summed per position, laid on top of the
+// two ordinary streams. A no-op without one, which is what keeps the Stage 1 and
+// Plan 2 paths at the node counts they had. Shapes are checked by the caller,
+// once, before either accumulation path forks.
+ggml_tensor * accumulate_acoustic(ggml_context * context,
+                                  ggml_tensor *  summed,
+                                  ggml_tensor *  acoustic_embedding,
+                                  int64_t        acoustic_offset) {
+    if (acoustic_embedding == nullptr) {
+        return summed;
+    }
+    return ggml_acc(context, summed, acoustic_embedding, summed->nb[1], summed->nb[2], summed->nb[3],
+                    static_cast<size_t>(acoustic_offset) * summed->nb[1]);
+}
+
+}  // namespace
+
 ggml_tensor * build_text_projection(ggml_context * context, const TalkerWeights & weights, ggml_tensor * token_ids) {
     if (context == nullptr || token_ids == nullptr || token_ids->type != GGML_TYPE_I32 ||
         weights.text_embedding == nullptr || weights.text_projection_1.weight == nullptr ||
@@ -36,7 +55,9 @@ ggml_tensor * build_talker_prefill_input(ggml_context *        context,
                                          ggml_tensor *         codec_tokens,
                                          int64_t               codec_offset,
                                          ggml_tensor *         speaker_embedding,
-                                         int64_t               speaker_index) {
+                                         int64_t               speaker_index,
+                                         ggml_tensor *         acoustic_embedding,
+                                         int64_t               acoustic_offset) {
     if (context == nullptr || codec_tokens == nullptr || codec_tokens->type != GGML_TYPE_I32 ||
         weights.codec_embedding == nullptr || codec_offset < 0) {
         return nullptr;
@@ -48,12 +69,27 @@ ggml_tensor * build_talker_prefill_input(ggml_context *        context,
     if (codec_offset + codec_tokens->ne[0] != text->ne[1]) {
         return nullptr;
     }
+    if (acoustic_embedding != nullptr) {
+        // A tail, like the codec stream: same width, and it must reach the last
+        // position. An acoustic block that stops short is a reference whose
+        // frames have gone out of step with their text, which no shape check
+        // downstream would notice.
+        if (acoustic_offset < 0 || acoustic_embedding->ne[0] != text->ne[0] ||
+            acoustic_offset + acoustic_embedding->ne[1] != text->ne[1]) {
+            return nullptr;
+        }
+    } else if (acoustic_offset >= 0) {
+        // An offset with nothing to place at it means the caller flattened an
+        // ICL prompt and then dropped the summed embeddings.
+        return nullptr;
+    }
     ggml_tensor * codec = ggml_get_rows(context, weights.codec_embedding, codec_tokens);
     if (speaker_embedding == nullptr) {
         // The codec stream is a tail of the text stream, so it is accumulated
         // into it at an offset rather than scattered row by row.
-        return ggml_acc(context, text, codec, text->nb[1], text->nb[2], text->nb[3],
-                        static_cast<size_t>(codec_offset) * text->nb[1]);
+        ggml_tensor * summed = ggml_acc(context, text, codec, text->nb[1], text->nb[2], text->nb[3],
+                                        static_cast<size_t>(codec_offset) * text->nb[1]);
+        return accumulate_acoustic(context, summed, acoustic_embedding, acoustic_offset);
     }
     if (speaker_index < 0 || speaker_index >= codec_tokens->ne[0] || speaker_embedding->ne[0] != text->ne[0]) {
         return nullptr;
@@ -79,7 +115,7 @@ ggml_tensor * build_talker_prefill_input(ggml_context *        context,
         out = ggml_acc(context, out, tail, out->nb[1], out->nb[2], out->nb[3],
                        static_cast<size_t>(codec_offset + speaker_index + 1) * out->nb[1]);
     }
-    return out;
+    return accumulate_acoustic(context, out, acoustic_embedding, acoustic_offset);
 }
 
 ggml_tensor * build_talker_step_input(ggml_context *        context,

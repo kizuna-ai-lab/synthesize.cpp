@@ -401,6 +401,14 @@ const CodecEncoderWeights & Model::codec_encoder_weights() const {
     return implementation_->weights.codec_encoder;
 }
 
+const TalkerWeights & Model::talker_weights() const {
+    return implementation_->weights.talker;
+}
+
+const CodePredictorWeights & Model::code_predictor_weights() const {
+    return implementation_->weights.code_predictor;
+}
+
 uint32_t Model::samples_per_frame() const {
     return implementation_->hparams.codec.hop_length;
 }
@@ -923,10 +931,18 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
 
     std::vector<int32_t> prompt_text;
     std::vector<int32_t> prompt_codec;
-    int64_t              codec_offset = 0;
-    status                            = flatten_talker_prompt(hparams, prompt, prompt_text, prompt_codec, codec_offset);
+    // Empty until the ICL path reaches this entry point; the prompt built above
+    // carries no reference, so nothing here can produce acoustic codes.
+    std::vector<int32_t> prompt_acoustic;
+    int64_t              codec_offset    = 0;
+    int64_t              acoustic_offset = -1;
+    status = flatten_talker_prompt(hparams, prompt, prompt_text, prompt_codec, codec_offset, prompt_acoustic,
+                                   acoustic_offset);
     if (status != SYNTH_OK) {
         return status;
+    }
+    if (!prompt_acoustic.empty()) {
+        return SYNTH_ERR_INTERNAL;
     }
 
     const int64_t prefill    = int64_t(prompt.positions.size());
@@ -952,7 +968,9 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     ggml_tensor *  t_prompt_mask  = ggml_new_tensor_2d(ictx, GGML_TYPE_F32, prefill, prefill);
     ggml_tensor *  t_step_text    = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, 1);
     ggml_tensor *  t_step_pos     = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, 1);
-    ggml_tensor *  t_acoustic     = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, int64_t(groups) - 1);
+    // [frames, groups-1] with one frame: the same fifteen int32s a 1-D tensor
+    // held, in the shape sum_code_embeddings reads a group's ids out of.
+    ggml_tensor *  t_acoustic     = ggml_new_tensor_2d(ictx, GGML_TYPE_I32, 1, int64_t(groups) - 1);
     ggml_tensor *  t_semantic     = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, 1);
     ggml_tensor *  t_previous     = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, 1);
     ggml_tensor *  t_hidden       = ggml_new_tensor_2d(ictx, GGML_TYPE_F32, hparams.code_predictor.hidden_size, 1);

@@ -1,6 +1,6 @@
 # Qwen3-TTS Family Selection and Port Plan
 
-Status: Confirmed 2026-08-13. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
+Status: Confirmed 2026-08-14. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
 complete and published. Intake, the oracle and conversion are done; stages 4
 through 7 have their measured work done: oracle replay and the public seam
 pass, and the codec runs on CUDA while the autoregressive half stays on the CPU
@@ -2083,6 +2083,42 @@ belongs to Plan 3, where the ICL path is built and can be adjudicated against
 its own renders. The table stays as the intake script measured it, because the
 row is evidence about the dump, not about the shipped path. See "Listening
 Audits" below.
+
+**A SECOND ICL OUTPUT-LENGTH PATHOLOGY, 2026-08-14, AND IT IS NOT DIAGNOSED
+EITHER.** Plan 3's Task 11 landed ICL synthesis, so the mode can now be driven
+end to end; the first thing it produced was the opposite symptom. Through the
+public seam, on the real 8.08 s `clone.wav` at its native length, with the
+target text `"Hi."` and seed 7 on CPU against the BF16 Base package:
+
+| reference transcript | outcome |
+| --- | --- |
+| the clip's own (`"Okay. Yeah. I resent you. …"`) | `SYNTH_OK`, 13 codec frames (24,960 PCM), peak 0.681, 5.5 s |
+| `"hello there"` — same audio | **never stops**: runs the full `kDefaultMaxFrames = 2048`, returns `SYNTH_ERR_OUTPUT_LIMIT`, zero audio, 475.9 s of CPU |
+
+The variable is **transcript–audio mismatch**, not clip length and not
+synthetic input — an earlier revision of Task 11's own test comment blamed a
+synthetic tone, and the review falsified that by holding the real clip fixed
+and changing only the transcript. It is an ordinary caller mistake: any
+imperfect ASR transcript is one.
+
+**Two symptoms, one suspected mechanism, neither diagnosed.** The 9-frame row
+above under-produces (9 frames for an 11-word sentence, from a
+transcript-assisted dump over a 4×-looped 30 s reference); this one never
+produces a stop code at all. Both are ICL-mode output lengths uncorrelated
+with the target text, and Stage 1 recorded a third member of the shape —
+greedy decoding running away to 8191 frames, "the model never emitting its
+stop code". Whether they share a cause is a HYPOTHESIS, not a finding: nothing
+has been instrumented, and it may simply be upstream's behaviour under a
+mismatched prompt. What is established is that the ICL path can burn the
+default ceiling and return nothing on a realistic input.
+
+**What exists today is mitigation, not a fix.** `src/synthesize.cpp`'s limit
+stop now emits `synthesis.output_limit` with a message naming the reference
+transcript when the request carried one, so a caller gets something to act on
+instead of a bare status; and `tests/qwen3_tts_base_load_real.cpp` caps its
+own ICL runs so the suite does not spend eight minutes reaching that state.
+Neither shortens the run or explains it. Adjudicating this — together with the
+9-frame row — is Plan 3's carry-over.
 
 ### What Plan 1 did not deliver
 

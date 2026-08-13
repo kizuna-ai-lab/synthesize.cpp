@@ -27,13 +27,19 @@ interface — no synthesis capability exists only in one of them.
 - Select a Preset Voice from a package's catalog, set a speaking rate and a
   synthesis seed, and bound the output length.
 - Prepare a Voice Profile from **Reference Audio** — for OmniVoice, and for the
-  Qwen3-TTS **Base** variant in x-vector mode — serialize it, and load it back.
-  From **Description Text**, for OmniVoice only. `src/voice-profile.cpp`
+  Qwen3-TTS **Base** variant in both of its modes — serialize it, and load it
+  back. From **Description Text**, for OmniVoice only. `src/voice-profile.cpp`
   refuses every other Model with `SYNTH_ERR_UNSUPPORTED_VOICE`: VITS, Kokoro,
   and the Qwen3-TTS CustomVoice variant, which carries no speaker encoder.
-  Transcript-assisted (ICL) cloning is **not** delivered — Qwen3-TTS reports
-  `reference_transcript` and `reference_language` as
-  `SYNTH_REQUIREMENT_UNSUPPORTED` and refuses a request that carries either.
+  For Qwen3-TTS Base the reference transcript selects the mode: absent prepares
+  the x-vector clone, present prepares the transcript-assisted (ICL) one, and
+  `reference_transcript` and `reference_language` report
+  `SYNTH_REQUIREMENT_OPTIONAL`. **A reference transcript that does not match
+  its reference audio makes ICL synthesis run to the output limit and return
+  nothing**, which on the default ceiling is minutes of CPU; the limit stop is
+  reported as `synthesis.output_limit` and names the transcript, and the cause
+  is recorded but not diagnosed (see `docs/porting/families/qwen3-tts.md`,
+  "Measured reference-duration bounds").
   What is measured is agreement with the reference implementation, not that a
   prepared Profile sounds like the voice it was prepared from. **One maintainer
   listened to one Qwen3-TTS Base source/clone pair on 2026-08-13 and judged it
@@ -177,10 +183,13 @@ one of them carries a speaker encoder.
 
 What Plan 2 did **not** deliver, and what nothing here should be read to claim:
 
-- **Transcript-assisted (ICL) cloning is Plan 3.** Only x-vector mode ships.
-  `reference_transcript` and `reference_language` report
-  `SYNTH_REQUIREMENT_UNSUPPORTED`, and a request carrying either is refused by
-  name rather than silently downgraded to the weaker clone.
+- **Transcript-assisted (ICL) cloning was Plan 3's, and Plan 3 is landing it.**
+  Plan 2 shipped x-vector mode only, reporting `reference_transcript` and
+  `reference_language` as `SYNTH_REQUIREMENT_UNSUPPORTED` and refusing a
+  request carrying either rather than silently downgrading to the weaker
+  clone. Both now report `SYNTH_REQUIREMENT_OPTIONAL` and both modes
+  synthesize; see "What it can do today" above for the caveat that comes with
+  the new mode.
 - **The listening pass is not Plan 2's**, and it has since run. Plan 2's own
   evidence is numerical: the x-vector agrees with the reference implementation
   to a committed cosine tolerance, which is a claim about the port and not
@@ -190,8 +199,9 @@ What Plan 2 did **not** deliver, and what nothing here should be read to claim:
   10 s and 30 s with the sub-minimum case refused as designed, and returned
   one listener's judgement that a clone is the same speaker as its source. One
   maintainer is not a quality evaluation: `quality_evaluation` stays `not_run`
-  and no Validation Level moves. The audit covers neither ICL, which is not
-  implemented, nor CUDA for the new graphs, which have only ever run on CPU.
+  and no Validation Level moves. The audit covers neither ICL, which did not
+  exist when it ran, nor CUDA for the new graphs, which have only ever run on
+  CPU.
 - **The CLI still cannot clone, for any family.** `synthesize-cli` has no Voice
   Profile support and no audio reader; adding one is a cross-family slice.
 - **No quantization and no CUDA for the new graphs.** Both are Plan 4's, to be

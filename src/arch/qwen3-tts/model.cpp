@@ -1017,6 +1017,15 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     // it if and only if it emitted acoustic codes, so a second clause reading
     // `acoustic_offset >= 0` would be a check neither half of which could
     // ever fail alone.
+    //
+    // IT ALSO DOES ONE THING NEITHER DIRECTION ABOVE NAMES, and it is the only
+    // thing that does: `acoustic_frames` below divides `prompt_acoustic.size()`
+    // by `groups - 1`. A package declaring `code_group_count == 1` makes that a
+    // division by zero. reference_is_well_formed refuses `groups < 2` for an
+    // ICL request, so `icl` and a one-group package cannot both hold by the
+    // time control reaches here -- but that refusal lives in another file, and
+    // this is the line standing between a malformed package and UB. Do not
+    // delete it on the grounds that both directions are unreachable.
     if (icl == prompt_acoustic.empty()) {
         return SYNTH_ERR_INTERNAL;
     }

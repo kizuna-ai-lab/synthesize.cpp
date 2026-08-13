@@ -306,6 +306,14 @@ synth_status_t create_with(synth_model_t *                            model,
 // to, because that comparison is only meaningful between two requests drawing
 // from the same stream. A seed of SYNTH_SEED_RANDOM would make two runs of
 // the SAME Profile differ and the comparison vacuous.
+//
+// THAT APPLIES TO EVERY CALLER OF THIS HELPER, not only to the comparison
+// that needed it -- check_profile_synthesizes and the cross-model refusal
+// check below now run seeded too. Deliberate and stated rather than left as a
+// silent widening: a refusal check cannot care which stream it would have
+// drawn from, and a synthesis check is strictly better off reproducible. The
+// alternative, a per-caller seed argument, would have added a parameter every
+// call site sets to the same value.
 constexpr uint64_t kSeed = 7;
 
 int synthesize_with(synth_context_t *       context,
@@ -425,12 +433,17 @@ int check_transcript_selects_icl_mode(synth_model_t *                           
     // prove between them (that an x-vector Profile synthesizes, and that a
     // reloaded one loads). The contrast needs one side of it, not two.
     //
-    // EVERY run below is capped, and the cap is what keeps this check cheap
-    // enough to belong here. 76,800 output PCM frames is about forty codec
+    // EVERY run below is capped. 76,800 output PCM frames is about forty codec
     // frames at this package's 1,920-sample hop -- comfortably past where the
-    // x-vector run stops on its own, and a bound on the ICL runs, which on
-    // THIS reference do not stop at all. See the loop below for why that is a
-    // property of the reference and not of the wiring.
+    // x-vector run stops on its own, and a bound on the ICL runs, which do not
+    // stop at all.
+    //
+    // THE CAP IS MITIGATION FOR A REALISTIC INPUT, NOT A GUARD AGAINST A
+    // CONTRIVED ONE. Read the loop below before changing it: what makes the
+    // ICL runs here run away is that the transcript does not describe the
+    // audio, which is what an imperfect ASR transcript is, and the same input
+    // through the public seam burns the full 2048-frame default ceiling. This
+    // check would take eight minutes and return nothing without the cap.
     constexpr uint64_t kFrameCap = 76800;
     std::vector<float> x_vector_pcm;
     synth_status_t     x_vector_status = SYNTH_OK;
@@ -453,16 +466,31 @@ int check_transcript_selects_icl_mode(synth_model_t *                           
     //
     // MEASURED, 2026-08-14, BF16 Base on CPU: the x-vector run stops at 14
     // codec frames and the ICL runs do not terminate at all -- they reach the
-    // cap and come back SYNTH_ERR_OUTPUT_LIMIT with no audio. That is a
-    // property of THIS reference, not of the wiring: the reference here is
-    // one second of a 220 Hz tone paired with the transcript "hello there",
-    // which is as far out of distribution as a reference gets, and the same
-    // code path on the real pinned clip with its real transcript terminates
-    // normally and produces audio (tests/qwen3_tts_clone_real.cpp, assertion
-    // 7). The assertion below is therefore "the two runs are not the same
-    // run" rather than "SYNTH_ERR_OUTPUT_LIMIT": what has to hold is that the
-    // reference block reached the prompt, not that an out-of-distribution
-    // reference degenerates in one particular way.
+    // cap and come back SYNTH_ERR_OUTPUT_LIMIT with no audio.
+    //
+    // THE TRIGGER IS TRANSCRIPT-AUDIO MISMATCH, NOT SYNTHETIC INPUT. An
+    // earlier revision of this comment blamed the 220 Hz tone and said the
+    // real clip with its real transcript terminates normally, which is true
+    // and not the variable. Task 11's review isolated it: keeping the real
+    // 8-second speech clip and swapping ONLY its transcript to "hello there"
+    // also fails to terminate -- 475.9 s of CPU, the full
+    // kDefaultMaxFrames = 2048 ceiling, non-SYNTH_OK, zero audio. A reference
+    // clip paired with a transcript that is not what it says is an ordinary
+    // caller mistake (any imperfect ASR transcript is one), so this is a
+    // production input, not an out-of-distribution curiosity. Do not go
+    // looking for the cause in "synthetic audio".
+    //
+    // It is also the SECOND recorded ICL output-length pathology in this
+    // family and neither is diagnosed: see
+    // docs/porting/families/qwen3-tts.md, "Measured reference-duration
+    // bounds", where a transcript-assisted dump produced 9 codec frames for
+    // an 11-word sentence. One under-produces, one never stops, both are ICL
+    // and both are uncorrelated with the target text.
+    //
+    // The assertion below is therefore "the two runs are not the same run"
+    // rather than "SYNTH_ERR_OUTPUT_LIMIT": what has to hold is that the
+    // reference block reached the prompt. Pinning the pathology itself would
+    // pin a model behaviour nobody has explained yet.
     for (synth_voice_profile_t * profile : { icl_profile, icl_reloaded }) {
         SeenDiagnostic     diagnostic;
         synth_status_t     status = SYNTH_OK;
@@ -484,6 +512,31 @@ int check_transcript_selects_icl_mode(synth_model_t *                           
         const bool   same_run = status == x_vector_status && icl_pcm.size() == x_vector_pcm.size() &&
                                 std::memcmp(icl_pcm.data(), x_vector_pcm.data(), compared * sizeof(float)) == 0;
         SYNTH_TEST_CHECK(!same_run);
+    }
+
+    // What a caller GETS when an ICL request runs away, which before Task 11's
+    // review was a bare SYNTH_ERR_OUTPUT_LIMIT: no code, no message, no audio,
+    // and -- uncapped -- eight minutes of CPU first. The limit stop now
+    // carries a diagnostic naming the input to look at.
+    //
+    // The cap here is two codec frames rather than kFrameCap, and that is what
+    // makes this assertion non-vacuous: at 3,840 output PCM frames the limit
+    // is reached whatever the model does, so this pins the DIAGNOSTIC rather
+    // than the pathology. Two frames also makes it the cheapest synthesis in
+    // this file.
+    {
+        SeenDiagnostic     diagnostic;
+        synth_status_t     status = SYNTH_OK;
+        std::vector<float> unused;
+        SYNTH_TEST_CHECK(synthesize_with(context, icl_profile, diagnostic, status, &unused, 3840) == 0);
+        SYNTH_TEST_CHECK(status == SYNTH_ERR_OUTPUT_LIMIT);
+        SYNTH_TEST_CHECK(diagnostic.seen);
+        SYNTH_TEST_CHECK(diagnostic.status == SYNTH_ERR_OUTPUT_LIMIT);
+        SYNTH_TEST_CHECK(diagnostic.code == "synthesis.output_limit");
+        // The ICL-specific half of the message, which is the actionable part:
+        // an x-vector request reaching the same line gets the generic text.
+        // tests/qwen3_tts_output_limit_test.cpp pins that other branch.
+        SYNTH_TEST_CHECK(diagnostic.message.find("reference transcript") != std::string::npos);
     }
 
     synth_voice_profile_free(icl_reloaded);

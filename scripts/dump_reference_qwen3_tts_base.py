@@ -354,6 +354,16 @@ def capture_icl_embed(model, sink: dict):
     for ``speech_tokenizer.decode``. It fires only in ICL mode -- x-vector-only
     cases never call it, which is what the case-shape check in ``run_case``
     verifies.
+
+    What lands here is the *sum* of the prompt's two tracks, which is a lossy
+    record of how they were aligned: a text track one position early plus a codec
+    track one position late is a different sum, but so are a hundred other
+    pairings. ``scripts/dump_reference_qwen3_tts_icl_prompt.py`` extends this
+    same wrapper to capture the two summands separately, the trailing schedule,
+    and which of the two alignment arms upstream actually took, into
+    ``prompt/alignment.json`` beside the ``prompt/icl_embed.f32`` written here.
+    It checks its tracks against this file, so this one stays the reference for
+    the block itself.
     """
     target = model.model
     original = target.generate_icl_prompt

@@ -311,10 +311,27 @@ int main(int argc, char ** argv) {
 
     // `rvq_residual_sNN.f32`: [frames, projected] each, already the oracle's
     // own order slice for slice -- no transpose.
+    //
+    // The size is CHECKED before the slice rather than assumed. It is
+    // guaranteed today -- prepare_codec_reference's postcondition sizes
+    // `residuals` at `groups * frames * projected` (codec-encoder-host.h) --
+    // and create_icl_profile already restates the sibling postcondition for
+    // the codes for exactly this reason. Unchecked, a short buffer is not a
+    // crash but iterator arithmetic past the end and a silent over-read into
+    // whatever follows, and `write_raw` would still report success: this
+    // driver writes the artifacts the codec-encoder golden gate compares
+    // against the oracle, so the damage would land in a gate's INPUTS, where
+    // nothing downstream distinguishes it from a real disagreement.
+    const size_t stride   = size_t(frames) * size_t(projected);
+    const size_t required = size_t(groups) * stride;
+    if (encoding.residuals.size() < required) {
+        std::fprintf(stderr, "residual buffer holds %zu floats, needs %zu (%lld groups x %zu)\n",
+                     encoding.residuals.size(), required, (long long) groups, stride);
+        return false;
+    }
     for (int64_t group = 0; group < groups; ++group) {
         char name[64];
         std::snprintf(name, sizeof(name), "rvq_residual_s%02lld.f32", (long long) group);
-        const size_t       stride = size_t(frames) * size_t(projected);
         std::vector<float> slice(encoding.residuals.begin() + std::ptrdiff_t(size_t(group) * stride),
                                  encoding.residuals.begin() + std::ptrdiff_t(size_t(group + 1) * stride));
         std::snprintf(shape, sizeof(shape), "[%lld, %lld]", (long long) frames, (long long) projected);

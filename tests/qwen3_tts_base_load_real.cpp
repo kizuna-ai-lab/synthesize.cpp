@@ -408,9 +408,13 @@ int synthesize_with(synth_context_t *       context,
 //     and the request is refused before any prompt exists. `same_run`'s first
 //     conjunct is then `INVALID_ARG == SYNTH_OK`, false, and the assertion
 //     passes. Both landed in the same commit, so the claim was never true.
-//     What catches a single-field deletion IN THIS FILE is the
-//     `status == SYNTH_ERR_OUTPUT_LIMIT` assertion further down, which stops
-//     holding when the request is refused instead.
+//     What catches a single-field deletion IN THIS FILE is that the refusal
+//     is SYNTH_ERR_INVALID_ARG, and two assertions further down pin it: the
+//     `status != SYNTH_ERR_INVALID_ARG` check inside the capped loop, and the
+//     `status == SYNTH_ERR_OUTPUT_LIMIT` check on the two-frame arm after it.
+//     Both hold whatever the model does. This used to name the loop's own
+//     OUTPUT_LIMIT assertion, which was build-dependent and is gone -- see
+//     "WHAT THE CAPPED LOOP PINS" below for why.
 //
 //     `!same_run` is also degenerate in the PASSING world, for reasons
 //     unrelated to the reference block: the measurement recorded below shows
@@ -488,9 +492,11 @@ int check_transcript_selects_icl_mode(synth_model_t *                           
     // codes and ids were reconstructed from bytes, and had they not been it
     // would land back on the x-vector run below.
     //
-    // MEASURED, 2026-08-14, BF16 Base on CPU: the x-vector run stops at 14
-    // codec frames and the ICL runs do not terminate at all -- they reach the
-    // cap and come back SYNTH_ERR_OUTPUT_LIMIT with no audio.
+    // MEASURED, 2026-08-14, BF16 Base on CPU, RelWithDebInfo: the x-vector run
+    // stops at 14 codec frames and the ICL runs do not terminate at all --
+    // they reach the cap and come back SYNTH_ERR_OUTPUT_LIMIT with no audio.
+    // That is an observation of one build, not a property this check pins;
+    // read "WHAT THE CAPPED LOOP PINS" below before turning it into one.
     //
     // THE TRIGGER IS TRANSCRIPT-AUDIO MISMATCH, NOT SYNTHETIC INPUT. An
     // earlier revision of this comment blamed the 220 Hz tone and said the
@@ -511,10 +517,54 @@ int check_transcript_selects_icl_mode(synth_model_t *                           
     // an 11-word sentence. One under-produces, one never stops, both are ICL
     // and both are uncorrelated with the target text.
     //
-    // The assertion below is therefore "the two runs are not the same run"
-    // rather than "SYNTH_ERR_OUTPUT_LIMIT": what has to hold is that the
-    // reference block reached the prompt. Pinning the pathology itself would
-    // pin a model behaviour nobody has explained yet.
+    // WHAT THE CAPPED LOOP PINS, AND WHAT IT DELIBERATELY DOES NOT.
+    //
+    // PINNED, and true whatever the model does:
+    //   1. the request was not refused BY MODE -- status is not
+    //      SYNTH_ERR_UNSUPPORTED_VOICE and no "synthesis.voice_unsupported"
+    //      diagnostic was raised. This is the flip Task 11 landed.
+    //   2. the request was not refused AS MALFORMED -- status is not
+    //      SYNTH_ERR_INVALID_ARG. This is the assertion a dropped
+    //      `family_request.reference_codes` or `reference_text_ids` breaks:
+    //      `validate_speaker_sources` (src/arch/qwen3-tts/model.cpp) enforces
+    //      the three ICL fields as a set and returns exactly that status for a
+    //      half-present one, before any prompt exists. With all three present
+    //      no valid request can produce it, so the assertion is silent in the
+    //      passing world and red in the broken one.
+    //   3. when both runs produced comparable audio, they are not the same
+    //      audio -- the `!same_run` comparison below, which is the direct
+    //      evidence that the reference block reached the prompt.
+    // Together: the reference block was ACCEPTED and reached the prompt, which
+    // is what this check exists to establish.
+    //
+    // NOT PINNED: where the ICL run stops. An earlier revision asserted
+    // `status == SYNTH_ERR_OUTPUT_LIMIT` here -- contradicting this very
+    // paragraph, which already said it must not -- and that assertion pinned a
+    // number this project has measured to be build-dependent.
+    //
+    //   * BUILD. tests/qwen3_tts_icl_real.cpp records identical package, clip,
+    //     transcript, text, seed and CPU backend, with the thread count swept
+    //     over 1/2/4/8/20 and no movement at all, and still: Release (-O3)
+    //     stops the ICL run at 24,960 output PCM frames where RelWithDebInfo
+    //     (-O2) stops it at 48,000. Each reproduces exactly within its own
+    //     build. The autoregressive stop decision follows the compiler's
+    //     floating-point choices; everything deterministic is unaffected.
+    //   * SEED. docs/porting/families/qwen3-tts.md, "Measured reference-duration
+    //     bounds", runs ONE mismatched input at five seeds and gets four
+    //     9-frame collapses against one runaway. On a mismatched transcript,
+    //     reaching the ceiling is one of two observed outcomes, not the
+    //     outcome -- and the collapse arm returns SYNTH_OK with audio.
+    //
+    // So a build or a seed whose stop fires before kFrameCap turns that
+    // assertion red with no defect behind it, in a check that costs a
+    // real-package load. Worse, the two builds in question are the two this
+    // project ships gates for: the sanitizer gate is RelWithDebInfo and every
+    // performance figure comes from Release.
+    //
+    // The pathology stays unpinned, exactly as this paragraph always said it
+    // should. Where SYNTH_ERR_OUTPUT_LIMIT IS pinned is the two-frame arm
+    // after the loop, whose 3,840-frame cap reaches the limit whatever the
+    // model does -- a bound this test sets, not a behaviour it is guessing at.
     for (synth_voice_profile_t * profile : { icl_profile, icl_reloaded }) {
         SeenDiagnostic     diagnostic;
         synth_status_t     status = SYNTH_OK;
@@ -536,24 +586,25 @@ int check_transcript_selects_icl_mode(synth_model_t *                           
         //
         // It is now conditioned on both runs having produced comparable audio.
         // When they have not, the two assertions that carry this check are the
-        // status/code pair above (not refused BY MODE) and the OUTPUT_LIMIT
-        // assertion below, both of which stop holding if the ICL fields are
-        // dropped at the seam. When they have, the byte comparison is the real
-        // thing and still fires.
+        // status/code pair above (not refused BY MODE) and the INVALID_ARG
+        // assertion below (not refused AS MALFORMED), both of which stop
+        // holding if the ICL fields are dropped at the seam. When they have,
+        // the byte comparison is the real thing and still fires.
         if (status == x_vector_status && !icl_pcm.empty() && !x_vector_pcm.empty()) {
             const size_t compared = std::min(icl_pcm.size(), x_vector_pcm.size());
             const bool   same_run = icl_pcm.size() == x_vector_pcm.size() &&
                                     std::memcmp(icl_pcm.data(), x_vector_pcm.data(), compared * sizeof(float)) == 0;
             SYNTH_TEST_CHECK(!same_run);
         }
-        // What the ICL arm actually reaches on this fixture, asserted rather
-        // than left implicit: the two runs are NOT the same run because the
-        // ICL one hits the cap. This is the assertion a dropped
-        // `family_request.reference_codes` or `reference_text_ids` breaks --
-        // the request becomes INVALID_ARG at validate_speaker_sources and
-        // never reaches the limit at all.
-        SYNTH_TEST_CHECK(status == SYNTH_ERR_OUTPUT_LIMIT);
-        SYNTH_TEST_CHECK(status != x_vector_status);
+        // The request was ACCEPTED rather than refused as malformed, which is
+        // point 2 of "WHAT THE CAPPED LOOP PINS" above: this is the assertion
+        // a dropped `family_request.reference_codes` or `reference_text_ids`
+        // breaks, because validate_speaker_sources refuses the half-present
+        // set with exactly SYNTH_ERR_INVALID_ARG before any prompt exists. It
+        // says nothing about WHERE the run stops -- that is the
+        // build-dependent and seed-dependent part, and pinning it is the
+        // mistake this line replaced.
+        SYNTH_TEST_CHECK(status != SYNTH_ERR_INVALID_ARG);
     }
 
     // What a caller GETS when an ICL request runs away, which before Task 11's
@@ -566,6 +617,17 @@ int check_transcript_selects_icl_mode(synth_model_t *                           
     // is reached whatever the model does, so this pins the DIAGNOSTIC rather
     // than the pathology. Two frames also makes it the cheapest synthesis in
     // this file.
+    //
+    // THIS ARM IS ALSO WHERE SYNTH_ERR_OUTPUT_LIMIT IS PINNED IN THIS FILE,
+    // and since 2026-08-15 it is the only place. The capped loop above used to
+    // assert the same status against kFrameCap, where the stop point is a
+    // property of the build and the seed rather than of this port; here it is
+    // a property of the 3,840-frame bound this test itself sets, so it holds
+    // in Release and RelWithDebInfo alike. It carries the loop's other duty
+    // too: a dropped `family_request.reference_codes` or `reference_text_ids`
+    // makes validate_speaker_sources return SYNTH_ERR_INVALID_ARG, and this
+    // equality stops holding. Do not weaken it to `!= SYNTH_OK` -- INVALID_ARG
+    // satisfies that, and the detection would be lost.
     {
         SeenDiagnostic     diagnostic;
         synth_status_t     status = SYNTH_OK;

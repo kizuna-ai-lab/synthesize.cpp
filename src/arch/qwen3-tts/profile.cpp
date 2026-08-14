@@ -203,9 +203,25 @@ synth_status_t create_icl_profile(const HParams &                     hparams,
     const synth_status_t codec_status = encode_codec_reference(hparams, codec_encoder, pcm_24k, threads, codec_encoding,
                                                                out_diagnostic_code, out_diagnostic_message);
     if (codec_status != SYNTH_OK) {
-        // Its own refusals -- a sub-frame clip, a non-finite sample, and the
-        // "voice_profile.reference_silent" rejection it raises identically to
-        // the speaker path above -- already set the diagnostic out-params.
+        // Which of its refusals carry a diagnostic, stated exactly, because
+        // the sentence that stood here until 2026-08-15 did not. It claimed
+        // that a sub-frame clip, a non-finite sample and the silent-reference
+        // rejection "already set the diagnostic out-params"; only the silent
+        // one did.
+        //
+        // Named: silence as "voice_profile.reference_silent" (raised
+        // identically to the speaker path above), an empty clip as
+        // "voice_profile.reference_too_short" (the core layer's own code,
+        // reused rather than duplicated), and a non-finite sample as
+        // "voice_profile.reference_not_finite". The non-finite one is the arm
+        // that matters: it is the only one of the three a caller can reach
+        // through the public seam, because nothing before it inspects
+        // reference sample values at the target rate.
+        //
+        // Bare, on purpose: a geometry failure. encode_codec_reference cannot
+        // tell a sub-frame clip from a package whose shapes disagree, and the
+        // sub-frame case is already refused with a name by the core layer's
+        // min_frames_per_clip preflight. Its own comment says why.
         return codec_status;
     }
 

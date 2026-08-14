@@ -331,7 +331,17 @@ synth_status_t encode_codec_reference(const HParams &             hparams,
     out_diagnostic_code    = nullptr;
     out_diagnostic_message = nullptr;
 
+    // Reuses the core layer's own code for a clip with nothing in it rather
+    // than minting a second name for the same mistake: src/voice-profile.cpp
+    // refuses `rfe < capabilities.min_frames_per_clip` as
+    // "voice_profile.reference_too_short", and an empty clip is that with
+    // rfe = 0. Unreachable from the public seam -- the core check fires first,
+    // and encode_speaker_reference runs before this function and refuses empty
+    // PCM of its own -- but create_icl_profile states that this function's
+    // refusals carry diagnostics, so they do.
     if (pcm.empty()) {
+        out_diagnostic_code    = "voice_profile.reference_too_short";
+        out_diagnostic_message = "the reference audio is empty";
         return SYNTH_ERR_INVALID_ARG;
     }
 
@@ -349,9 +359,42 @@ synth_status_t encode_codec_reference(const HParams &             hparams,
 
     // Refuses a sub-frame clip and a non-finite sample, which a graph builder
     // cannot see: it reads shapes, never values.
+    //
+    // ONLY THE NON-FINITE ARM IS NAMED HERE, AND THAT IS DELIBERATE.
+    // codec_encoder_check_waveform folds its failures into one status, and
+    // they are not all the same mistake: it refuses a non-finite sample, but
+    // its geometry step also refuses a WEIGHTS set whose declared shapes do
+    // not agree with each other. Those two arrive here indistinguishable. A
+    // caller's corrupt buffer and a corrupt package are different problems,
+    // and naming the geometry failure "reference_too_short" would tell the
+    // holder of a bad package to go and lengthen a perfectly good clip.
+    //
+    // So the finiteness re-test below decides only its own arm -- O(n), and
+    // only on the refusal path, which ends the call anyway -- and a geometry
+    // failure keeps returning a bare status. That is not a gap: a clip too
+    // short to fill a frame is refused before this function by
+    // src/voice-profile.cpp's min_frames_per_clip preflight, WITH the
+    // "voice_profile.reference_too_short" diagnostic, so the caller-facing
+    // case already has a name. What is left here is unreachable from the
+    // public seam and genuinely ambiguous.
+    //
+    // THE NON-FINITE ARM, BY CONTRAST, IS REACHABLE. Nothing before this point
+    // inspects reference sample VALUES at the target rate:
+    // speaker-encoder-host.cpp checks the finiteness of the embedding it
+    // produces, not of its input, and audio-normalizer.cpp runs its own check
+    // only when a resample path is taken. A caller handing in NaN or Inf PCM
+    // already at 24 kHz arrives here, and before 2026-08-15 left with a bare
+    // SYNTH_ERR_INVALID_ARG and nothing to act on.
     CodecEncoderGeometry geometry;
     synth_status_t       status = codec_encoder_check_waveform(weights, pcm.data(), pcm.size(), geometry);
     if (status != SYNTH_OK) {
+        for (const float sample : pcm) {
+            if (!std::isfinite(sample)) {
+                out_diagnostic_code    = "voice_profile.reference_not_finite";
+                out_diagnostic_message = "the reference audio contains a sample that is not a finite number";
+                break;
+            }
+        }
         return status;
     }
 

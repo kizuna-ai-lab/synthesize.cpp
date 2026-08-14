@@ -1,16 +1,23 @@
 #include "bpe.h"
 
-#include <cctype>
-
 namespace synth::qwen3tts {
 
 // Moved out of this file's anonymous namespace and declared in bpe.h when
 // Plan 3's Task 8 gave it a second caller (profile.cpp's create_icl_profile);
 // the rationale for ASCII-only, and for the two callers sharing one
 // predicate, is on the declaration there.
+// The set is written out rather than delegated to std::isspace, which answers
+// against the global C locale: a host whose locale classifies an additional
+// byte as space would make this predicate -- and with it the
+// "voice_profile.transcript_blank" refusal and the mode selection behind it --
+// depend on the environment the process happens to start in. These six are
+// what the "C" locale means by space, and they are what this family's
+// pre-tokenizer treats as whitespace. Naming them keeps the answer identical
+// on every host, which is what the ASCII-only rule on the declaration in bpe.h
+// is for.
 bool qwen_transcript_is_blank(const std::string & transcript) {
     for (const char byte : transcript) {
-        if (std::isspace(static_cast<unsigned char>(byte)) == 0) {
+        if (byte != ' ' && byte != '\t' && byte != '\n' && byte != '\v' && byte != '\f' && byte != '\r') {
             return false;
         }
     }

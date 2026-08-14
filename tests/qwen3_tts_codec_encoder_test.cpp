@@ -1259,14 +1259,54 @@ int check_silent_reference_is_refused(const Fixture & fixture) {
 
     // An empty clip and a sub-frame clip are refused too, and NOT as silence:
     // they are a different mistake and get a different answer.
+    //
+    // The empty clip now names itself. This assertion used to read
+    // `diagnostic == nullptr`, pinning the absence create_icl_profile's own
+    // comment denied; it pins the code instead, so a regression back to the
+    // bare status is caught rather than blessed. The code is the CORE layer's
+    // own, not a second name for the same mistake.
     const std::vector<float> empty;
     SYNTH_TEST_CHECK(synth::qwen3tts::encode_codec_reference(hparams, fixture.weights, empty, 1, encoding, diagnostic,
                                                              message) == SYNTH_ERR_INVALID_ARG);
-    SYNTH_TEST_CHECK(diagnostic == nullptr);
+    SYNTH_TEST_CHECK(diagnostic != nullptr);
+    SYNTH_TEST_CHECK(std::string(diagnostic) == "voice_profile.reference_too_short");
+    SYNTH_TEST_CHECK(message != nullptr);
+
+    // The sub-frame clip stays UNNAMED, and that is the assertion, not an
+    // omission. It is refused by codec_encoder_check_waveform's geometry step,
+    // which refuses a malformed WEIGHTS set through the same return -- see
+    // check_refusals, which drives exactly that and requires no code be
+    // claimed. The two are indistinguishable from inside this function, so
+    // calling this one "reference_too_short" would tell the holder of a bad
+    // package to lengthen a perfectly good clip. The caller-facing short-clip
+    // case is named a layer up, by src/voice-profile.cpp's min_frames_per_clip
+    // preflight, which is why nothing is lost here.
     const std::vector<float> stub = lcg_clip(kSamplesPerFrame - 1, 0.0f);
     SYNTH_TEST_CHECK(synth::qwen3tts::encode_codec_reference(hparams, fixture.weights, stub, 1, encoding, diagnostic,
                                                              message) != SYNTH_OK);
     SYNTH_TEST_CHECK(diagnostic == nullptr);
+
+    // The non-finite refusal, which is the one of the three a caller can
+    // actually reach: nothing between the public seam and this function
+    // inspects reference sample VALUES at the target rate. It is refused as
+    // its own mistake rather than folded into the sub-frame code, so a caller
+    // handed a corrupt buffer is told which buffer to look at.
+    //
+    // The clip is otherwise VALID -- long enough, not silent -- so the only
+    // thing that can move the answer is the one poisoned sample. NaN and Inf
+    // are checked separately because std::isfinite refuses both and a
+    // comparison-based check would let NaN through.
+    for (const float poison : { std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(),
+                                -std::numeric_limits<float>::infinity() }) {
+        std::vector<float> spoiled  = lcg_clip(kSamplesPerFrame * 4, 0.25f);
+        spoiled[spoiled.size() / 2] = poison;
+        SYNTH_TEST_CHECK(synth::qwen3tts::encode_codec_reference(hparams, fixture.weights, spoiled, 1, encoding,
+                                                                 diagnostic, message) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(diagnostic != nullptr);
+        SYNTH_TEST_CHECK(std::string(diagnostic) == "voice_profile.reference_not_finite");
+        SYNTH_TEST_CHECK(message != nullptr);
+        SYNTH_TEST_CHECK(encoding.codes.empty());
+    }
     return 0;
 }
 

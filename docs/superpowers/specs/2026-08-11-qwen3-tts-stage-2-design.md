@@ -1,19 +1,21 @@
 # Qwen3-TTS Stage 2 — Reference Audio Voice Cloning — Design
 
 Status: Approved in discussion with jiangzhuo on 2026-08-11; three errata added
-2026-08-12 after Plan 1 (the Base package) was executed, and a fourth added
-2026-08-13 from a measurement taken while Plan 3 (the ICL path) was scoped. This
+2026-08-12 after Plan 1 (the Base package) was executed, a fourth added
+2026-08-13 from a measurement taken while Plan 3 (the ICL path) was scoped, and
+a fifth added 2026-08-15 from Plan 3's review, on an unreproduced figure. This
 is the design record for the second rung of the Qwen3-TTS Reference Model Variant
 Ladder (`docs/porting/families/qwen3-tts.md`, "Reference Model Variant Ladder").
 The family record itself is extended at intake, per `docs/model-porting.md`.
 
 Plans 2–4 are written from this document, so where execution contradicted it
-the correction lives here rather than only in the plan that found it. All four
+the correction lives here rather than only in the plan that found it. All five
 errata are marked in bold in the section they correct: section 3 on the Voice
-Profile capability advertisement, section 4 on codec deduplication, and two in
-section 6 — greedy oracle decoding, and the plain-equality gate on reference
-codes. Nothing else in this document has been rewritten — the original
-prescription is left standing above each erratum so the change is legible.
+Profile capability advertisement, section 4 on codec deduplication, and three in
+section 6 — greedy oracle decoding, the plain-equality gate on reference codes,
+and the unreproduced `278` count in that gate's rejected alternative. Nothing
+else in this document has been rewritten — the original prescription is left
+standing above each erratum so the change is legible.
 
 ## 1. Context
 
@@ -437,6 +439,21 @@ codes against 278 for the table alone — so the stack's contribution is the lar
 one, and 0.624% / 4.04% are a **floor** on divergence rather than a budget the
 port can be held to. The price would have been shipping a deliberately less
 accurate table to satisfy a test that still failed.
+
+**Erratum, 2026-08-15 — the `278` figure in the paragraph above was never
+reproduced, and no superseding value exists.** It is the table-alone
+code-divergence count the rejection reasoning weighs the all-f32 load against,
+and nothing recomputes it: the only other occurrence in the tree is a comment in
+`scripts/dump_reference_qwen3_tts_codec_encoder.py` repeating the same pair, not
+an independent measurement, and no later run replaced it the way the committed
+float32 re-run replaced other figures from that day. So the reading that "the
+stack's contribution is the larger one" rests on one unreproduced number. Treat
+`278` as unverified rather than as a measurement, and re-measure the table-alone
+contribution before a later rung reasons from it. The rejection itself does not
+turn on the count: baking a bf16 table would still leave the port's F32 SEANet
+and F32 encoder transformer handing the quantizer latents the oracle's bf16
+stack never produced, which is the structural argument the paragraph above
+makes and which `278` only illustrates.
 
 *Keeping plain equality and absorbing the flips through `oracle.alternate_grids`.*
 Rejected on what that mechanism is. An alternate grid is a further grid the

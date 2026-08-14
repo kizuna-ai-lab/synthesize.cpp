@@ -481,6 +481,12 @@ has the same problem. (`tests/tolerances/qwen3-tts.json:639` also says "three
 lengths" where `:636` correctly says two.) **A second reference clip and a
 second speaker are the highest-value coverage Plan 4 can add.**
 
+**[Historical, marked rather than rewritten: the family record's gap was closed
+on 2026-08-14, after this file was written. `docs/porting/families/qwen3-tts.md:2980-2995`
+now states in the family record itself that the three codec cases are one
+recording, and that none of it is independent corroboration. The "does not,
+anywhere" above is the state at Plan 3's close.]**
+
 **The acoustic branch's real headroom is 1.64x, not the 2.0x recorded.** The
 oracle's `codec_encoder/waveform.f32` is **exactly `bfloat16(clone.wav)`**,
 verified element for element — found, not assumed. The stage-wise validator

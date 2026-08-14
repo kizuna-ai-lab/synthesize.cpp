@@ -2192,13 +2192,16 @@ by the plan -- that the pad arm buries the target text -- is neither confirmed
 nor needed here; the mismatch control moves the number without changing the arm,
 so it is not recorded as the cause.
 
-**One pathology, two symptoms -- the Task 11 hypothesis is now demonstrated,
-not assumed.** Task 11's review found a real 8 s clip with a deliberately wrong
+**Two symptoms CO-OCCUR under one input; the shared mechanism remains a
+hypothesis.** Task 11's review found a real 8 s clip with a deliberately wrong
 transcript running to the ceiling, and hypothesised it and this collapse were
-one ICL length pathology. They are: the seed scatter above produces *both*
-symptoms from a *single* input configuration, four collapses and one runaway,
-differing only in seed. An incoherent reference makes the stopping decision
-unreliable in both directions.
+one ICL length pathology. What the seed scatter above adds is co-occurrence, not
+that mechanism: *both* symptoms arise from a *single* input configuration, four
+collapses and one runaway across five seeds, differing only in seed. That is one
+input, not a traced causal path -- nothing was instrumented, no intervention
+isolated a cause -- so "one pathology" stays a hypothesis and is labelled as one
+below. An incoherent reference makes the stopping decision unreliable in both
+directions.
 
 #### What Step 3 still needs, and what the port half now does say
 
@@ -3185,9 +3188,15 @@ held.
 
 An ICL envelope carries three tensors where an x-vector envelope carries one:
 `profile.x_vector`, `profile.codes` (the `[16, T]` reference grid in
-group-fastest order) and `profile.reference_text_ids`. **The third is
-recoverable transcript content and the project says so** — byte-level BPE is
-invertible, so whoever holds the Profile can recover the reference transcript.
+group-fastest order) and `profile.reference_text_ids`. **The third discloses the
+reference transcript's content and the project says so** — byte-level BPE decodes
+the ids back to text, so whoever holds the Profile can read what the transcript
+said. Recovery is not byte-exact: the ids come from wrapping the transcript in
+the reference turn, tokenizing, and slicing a fixed count off each end, and that
+map is not injective — measured on the shipped Base package's vocabulary,
+`"\nHello"` and `"Hello"` both reduce to the single id 9707
+(`src/arch/qwen3-tts/bpe.h`). What a holder recovers is the content, up to
+whitespace at its boundaries, and that is disclosure either way.
 That declaration is the design's D5 and it now lives in
 `docs/voice-conditioning.md`, which is the document a Profile's recipient
 would read. Profiles still never carry enrollment audio. The divergence from
@@ -3264,13 +3273,18 @@ in the file where the next person will hit it.
   CLI's position" above: adding an audio reader is a cross-family slice, not a
   qwen3-tts increment.
 - **Any diagnosis of the ICL output-length pathology, or a shorter failure.**
-  Pairing a reference clip with a transcript that does not match it runs
-  synthesis to the 2048-frame ceiling — about eight minutes, non-OK, zero
-  audio. It is an ordinary caller mistake (any imperfect ASR transcript is
-  one). What Plan 3 added is **mitigation, not a diagnosis and not a fix**: one
-  static error string, so that the limit stop points a caller at the inputs to
-  check instead of returning a bare status. **Shortening it needs a lower ICL
-  ceiling or a run-away detector, and neither was built.**
+  Pairing a reference clip with a transcript that does not match it has been
+  measured, on this port, running synthesis to the 2048-frame ceiling — about
+  eight minutes, non-OK, zero audio. **Reaching the ceiling is not the only
+  outcome a mismatch produces**: on the reference implementation the same kind
+  of mismatch collapsed on four of five seeds — 9, 8, 12 and 4 frames — and
+  reached the ceiling on the fifth, and a collapse hands back a short clip
+  rather than a status a caller can key on. It is an ordinary caller mistake
+  (any imperfect ASR transcript is one). What Plan 3 added is **mitigation, not
+  a diagnosis and not a fix**: one static error string, so that the limit stop
+  points a caller at the inputs to check instead of returning a bare status.
+  **Shortening it needs a lower ICL ceiling or a run-away detector, and neither
+  was built.**
 
   **The provenance, corrected on 2026-08-14 — an earlier revision of this
   bullet had it backwards and the correction matters for Plan 4.** It said the
@@ -3289,8 +3303,9 @@ in the file where the next person will hit it.
   and its section above is where the `trim_seconds` driver flag a port
   comparison would need is recorded.
 - **A port-side answer on the 9-frame case.** The anomaly, open since Plan 1,
-  **is adjudicated**: it reproduces exactly, and it is the same mechanism as
-  the runaway — one input, five seeds, four collapses and one runaway. It is
+  **is adjudicated**: it reproduces exactly, and it **co-occurs** with the
+  runaway under one input — five seeds, four collapses and one runaway. That
+  they share a mechanism is a hypothesis, not something this measured. It is
   **not** a monotone function of reference length; that explanation was raised
   and refuted inside this plan. But the frame-count half of the port
   comparison is distributional and remains unrun.

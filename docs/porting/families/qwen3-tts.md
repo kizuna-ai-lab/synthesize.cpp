@@ -2058,6 +2058,69 @@ documented degeneracy signature (near-silence or one code dominating the
 output; neither fires at either edge). The 10 s point is the best-behaved
 of the five, landing within 3 frames of baseline.
 
+#### The 9-frame anomaly, adjudicated 2026-08-14
+
+Carried unresolved through Plans 1 and 2; Plan 2 could not settle it because
+its regeneration ran in x-vector mode, which is not evidence about ICL. Plan 3
+has ICL, so the case was driven again and the surrounding space measured with
+`scripts/measure_qwen3_tts_icl_reference_length.py` (28 runs, one model load,
+target text / clip / language / sampling / `max_new_tokens` all fixed; only
+`trim_seconds`, the reference transcript's repeat count, and the seed vary).
+
+**It reproduces exactly.** `base-ref-max` gives 9 generated frames, 0.72 s,
+`peak_abs` 0.474609375, `rms` 0.0686, 8 distinct semantic codes, 375 reference
+frames -- every figure Plan 1 recorded, to the digit. Every one of the six rows
+in the table above reproduces to the frame. So the third outcome (the oracle no
+longer reproduces it) is ruled out, and this is not measurement drift.
+
+**But it is NOT the end of a monotone trend, and that hypothesis is refuted
+rather than merely unsupported.** Three Golden points (13 -> 127, 101 -> 45,
+375 -> 9) suggested output length is a decreasing function of reference length.
+Densifying to eight points shows a genuinely monotone relation **only while the
+clip is not looped**:
+
+| reference frames | 7 | 13 | 25 | 38 | 50 | 75 | 100 | 101 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| generated frames | 136 | 127 | 122 | 111 | 90 | 67 | 51 | 45 |
+
+That span (136 -> 45) is far larger than the seed spread at a fixed point
+(45/53/48/57/55 over five seeds at 101 frames), so the trend is real. Past the
+clip's own 8.08 s it collapses: 125 -> 42, ~150 -> ran away to the ceiling,
+200 -> 43, 250 -> 100, 300 -> 43, 375 -> 9. Not a curve.
+
+**Because past 8.08 s "a longer reference" is only reachable by LOOPING the
+clip**, and the harness keeps the single-repetition transcript, so the reference
+audio says the sentence up to four times while its transcript says it once.
+That is a transcript-audio mismatch manufactured by the bound itself.
+
+**At 375 frames the output is not a function of anything -- it is unstable.**
+Five seeds at the identical input: 9, 8, 12, 4, and one run to the 2048-frame
+ceiling. Repeating the transcript to match the loop count moves seed 0 from 9
+to 66 frames.
+
+**So the anomaly reproduces, with a mechanism that is not the trend**: an
+incoherent reference, not reference length. The structural hypothesis offered
+by the plan -- that the pad arm buries the target text -- is neither confirmed
+nor needed here; the mismatch control moves the number without changing the arm,
+so it is not recorded as the cause.
+
+**One pathology, two symptoms -- the Task 11 hypothesis is now demonstrated,
+not assumed.** Task 11's review found a real 8 s clip with a deliberately wrong
+transcript running to the ceiling, and hypothesised it and this collapse were
+one ICL length pathology. They are: the seed scatter above produces *both*
+symptoms from a *single* input configuration, four collapses and one runaway,
+differing only in seed. An incoherent reference makes the stopping decision
+unreliable in both directions.
+
+**Two runaways that are not the same thing**, distinguished by the code
+diversity of the tail rather than by frame count. The pathological runaway holds
+~6 distinct semantic codes across its last 400 frames -- a degenerate loop. The
+`base-text-long` Golden case also reaches 2047 frames, but holds 233 distinct
+codes there: it is still speaking, because its 4,749-character text needs
+roughly 4,000 frames against a 2,048 budget. That one is arithmetic, and the
+case as specified cannot terminate; it is recorded as a known non-terminating
+input rather than treated as this defect.
+
 **No listening pass had happened when this table was measured.** `intake.json`
 records `perceptual_evaluation_performed: false` for every point, and its
 `recommendation` states plainly that the objective signals checked here

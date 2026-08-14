@@ -348,7 +348,16 @@
                 }
               },
               "backend": "CPU",
-              "note": "Measured 2026-08-12 on CPU (build/, CMAKE_BUILD_TYPE=Release) over base-xvector-en and base-xvector-zh, via scripts/validate-qwen3-tts-replay.py --compare-x-vector against the real qwen3-tts-12hz-0-6b-base-BF16.gguf and models/qwen3-tts-reference-audio/clone.wav. The gate is 5x the measured deviation in (1 - cosine), the rule this file's own top-level note states for every other probe here. max_abs is recorded but does not gate: an x-vector is a direction consumed by a dot product against the prompt, so cosine is the quantity that matters, the same reasoning that leaves max_abs ungated on the talker probes above and gating only on audio.pcm.\n\nOnly one independent measurement, not two: both cases point at the identical reference clip with no trim, and every file under speaker/ is byte-identical between them (conventions.json's own measurement_coverage note) -- only the synthesis text and language differ, which the speaker path never reads. Running both is what shows the whole pipeline (load, resample, encode, mel, ECAPA, x-vector) is deterministic case to case, not a second data point on the residual.\n\nThe residual is bfloat16 quantization of the *oracle*, not a port defect. The oracle's own speaker_encoder weights run in torch.bfloat16 and its dumped tensors round-trip through bfloat16 exactly for seven of the eight speaker/*.f32 files -- verified directly, max abs diff 0.0 -- everything except mel.f32, whose bf16 round-trip differs by up to ~0.031 (conventions.json's own artifact_dtypes note). At the x-vector's own largest element (|ref| = 7.28), 0.02111 is 0.68 of one bfloat16 ulp; recomputing the oracle's own final ASP/FC layer directly in float64 disagrees with the oracle's recorded x_vector by more (0.022367) than this port does. A tolerance whose story was 'the filterbank rounds differently' would be wrong: the mel front end that feeds this graph is essentially exact on its own (max_abs 3.31e-4 against the oracle, and against a float64 truth the port's own mel is *closer* -- 1.14e-4 against the oracle's 2.21e-4). The budget spent here is almost entirely the ECAPA graph's bf16-quantized-weights arithmetic across 38 convolutions, not the mel stage -- the mel comparison above was run specifically to rule the mel stage out before this number was committed, not merely alongside it."
+              "note": "Measured 2026-08-12 on CPU (build/, CMAKE_BUILD_TYPE=Release) over base-xvector-en and base-xvector-zh, via scripts/validate-qwen3-tts-replay.py --compare-x-vector against the real qwen3-tts-12hz-0-6b-base-BF16.gguf and models/qwen3-tts-reference-audio/clone.wav. The gate is 5x the measured deviation in (1 - cosine), the rule this file's own top-level note states for every other probe here. max_abs is recorded but does not gate: an x-vector is a direction consumed by a dot product against the prompt, so cosine is the quantity that matters, the same reasoning that leaves max_abs ungated on the talker probes above and gating only on audio.pcm.\n\nOnly one independent measurement, not two: both cases point at the identical reference clip with no trim, and every file under speaker/ is byte-identical between them (conventions.json's own measurement_coverage note) -- only the synthesis text and language differ, which the speaker path never reads. Running both is what shows the whole pipeline (load, resample, encode, mel, ECAPA, x-vector) is deterministic case to case, not a second data point on the residual.\n\nThe residual is bfloat16 quantization of the *oracle*, not a port defect. The oracle's own speaker_encoder weights run in torch.bfloat16 and its dumped tensors round-trip through bfloat16 exactly for seven of the eight speaker/*.f32 files -- verified directly, max abs diff 0.0 -- everything except mel.f32, whose bf16 round-trip differs by up to ~0.031 (conventions.json's own artifact_dtypes note). At the x-vector's own largest element (|ref| = 7.28), 0.02111 is 0.68 of one bfloat16 ulp; recomputing the oracle's own final ASP/FC layer directly in float64 disagrees with the oracle's recorded x_vector by more (0.022367) than this port does. A tolerance whose story was 'the filterbank rounds differently' would be wrong: the mel front end that feeds this graph is essentially exact on its own (max_abs 3.31e-4 against the oracle, and against a float64 truth the port's own mel is *closer* -- 1.14e-4 against the oracle's 2.21e-4). The budget spent here is almost entirely the ECAPA graph's bf16-quantized-weights arithmetic across 38 convolutions, not the mel stage -- the mel comparison above was run specifically to rule the mel stage out before this number was committed, not merely alongside it.",
+              "cases_not_extended": {
+                "measured": "2026-08-14",
+                "identical_x_vector_cases": 10,
+                "distinct_x_vector_cases": [
+                  "base-ref-min",
+                  "base-ref-max"
+                ],
+                "note": "Task 12 was asked to extend this stage past its two cases and MEASURED THAT DOING SO WOULD ADD NOTHING, so it stayed at two. All ten ICL cases now have oracle dumps, and their speaker/x_vector.f32 files are BYTE-IDENTICAL to the two x-vector cases already here -- one sha256 across ten of the twelve cases. That is expected rather than surprising: every one of them points at the same untrimmed clone.wav, and the speaker path reads nothing else (not the text, not the language, not the seed). Raising `cases` from 2 to 10 on that evidence would multiply the same measurement by five and call it coverage.\n\nTHE ONLY TWO CASES THAT WOULD ADD A DATA POINT are base-ref-min and base-ref-max, whose x-vectors do differ (three distinct digests across the twelve) because their reference audio is trimmed to 1 s and looped to 30 s respectively. They are also the two this comparison cannot currently drive: run_compare_x_vector hands the driver the WAV path and the driver has no trim, so the port would encode the full clip while the oracle encoded a trimmed one, and the comparison would fail for a reason that is not the port's arithmetic. Giving the driver `trim_seconds` is what would make this stage genuinely wider, and it is not done here; the x-vector residual therefore still rests on ONE reference clip, exactly as this stage's own probe note already says."
+              }
             },
             "codec_encoder": {
               "phase": "oracle_replay",
@@ -362,7 +371,209 @@
                   "observed_worst_stage": "transformer_l7",
                   "headroom": 10.8,
                   "fault_injection_rel_absmax": 1.649,
-                  "note": "THE PRIMARY GATE, and the only one of the three independent of the codebook table being shared by construction. One threshold enforced PER STAGE across all 33 taps (waveform, seanet_stage0-3, seanet_tail, transformer_l0-7, downsample, latents, rvq_residual_s00-15, rvq_reconstruction) by scripts/validate-qwen3-tts-codec_encoder.py, which prints every stage's own figure -- so a drifting stage is LOCATED in the validator's output, and this cell records the gate plus the worst stage that cleared it. Rolling the taps into one summary number is what the eleven-plus taps exist to avoid; one threshold applied to each of them is not that, it is how the validator is written.\n\n`rel_absmax` is max|a-b| divided by the REFERENCE tensor's own absolute maximum -- one scalar scale for the whole tensor, not a per-element |d|/|x|. Quoting it against a `rel_rms` threshold is a review round the validator's own header exists to avoid repeating.\n\nThe comparison gated here is port vs upstream-f32, BOTH float32, where a defect in this port would live. Port vs the bfloat16 oracle is a different quantity that is expected to sit at bf16 scale and is not gated by this number. 1.0e-3 is still a quarter of one bf16 unit (2^-8), so it cannot be passed by a port that merely rounds like bf16 -- it demands float32 agreement with upstream. The injected fault is upstream's own symmetric (non-causal) MimiConv1d padding split, which builds the same shapes from the same weights and a different encoder: it reads 1.649, a 1650x discrimination."
+                  "note": "THE PRIMARY GATE, and the only one of the three independent of the codebook table being shared by construction. One threshold enforced PER STAGE across all 33 taps (waveform, seanet_stage0-3, seanet_tail, transformer_l0-7, downsample, latents, rvq_residual_s00-15, rvq_reconstruction) by scripts/validate-qwen3-tts-codec_encoder.py, which prints every stage's own figure -- so a drifting stage is LOCATED in the validator's output, and this cell records the gate plus the worst stage that cleared it. Rolling the taps into one summary number is what the eleven-plus taps exist to avoid; one threshold applied to each of them is not that, it is how the validator is written.\n\n`rel_absmax` is max|a-b| divided by the REFERENCE tensor's own absolute maximum -- one scalar scale for the whole tensor, not a per-element |d|/|x|. Quoting it against a `rel_rms` threshold is a review round the validator's own header exists to avoid repeating.\n\nThe comparison gated here is port vs upstream-f32, BOTH float32, where a defect in this port would live. Port vs the bfloat16 oracle is a different quantity that is expected to sit at bf16 scale and is not gated by this number. 1.0e-3 is still a quarter of one bf16 unit (2^-8), so it cannot be passed by a port that merely rounds like bf16 -- it demands float32 agreement with upstream. The injected fault is upstream's own symmetric (non-causal) MimiConv1d padding split, which builds the same shapes from the same weights and a different encoder: it reads 1.649, a 1650x discrimination.",
+                  "normalizer": "rel_absmax = max|a-b| / max|reference|, one scalar scale for the whole tensor -- NOT a per-element |d|/|x|, and not rel_rms. The gated comparison is port vs upstream-f32 (both float32); port vs oracle is recorded beside it and carries the oracle's bf16 rounding.",
+                  "per_stage": {
+                    "waveform": {
+                      "rel_absmax": 0.0,
+                      "bf16_units": 0.0,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.0
+                    },
+                    "seanet_stage0": {
+                      "rel_absmax": 9.752e-07,
+                      "bf16_units": 0.00025,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.007056
+                    },
+                    "seanet_stage1": {
+                      "rel_absmax": 7.252e-06,
+                      "bf16_units": 0.00186,
+                      "worst_case": "base-ref-min",
+                      "observed_port_vs_oracle_rel_absmax": 0.03655
+                    },
+                    "seanet_stage2": {
+                      "rel_absmax": 4.121e-06,
+                      "bf16_units": 0.00105,
+                      "worst_case": "base-ref-min",
+                      "observed_port_vs_oracle_rel_absmax": 0.029
+                    },
+                    "seanet_stage3": {
+                      "rel_absmax": 1.145e-05,
+                      "bf16_units": 0.00293,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.0505
+                    },
+                    "seanet_tail": {
+                      "rel_absmax": 2.281e-05,
+                      "bf16_units": 0.00584,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.0426
+                    },
+                    "transformer_l0": {
+                      "rel_absmax": 9.817e-07,
+                      "bf16_units": 0.00025,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.003133
+                    },
+                    "transformer_l1": {
+                      "rel_absmax": 8.021e-07,
+                      "bf16_units": 0.00021,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.004025
+                    },
+                    "transformer_l2": {
+                      "rel_absmax": 8.069e-07,
+                      "bf16_units": 0.00021,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.004725
+                    },
+                    "transformer_l3": {
+                      "rel_absmax": 8.091e-07,
+                      "bf16_units": 0.00021,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.007427
+                    },
+                    "transformer_l4": {
+                      "rel_absmax": 8.118e-07,
+                      "bf16_units": 0.00021,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.005551
+                    },
+                    "transformer_l5": {
+                      "rel_absmax": 9.038e-07,
+                      "bf16_units": 0.00023,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.006931
+                    },
+                    "transformer_l6": {
+                      "rel_absmax": 8.373e-07,
+                      "bf16_units": 0.00021,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.009598
+                    },
+                    "transformer_l7": {
+                      "rel_absmax": 9.303e-05,
+                      "bf16_units": 0.02382,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.4054
+                    },
+                    "downsample": {
+                      "rel_absmax": 1.928e-05,
+                      "bf16_units": 0.00494,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.1373
+                    },
+                    "latents": {
+                      "rel_absmax": 1.928e-05,
+                      "bf16_units": 0.00494,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.1373
+                    },
+                    "rvq_residual_s00": {
+                      "rel_absmax": 1.309e-05,
+                      "bf16_units": 0.00335,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.1411
+                    },
+                    "rvq_residual_s01": {
+                      "rel_absmax": 1.244e-05,
+                      "bf16_units": 0.00318,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.08997
+                    },
+                    "rvq_residual_s02": {
+                      "rel_absmax": 2.868e-05,
+                      "bf16_units": 0.00734,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.5111
+                    },
+                    "rvq_residual_s03": {
+                      "rel_absmax": 3.876e-05,
+                      "bf16_units": 0.00992,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.5422
+                    },
+                    "rvq_residual_s04": {
+                      "rel_absmax": 3.951e-05,
+                      "bf16_units": 0.01011,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.6877
+                    },
+                    "rvq_residual_s05": {
+                      "rel_absmax": 4.494e-05,
+                      "bf16_units": 0.0115,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.6428
+                    },
+                    "rvq_residual_s06": {
+                      "rel_absmax": 4.476e-05,
+                      "bf16_units": 0.01146,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.7733
+                    },
+                    "rvq_residual_s07": {
+                      "rel_absmax": 4.73e-05,
+                      "bf16_units": 0.01211,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.9278
+                    },
+                    "rvq_residual_s08": {
+                      "rel_absmax": 5.545e-05,
+                      "bf16_units": 0.0142,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.9475
+                    },
+                    "rvq_residual_s09": {
+                      "rel_absmax": 5.716e-05,
+                      "bf16_units": 0.01463,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.8501
+                    },
+                    "rvq_residual_s10": {
+                      "rel_absmax": 5.969e-05,
+                      "bf16_units": 0.01528,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.827
+                    },
+                    "rvq_residual_s11": {
+                      "rel_absmax": 6.346e-05,
+                      "bf16_units": 0.01625,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.8779
+                    },
+                    "rvq_residual_s12": {
+                      "rel_absmax": 6.769e-05,
+                      "bf16_units": 0.01733,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.8367
+                    },
+                    "rvq_residual_s13": {
+                      "rel_absmax": 7.131e-05,
+                      "bf16_units": 0.01826,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.889
+                    },
+                    "rvq_residual_s14": {
+                      "rel_absmax": 7.623e-05,
+                      "bf16_units": 0.01951,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.9896
+                    },
+                    "rvq_residual_s15": {
+                      "rel_absmax": 7.813e-05,
+                      "bf16_units": 0.02,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.9307
+                    },
+                    "rvq_reconstruction": {
+                      "rel_absmax": 0.0,
+                      "bf16_units": 0.0,
+                      "worst_case": "base-icl-en",
+                      "observed_port_vs_oracle_rel_absmax": 0.6451
+                    }
+                  },
+                  "per_stage_note": "Every tap the validator compares, worst over the three cases, measured 2026-08-14 -- the figures this grid previously did not carry. One threshold (rel_absmax above) is enforced against each of them; these are the observations it clears, not 33 separate gates.\n\nWHERE THE PORT IS TIGHT, which the next plan will want. Thirteen of the 33 taps sit below 0.003 of one bf16 unit, and the eight transformer layers l0-l6 hold ~8e-07 (0.0002 bf16 units) -- four orders of magnitude under the gate. Two taps are EXACTLY zero: `waveform` (the port is handed the oracle's own waveform, so this is an input check, not a result) and `rvq_reconstruction` (see the stage note -- a consistency check whose operands are shared by construction).\n\nWHERE IT IS LOOSEST, and it is a cascade rather than a defect: transformer_l7 at 9.303e-05 (0.0238 bf16 units) is the worst single tap, and the RVQ residuals climb monotonically s00 -> s15 (1.3e-05 -> 7.8e-05) because each stage subtracts the previous one's reconstruction and inherits its error. Every one of them remains an order of magnitude under the gate."
                 },
                 "codec.rvq_reconstruction.semantic": {
                   "p95_relative_l2": 0.02,
@@ -379,7 +590,21 @@
                   "note": "Same percentile statistic and same never-averaged rule as the semantic branch; see its note for why a maximum is unsatisfiable here.\n\nNOT at bf16 scale, and it cannot be. This branch aggregates fifteen stages and disagreement with the bf16 oracle grows monotonically down the cascade (4, 6, 20, 34, ... 74 of 101 frames), so almost every frame carries at least one flip and the branch sits in the flip tail at the MEDIAN (0.1317), not only at its p95. The design's predicted 0.18 absolute L2 for this branch is 39x too small against a measured median of 7.014 absolute and must not be used.\n\nHEADROOM IS ~2x HERE AND IT IS DRAWN FROM ONE RECORDING. base-ref-min is a byte-exact prefix of base-icl-en and base-text-short is that same clip again at full length: three cases, one speaker, one microphone. A second speaker would be independent corroboration and there is not one, so this figure and the semantic one should be revisited the first time a second reference clip exists, rather than treated as settled by three passing cases. Injected fault p95 1.741, a 3.5x discrimination -- the narrowest of the three gates."
                 }
               },
-              "note": "Measured by Task 5 of the ICL plan and committed with the validator that reproduces it; promoted out of `provisional_variants` into this grid on 2026-08-14, which is what retired the copied placeholder described in this variant's own note. The thresholds and every observed figure below are transcribed from scripts/validate-qwen3-tts-codec_encoder.py, which states each one beside the measurement it clears and the injected fault it still catches; they are not re-derived here.\n\nTHE CODES ARE NOT THE GATE. The design's fourth erratum (2026-08-13) dropped plain equality on codes/reference.i32: the oracle's RVQ codebook is bfloat16 and the converter's is float32, the two tables disagree on 4.04% of frame-stage decisions (95.96% agreement), and upstream disagrees with ITSELF depending on whether `dtype` is passed at load -- so an equality gate would test a load-time keyword argument rather than this port. That agreement rate is recorded here as an observation and gates nothing, which is exactly why a note is the right carrier for it. For the same reason this stage records no `codec.reference_codes` probe and the manifest carries no `alternate_grids`: enumerating admissible grids would mean committing a second oracle's output for every case.\n\nWhat the reconstruction's exact zero does and does not say: port vs upstream-f32 on rvq_reconstruction measures 0 exactly, and under an injected fault it reads 1.115, so it is a comparison that CAN fail. But it decomposes into three conjuncts at once -- the codes agree, the two float32 codebook tables are bit-identical BY CONSTRUCTION, and the accumulation order matches -- so it is a consistency check, not independent evidence about the codebook conversion. The load-bearing independent evidence is `codec.chain`.\n\nThree cases (base-icl-en, base-ref-min, base-text-short), CPU, float32 port against the committed bfloat16 oracle dump and an upstream float32 re-run of the same taps. They are one recording at three lengths, not three independent recordings -- see the acoustic probe's note."
+              "note": "Measured by Task 5 of the ICL plan and committed with the validator that reproduces it; promoted out of `provisional_variants` into this grid on 2026-08-14, which is what retired the copied placeholder described in this variant's own note. The thresholds and every observed figure below are transcribed from scripts/validate-qwen3-tts-codec_encoder.py, which states each one beside the measurement it clears and the injected fault it still catches; they are not re-derived here.\n\nTHE CODES ARE NOT THE GATE. The design's fourth erratum (2026-08-13) dropped plain equality on codes/reference.i32: the oracle's RVQ codebook is bfloat16 and the converter's is float32, upstream disagrees with ITSELF depending on whether `dtype` is passed at load, so an equality gate would test a load-time keyword argument rather than this port. The measured agreement rates live in `code_agreement` beside these probes, where the earlier 4.04%-versus-observed confusion is also corrected; they are observations and gate nothing. For the same reason this stage records no `codec.reference_codes` probe and the manifest carries no `alternate_grids`: enumerating admissible grids would mean committing a second oracle's output for every case.\n\nWhat the reconstruction's exact zero does and does not say: port vs upstream-f32 on rvq_reconstruction measures 0 exactly, and under an injected fault it reads 1.115, so it is a comparison that CAN fail. But it decomposes into three conjuncts at once -- the codes agree, the two float32 codebook tables are bit-identical BY CONSTRUCTION, and the accumulation order matches -- so it is a consistency check, not independent evidence about the codebook conversion. The load-bearing independent evidence is `codec.chain`.\n\nThree cases (base-icl-en, base-ref-min, base-text-short), CPU, float32 port against the committed bfloat16 oracle dump and an upstream float32 re-run of the same taps. They are one recording at three lengths, not three independent recordings -- see the acoustic probe's note.",
+              "case_ids": [
+                "base-icl-en",
+                "base-ref-min",
+                "base-text-short"
+              ],
+              "code_agreement": {
+                "port_vs_upstream_f32_percent": 100.0,
+                "port_vs_oracle_percent": {
+                  "base-icl-en": 52.97,
+                  "base-ref-min": 53.846,
+                  "base-text-short": 52.97
+                },
+                "note": "RECORDED AS EVIDENCE; NOTHING GATES ON IT. A correction is folded in here, because this file briefly stated the wrong thing: it read '4.04% of frame-stage decisions disagree (95.96% agreement)', conflating two different quantities. The erratum's 4.04% bounds the CODEBOOK TABLE's own contribution -- what differs when the same latent is quantized against a bf16 table versus an f32 one -- and is a FLOOR on divergence, not the observed rate. Measured end to end, port and oracle agree on 52.970% of frame-stage decisions for base-icl-en (760 of 1616 differ) and 53.846% for base-ref-min (96 of 208). Divergence grows monotonically across the 16 RVQ columns (4, 6, 20, 34 ... 74 of 101 frames for base-icl-en), which is the cascade the acoustic reconstruction gate is built around.\n\nTHE NUMBER THAT MATTERS FOR THIS PORT is the other one: port versus upstream-f32 agrees on 100.000% of decisions, 0 of 1616, on every case. The port reproduces float32 upstream exactly; the ~47% divergence is entirely the oracle's bf16 codebook, which is why codes were removed as a gate in the first place."
+              }
             }
           }
         }

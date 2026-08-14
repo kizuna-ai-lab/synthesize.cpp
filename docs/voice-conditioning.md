@@ -1,6 +1,6 @@
 # Voice Conditioning Survey
 
-Status: Research snapshot on 2026-07-21; the public source set, all four source-specific C representations, Reference Audio normalization, and the Serialized Profile format and compatibility rules are confirmed.
+Status: Research snapshot on 2026-07-21; the public source set, all four source-specific C representations, Reference Audio normalization, the Serialized Profile format and compatibility rules, and the declaration rule for invertible derived conditioning stated below are confirmed; amended 2026-08-14 for the qwen3-tts ICL Profile's recoverable transcript.
 
 ## Purpose
 
@@ -60,7 +60,9 @@ Random Seed has no borrowed identity payload: one concrete `uint64_t` selects fr
 
 Serialized Profile uses paired memory import and export operations. Import borrows a non-empty opaque self-contained byte view for one synchronous call; export returns a library-owned read-only Byte Buffer. The representation may encapsulate family-specific conditioning but exposes no public tensor types, external resource references, or alternate Model Family dispatch path.
 
-The wire representation is little-endian GGUF v3 with a project format version, versioned Model Family Profile Schema, Profile Compatibility ID, and whole-file SHA-256 integrity value. Profiles contain canonical backend-independent conditioning and omit enrollment audio, transcript, and description source material by default. Compatibility is exact and converter-declared; architecture names, shapes, filenames, and whole Model Package hashes are not substitutes.
+The wire representation is little-endian GGUF v3 with a project format version, versioned Model Family Profile Schema, Profile Compatibility ID, and whole-file SHA-256 integrity value. Profiles contain canonical backend-independent conditioning. **Profiles never carry enrollment audio.** They omit transcript and description source material by default, and where a Model Family Profile Schema instead declares derived conditioning that is invertible to that source material, the rule in the next paragraph governs it. Compatibility is exact and converter-declared; architecture names, shapes, filenames, and whole Model Package hashes are not substitutes.
+
+**Invertible derived conditioning is declared, never implied.** A Model Family Profile Schema may carry conditioning that is derived from source material rather than being that source material, and from which the source is nonetheless reconstructible. Where it does, two things are required of it: the Schema declares that field explicitly, and this document names what a holder of the Profile can recover from it. One such field exists today. **A Serialized qwen3-tts ICL Profile carries reference text token ids, byte-level BPE is invertible, and whoever holds the Profile can recover the reference transcript.** The field is `profile.reference_text_ids`, declared by the `icl` kind of Profile Schema `qwen3-tts-voice-clone`; the x-vector kind of the same Schema carries no such field. Distributing an ICL Profile therefore distributes its reference transcript, and the point of stating it here is that doing so is an informed act. Enrollment audio remains excluded in both kinds and under every Schema.
 
 ## Representative Primary Sources
 

@@ -579,17 +579,34 @@ int check_transcript_selects_icl_mode(synth_model_t *                           
         // an x-vector request reaching the same line gets the generic text.
         // tests/qwen3_tts_output_limit_test.cpp pins that other branch.
         //
-        // AND THIS ARM IS WHY THE MESSAGE HEDGES. The transcript here MATCHES
-        // its audio; the cause of this limit stop is the 3,840-frame cap two
-        // lines above, set by this test. An earlier revision of the message
-        // read "the measured cause is a reference transcript that does not
-        // match its reference audio" -- asserted, as a definite cause, to a
-        // caller in exactly this position, who would have gone and re-recorded
-        // a clip that was never wrong. The message now names the cap and the
-        // text first and the transcript as one measured possibility, so both
-        // halves below are true of this run.
+        // AND THIS ARM IS WHY THE MESSAGE HEDGES. The cause of THIS limit stop
+        // is the 3,840-frame cap two lines above, set by this test: at two
+        // codec frames the limit is reached whatever the model does, which is
+        // what makes the assertion non-vacuous and is stated above. An earlier
+        // revision of the message read "the measured cause is a reference
+        // transcript that does not match its reference audio" -- asserted, as
+        // a definite cause, to a caller in exactly this position, who would
+        // then have gone looking at an input that had nothing to do with it.
+        //
+        // (An earlier revision of THIS COMMENT justified the hedge by claiming
+        // "the transcript here MATCHES its audio". It does not: `icl_profile`
+        // pairs "hello there" with make_tone's 220 Hz sine, and this same file
+        // says so twice, including the paragraph above that identifies
+        // transcript-audio mismatch as what makes these runs never terminate.
+        // The cap is the reason the hedge is needed here; the fixture's own
+        // mismatch is beside the point and was asserted wrongly.)
+        //
+        // The three assertions below, and which one does the work. The first
+        // two are ICL-ONLY text: `kOutputLimitDuringGeneration`, the branch a
+        // Preset-Voice request gets, contains neither. An earlier revision
+        // matched "output limit" instead, which is in the prefix BOTH branches
+        // share -- so it passed with the entire hedging clause deleted, i.e.
+        // the assertion added to protect the fix could not fail. The third
+        // pins the specific regression, and it is a literal guard: a
+        // differently-worded reassertion would slip past it, which is
+        // accepted.
         SYNTH_TEST_CHECK(diagnostic.message.find("reference transcript") != std::string::npos);
-        SYNTH_TEST_CHECK(diagnostic.message.find("output limit") != std::string::npos);
+        SYNTH_TEST_CHECK(diagnostic.message.find("the length of the requested text") != std::string::npos);
         SYNTH_TEST_CHECK(diagnostic.message.find("the measured cause is") == std::string::npos);
     }
 

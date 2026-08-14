@@ -627,7 +627,13 @@ int main(int argc, char ** argv) {
     // roughly one mebibyte of codes buys, and 43x this package's own 375-frame
     // ceiling.
     constexpr uint64_t   kForgedReferenceFrames = 16300;
-    std::vector<uint8_t> forged_bytes;
+    // The other untrusted count in the same envelope, and the third instance
+    // of the same asymmetry: creation bounds the reference text ids by the
+    // package's `max_input_tokens` (1,024 here) and the loader did not. About
+    // a mebibyte of ids, ~256x that ceiling.
+    constexpr uint64_t   kForgedReferenceIds    = 262000;
+    std::vector<uint8_t> forged_frames_bytes;
+    std::vector<uint8_t> forged_ids_bytes;
 
     // --- Assertion 1: the prepared ICL Profile, against the oracle.
     //
@@ -847,14 +853,28 @@ int main(int argc, char ** argv) {
         // producing it through our OWN writer rather than by hand-assembling
         // GGUF is what makes it unarguable: no test-local encoder is standing
         // between the claim and the loader.
-        auto forged    = std::make_shared<synth::qwen3tts::IclProfile>(*icl);
-        forged->frames = kForgedReferenceFrames;
-        forged->codes.assign(size_t(forged->groups) * size_t(kForgedReferenceFrames), 0);
         uint8_t compatibility_id[32] = {};
         SYNTH_TEST_CHECK(
             synth::decode_profile_compatibility_id(hparams.profile.compatibility_id_hex, compatibility_id));
-        SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(hparams, *forged, compatibility_id, forged_bytes) ==
-                         SYNTH_OK);
+
+        auto forged_frames    = std::make_shared<synth::qwen3tts::IclProfile>(*icl);
+        forged_frames->frames = kForgedReferenceFrames;
+        forged_frames->codes.assign(size_t(forged_frames->groups) * size_t(kForgedReferenceFrames), 0);
+        SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(hparams, *forged_frames, compatibility_id,
+                                                                forged_frames_bytes) == SYNTH_OK);
+
+        // The id twin: a LEGAL frame count and a hostile id count, so the two
+        // envelopes isolate the two ceilings from each other. Every id is
+        // inside `talker.text_vocab_size`, which the writer checks separately,
+        // so the range rule cannot be what refuses it.
+        auto forged_ids = std::make_shared<synth::qwen3tts::IclProfile>(*icl);
+        forged_ids->reference_text_ids.clear();
+        forged_ids->reference_text_ids.reserve(size_t(kForgedReferenceIds));
+        for (uint64_t index = 0; index < kForgedReferenceIds; ++index) {
+            forged_ids->reference_text_ids.push_back(int32_t(index % hparams.talker.text_vocab_size));
+        }
+        SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(hparams, *forged_ids, compatibility_id,
+                                                                forged_ids_bytes) == SYNTH_OK);
         // The package's own ceiling, recomputed here from the same two
         // declared numbers the loader uses, so the ratio below is measured
         // rather than quoted: 375 code frames for the Base package.
@@ -865,9 +885,16 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr,
                      "qwen3-tts-icl-real: forged envelope %zu bytes declaring %llu reference frames against this "
                      "package's own ceiling of %llu (%.1fx)\n",
-                     forged_bytes.size(), (unsigned long long) kForgedReferenceFrames,
+                     forged_frames_bytes.size(), (unsigned long long) kForgedReferenceFrames,
                      (unsigned long long) ceiling_frames, double(kForgedReferenceFrames) / double(ceiling_frames));
         SYNTH_TEST_CHECK(kForgedReferenceFrames > ceiling_frames);
+        std::fprintf(stderr,
+                     "qwen3-tts-icl-real: forged envelope %zu bytes declaring %llu reference text ids against this "
+                     "package's own max_input_tokens of %llu (%.1fx)\n",
+                     forged_ids_bytes.size(), (unsigned long long) kForgedReferenceIds,
+                     (unsigned long long) hparams.max_input_tokens,
+                     double(kForgedReferenceIds) / double(hparams.max_input_tokens));
+        SYNTH_TEST_CHECK(kForgedReferenceIds > hparams.max_input_tokens);
     }
 
     // kText/kSeed are shared by assertions 2 through 7, so that every
@@ -1149,12 +1176,21 @@ int main(int argc, char ** argv) {
     // after, deliberately: if a future change refuses the envelope for some
     // other reason, the RSS assertion still describes the property and the
     // status assertion still describes the rule.
-    {
-        SYNTH_TEST_CHECK(!forged_bytes.empty());
+    //
+    // TWO ENVELOPES, ONE PER CEILING, isolating them from each other: the first
+    // declares 16,300 reference FRAMES with a legal id count, the second
+    // declares 262,000 reference text IDS with a legal frame count. The second
+    // closes the third instance of the same asymmetry -- creation bounds the
+    // ids by `max_input_tokens` and the loader did not. Its amplification is
+    // LINEAR (the ids never reach `prefill`), so its measured cost is far
+    // smaller than the frame ceiling's; both are measured rather than argued.
+    for (const auto & forged :
+         { std::make_pair("frames", &forged_frames_bytes), std::make_pair("ids", &forged_ids_bytes) }) {
+        SYNTH_TEST_CHECK(!forged.second->empty());
         synth_voice_profile_load_params_t forged_load_params;
         synth_voice_profile_load_params_init(&forged_load_params, sizeof(forged_load_params));
-        forged_load_params.data      = forged_bytes.data();
-        forged_load_params.data_size = forged_bytes.size();
+        forged_load_params.data      = forged.second->data();
+        forged_load_params.data_size = forged.second->size();
 
         const uint64_t          before         = peak_rss_kib();
         synth_voice_profile_t * forged_profile = nullptr;
@@ -1175,10 +1211,38 @@ int main(int argc, char ** argv) {
         // Zero on a platform that does not report RSS, which makes the
         // comparison vacuously true there rather than falsely failing.
         const uint64_t growth_kib = after > before ? after - before : 0;
-        std::fprintf(stderr, "qwen3-tts-icl-real: forged %zu-byte envelope -> status %d, peak RSS +%llu KiB\n",
-                     forged_bytes.size(), int(forged_status), (unsigned long long) growth_kib);
-        // 256 MiB, the same budget Task 9's arm uses, against a measured
-        // ~6,000,000 KiB on the tree that had no ceiling.
+        std::fprintf(stderr, "qwen3-tts-icl-real: forged %s envelope %zu bytes -> status %d, peak RSS +%llu KiB\n",
+                     forged.first, forged.second->size(), int(forged_status), (unsigned long long) growth_kib);
+        // 256 MiB, the same budget Task 9's arm uses.
+        //
+        // WHICH ASSERTION CARRIES WHICH ENVELOPE -- measured, in both
+        // directions, by deleting each clause in turn on this machine with
+        // this package, and NOT the same answer for the two:
+        //
+        //   frames: RSS carries it. With the frame ceiling deleted the load
+        //     returns SYNTH_OK, synthesis begins, and peak RSS passes
+        //     24,000,000 KiB (~23 GiB) without terminating after 25 minutes --
+        //     independently reproduced at 21,578,040 KiB and still rising when
+        //     killed. Read those as a FLOOR: neither run reached its own peak.
+        //     (Not the whole-branch review's pre-measurement "~5.9 GB", which
+        //     an earlier revision of this comment mislabelled as measured; it
+        //     omitted the graph compute buffer, where a prefill x prefill
+        //     attention score tensor at 16,310 positions dominates.)
+        //
+        //   ids: THE STATUS CARRIES IT, AND RSS CANNOT SEE IT AT ALL. With the
+        //     id ceiling deleted the load returns SYNTH_OK, synthesis runs to
+        //     completion, and this instrument still reports +0 KiB. That is
+        //     the honest result of measuring rather than assuming: the
+        //     amplification there is linear -- the ids never reach `prefill`,
+        //     they become ~262,000 TalkerInputPosition values twice over,
+        //     tens of megabytes -- and peak RSS is monotone, so anything under
+        //     the multi-gigabyte high-water mark the earlier assertions have
+        //     already set is invisible to it. What DOES move is wall time:
+        //     the whole test goes 34.4 s -> 67.3 s, one forged request costing
+        //     ~33 s of CPU. So for that envelope the SYNTH_ERR_INVALID_ARG
+        //     assertion below is the load-bearing one, and the RSS assertion
+        //     is a bound that happens to hold. Do not read the pair as one
+        //     check covering both.
         SYNTH_TEST_CHECK(growth_kib < 256u * 1024u);
         SYNTH_TEST_CHECK(forged_status == SYNTH_ERR_INVALID_ARG);
         SYNTH_TEST_CHECK(forged_profile == nullptr);

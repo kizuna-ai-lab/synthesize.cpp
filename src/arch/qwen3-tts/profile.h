@@ -642,8 +642,17 @@ synth_status_t serialize_icl_profile(const HParams &    hparams,
 // `code_groups` against `codec.decoder.quantizer_count` exactly, and
 // `reference_frames` against the package's own reference ceiling --
 // `ceil(min(max_frames_per_clip, max_total_frames) / codec.hop_length)`, 375
-// for the Base package. The id stream has no such width and the buffer is
-// still what bounds it.
+// for the Base package. The id stream has no fixed width, so it is bounded by
+// the package's `max_input_tokens` (1,024 for the Base package), which is the
+// same number `Model::tokenize_reference_transcript` gives the frontend when
+// this family's own writer produces one.
+//
+// The three of them close the same asymmetry, found three times on one branch:
+// a contract the CREATION path enforces and the LOAD path did not re-derive.
+// Task 9's was the declared element count against the buffer; the frame
+// ceiling and the id ceiling are against the package's own declared limits.
+// Whoever adds a fourth untrusted count here should look for its creation-side
+// bound first and assume one exists.
 //
 // THE FRAME CEILING WAS MISSING WHEN THIS BRANCH FIRST SHIPPED IT, and the
 // second correction is worth as much as the first below. The ceiling bound at

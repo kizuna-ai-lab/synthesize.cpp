@@ -1596,6 +1596,39 @@ synth_status_t load_profile_from_memory(const HParams & hparams,
     if (!i32_tensor_elements(g, data_size, kTensorReferenceTextIds, ids_id, ids_elements)) {
         return SYNTH_ERR_INVALID_ARG;
     }
+    // THE SAME ASYMMETRY AS THE FRAME CEILING ABOVE, ON THE ADJACENT FIELD --
+    // the THIRD instance of it on this branch, after Task 9's declared counts
+    // and MB1's frame ceiling, which is why it is closed the same way rather
+    // than argued about. Creation bounds this stream:
+    // Model::tokenize_reference_transcript passes `hparams.max_input_tokens`
+    // into qwen_reference_transcript_ids, which forwards it to the text
+    // frontend, and bpe-frontend.cpp refuses an output longer than that. The
+    // Base package declares 1024, so this family's own writer cannot emit more
+    // than 1,024 reference text ids -- while the reader, before this check,
+    // accepted whatever the buffer could back, which for a ~1 MiB envelope is
+    // about 262,000, roughly 256x.
+    //
+    // WHAT IT COSTS, AND WHY IT IS SMALLER THAN THE FRAME CEILING'S: this one
+    // is LINEAR, not quadratic. The ids never reach `prefill` -- append_icl_block
+    // emits exactly `reference_frames + 1` positions whichever alignment arm
+    // runs, so the quadratic term stays bounded by the field above. They are
+    // copied into `reference_text_tokens`, then into the prompt's text track
+    // and, on the truncate arm, into the trailing decode schedule, as
+    // `TalkerInputPosition` values at roughly 32 bytes each -- about a 20x
+    // linear amplification on top of a decode schedule hundreds of times
+    // longer than the package says it accepts. Measured rather than estimated;
+    // the figure is in tests/qwen3_tts_icl_real.cpp's assertion 8, which
+    // exercises this bound with the same instrument it uses for the frame one.
+    //
+    // The header's old sentence -- "the two ICL streams have no such fixed
+    // width, so the buffer itself is what bounds them" -- was written before
+    // that shape was recognised as a defect on the sibling field, and is
+    // corrected there too. `max_input_tokens == 0` is refused rather than
+    // treated as "no limit", the same defence-in-depth choice the frame
+    // ceiling makes.
+    if (hparams.max_input_tokens == 0 || ids_elements > hparams.max_input_tokens) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
 
     std::vector<int32_t> codes(size_t{ codes_elements });
     if (!copy_tensor_bytes(g, data, data_size, codes_id, codes.size() * sizeof(int32_t), codes.data())) {

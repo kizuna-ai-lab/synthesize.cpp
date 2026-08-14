@@ -264,12 +264,16 @@ assertion was available and would have made the rotation detectable.
 
 **Nobody listened to that audio.** No ICL listening audit was run at all. Do not
 describe the misaligned output as fluent, plausible, or in approximately the
-right voice — none of that was established. Seven sites in the tree do make such
-claims (review I1); one of them,
-`tests/qwen3_tts_icl_prompt_test.cpp:4-6`, additionally claims the rotation
-leaves the length right, which this branch measured false, and cites
+right voice — none of that was established. Seven sites in the tree used to make
+such claims (review I1), plus an eighth the review did not list; **all eight were
+rewritten in `5f8213b` and `<this commit>`**, and a tree-wide grep now returns
+only quoted-and-refuted corrections. One of them,
+`tests/qwen3_tts_icl_prompt_test.cpp:4-6`, additionally claimed the rotation
+leaves the length right — which this branch measured false — and cited
 `src/arch/qwen3-tts/talker-host.h:110-111` for it, where the text actually reads
-*"in the wrong voice or the wrong language."* **The argument stands without any
+*"in the wrong voice or the wrong language."* All three of that comment's
+defects are corrected in place, with the old text quoted so the correction is
+auditable. **The argument stands without any
 audible claim:** a defect that the numerical gates caught and nothing else did
 is the entire point.
 
@@ -321,13 +325,43 @@ The best single artifact of this discipline is the masking audit at
 
 ## 3. Carried items — things Plan 4 must revisit, not merely extend
 
-### 3.1 Open at the time of writing: the whole-branch review's must-fix set
+### 3.1 The whole-branch review's must-fix set — CLOSED, with what it cost
 
-The review verdict on `e99205b` is **CHANGES NEEDED**. None of these is in the
-C/C++ inference path. MB4 is this file. As of writing, the working tree carries
-an **uncommitted** MB1 fix (a `max_frames_per_clip`/`max_total_frames` bound in
-`src/arch/qwen3-tts/profile.cpp` plus a header change) — verify its state before
-assuming either way. The rest are open.
+**Status: all four blockers closed in `5f8213b`, re-reviewed and verified by
+running.** This section is kept because the *shape* of MB1 recurred a third time
+and Plan 4 should expect a fourth.
+
+The ceiling now applied is the package's own: `ceil(min(max_frames_per_clip,
+max_total_frames) / hop_length)` = **375**, both factors already present in the
+`HParams` the loader takes — not a new constant, a constraint that was already
+there and unused. Re-review confirmed the derivation against both creation
+checks and the trim divisor, computed 375 at runtime, and measured the forged
+envelope refused at **+0 KiB**. With the clause deleted in an isolated copy the
+integration run reached **VmHWM 21,578,040 KiB and was still rising** when it was
+killed. `base-ref-max` sits exactly at 375, so **no Golden Manifest case is
+rejected** by the new bound.
+
+The measurement that justified it: a **1,048,384-byte envelope built by this
+project's own writer**, declaring 16,300 frames (43.5× the ceiling), drove peak
+RSS to **24,447,664 KiB ≈ 23.3 GiB**, with load returning `SYNTH_OK` and the
+process still running after 25 minutes. **A status assertion cannot see this** —
+the arm has to measure peak RSS, as Task 9's did.
+
+**The recurring shape, three times on this branch.** A count is bounded where a
+value is created and unbounded where it is loaded:
+1. Task 9 — codes and ids sized from unchecked counts before the truncation
+   guard (1.48 GiB). Fixed structurally: the count is unobtainable until the
+   bytes behind it exist.
+2. MB1 — `declared_frames` bounded at creation, not at load (23.3 GiB,
+   quadratic through `prefill`).
+3. Found by the re-review looking for a third: `reference_text_ids`' count is
+   unbounded at load (`profile.cpp:1592-1596`) while creation bounds it by
+   `max_input_tokens` (`model.cpp:438-439`) — ~20×, linear.
+
+**Plan 4: when you add a field to the envelope, the question is not "is this
+value valid" but "is this count bounded by the same thing that bounds it at
+creation".** Two of the three were found only because someone went looking for
+the shape rather than for the instance.
 
 - **MB1 CRITICAL — `declared_frames` is bounded at creation and not at load.**
   `src/voice-profile.cpp:637` refuses a clip above `max_frames_per_clip`, so at

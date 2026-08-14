@@ -648,6 +648,9 @@ bool build_icl_fixture(IclFixture & fixture) {
     fixture.hparams.codec.hop_length                       = 1920;
     fixture.hparams.profile.max_frames_per_clip            = 720000;
     fixture.hparams.profile.max_total_frames               = 720000;
+    // The Base package's own input-token ceiling, which bounds the reference
+    // text id stream at load on the same reasoning.
+    fixture.hparams.max_input_tokens                       = 1024;
 
     fixture.persistent  = make_context(ggml_tensor_overhead() * 512);
     ggml_context * pctx = fixture.persistent.get();
@@ -1337,6 +1340,11 @@ constexpr uint64_t kEnvelopeMaxTotalFrames   = 400;  // 100 code frames; never t
 constexpr uint32_t kEnvelopeMaxReferenceFrames =
     uint32_t((kEnvelopeMaxFramesPerClip + kEnvelopeSamplesPerFrame - 1) / kEnvelopeSamplesPerFrame);
 static_assert(kEnvelopeMaxReferenceFrames == 6, "the ceiling arms below are written against six code frames");
+// The package's input-token ceiling, which bounds the OTHER ICL stream at load
+// exactly as the frames ceiling bounds the grid. Six, so that the shared
+// five-id payload sits under it and an arm can build a real payload one id
+// over without touching anything else.
+constexpr uint64_t kEnvelopeMaxInputTokens = 6;
 static_assert(kEnvelopeFrames < kEnvelopeMaxReferenceFrames,
               "every other envelope arm must sit strictly under the ceiling, or this fixture changes their meaning");
 
@@ -1349,6 +1357,7 @@ HParams envelope_hparams(uint32_t enc_dim) {
     hparams.codec.hop_length              = kEnvelopeSamplesPerFrame;
     hparams.profile.max_frames_per_clip   = kEnvelopeMaxFramesPerClip;
     hparams.profile.max_total_frames      = kEnvelopeMaxTotalFrames;
+    hparams.max_input_tokens              = kEnvelopeMaxInputTokens;
     return hparams;
 }
 
@@ -3174,6 +3183,68 @@ int test_the_reader_refuses_a_reference_longer_than_the_package_allows() {
     return 0;
 }
 
+// --- THE INPUT-TOKEN CEILING BINDS AT LOAD TOO (re-review, the third instance
+// of MB1's asymmetry). `reference_text_ids`' element count was bounded only by
+// the buffer, while creation bounds the same stream by the package's declared
+// `max_input_tokens` -- `Model::tokenize_reference_transcript` hands that
+// number to the frontend, which refuses a longer output. For the Base package
+// that is 1,024 ids emitted against roughly 262,000 accepted from a ~1 MiB
+// envelope.
+//
+// Linear rather than quadratic, and that is why it is a contract gap with a
+// modest amplification rather than a second MB1: the ids never reach
+// `prefill`, which `append_icl_block` fixes at `reference_frames + 1`
+// whichever alignment arm runs. They do reach the prompt's text track and the
+// trailing decode schedule as ~32-byte positions.
+//
+// THE ISOLATION, same shape as the frames arm: both rows build a REAL payload
+// through the REAL writer, so the grid rules and the frame ceiling are
+// satisfied on both sides and the only thing that differs is the id count.
+//
+// Dimension: value (the declared id count, against the package's own input
+// ceiling). MEASURED: with the clause deleted the over-ceiling row loads with
+// SYNTH_OK.
+int test_the_reader_refuses_more_reference_ids_than_the_package_accepts() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+
+    const struct {
+        uint64_t       ids;
+        synth_status_t expected;
+    } cases[] = {
+        // Exactly at the ceiling: a transcript this package's own frontend
+        // could have produced, so it must still load. Without this row a
+        // loader that refused every ICL envelope would satisfy the arm.
+        { kEnvelopeMaxInputTokens,     SYNTH_OK              },
+        { kEnvelopeMaxInputTokens + 1, SYNTH_ERR_INVALID_ARG },
+    };
+
+    for (const auto & one : cases) {
+        auto profile = std::make_shared<IclProfile>(*make_serializable_icl_profile(kProfileEncDim));
+        profile->reference_text_ids.clear();
+        for (uint64_t index = 0; index < one.ids; ++index) {
+            // Inside kEnvelopeTextVocab, which the writer checks separately --
+            // so that rule cannot be what refuses the second row.
+            profile->reference_text_ids.push_back(int32_t(index % kEnvelopeTextVocab));
+        }
+        std::vector<uint8_t> bytes;
+        SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(envelope_hparams(kProfileEncDim), *profile,
+                                                                compatibility_id, bytes) == SYNTH_OK);
+
+        synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+        std::shared_ptr<const void> payload;
+        const char *                code    = nullptr;
+        const char *                message = nullptr;
+        const synth_status_t        status =
+            synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                      compatibility_id, family_tag, payload, code, message);
+        SYNTH_TEST_CHECK(status == one.expected);
+        SYNTH_TEST_CHECK((payload != nullptr) == (one.expected == SYNTH_OK));
+    }
+    return 0;
+}
+
 // --- A DECLARED COUNT IS NOT A BUDGET (Task 9 review, Critical 1). Both I32
 // streams used to be sized from the buffer's own declared element counts and
 // only afterwards asked whether those ranges fit; a 1 KiB Serialized Profile
@@ -3495,6 +3566,7 @@ int main() {
     SYNTH_TEST_CHECK(test_the_reader_refuses_a_grid_the_package_cannot_hold() == 0);
     SYNTH_TEST_CHECK(test_the_writer_refuses_a_grid_that_does_not_match_its_codes() == 0);
     SYNTH_TEST_CHECK(test_the_reader_refuses_a_reference_longer_than_the_package_allows() == 0);
+    SYNTH_TEST_CHECK(test_the_reader_refuses_more_reference_ids_than_the_package_accepts() == 0);
     SYNTH_TEST_CHECK(test_a_declared_count_larger_than_the_buffer_allocates_nothing() == 0);
     SYNTH_TEST_CHECK(test_an_icl_envelope_inherits_the_payload_value_checks() == 0);
 

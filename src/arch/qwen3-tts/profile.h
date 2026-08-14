@@ -559,11 +559,10 @@ synth_status_t serialize_icl_profile(const HParams &    hparams,
 // own format, never blacklist another component's invariants
 // (docs/porting/families/omnivoice.md, "a whitelist, not a blacklist").
 //
-// The ids' COUNT is deliberately not bounded against `max_input_tokens`. That
-// limit governs a synthesis REQUEST's text, and the reference tokenizer
-// reuses it only incidentally; what actually bounds the count here is the
-// declared tensor byte range having to fit inside the supplied buffer, which
-// is checked before anything is sized from it.
+// (The ids' COUNT is bounded too, against `max_input_tokens`. A paragraph here
+// used to say it was "deliberately not bounded"; that stopped being true when
+// the bound landed and the paragraph was not removed with it. See the size
+// arithmetic below, which states the bound, and profile.cpp's own check.)
 //
 // Payload-value parity (a reviewer finding on this task): a loaded
 // XVectorProfile satisfies the same invariants a CREATED one does, not just

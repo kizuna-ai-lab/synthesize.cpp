@@ -266,7 +266,7 @@ assertion was available and would have made the rotation detectable.
 describe the misaligned output as fluent, plausible, or in approximately the
 right voice — none of that was established. Seven sites in the tree used to make
 such claims (review I1), plus an eighth the review did not list; **all eight were
-rewritten in `5f8213b` and `<this commit>`**, and a tree-wide grep now returns
+rewritten in `5f8213b` and `ae63d12`**, and a tree-wide grep now returns
 only quoted-and-refuted corrections. One of them,
 `tests/qwen3_tts_icl_prompt_test.cpp:4-6`, additionally claimed the rotation
 leaves the length right — which this branch measured false — and cited
@@ -354,9 +354,21 @@ value is created and unbounded where it is loaded:
    bytes behind it exist.
 2. MB1 — `declared_frames` bounded at creation, not at load (23.3 GiB,
    quadratic through `prefill`).
-3. Found by the re-review looking for a third: `reference_text_ids`' count is
-   unbounded at load (`profile.cpp:1592-1596`) while creation bounds it by
-   `max_input_tokens` (`model.cpp:438-439`) — ~20×, linear.
+3. Found by the re-review looking for a third: `reference_text_ids`' count was
+   unbounded at load while creation bounded it by `max_input_tokens`. Closed in
+   `ae63d12` against `hparams.max_input_tokens`, with 0 refused rather than read
+   as "no limit".
+
+**And the third one taught something the first two did not: the instrument that
+caught MB1 is blind to it.** A 1,059,520-byte envelope declaring 262,000 ids
+(255.9× the bound) loads `SYNTH_OK`, **synthesis completes**, and peak RSS
+reports **+0 KiB** — the amplification is linear and sits under the multi-GB
+high-water mark the frames arm had already set. What actually moves is **wall
+time: 34.4 s → 67.3 s**. So on this path the *status* assertion is the
+load-bearing one and RSS is a bound that merely happens to hold, and the check
+says so in the file. **Copying MB1's peak-RSS arm here would have produced a
+guard that cannot fail** — the same defect class, arrived at by reusing the
+right fix for the wrong reason.
 
 **Plan 4: when you add a field to the envelope, the question is not "is this
 value valid" but "is this count bounded by the same thing that bounds it at

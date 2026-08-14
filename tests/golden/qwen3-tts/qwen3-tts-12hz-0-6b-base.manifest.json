@@ -120,7 +120,8 @@
       "coverage": [
         "upstream-example",
         "baseline",
-        "voice-clone-icl"
+        "voice-clone-icl",
+        "alignment-arm-pad"
       ],
       "input": {
         "kind": "text_utf8",
@@ -324,7 +325,8 @@
       },
       "coverage": [
         "transcript-assisted",
-        "icl-mode"
+        "icl-mode",
+        "alignment-arm-pad"
       ],
       "input": {
         "kind": "text_utf8",
@@ -432,7 +434,8 @@
       "coverage": [
         "second-language",
         "icl-mode",
-        "non-latin-script"
+        "non-latin-script",
+        "alignment-arm-pad"
       ],
       "input": {
         "kind": "text_utf8",
@@ -540,7 +543,8 @@
       "coverage": [
         "third-language",
         "icl-mode",
-        "non-latin-script"
+        "non-latin-script",
+        "alignment-arm-pad"
       ],
       "input": {
         "kind": "text_utf8",
@@ -745,7 +749,8 @@
       },
       "coverage": [
         "reference-duration-min",
-        "min-frames-per-clip"
+        "min-frames-per-clip",
+        "alignment-arm-truncate"
       ],
       "input": {
         "kind": "text_utf8",
@@ -853,7 +858,8 @@
       },
       "coverage": [
         "reference-duration-max",
-        "max-frames-per-clip"
+        "max-frames-per-clip",
+        "alignment-arm-pad"
       ],
       "input": {
         "kind": "text_utf8",
@@ -961,7 +967,8 @@
       },
       "coverage": [
         "one-word-target-text",
-        "short-utterance"
+        "short-utterance",
+        "alignment-arm-pad"
       ],
       "input": {
         "kind": "text_utf8",
@@ -1068,7 +1075,8 @@
       },
       "coverage": [
         "near-max-input-tokens",
-        "long-sequence"
+        "long-sequence",
+        "alignment-arm-truncate"
       ],
       "input": {
         "kind": "text_utf8",
@@ -1174,7 +1182,8 @@
         "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
       },
       "coverage": [
-        "alternate-stochastic-path"
+        "alternate-stochastic-path",
+        "alignment-arm-pad"
       ],
       "input": {
         "kind": "text_utf8",
@@ -1280,7 +1289,8 @@
         "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
       },
       "coverage": [
-        "alternate-stochastic-path"
+        "alternate-stochastic-path",
+        "alignment-arm-pad"
       ],
       "input": {
         "kind": "text_utf8",

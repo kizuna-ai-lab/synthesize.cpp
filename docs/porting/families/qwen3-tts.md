@@ -2112,6 +2112,45 @@ symptoms from a *single* input configuration, four collapses and one runaway,
 differing only in seed. An incoherent reference makes the stopping decision
 unreliable in both directions.
 
+#### The alignment arms, measured across all ten ICL cases (2026-08-14)
+
+`generate_icl_prompt` has two arms and the Golden suite covers both. The arm is
+read out of the return statement that executed, never recomputed from `T1` and
+`T2`: a block of `T2` positions is consistent with either arm, so inference from
+lengths is not sound. `prompt/alignment.json` cross-checks each reading three
+independent ways (return line, trailing-object identity, `text_embed` length)
+and fails if they disagree.
+
+| case | T1 | T2 | arm | ref frames | trailing |
+| --- | ---: | ---: | --- | ---: | ---: |
+| `base-upstream-clone-en` | 78 | 102 | pad | 101 | 1 |
+| `base-icl-en` | 46 | 102 | pad | 101 | 1 |
+| `base-icl-zh` | 45 | 102 | pad | 101 | 1 |
+| `base-icl-ja` | 35 | 102 | pad | 101 | 1 |
+| `base-ref-min` | 46 | 14 | **truncate** | 13 | 32 |
+| `base-ref-max` | 46 | 376 | pad | 375 | 1 |
+| `base-text-short` | 33 | 102 | pad | 101 | 1 |
+| `base-text-long` | 980 | 102 | **truncate** | 101 | 878 |
+| `base-seed-one` | 46 | 102 | pad | 101 | 1 |
+| `base-seed-forty-two` | 46 | 102 | pad | 101 | 1 |
+
+The two x-vector-only cases have no row: that mode never calls
+`generate_icl_prompt`, so it has no arm rather than an unmeasured one.
+
+**The truncate arm is reached two different ways and only one was anticipated.**
+`base-ref-min` gets there by making `T2` small (a 1 s reference, 13 frames);
+`base-text-long` gets there by making `T1` large (a 4,749-character target text,
+`T1`=980). They exercise one branch from opposite sides, and `base-text-long` is
+the only case whose trailing schedule carries substantial content -- 878
+positions against every other case's 1 or 32.
+
+**This is also what rules the arm out as the 9-frame cause.** `base-ref-max` is
+in the pad arm, which is the shape the plan's structural hypothesis pointed at.
+But the matched-transcript control holds the arm and `T2` fixed at pad/376 --
+repeating the transcript lengthens `T1` to ~136, still well under 376 -- and the
+output moves from 9 frames to 66. Same arm, same block length, different result,
+so the arm is not what is driving it.
+
 **Two runaways that are not the same thing**, distinguished by the code
 diversity of the tail rather than by frame count. The pathological runaway holds
 ~6 distinct semantic codes across its last 400 frames -- a degenerate loop. The

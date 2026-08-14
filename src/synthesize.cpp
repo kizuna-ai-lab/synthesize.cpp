@@ -1204,24 +1204,42 @@ synth_status_t synth_synthesize(synth_context_t *          context,
             // branch left every resolved result field zeroed and called it a
             // graph failure.
             //
-            // A limit stop here means the talker never produced its stop code,
-            // and for a transcript-assisted request that has a MEASURED and
-            // entirely ordinary cause: a reference clip paired with a
-            // transcript that is not what it says. Measured 2026-08-14 on the
-            // real 8-second pinned clip with the transcript replaced by
-            // "hello there" -- 475.9 s of CPU, the full 2048-frame default
-            // ceiling, and zero audio. That is an imperfect-ASR-transcript
-            // input, not a contrived one, so the caller is told which of its
-            // inputs to look at rather than left with a bare status after
-            // eight minutes. See docs/porting/families/qwen3-tts.md's
-            // reference-duration section: this is the second recorded ICL
-            // output-length pathology and neither is diagnosed.
+            // A limit stop here means the talker never produced its stop code.
+            // For a transcript-assisted request one cause has been MEASURED --
+            // a reference clip paired with a transcript that is not what it
+            // says: 2026-08-14, the real 8-second pinned clip with the
+            // transcript replaced by "hello there", 475.9 s of CPU, the full
+            // 2048-frame default ceiling, zero audio. That is an
+            // imperfect-ASR-transcript input rather than a contrived one, so
+            // naming it saves a caller from a bare status after eight minutes.
+            //
+            // THE MESSAGE NAMES IT AS A POSSIBILITY AND MUST NOT ASSERT IT AS
+            // THE CAUSE, and an earlier revision of this string did exactly
+            // that ("the measured cause is..."). The condition below is any
+            // ICL request, and this tree contains two ICL limit stops with
+            // entirely different causes: tests/qwen3_tts_base_load_real.cpp
+            // reaches it with a MATCHING transcript and a caller-set
+            // `max_output_frames` that no model could satisfy, and
+            // `base-text-long` reaches it on arithmetic -- a 4,749-character
+            // text needing roughly 4,000 frames against a 2,048 budget. A
+            // caller in either position, told "the measured cause is your
+            // reference transcript", re-records a clip that was never wrong.
+            // Only the TRIGGER was ever identified; nothing was root-caused,
+            // and the family record says so in the same words.
+            //
+            // The Preset-Voice sibling states the principle from the other
+            // side: tests/qwen3_tts_output_limit_test.cpp asserts this string
+            // is ABSENT for a request carrying no reference, "because naming a
+            // reference transcript here would be misdirection". The same
+            // objection applies within the ICL arm whenever the cause is the
+            // caller's cap or the caller's text.
             if (status == SYNTH_ERR_OUTPUT_LIMIT) {
                 return report_output_limit(
                     delivery_info, sink, out_result, prepared.diagnostics,
                     family_request.reference_codes != nullptr ?
                         "synthesis reached the effective output limit before the model produced its stop "
-                        "condition; for a transcript-assisted Voice Profile the measured cause is a reference "
+                        "condition; for a transcript-assisted Voice Profile, check the output limit and the "
+                        "length of the requested text first, and note that one measured cause is a reference "
                         "transcript that does not match its reference audio" :
                         kOutputLimitDuringGeneration);
             }

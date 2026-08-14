@@ -1129,15 +1129,17 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     # branch -- handed a path it cannot read, it fails.
     #
     #   * the package and the pinned clip, as the clone test is guarded;
-    #   * base-icl-en's `codec_encoder/rvq_reconstruction.f32`. This test is the
-    #     ONLY REGISTERED enforcement of the two codec.rvq_reconstruction cells:
-    #     scripts/validate-qwen3-tts-codec_encoder.py computes and prints them,
-    #     but nothing in this file or in CI invokes that script, so it is run by
-    #     hand or not at all -- the same "a registered target is not a
-    #     registered test" gap the two speaker-path validator modes below were
-    #     added to close. It enforces them on a DIFFERENT input, too (the WAV
-    #     rather than the oracle's bfloat16-rounded waveform.f32); the test file
-    #     records what that costs;
+    #   * base-icl-en's `codec_encoder/rvq_reconstruction.f32`. This test is one
+    #     of the two registered enforcements of the codec.rvq_reconstruction
+    #     cells -- the other being synthesize-qwen3-tts-codec-encoder-golden
+    #     below, which drives the committed validator and additionally covers
+    #     `codec.chain` and the other two cases. They are not interchangeable:
+    #     this one enforces them on a DIFFERENT input (the WAV, rather than the
+    #     oracle's bfloat16-rounded waveform.f32), and the test file records
+    #     what that costs. (These lines claimed sole enforcement until
+    #     2026-08-14 -- true when written and falsified by the golden gate
+    #     registered further down in this same file, which is the "partial
+    #     correction" failure the branch names elsewhere.)
     #   * base-icl-en's `codes/reference.i32`, which supplies the frame count
     #     upstream actually produced AND the recorded agreement rate;
     #   * base-icl-en's `prompt/alignment.json`, from which the reference
@@ -1254,7 +1256,7 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     # the other end (a Voice Profile prepared from the WAV rather than the
     # oracle's bfloat16-rounded waveform), and the two enforcements are
     # deliberately not interchangeable -- see that test and the tolerance
-    # file's `registered_consumer` block.
+    # file's `registered_consumers` block.
     #
     # Guarded on THREE artifacts, all of them deliberately uncommitted, so an
     # unmaterialized dump is a MISSING test rather than a passing one: the

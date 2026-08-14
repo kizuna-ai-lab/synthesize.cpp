@@ -638,8 +638,27 @@ synth_status_t serialize_icl_profile(const HParams &    hparams,
 // buffer, using only cheap GGUF metadata/tensor-info getters (no tensor
 // payload is read), before any `std::vector` sizes itself from the
 // corresponding count. For the x-vector the count is additionally pinned to
-// the package's own `enc_dim`; the two ICL streams have no such fixed width,
-// so the buffer itself is what bounds them.
+// the package's own `enc_dim`. The ICL code grid is pinned in BOTH factors:
+// `code_groups` against `codec.decoder.quantizer_count` exactly, and
+// `reference_frames` against the package's own reference ceiling --
+// `ceil(min(max_frames_per_clip, max_total_frames) / codec.hop_length)`, 375
+// for the Base package. The id stream has no such width and the buffer is
+// still what bounds it.
+//
+// THE FRAME CEILING WAS MISSING WHEN THIS BRANCH FIRST SHIPPED IT, and the
+// second correction is worth as much as the first below. The ceiling bound at
+// CREATION (src/voice-profile.cpp refuses an over-long reference clip) and
+// nowhere at LOAD, so this family's writer could emit at most 375 code frames
+// while its reader accepted roughly 16,300 from a ~1 MiB buffer. The
+// allocation that number drives is not in this function -- Task 9's fix is
+// intact and the codes vector is honestly ~1 MiB -- it is in `run_synthesis`,
+// where `prefill = frames + 10` sizes a `prefill x prefill` attention mask
+// twice plus KV caches at ~235 kB per position, i.e. QUADRATIC in a number
+// this loader had not bounded. Load and synthesis both return SYNTH_OK, so no
+// status assertion can see it; the arm that catches it measures peak RSS.
+// The sibling family already carried the same check
+// (`max_total_frames` at :376/:390 of arch/omnivoice/profile.h). Two families,
+// one release, one had it.
 //
 // THIS SENTENCE WAS FALSE WHEN THIS TASK FIRST SHIPPED IT, and the correction
 // is worth more than the claim. Task 9's original ICL path sized both I32

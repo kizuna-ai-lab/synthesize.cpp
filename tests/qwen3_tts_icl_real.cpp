@@ -6,10 +6,21 @@
 // This is Stage 2 Plan 3's completion gate for the end-to-end half of the
 // spec's Sec.8 ("ICL clone runs end to end"). The numerical halves belong
 // elsewhere and are NOT re-derived here: the codec encoder's stage-wise
-// comparison is scripts/validate-qwen3-tts-codec_encoder.py's -- which nothing
-// registers with CTest, so assertion 1 below is the ONLY registered consumer of
-// the two codec.rvq_reconstruction gates -- and the two-track prompt's is
-// tests/qwen3_tts_icl_prompt_real.cpp's, which IS registered.
+// comparison is scripts/validate-qwen3-tts-codec_encoder.py's, driven by
+// synthesize-qwen3-tts-codec-encoder-golden, and the two-track prompt's is
+// tests/qwen3_tts_icl_prompt_real.cpp's. Both are registered CTest tests, and
+// this file relies on both.
+//
+// (This sentence said the opposite until 2026-08-14: that nothing registered
+// the codec validator, and that assertion 1 below was therefore the ONLY
+// consumer of the two codec.rvq_reconstruction gates. That was true when it
+// was written and was falsified in the same session by the commit that
+// registered the golden gate -- which updated the check-site note 700 lines
+// below and left this one standing. The masking table and the note at
+// assertion 1 have said "also enforced by the golden gate" ever since, so
+// this file contradicted itself in two places. Recorded rather than silently
+// swapped, because the failure mode is the branch's own: a partial correction
+// leaves a document looking reviewed.)
 //
 // WHAT AN END-TO-END TEST HERE CAN AND CANNOT ESTABLISH. Read this before
 // adding an assertion, and before reading any assertion below as an alignment
@@ -19,7 +30,7 @@
 // re-measured against THIS file on 2026-08-14. With the ICL prompt's codec
 // track rotated one frame -- talker-host.cpp's append_icl_block reading frame
 // `index` where it must read `index - 1` -- the public seam still returns
-// SYNTH_OK with plausible speech, and this test PASSES, at 19,200 PCM frames
+// SYNTH_OK with finite, non-silent audio, and this test PASSES, at 19,200 PCM frames
 // where correct is 24,960 (0.8000 s against 1.0400 s). The frame count is ON
 // THE API SURFACE and no assertion reads it: the accurate phrasing is
 // OBSERVABLE, NEVER DETECTABLE. (Under the same rotation
@@ -143,10 +154,12 @@
 //                                  is mode-independent (src/synthesize.cpp
 //                                  seeds after the CloneMode switch closes), so
 //                                  this is its ICL twin, not a second rule.
-//   assertion 4                    qwen3_tts_clone_real.cpp:624 AND
-//                                  qwen3_tts_base_load_real.cpp:514, the latter
-//                                  on a WEAKER registration guard. See the
-//                                  check.
+//   assertion 4                    qwen3_tts_clone_real.cpp:624, and ONLY
+//                                  that. base_load_real's own ICL-vs-x-vector
+//                                  differential cannot fail on the deletion
+//                                  either check exists for -- see the note at
+//                                  the check, which corrects an entry this
+//                                  table carried for one commit.
 //   assertion 5                    qwen3_tts_profile_test.cpp:2448/:2491 (the
 //                                  reloaded grid), :1971 (the icl envelope's
 //                                  exact key set), :2531 (the x-vector writer
@@ -183,8 +196,13 @@
 #include "arch/qwen3-tts/profile.h"
 #include "arch/qwen3-tts/qwen3-tts.h"
 #include "arch/qwen3-tts/weights.h"
+#include "model-info.h"
 #include "synthesize.h"
 #include "test-assert.h"
+
+#if defined(__linux__) || defined(__APPLE__)
+#    include <sys/resource.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -399,6 +417,31 @@ bool contains_bytes(const uint8_t * bytes, size_t size, const char * needle) {
     return false;
 }
 
+// This process's peak resident set size in KiB, or 0 where the platform does
+// not report one. PEAK rather than current, so it is monotone: a delta across
+// one call is zero unless that call itself pushed the peak up, which is
+// exactly the instrument assertion 8 needs. Same helper, same reasoning, as
+// tests/qwen3_tts_profile_test.cpp's own -- Task 9's hostile-envelope arm
+// established that a status assertion cannot see an amplification, because
+// the allocation completes and then the call returns normally.
+uint64_t peak_rss_kib() {
+#if defined(__linux__)
+    rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
+        return 0;
+    }
+    return uint64_t(usage.ru_maxrss);  // Linux reports KiB
+#elif defined(__APPLE__)
+    rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
+        return 0;
+    }
+    return uint64_t(usage.ru_maxrss) / 1024;  // macOS reports bytes
+#else
+    return 0;
+#endif
+}
+
 synth_voice_reference_t make_reference(const std::vector<float> & pcm, uint32_t sample_rate, uint32_t channel_count) {
     synth_voice_reference_t reference;
     synth_voice_reference_init(&reference, sizeof(reference));
@@ -577,6 +620,14 @@ int main(int argc, char ** argv) {
     // Deleting this line alone changes nothing either of them does not already
     // report.
     SYNTH_TEST_CHECK(capabilities.reference_transcript == SYNTH_REQUIREMENT_OPTIONAL);
+
+    // Assertion 8's forged envelope, built inside assertion 1's block (the
+    // only scope holding a real prepared Profile) and consumed after
+    // assertion 7. 16,300 frames is the review's own worked figure: it is what
+    // roughly one mebibyte of codes buys, and 43x this package's own 375-frame
+    // ceiling.
+    constexpr uint64_t   kForgedReferenceFrames = 16300;
+    std::vector<uint8_t> forged_bytes;
 
     // --- Assertion 1: the prepared ICL Profile, against the oracle.
     //
@@ -784,6 +835,39 @@ int main(int argc, char ** argv) {
                      "qwen3-tts-icl-real: code agreement against the bf16 oracle %.3f%% (%zu of %zu differ) "
                      "-- RECORDED, gating nothing (the design's fourth erratum)\n",
                      100.0 * (1.0 - double(differing) / double(icl->codes.size())), differing, icl->codes.size());
+
+        // Assertion 8's input, built here because this is the only scope
+        // holding a real prepared Profile and the family writer. Everything
+        // about it is genuine except the length: the real x-vector, the real
+        // reference text ids, the real group count, the real package's own
+        // compatibility id, and a digest the real writer computes -- so it is
+        // indistinguishable from a legitimate Serialized Profile except that
+        // it declares more reference frames than any clip this package accepts
+        // could have produced. That is precisely what an attacker writes, and
+        // producing it through our OWN writer rather than by hand-assembling
+        // GGUF is what makes it unarguable: no test-local encoder is standing
+        // between the claim and the loader.
+        auto forged    = std::make_shared<synth::qwen3tts::IclProfile>(*icl);
+        forged->frames = kForgedReferenceFrames;
+        forged->codes.assign(size_t(forged->groups) * size_t(kForgedReferenceFrames), 0);
+        uint8_t compatibility_id[32] = {};
+        SYNTH_TEST_CHECK(
+            synth::decode_profile_compatibility_id(hparams.profile.compatibility_id_hex, compatibility_id));
+        SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(hparams, *forged, compatibility_id, forged_bytes) ==
+                         SYNTH_OK);
+        // The package's own ceiling, recomputed here from the same two
+        // declared numbers the loader uses, so the ratio below is measured
+        // rather than quoted: 375 code frames for the Base package.
+        const uint64_t ceiling_frames =
+            (std::min(hparams.profile.max_frames_per_clip, hparams.profile.max_total_frames) +
+             hparams.codec.hop_length - 1) /
+            hparams.codec.hop_length;
+        std::fprintf(stderr,
+                     "qwen3-tts-icl-real: forged envelope %zu bytes declaring %llu reference frames against this "
+                     "package's own ceiling of %llu (%.1fx)\n",
+                     forged_bytes.size(), (unsigned long long) kForgedReferenceFrames,
+                     (unsigned long long) ceiling_frames, double(kForgedReferenceFrames) / double(ceiling_frames));
+        SYNTH_TEST_CHECK(kForgedReferenceFrames > ceiling_frames);
     }
 
     // kText/kSeed are shared by assertions 2 through 7, so that every
@@ -873,25 +957,32 @@ int main(int argc, char ** argv) {
     //   * tests/qwen3_tts_clone_real.cpp:624, an equivalent ICL-against-
     //     x-vector differential Task 11 added as a stopgap inside the x-vector
     //     plan's own gate, because this file did not exist yet; and
-    //   * tests/qwen3_tts_base_load_real.cpp:514
-    //     (`check_transcript_selects_icl_mode`), whose own header at :396-401
-    //     names this exact deletion -- "dropping either
-    //     `family_request.reference_codes` or `family_request.reference_text_ids`
-    //     at the seam is what it catches".
+    //   * tests/qwen3_tts_base_load_real.cpp's `check_transcript_selects_icl_mode`,
+    //     but NOT through its `!same_run` differential and NOT as a stronger
+    //     masker -- see the correction below.
     //
-    // The second is the STRONGER masker and was missed by the first audit here:
-    // base-load-real registers on the package alone (tests/CMakeLists.txt),
-    // while clone-real additionally needs the oracle x-vector sentinel, so
-    // there are checkouts where clone-real is absent and base_load_real:514
-    // still fires. An earlier revision of this comment predicted that retiring
-    // clone-real's assertion 7 would leave this line the sole owner of the
-    // claim. THAT WAS WRONG and is corrected here rather than left for someone
-    // to act on: base_load_real:514 would own it. Retire nothing on that
-    // premise.
+    // A CORRECTION THIS COMMENT CARRIED FOR ONE COMMIT, worth keeping visible
+    // because it was wrong in the direction that invites deleting coverage. It
+    // said base-load-real's differential was the STRONGER masker and that
+    // retiring clone-real's assertion 7 would leave that line the sole owner
+    // of this claim. Both halves are false. That differential CANNOT FAIL on
+    // either named deletion: `validate_speaker_sources` refuses a
+    // half-present ICL field set with INVALID_ARG, so dropping one assignment
+    // never produces an x-vector-shaped run to compare against, and in the
+    // world that does hold there the ICL runs return SYNTH_ERR_OUTPUT_LIMIT
+    // with zero audio while the x-vector run returns SYNTH_OK with PCM, so the
+    // comparison is doubly degenerate. What catches the deletion in that file
+    // is its `status == SYNTH_ERR_OUTPUT_LIMIT` assertion, which is a
+    // different property. So the two NON-DEGENERATE end-to-end differentials
+    // for this claim are this line and clone_real:624, and retiring either
+    // leaves exactly one. Retire neither on the old premise.
     //
     // Found by searching the other qwen3-tts tests for the property, not by
     // inversion -- an inversion tells you the check fires, never that another
-    // file's check fires too unless you also run that file.
+    // file's check fires too unless you also run that file. And, as the
+    // correction above shows, running the other file is still not enough: it
+    // has to be run under the deletion, which is how a check that cannot fail
+    // gets mistaken for a masker.
     std::vector<float> pcm_x_vector;
     uint32_t           channels_x_vector = 0;
     uint32_t           rate_x_vector     = 0;
@@ -1032,6 +1123,66 @@ int main(int argc, char ** argv) {
                                     channels_x_vector_reloaded, rate_x_vector_reloaded));
     SYNTH_TEST_CHECK(channels_x_vector_reloaded == channels_x_vector && rate_x_vector_reloaded == rate_x_vector);
     SYNTH_TEST_CHECK(same_pcm(pcm_x_vector_reloaded, pcm_x_vector));
+
+    // --- Assertion 8: a Serialized Profile cannot buy gigabytes of resident
+    // set with a mebibyte of bytes.
+    //
+    // THE RULE THIS PINS, and why it needs this tier. The package's reference
+    // ceiling bound at CREATION (src/voice-profile.cpp refuses an over-long
+    // clip) and, until the whole-branch review, nowhere at LOAD -- so this
+    // family's writer could emit at most 375 code frames while its reader
+    // accepted whatever the buffer backed. The loader's own allocation is
+    // honest (16,300 frames of codes is ~1 MiB, and Task 9's structural fix
+    // guarantees the bytes exist); the amplification is downstream and
+    // QUADRATIC, in run_synthesis's `prefill x prefill` attention mask and its
+    // per-position KV caches.
+    //
+    // WHY THE ASSERTION IS ON PEAK RSS AND NOT ON A STATUS. Before the fix
+    // BOTH calls succeeded: the envelope is well-formed, so the load returned
+    // SYNTH_OK, and the synthesis that followed allocated and then returned
+    // normally. No status anywhere moved. That is the same shape Task 9's
+    // reviewer found and the reason its arm measures the resident set; a
+    // status assertion here would have passed on the defective tree.
+    //
+    // So the arm does what a CALLER would do -- load, and if that succeeds,
+    // synthesize -- and asserts the resident set. The status check comes
+    // after, deliberately: if a future change refuses the envelope for some
+    // other reason, the RSS assertion still describes the property and the
+    // status assertion still describes the rule.
+    {
+        SYNTH_TEST_CHECK(!forged_bytes.empty());
+        synth_voice_profile_load_params_t forged_load_params;
+        synth_voice_profile_load_params_init(&forged_load_params, sizeof(forged_load_params));
+        forged_load_params.data      = forged_bytes.data();
+        forged_load_params.data_size = forged_bytes.size();
+
+        const uint64_t          before         = peak_rss_kib();
+        synth_voice_profile_t * forged_profile = nullptr;
+        const synth_status_t    forged_status =
+            synth_voice_profile_load_from_memory(model, &forged_load_params, &forged_profile);
+        if (forged_status == SYNTH_OK && forged_profile != nullptr) {
+            // The ceiling is gone. Take the next step a caller takes, which is
+            // the one that actually allocates, so the measurement below is of
+            // the real cost rather than of the loader's honest megabyte.
+            std::vector<float> pcm_forged;
+            uint32_t           channels_forged = 0;
+            uint32_t           rate_forged     = 0;
+            (void) synthesize_pcm(model, forged_profile, kText, kSeed, pcm_forged, channels_forged, rate_forged);
+            synth_voice_profile_free(forged_profile);
+            forged_profile = nullptr;
+        }
+        const uint64_t after      = peak_rss_kib();
+        // Zero on a platform that does not report RSS, which makes the
+        // comparison vacuously true there rather than falsely failing.
+        const uint64_t growth_kib = after > before ? after - before : 0;
+        std::fprintf(stderr, "qwen3-tts-icl-real: forged %zu-byte envelope -> status %d, peak RSS +%llu KiB\n",
+                     forged_bytes.size(), int(forged_status), (unsigned long long) growth_kib);
+        // 256 MiB, the same budget Task 9's arm uses, against a measured
+        // ~6,000,000 KiB on the tree that had no ceiling.
+        SYNTH_TEST_CHECK(growth_kib < 256u * 1024u);
+        SYNTH_TEST_CHECK(forged_status == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(forged_profile == nullptr);
+    }
 
     // --- Assertion 6: an ICL Profile presented to a second Loaded Model
     // refuses with SYNTH_ERR_UNSUPPORTED_VOICE and writes no audio.

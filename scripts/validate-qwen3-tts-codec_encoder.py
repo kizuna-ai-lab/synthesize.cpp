@@ -96,7 +96,7 @@ BF16_UNIT = 2.0 ** -8
 # supplied; load_gates() refuses to run if the two disagree, so a transcription
 # can no longer drift silently.
 STAGE_REL_ABSMAX = 1.0e-3
-#   measured worst 9.303e-05 (transformer_l7, all three cases) -> 10.8x headroom
+#   measured worst 9.303e-05 (transformer_l7, all three cases) -> 10.7x headroom
 #   injected fault 1.649e+00                                   -> 1650x discrimination
 #   and 1e-3 is still a quarter of one bf16 unit, so it cannot pass a port that
 #   merely "rounds like bf16" -- it demands float32 agreement with upstream.
@@ -113,17 +113,26 @@ STAGE_REL_ABSMAX = 1.0e-3
 #
 # THE TWO BRANCHES GET SEPARATE KEYS AND ARE NEVER AVERAGED. They are an order
 # of magnitude apart (rms 13.5 against 3.11) and, more importantly, they have
-# very different dynamic range: the semantic branch moves 0.004 -> 1.20 under
-# the fault (300x) and the acoustic branch only 0.25 -> 1.15 (4.6x). Averaging
-# them would blunt the sharper instrument with the duller one.
+# very different dynamic range. Under the injected fault the semantic branch's
+# p95 moves 0.004103 -> 1.601, a 390x move, while the acoustic branch's moves
+# only 0.2491 -> 1.741, a 7.0x move. Averaging them would blunt the sharper
+# instrument with the duller one. (This read "0.004 -> 1.20 (300x)" and
+# "0.25 -> 1.15 (4.6x)" until 2026-08-14, two figures that match neither the
+# fault p95 recorded three lines below nor anything else in the file; they are
+# replaced by the recorded ones rather than left as an unattributable
+# statistic.)
 RECONSTRUCTION_P95_RELATIVE = {
     "semantic": 2.0e-2,
     #   measured p95 0.004103 (worst case) -> 4.9x headroom
-    #   injected fault p95 1.601           -> 78x discrimination
+    #   injected fault p95 1.601           -> 80x discrimination
     #   5x one bf16 unit, which is where the design says this branch's median
     #   belongs; it flips on only 4 of 101 frames so the tail stays contained.
     "acoustic": 5.0e-1,
-    #   measured p95 0.2491 (worst case)   -> 2.0x headroom
+    #   measured p95 0.2491 (worst case)   -> 2.0x headroom, and that figure is
+    #   the OTHER input: it is measured with the port fed the oracle's own
+    #   bfloat16 waveform, which is what this script does. The registered
+    #   end-to-end consumer feeds the port the WAV and reads 0.304719, i.e.
+    #   1.64x. See `registered_consumers` in the tolerance file.
     #   injected fault p95 1.741           -> 3.5x discrimination
     #   NOT at bf16 scale, and it cannot be. This branch aggregates fifteen
     #   stages, disagreement with the bf16 oracle grows monotonically down the

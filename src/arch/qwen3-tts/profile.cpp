@@ -1518,6 +1518,60 @@ synth_status_t load_profile_from_memory(const HParams & hparams,
         return SYNTH_ERR_INVALID_ARG;
     }
 
+    // THE PACKAGE'S OWN REFERENCE CEILING, APPLIED TO THE DECLARED FRAME
+    // COUNT. Without this the ceiling binds at CREATION and not at LOAD, and
+    // the two ends of the same contract disagree by two orders of magnitude:
+    // src/voice-profile.cpp refuses a reference longer than
+    // `max_frames_per_clip`/`max_total_frames` (720,000 PCM frames = 30 s for
+    // the Base package), so this family's own writer cannot emit more than
+    // ceil(720000 / 1920) = 375 code frames -- while the reader, before this
+    // check existed, accepted anything the buffer could back, which for a
+    // ~1 MiB envelope is about 16,300 frames, 43x the ceiling.
+    //
+    // WHY THAT IS A MEMORY-SAFETY MATTER AND NOT A TIDINESS ONE, and why
+    // Task 9's fix does not reach it. That fix made an unchecked count
+    // unobtainable -- `tensor_range_fits` runs inside `i32_tensor_elements`,
+    // so a declared count is always backed by real bytes. It is: 16,300
+    // frames is only ~1 MiB of codes, and the loader's own allocation is
+    // therefore small and honest. The amplification is DOWNSTREAM and
+    // QUADRATIC: `run_synthesis` builds `prefill = frames + 10` and then a
+    // `prefill x prefill` attention mask twice over (model.cpp's
+    // ggml_new_tensor_2d and its host-side std::vector), plus KV caches at
+    // ~235 kB per position. A ~1 MiB envelope therefore drives gigabytes of
+    // resident set, growing as the SQUARE of the declared count, and both the
+    // load and the synthesis return SYNTH_OK -- no status anywhere moves, so
+    // only a peak-RSS measurement can see it. tests/qwen3_tts_icl_real.cpp's
+    // assertion 8 is that measurement.
+    //
+    // The sibling family already had exactly this check
+    // (arch/omnivoice/profile.h's `max_total_frames` parameter, bounding its
+    // declared element count before any vector sizes itself); this loader
+    // already takes the whole `HParams`, so the bound was in scope and simply
+    // unused. It is the same doctrine this file states for the code and id
+    // ranges: validate positively against what OUR OWN WRITER can emit.
+    //
+    // INVALID_ARG and not INPUT_TOO_LONG, deliberately: creation reports a
+    // caller's over-long clip, but there is no legitimate caller here -- a
+    // Serialized Profile declaring more frames than the package's own encoder
+    // could ever have produced is malformed, which is what every other
+    // refusal in this loader returns.
+    //
+    // The two factors are read as uint64 so the ceiling divide cannot wrap,
+    // and a package declaring a zero hop or a zero ceiling is refused rather
+    // than allowed to compute an unbounded limit -- read_hparams keeps both
+    // non-zero for every real package, so this is defence in depth.
+    {
+        const uint64_t samples_per_frame = hparams.codec.hop_length;
+        const uint64_t pcm_ceiling = std::min(hparams.profile.max_frames_per_clip, hparams.profile.max_total_frames);
+        if (samples_per_frame == 0 || pcm_ceiling == 0) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        const uint64_t max_reference_frames = (pcm_ceiling + samples_per_frame - 1) / samples_per_frame;
+        if (uint64_t(declared_frames) > max_reference_frames) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+    }
+
     // Both counts below arrive already checked against what `data_size` can
     // actually hold -- i32_tensor_elements refuses a declared range that does
     // not fit -- so the two `std::vector` constructions further down cannot be

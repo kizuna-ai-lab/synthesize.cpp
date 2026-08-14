@@ -395,10 +395,34 @@ int synthesize_with(synth_context_t *       context,
 //     from the x-vector Profile's own audio for the same text and the same
 //     seed. Both Profiles are prepared from the same tone, so their x-vectors
 //     are identical floats; the reference block in the prompt is the only
-//     thing left that can move a sample. That comparison is this check's
-//     load-bearing assertion, and dropping either
+//     thing left that can move a sample.
+//
+//     THAT LAST SENTENCE USED TO END "and dropping either
 //     `family_request.reference_codes` or `family_request.reference_text_ids`
-//     at the seam is what it catches.
+//     at the seam is what it catches." IT IS FALSE, and two other files cited
+//     it, so the correction matters more than the claim. Neither single
+//     deletion reaches the `!same_run` comparison at all:
+//     `validate_speaker_sources` (src/arch/qwen3-tts/model.cpp) enforces the
+//     three ICL fields as a SET -- `has_codes != has_ids || has_codes !=
+//     has_frames` is INVALID_ARG -- so dropping one leaves the other two set
+//     and the request is refused before any prompt exists. `same_run`'s first
+//     conjunct is then `INVALID_ARG == SYNTH_OK`, false, and the assertion
+//     passes. Both landed in the same commit, so the claim was never true.
+//     What catches a single-field deletion IN THIS FILE is the
+//     `status == SYNTH_ERR_OUTPUT_LIMIT` assertion further down, which stops
+//     holding when the request is refused instead.
+//
+//     `!same_run` is also degenerate in the PASSING world, for reasons
+//     unrelated to the reference block: the measurement recorded below shows
+//     the ICL runs returning SYNTH_ERR_OUTPUT_LIMIT with zero audio against
+//     the x-vector run's SYNTH_OK with PCM, so both of its first two
+//     conjuncts are already false. It is kept, narrowed below to the case it
+//     can actually decide, and it is NOT this check's load-bearing assertion.
+//     The end-to-end differential that IS non-degenerate -- both arms
+//     returning SYNTH_OK with real audio, because the clip is paired with its
+//     own transcript -- lives in tests/qwen3_tts_icl_real.cpp and
+//     tests/qwen3_tts_clone_real.cpp. Do not retire either of those believing
+//     this line covers the property.
 int check_transcript_selects_icl_mode(synth_model_t *                            model,
                                       synth_context_t *                          context,
                                       const synth_voice_profile_capabilities_t & capabilities) {
@@ -502,16 +526,34 @@ int check_transcript_selects_icl_mode(synth_model_t *                           
         // "synthesis.voice_unsupported" for two OTHER refusals.
         SYNTH_TEST_CHECK(status != SYNTH_ERR_UNSUPPORTED_VOICE);
         SYNTH_TEST_CHECK(!(diagnostic.seen && diagnostic.code == "synthesis.voice_unsupported"));
-        // Same text, same seed, same reference clip, and therefore the same
-        // x-vector floats in both Profiles -- create_icl_profile runs the same
-        // encode_speaker_reference over the same samples. The reference block
-        // is the only thing left that can move a sample, so an ICL run that
-        // matched the x-vector run would mean the block never reached the
-        // prompt.
-        const size_t compared = std::min(icl_pcm.size(), x_vector_pcm.size());
-        const bool   same_run = status == x_vector_status && icl_pcm.size() == x_vector_pcm.size() &&
-                                std::memcmp(icl_pcm.data(), x_vector_pcm.data(), compared * sizeof(float)) == 0;
-        SYNTH_TEST_CHECK(!same_run);
+        // NARROWED to what it can decide, and honestly labelled. As written
+        // before 2026-08-14 this compared status, size and bytes at once, so
+        // in the world that actually holds here -- the ICL runs come back
+        // SYNTH_ERR_OUTPUT_LIMIT with zero audio, the x-vector run SYNTH_OK
+        // with PCM -- it was true for two reasons that have nothing to do with
+        // whether the reference block reached the prompt, and the header above
+        // wrongly called it this check's load-bearing assertion.
+        //
+        // It is now conditioned on both runs having produced comparable audio.
+        // When they have not, the two assertions that carry this check are the
+        // status/code pair above (not refused BY MODE) and the OUTPUT_LIMIT
+        // assertion below, both of which stop holding if the ICL fields are
+        // dropped at the seam. When they have, the byte comparison is the real
+        // thing and still fires.
+        if (status == x_vector_status && !icl_pcm.empty() && !x_vector_pcm.empty()) {
+            const size_t compared = std::min(icl_pcm.size(), x_vector_pcm.size());
+            const bool   same_run = icl_pcm.size() == x_vector_pcm.size() &&
+                                    std::memcmp(icl_pcm.data(), x_vector_pcm.data(), compared * sizeof(float)) == 0;
+            SYNTH_TEST_CHECK(!same_run);
+        }
+        // What the ICL arm actually reaches on this fixture, asserted rather
+        // than left implicit: the two runs are NOT the same run because the
+        // ICL one hits the cap. This is the assertion a dropped
+        // `family_request.reference_codes` or `reference_text_ids` breaks --
+        // the request becomes INVALID_ARG at validate_speaker_sources and
+        // never reaches the limit at all.
+        SYNTH_TEST_CHECK(status == SYNTH_ERR_OUTPUT_LIMIT);
+        SYNTH_TEST_CHECK(status != x_vector_status);
     }
 
     // What a caller GETS when an ICL request runs away, which before Task 11's
@@ -536,7 +578,19 @@ int check_transcript_selects_icl_mode(synth_model_t *                           
         // The ICL-specific half of the message, which is the actionable part:
         // an x-vector request reaching the same line gets the generic text.
         // tests/qwen3_tts_output_limit_test.cpp pins that other branch.
+        //
+        // AND THIS ARM IS WHY THE MESSAGE HEDGES. The transcript here MATCHES
+        // its audio; the cause of this limit stop is the 3,840-frame cap two
+        // lines above, set by this test. An earlier revision of the message
+        // read "the measured cause is a reference transcript that does not
+        // match its reference audio" -- asserted, as a definite cause, to a
+        // caller in exactly this position, who would have gone and re-recorded
+        // a clip that was never wrong. The message now names the cap and the
+        // text first and the transcript as one measured possibility, so both
+        // halves below are true of this run.
         SYNTH_TEST_CHECK(diagnostic.message.find("reference transcript") != std::string::npos);
+        SYNTH_TEST_CHECK(diagnostic.message.find("output limit") != std::string::npos);
+        SYNTH_TEST_CHECK(diagnostic.message.find("the measured cause is") == std::string::npos);
     }
 
     synth_voice_profile_free(icl_reloaded);

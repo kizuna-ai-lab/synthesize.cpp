@@ -635,6 +635,19 @@ bool build_icl_fixture(IclFixture & fixture) {
     fixture.hparams.codec.decoder.codebook_size            = uint32_t(kCodebookSize);
     fixture.hparams.codec.decoder.quantizer_count          = uint32_t(kGroups);
     fixture.hparams.codec.decoder.semantic_quantizer_count = uint32_t(kSemanticGroups);
+    // The package's reference ceiling, at the real Base package's own values
+    // (30 s at 24 kHz, a 1,920-sample hop -> 375 code frames). The loader
+    // converts these into the maximum `reference_frames` it will accept
+    // (whole-branch review MB1), so a fixture that left them zero would make
+    // every ICL envelope in this file unloadable. Set to the real numbers
+    // rather than to something permissive, so that this fixture's own
+    // references -- 13 frames at kShortReferenceSamples, 101 at the longest --
+    // are checked against the ceiling a real caller meets. The isolating arm
+    // for the ceiling itself uses envelope_hparams, whose ceiling is small
+    // enough to build a payload one frame over.
+    fixture.hparams.codec.hop_length                       = 1920;
+    fixture.hparams.profile.max_frames_per_clip            = 720000;
+    fixture.hparams.profile.max_total_frames               = 720000;
 
     fixture.persistent  = make_context(ggml_tensor_overhead() * 512);
     ggml_context * pctx = fixture.persistent.get();
@@ -1308,12 +1321,34 @@ constexpr uint32_t kEnvelopeFrames    = 3;
 constexpr uint32_t kEnvelopeCodebook  = 8;
 constexpr uint32_t kEnvelopeTextVocab = 64;
 
+// The package's own reference ceiling, which the loader converts from PCM
+// frames into code frames exactly as the real packages force it to:
+// `ceil(min(max_frames_per_clip, max_total_frames) / codec.hop_length)`. Six
+// here, comfortably above kEnvelopeFrames so that every other arm in this
+// section is unaffected, and small enough that the isolating arm below can
+// build a real payload one frame over it.
+//
+// The two PCM limits are set UNEQUAL on purpose: `min` of the two is what
+// binds, so a loader reading only one of them still passes if they are equal.
+// kEnvelopeMaxReferenceFrames is derived from the SMALLER one.
+constexpr uint32_t kEnvelopeSamplesPerFrame  = 4;
+constexpr uint64_t kEnvelopeMaxFramesPerClip = 24;   // 6 code frames
+constexpr uint64_t kEnvelopeMaxTotalFrames   = 400;  // 100 code frames; never the binding one
+constexpr uint32_t kEnvelopeMaxReferenceFrames =
+    uint32_t((kEnvelopeMaxFramesPerClip + kEnvelopeSamplesPerFrame - 1) / kEnvelopeSamplesPerFrame);
+static_assert(kEnvelopeMaxReferenceFrames == 6, "the ceiling arms below are written against six code frames");
+static_assert(kEnvelopeFrames < kEnvelopeMaxReferenceFrames,
+              "every other envelope arm must sit strictly under the ceiling, or this fixture changes their meaning");
+
 HParams envelope_hparams(uint32_t enc_dim) {
     HParams hparams;
     hparams.speaker_encoder.enc_dim       = enc_dim;
     hparams.codec.decoder.quantizer_count = kEnvelopeGroups;
     hparams.codec.decoder.codebook_size   = kEnvelopeCodebook;
     hparams.talker.text_vocab_size        = kEnvelopeTextVocab;
+    hparams.codec.hop_length              = kEnvelopeSamplesPerFrame;
+    hparams.profile.max_frames_per_clip   = kEnvelopeMaxFramesPerClip;
+    hparams.profile.max_total_frames      = kEnvelopeMaxTotalFrames;
     return hparams;
 }
 
@@ -3031,6 +3066,114 @@ int test_the_reader_refuses_a_grid_the_package_cannot_hold() {
     return 0;
 }
 
+// --- THE WRITER'S OWN PRODUCT CLAUSE, ISOLATED (whole-branch review, I12).
+// `serialize_icl_profile` refuses a payload whose `codes.size()` is not
+// `groups * frames`. That rule shipped with NO test that could fire on it:
+// the writer half of test_the_reader_refuses_a_grid_the_package_cannot_hold
+// above deliberately keeps the product intact so that only the package rule
+// fires, and every other writer arm builds a consistent payload. Deleting the
+// clause left the whole suite green -- the plan's own "a test that stays green
+// is not a test", applied to a rule with no test at all.
+//
+// THE ISOLATION. `groups` stays exactly the package's `quantizer_count` and
+// `frames` stays under the reference ceiling, so neither of the writer's other
+// two rules can be the cause; only `4 * 4 != 12` can refuse this.
+//
+// Dimension: value (the declared product, against the payload it describes).
+// MEASURED: with the clause deleted this arm serializes with SYNTH_OK.
+int test_the_writer_refuses_a_grid_that_does_not_match_its_codes() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+
+    auto profile    = std::make_shared<IclProfile>(*make_serializable_icl_profile(kProfileEncDim));
+    // The payload keeps its kEnvelopeGroups * kEnvelopeFrames == 12 codes; only
+    // the DECLARED frame count moves, and it moves to a value the package
+    // would otherwise accept.
+    profile->frames = kEnvelopeFrames + 1;
+    static_assert(kEnvelopeFrames + 1 <= kEnvelopeMaxReferenceFrames,
+                  "the perturbed frame count must stay under the ceiling, or the ceiling rule masks this arm");
+    SYNTH_TEST_CHECK(profile->groups == uint64_t(kEnvelopeGroups));
+    SYNTH_TEST_CHECK(profile->codes.size() != size_t(profile->groups) * size_t(profile->frames));
+
+    std::vector<uint8_t> written;
+    SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(envelope_hparams(kProfileEncDim), *profile,
+                                                            compatibility_id, written) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(written.empty());
+    return 0;
+}
+
+// --- THE REFERENCE CEILING BINDS AT LOAD AND NOT ONLY AT CREATION
+// (whole-branch review, MB1). `reference_frames` was checked for `!= 0` and
+// for `groups * frames == element_count` and against NOTHING ELSE, so the
+// package's own reference-length ceiling -- the one src/voice-profile.cpp
+// enforces on every clip a caller presents -- bound the WRITER and not the
+// READER. For the real Base package that is 375 code frames emitted against
+// roughly 16,300 accepted from a ~1 MiB buffer.
+//
+// WHY A STATUS ASSERTION IS ENOUGH HERE AND NOT AT THE OTHER TIER. The
+// allocation the missing bound unlocks is not in the loader -- Task 9's fix is
+// intact, and 16,300 frames of codes is an honest ~1 MiB. It is in
+// `run_synthesis`, which sizes a `prefill x prefill` attention mask from
+// `frames + 10`, i.e. QUADRATICALLY, and returns SYNTH_OK while doing it. This
+// arm pins the RULE, cheaply and without a package;
+// tests/qwen3_tts_icl_real.cpp's assertion 8 measures the peak RSS the rule
+// prevents, because that is the only observable that moves.
+//
+// THE ISOLATION. Both arms build a REAL payload through the REAL writer at
+// their own frame count, so `groups * frames` equals the codes tensor's own
+// element count on both sides and `groups` is the package's on both sides:
+// the product rule and the package-width rule are satisfied in the refused
+// case, and the ceiling is the only thing that can refuse it. Perturbing the
+// `reference_frames` key of a fixed envelope -- what every neighbouring arm
+// does -- could not isolate this at all, because raising it breaks the product
+// first.
+//
+// Dimension: value (the declared length, against the package's own ceiling).
+// MEASURED: with the ceiling clause deleted, the over-ceiling arm loads with
+// SYNTH_OK and the whole suite is otherwise green.
+int test_the_reader_refuses_a_reference_longer_than_the_package_allows() {
+    constexpr uint32_t kProfileEncDim = 11;
+    uint8_t            compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+
+    const struct {
+        uint32_t       frames;
+        synth_status_t expected;
+    } cases[] = {
+        // Exactly at the ceiling: this is a length the package's own encoder
+        // could have produced, so it must still load. Without this row the
+        // arm below could be satisfied by a loader that refused everything.
+        { kEnvelopeMaxReferenceFrames,     SYNTH_OK              },
+        // One frame over: no clip this package accepts can produce it.
+        { kEnvelopeMaxReferenceFrames + 1, SYNTH_ERR_INVALID_ARG },
+    };
+
+    for (const auto & one : cases) {
+        auto profile    = std::make_shared<IclProfile>(*make_serializable_icl_profile(kProfileEncDim));
+        profile->frames = one.frames;
+        profile->codes.assign(size_t(kEnvelopeGroups) * size_t(one.frames), 0);
+        for (size_t index = 0; index < profile->codes.size(); ++index) {
+            profile->codes[index] = int32_t(index % kEnvelopeCodebook);
+        }
+        std::vector<uint8_t> bytes;
+        SYNTH_TEST_CHECK(synth::qwen3tts::serialize_icl_profile(envelope_hparams(kProfileEncDim), *profile,
+                                                                compatibility_id, bytes) == SYNTH_OK);
+        SYNTH_TEST_CHECK(!bytes.empty());
+
+        synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+        std::shared_ptr<const void> payload;
+        const char *                code    = nullptr;
+        const char *                message = nullptr;
+        const synth_status_t        status =
+            synth::qwen3tts::load_profile_from_memory(envelope_hparams(kProfileEncDim), bytes.data(), bytes.size(),
+                                                      compatibility_id, family_tag, payload, code, message);
+        SYNTH_TEST_CHECK(status == one.expected);
+        SYNTH_TEST_CHECK((payload != nullptr) == (one.expected == SYNTH_OK));
+    }
+    return 0;
+}
+
 // --- A DECLARED COUNT IS NOT A BUDGET (Task 9 review, Critical 1). Both I32
 // streams used to be sized from the buffer's own declared element counts and
 // only afterwards asked whether those ranges fit; a 1 KiB Serialized Profile
@@ -3350,6 +3493,8 @@ int main() {
     SYNTH_TEST_CHECK(test_the_icl_writer_refuses_out_of_range_streams() == 0);
     SYNTH_TEST_CHECK(test_the_reader_refuses_an_inconsistent_code_grid() == 0);
     SYNTH_TEST_CHECK(test_the_reader_refuses_a_grid_the_package_cannot_hold() == 0);
+    SYNTH_TEST_CHECK(test_the_writer_refuses_a_grid_that_does_not_match_its_codes() == 0);
+    SYNTH_TEST_CHECK(test_the_reader_refuses_a_reference_longer_than_the_package_allows() == 0);
     SYNTH_TEST_CHECK(test_a_declared_count_larger_than_the_buffer_allocates_nothing() == 0);
     SYNTH_TEST_CHECK(test_an_icl_envelope_inherits_the_payload_value_checks() == 0);
 

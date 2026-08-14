@@ -84,9 +84,11 @@ drives it end to end against the real package. **The plain-equality gate on
 reference codes was dropped by ruling on 2026-08-13** -- upstream disagrees
 with itself depending on a load-time `dtype` keyword -- and replaced with
 stage-wise float artifacts at a bf16-derived tolerance. **A wrong two-track
-alignment produces fluent speech and returns `SYNTH_OK`**, so those numerical
-gates are the whole defence; the frame count that betrays it is observable on
-the public seam and nothing looks at it. The Validation Level does not move,
+alignment still returns `SYNTH_OK` with finite, non-silent audio**, so those
+numerical gates are the whole defence; the frame count that betrays it is
+observable on the public seam and nothing looks at it. (Whether that audio is
+*fluent* is unknown — nobody listened to it, and this document says so wherever
+the measurement is quoted.) The Validation Level does not move,
 **no Listening Audit has run for ICL**, and no performance or quantization
 number is claimed. See "Stage 2: Base Package, Plan 3" below, including what
 remains: Description Text (Stage 3), the CLI, and quantization, CUDA and the
@@ -2783,7 +2785,16 @@ CPU at `CMAKE_BUILD_TYPE=Release`:
 | `synthesize-qwen3-tts-icl-real` | passes | **passes** |
 | `icl-prompt-real`, codec track | 2.232e-03 | **7.945e-01** (gate 2.0e-2) |
 
-The audio is plausible speech in approximately the right voice. `frame_count`
+**What was measured is the table above and nothing more.** The misaligned run
+returned `SYNTH_OK`, emitted 19,200 finite PCM frames at peak amplitude 0.7696,
+and passed every differential the end-to-end test makes. **Nobody listened to
+it.** No Listening Audit has run for ICL at all, so this document makes no claim
+about whether the misaligned audio is fluent, intelligible, or in the reference
+speaker's voice — earlier revisions of this paragraph said "plausible speech in
+approximately the right voice", which no measurement in this branch supports.
+The argument does not need it: a defect that every gate but the numerical ones
+missed is the point, and "returned success with finite non-silent audio and a
+23% shorter duration that nothing asserts" is what makes it. `frame_count`
 is on the API surface, so a caller can see 0.80 s where 1.04 s is correct —
 the accurate phrasing is **observable, never detected**: the evidence sits in
 public view and nothing looks at it. That the end-to-end test passes is a
@@ -2942,8 +2953,15 @@ tail a lucky case avoids.
 **And upstream does not agree with itself.** Loading with
 `dtype=torch.bfloat16` — what the model card and the shipped demo both do —
 reproduces the committed `codes/reference.i32` exactly. **Omitting `dtype`,
-which `transformers` resolves to float32, disagrees with it on 794 of 1616
-codes on `base-icl-en` — 49%.** A gate that one run of the reference
+which `transformers` resolves to float32, disagrees with it on 760 of 1616
+codes on `base-icl-en` — 47.03%.** (This read "794 of 1616 — 49%" until
+2026-08-14, fifteen lines above a table giving 760 for the same comparison.
+794 was a 2026-08-13 pre-execution estimate; 760 is what the committed
+float32 re-run produces and is what the grid, the table below and
+`scripts/dump_reference_qwen3_tts_codec_encoder_float32.py` all carry. The
+same stale figure survives in the dated plan and spec documents, which record
+what was believed when they were written and are not corrected here.) A gate
+that one run of the reference
 implementation passes and another fails is testing a load-time keyword
 argument, not this port. Plan 1's "codes match byte-for-byte" observation was
 never about the table either: both scripts load `bfloat16`, so it measured
@@ -2958,6 +2976,23 @@ agreement rates below are recorded as evidence and gate nothing.**
 | port vs upstream-f32 | **100.000%** (0 of 1616) | **100.000%** (0 of 208) |
 | port vs the bf16 oracle | 52.970% (760 of 1616) | 53.846% (96 of 208) |
 | upstream-f32 vs the bf16 oracle | 52.970% (760 of 1616) | 53.846% (96 of 208) |
+
+> **THE THREE CODEC CASES ARE ONE RECORDING, AND THIS DOCUMENT DID NOT SAY SO
+> UNTIL 2026-08-14.** `base-ref-min`'s `waveform.f32` is a **byte-exact
+> prefix** of `base-icl-en`'s — the first 24,000 of its 193,920 samples,
+> checked on the bytes — and `base-text-short` is that same clip again at full
+> length, differing only in synthesis text the encoder never reads. So
+> `base-icl-en` and `base-text-short` are the SAME 8.08-second clip: one
+> speaker, one microphone, one sample rate, two lengths. Wherever this section
+> says "three cases", or prints two columns side by side, or notes that "the
+> three calibration cases sit at 0.00/3.96/3.96%" — the identical 3.96/3.96
+> being that clip measured twice — **none of it is independent corroboration**.
+> A second speaker would be, and there is not one. `tests/tolerances/qwen3-tts.json`,
+> `scripts/dump_reference_qwen3_tts_codec_encoder.py` and
+> `scripts/validate-qwen3-tts-codec_encoder.py` have all stated this from the
+> start; this file — the one a later variant's implementer is directed to —
+> did not, which is why the acoustic branch's 1.64x–2.0x headroom should be
+> read as drawn from a single microphone.
 
 The last two rows are equal because they differ on **exactly the same codes**:
 the divergence is attributable to bf16, decision by decision, and the dropped
@@ -2990,8 +3025,8 @@ the build tree rather than reading a stale dump.
 
 | gate | threshold | observed | headroom | injected fault reads |
 | --- | ---: | ---: | ---: | ---: |
-| `codec.chain` `rel_absmax`, per stage over 33 taps | 1.0e-3 | 9.303e-05 (`transformer_l7`) | 10.8x | 1.649 (1650x) |
-| `codec.rvq_reconstruction.semantic`, p95 relative L2 | 2.0e-2 | 0.004103 | 4.9x | 1.601 (78x) |
+| `codec.chain` `rel_absmax`, per stage over 33 taps | 1.0e-3 | 9.303e-05 (`transformer_l7`) | 10.7x | 1.649 (1650x) |
+| `codec.rvq_reconstruction.semantic`, p95 relative L2 | 2.0e-2 | 0.004103 | 4.9x | 1.601 (80x) |
 | `codec.rvq_reconstruction.acoustic`, p95 relative L2 | 5.0e-1 | 0.2491 | 2.0x | 1.741 (3.5x) |
 
 The chain gate is the primary one and the only one of the three independent of
@@ -3018,7 +3053,12 @@ widening anything.**
   bf16 unit). Measured on `base-icl-en` alone, which is the only case that test
   drives: acoustic p95 **0.304719**, semantic 0.004033, code agreement
   **50.743%** where the bf16-waveform run of the same case gives 0.2491,
-  0.004033 and 52.970%. So **the acoustic branch's real headroom against a
+  **0.004103** and 52.970%. (That semantic figure was printed as 0.004033 on
+  both sides until 2026-08-14 — the WAV-path number on both halves of a
+  contrast whose whole point is that the two inputs differ, erasing the one
+  move it was recording. The grid has it right in
+  `observed_p95_relative_l2` against
+  `observed_p95_relative_l2_from_wav_input`.) So **the acoustic branch's real headroom against a
   caller's own WAV is 1.64x, not the 2.0x the grid's own column records** —
   that column is the worst over three cases from the oracle's input, and the
   two are not the same measurement. Recorded under `registered_consumers`
@@ -3029,9 +3069,9 @@ widening anything.**
   with upstream-f32 100.000% (0 of 6000), and the chain gate passes *tighter*
   than the calibration cases at 8.431e-05. The p95 only enters the flipped tail
   above roughly a 5% flip rate; the three calibration cases sit at
-  0.00/3.96/3.96% and `base-ref-max` at 5.33%, an 87x jump. **Widening was
+  0.00/3.96/3.96% and `base-ref-max` at 5.33%, an 85x jump. **Widening was
   refused**: 0.35 would leave the injected fault 4.6x above the gate instead of
-  78x, destroying its discrimination. It is recorded as `gate_scope_warning`,
+  80x, destroying its discrimination. It is recorded as `gate_scope_warning`,
   `cases` stays at 3, and the statistic needs redesigning in Plan 4 — gate the
   flip rate separately from the reconstruction error on non-flipped frames. The
   real evidence for that case is the 100% code agreement, not the p95.
@@ -3061,8 +3101,20 @@ dumps cannot settle correctness alone): the codec track is 0.0 … 4.2e-09,
 float32-exact, being 16 lookups and 15 adds in the same order; the text track
 is 1.28e-04 … 1.73e-04, **23x–30x below one bf16 unit roundoff**. The entire
 residual against the oracle is the oracle's own arithmetic. The same holds
-across the whole encoder chain: port vs upstream-f32 is 4.7e-07 … 9.3e-05,
-where upstream-f32 vs the bf16 oracle is 0.0 … 0.41.
+across the whole encoder chain: over the 33 taps the grid records, port vs
+upstream-f32 is 8.021e-07 … 9.303e-05 (worst `transformer_l7`), where
+upstream-f32 vs the bf16 oracle is 0.0 … **0.9896** (worst `rvq_residual_s14`,
+with s08 at 0.9475, s15 at 0.9307 and s07 at 0.9278 behind it).
+
+**Both figures in that last sentence were wrong until 2026-08-14 and the upper
+one mattered.** It read "4.7e-07 … 9.3e-05, where upstream-f32 vs the bf16
+oracle is 0.0 … 0.41". 0.41 is `transformer_l7`'s 0.4054 — the maximum over
+the **non-RVQ** taps only — so it understated the real bf16-scale spread by
+2.4x, and a later plan sizing a bf16-derived bound off this sentence would have
+set it that much too tight. `4.7e-07` appears nowhere in the grid at all; the
+smallest non-zero per-stage worst is `8.021e-07` (`transformer_l1`). Every
+number here is now transcribed from `codec.chain.per_stage` in
+`tests/tolerances/qwen3-tts.json`, which is the file that carries them.
 
 **The five-way decomposition demonstrably localizes, which is its point.**
 Shifting the codec track one frame moves `codec` 2.232e-03 → 7.945e-01 and
@@ -3190,10 +3242,15 @@ in the file where the next person will hit it.
 - **A Listening Audit for ICL.** None has run. The 2026-08-13 audit recorded
   under "Listening Audits" below was **x-vector-only** and says so; it covers
   neither this mode nor CUDA. One is scheduled for Plan 4's ship-prep phase.
-  Note also what an audit could not have decided here: the alignment defect at
-  the top of this section produces fluent speech in approximately the right
-  voice, so the numerical gates are the evidence and a listener is not a
-  substitute for them.
+  Note what follows from that, rather than what an earlier revision of this
+  bullet claimed. It argued that a listener could not have caught the alignment
+  defect because the misaligned audio "produces fluent speech in approximately
+  the right voice" — a listener's judgement, asserted in the same bullet that
+  says no listener ever heard it. **Nobody knows whether a listener would have
+  caught it.** What is known is that the misaligned run returned `SYNTH_OK`
+  with finite, non-silent audio and a 23% shorter duration, and that the
+  numerical gates are the only thing in the tree that did catch it. Both facts
+  stand on their own; neither needs an audible claim.
 - **Quantization Profiles and the CUDA Execution Backend.** Plan 4's. No
   `F16`, `Q8_MIXED` or `CUDA` cell was added to the tolerance grid and **no
   performance number is claimed by this plan.** The codec encoder is
@@ -3206,19 +3263,31 @@ in the file where the next person will hit it.
 - **The CLI path.** `examples/cli/` is untouched, for the reasons under "The
   CLI's position" above: adding an audio reader is a cross-family slice, not a
   qwen3-tts increment.
-- **A diagnosis of the ICL output-length pathology, or a shorter failure.**
+- **Any diagnosis of the ICL output-length pathology, or a shorter failure.**
   Pairing a reference clip with a transcript that does not match it runs
   synthesis to the 2048-frame ceiling — about eight minutes, non-OK, zero
   audio. It is an ordinary caller mistake (any imperfect ASR transcript is
-  one). What Plan 3 added is a diagnosis, not a fix: the limit stop emits
-  `synthesis.output_limit` naming "a reference transcript that does not match
-  its reference audio", so a caller gets something to act on. **Shortening it
-  needs a lower ICL ceiling or a run-away detector, and neither was built.**
-  The pathology itself was measured on the **PyTorch reference
-  implementation**; this port was not compared on it, so it is upstream's
-  behaviour rather than a port defect — see "The 9-frame anomaly" above for
-  the scope of that claim and for the `trim_seconds` driver flag that a port
-  comparison would need.
+  one). What Plan 3 added is **mitigation, not a diagnosis and not a fix**: one
+  static error string, so that the limit stop points a caller at the inputs to
+  check instead of returning a bare status. **Shortening it needs a lower ICL
+  ceiling or a run-away detector, and neither was built.**
+
+  **The provenance, corrected on 2026-08-14 — an earlier revision of this
+  bullet had it backwards and the correction matters for Plan 4.** It said the
+  pathology "was measured on the PyTorch reference implementation; this port
+  was not compared on it, so it is upstream's behaviour rather than a port
+  defect." That is the 9-frame anomaly's caveat, borrowed and stapled to a
+  different measurement. **The transcript-mismatch hang has only ever been
+  measured on THIS PORT**, through the public C seam — 475.9 s of CPU,
+  `SYNTH_ERR_OUTPUT_LIMIT` at `kDefaultMaxFrames = 2048`, zero audio, at
+  `CMAKE_BUILD_TYPE=Release`. Upstream was never run on a mismatched
+  transcript. So nothing establishes this as upstream's behaviour, and nothing
+  clears the port of it either; the shared-cause link to the 9-frame case is
+  recorded elsewhere in this document as **a hypothesis, not a finding**, and
+  promoting it here would send Plan 4 hunting in the wrong implementation. The
+  9-frame work *is* oracle-side (`scripts/measure_qwen3_tts_icl_reference_length.py`),
+  and its section above is where the `trim_seconds` driver flag a port
+  comparison would need is recorded.
 - **A port-side answer on the 9-frame case.** The anomaly, open since Plan 1,
   **is adjudicated**: it reproduces exactly, and it is the same mechanism as
   the runaway — one input, five seeds, four collapses and one runaway. It is

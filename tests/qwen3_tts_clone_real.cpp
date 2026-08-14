@@ -585,8 +585,21 @@ int main(int argc, char ** argv) {
     // bit-identical x-vectors; kText and kSeed are unchanged from assertion
     // 2. The reference block -- the codes and the reference text ids the
     // dispatch passes only in the ICL arm -- is therefore the only thing left
-    // that can move a sample. A dispatch that dropped either field would
-    // reproduce pcm_first exactly.
+    // that can move a sample. A dispatch that dropped ALL THREE ICL fields
+    // would reproduce pcm_first exactly, and this is one of the two
+    // non-degenerate end-to-end checks of that (the other is
+    // tests/qwen3_tts_icl_real.cpp's assertion 4, which carries the whole
+    // masking table).
+    //
+    // "DROPPED EITHER FIELD" WAS WRONG AND IS CORRECTED HERE. Dropping ONE of
+    // `family_request.reference_codes` / `reference_text_ids` /
+    // `reference_frames` does not reach this comparison at all:
+    // `validate_speaker_sources` enforces them as a set and refuses a
+    // half-present one with INVALID_ARG, so `synthesize_pcm` returns false and
+    // this file fails at its own SYNTH_TEST_CHECK on that call, several lines
+    // above the difference assertion. The same wrong claim was made in
+    // tests/qwen3_tts_base_load_real.cpp, where it was worse -- there the
+    // corresponding differential cannot fail on the deletion at all.
     //
     // What this does NOT claim: that the ICL clone resembles the speaker more
     // closely than the x-vector one does. That is a Quality Evaluation claim

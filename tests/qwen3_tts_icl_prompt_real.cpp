@@ -6,8 +6,10 @@
 // only the block. A block that is right for the wrong reasons is exactly the
 // failure this plan exists to make visible, because nothing downstream of it
 // can: the talker samples, so the audio was never going to match the oracle's
-// sample for sample, and a misaligned block still produces fluent speech in
-// approximately the right voice.
+// sample for sample, and a misaligned block still returns `SYNTH_OK` with
+// finite, non-silent audio -- measured on this port. Whether that audio is
+// fluent, or in the reference speaker's voice, is UNKNOWN: no Listening Audit
+// has run for ICL, and an earlier revision of this sentence asserted both.
 //
 // Inputs come from the oracle rather than from the port wherever the port is
 // not what is under test: `ref_text_ids.i32` and `target_text_ids.i32` are the

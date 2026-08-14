@@ -1,12 +1,29 @@
 // The two-track ICL prompt block and its min(T1, T2) alignment.
 //
-// This is the piece of transcript-assisted cloning that nothing downstream can
-// check. A block whose two tracks are misaligned by one position produces
-// fluent speech, in approximately the right voice, in the right language, at
-// the right length -- talker-host.h says so at the top of build_talker_prompt
-// and it is the reason this file exists. The end-to-end audio cannot catch it
-// either: the talker samples, so the audio was never going to match the
-// oracle's sample for sample.
+// This is the piece of transcript-assisted cloning that nothing downstream
+// asserts. A block whose two tracks are misaligned by one frame still returns
+// `SYNTH_OK` with finite, non-silent audio -- MEASURED on this port, and the
+// reason this file exists. The end-to-end audio cannot catch it either: the
+// talker samples, so the audio was never going to match the oracle's sample
+// for sample.
+//
+// THREE THINGS THIS PARAGRAPH USED TO SAY, ALL WRONG, corrected 2026-08-14
+// because each one discourages the reader from the very check that would help.
+//
+//   1. "at the right length" -- FALSE, and this branch measured it false. The
+//      one-frame codec rotation moves the output from 24,960 PCM frames to
+//      19,200 (1.0400 s to 0.8000 s). The length is the ONE end-to-end
+//      observable the defect moves; telling the next reader it does not move
+//      is telling them not to look at the only thing that shows.
+//      tests/qwen3_tts_icl_real.cpp records why it is still not asserted (the
+//      count is build-dependent: Release 24,960, RelWithDebInfo 48,000).
+//   2. "fluent speech, in approximately the right voice, in the right
+//      language" -- an audible judgement, and NOBODY LISTENED. No Listening
+//      Audit has run for ICL. What was measured is a status, a frame count, a
+//      peak amplitude and a set of passing differentials.
+//   3. "talker-host.h says so" -- it says the OPPOSITE of what it was cited
+//      for. That header reads "A prompt off by one still synthesizes speech,
+//      in the WRONG VOICE OR THE WRONG LANGUAGE."
 //
 // Every rule below is one the oracle's own alignment.json supplies the target
 // for (scripts/dump_reference_qwen3_tts_icl_prompt.py, one alignment.json per

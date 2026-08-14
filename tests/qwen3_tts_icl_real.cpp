@@ -62,9 +62,33 @@
 // port defect. Every ICL Profile below therefore uses the clip's OWN
 // transcript, read out of the oracle's own dump rather than retyped, and no
 // assertion here perturbs a reference grid or pairs the clip with foreign text.
-// The same input at different seeds also produces either near-zero output
-// (4-12 frames) or the runaway, so no assertion here has a frame count for its
-// expected value.
+//
+// WHY THE FRAME COUNT IS NOT PINNED, corrected on 2026-08-14 -- the reason
+// first written here was borrowed from a regime this file never enters and was
+// WRONG. That reason was Task 12's seed sweep giving 9, 8, 12, 4 and 2047
+// frames from one input; that sweep was taken at 375 LOOPED reference frames
+// against a single-repetition transcript, i.e. the mismatch above. At the 101
+// matched frames this file actually uses, the same commit records a stable
+// 45/53/48/57/55, `kSeed` is pinned below, and assertion 3 proves the output
+// is bit-reproducible. An exact frame-count assertion was therefore available,
+// and it would have made the rotation above detectable.
+//
+// The real reason is BUILD DEPENDENCE, and it is measured rather than feared.
+// Identical package, clip, transcript, text, seed and CPU backend, and the
+// thread count swept over 1/2/4/8/20 with no movement at all -- but:
+//
+//   Release (-O3)          icl 24,960 PCM frames, x-vector 36,480
+//   RelWithDebInfo (-O2)   icl 48,000 PCM frames, x-vector 28,800
+//
+// Each figure reproduces exactly on re-run within its own build. The
+// autoregressive STOP decision is what moves; everything deterministic is
+// unaffected -- the reconstruction p95 and the code agreement below are
+// bit-identical across the two builds. So an exact frame count is a property
+// of the compiler's floating-point choices, not of this port, and pinning one
+// would fail the RelWithDebInfo tree the sanitizer gate itself uses. It is
+// PRINTED instead, which puts it in the log and not in a gate. Anyone wanting
+// to close the rotation gap here needs a build-invariant observable, and this
+// is the measurement saying the frame count is not one.
 //
 // The seven assertions, each its own block below:
 //
@@ -87,6 +111,68 @@
 //   7. an x-vector Profile serializes to a Plan 2-shaped envelope -- the ICL
 //      kind's keys and tensors ABSENT, the "x-vector" kind present -- and
 //      still loads and still synthesizes.
+//
+// WHAT IS MASKED, ALL OF IT, because a partial audit is worse than none -- a
+// reader who sees three masking notes concludes the unmarked checks are sole
+// evidence. The first audit here was done by single-deletion inversion, which
+// finds a masker only if the inversion happens to be run against every other
+// suite; this one was done by searching the other qwen3-tts test files for the
+// PROPERTY, which is the method that scales. Each entry is repeated at its own
+// check below.
+//
+//   assertion 1, structural half   qwen3_tts_profile_test.cpp:698 (mode), :740
+//                                  (ids), :725 (x-vector width), :733 (groups),
+//                                  :823/:827 (frames, incl. the ceiling
+//                                  divide), :736 (code range), :770
+//                                  (codes_equal). All at unit tier, on a
+//                                  synthetic fixture.
+//   assertion 1, the p95 gates     synthesize-qwen3-tts-codec-encoder-golden,
+//                                  added in the same commit as this note. NOT
+//                                  interchangeable: it feeds the port the
+//                                  oracle's bfloat16 waveform and this feeds it
+//                                  the WAV. Deleting either leaves the CELL
+//                                  enforced and one of the two inputs unchecked.
+//   assertion 1, frames vs oracle  NOT MASKED. `icl->frames ==
+//                                  frames_from_oracle` is the only place the
+//                                  port's frame count meets upstream's own.
+//   assertion 2                    qwen3_tts_clone_real.cpp:611-619, the same
+//                                  finiteness/non-silence block with the same
+//                                  1e-4f constant. Only `channels_icl == 1` is
+//                                  unique here.
+//   assertion 3                    qwen3_tts_clone_real.cpp:511 -- and the rule
+//                                  is mode-independent (src/synthesize.cpp
+//                                  seeds after the CloneMode switch closes), so
+//                                  this is its ICL twin, not a second rule.
+//   assertion 4                    qwen3_tts_clone_real.cpp:624 AND
+//                                  qwen3_tts_base_load_real.cpp:514, the latter
+//                                  on a WEAKER registration guard. See the
+//                                  check.
+//   assertion 5                    qwen3_tts_profile_test.cpp:2448/:2491 (the
+//                                  reloaded grid), :1971 (the icl envelope's
+//                                  exact key set), :2531 (the x-vector writer
+//                                  refusing an ICL payload -- the D4 downgrade).
+//                                  All unit tier, synthetic package.
+//   assertion 6                    Masked BY CONSTRUCTION; see the check.
+//   assertion 7                    qwen3_tts_clone_real.cpp:549-573 and
+//                                  qwen3_tts_base_load_real.cpp:423 for the
+//                                  round trip; qwen3_tts_profile_test.cpp:1942
+//                                  and :2635 for the negative markers.
+//   the capability check           qwen3_tts_base_load_real.cpp:107 and
+//                                  qwen3_tts_voice_required_test.cpp:198, the
+//                                  latter needing no package at all.
+//
+// So what survives here as SOLE evidence is narrow and worth naming: the
+// oracle frame count, the WAV-input arm of the two p95 gates, and the fact
+// that all of it holds for the REAL package through the public seam at once.
+// That is a real contribution and it is not seven assertions' worth.
+//
+// NOTE ON THE INVERSION RECORD, which lives in this task's commit message and
+// not here: every line number in it is machine-emitted by re-running each
+// inversion against the FINAL tree and copying the binary's own `check failed`
+// line, the method Task 7's fix round settled on. The first record for this file
+// was transcribed by hand from a pre-final revision and every citation in it was
+// off by 8 or 21 lines. Do not hand-transcribe them, and do not put a line-number
+// table in this file either -- it would go stale the same way.
 //
 // WHAT THIS FILE DOES NOT CLAIM. That the ICL clone resembles the speaker, or
 // resembles them more closely than the x-vector clone does. That is a Quality
@@ -483,11 +569,13 @@ int main(int argc, char ** argv) {
     // build advertising the capability without this file's remaining six
     // assertions holding is not a passing configuration.
     //
-    // MASKED, and measured to be: reverting weights.cpp's assignment to
-    // UNSUPPORTED fails this line AND
-    // tests/qwen3_tts_base_load_real.cpp:107, which asserts the same
-    // enumerator. Deleting this line alone changes nothing that test does not
-    // already report.
+    // MASKED TWICE, and measured to be: reverting weights.cpp's assignment to
+    // UNSUPPORTED fails this line AND tests/qwen3_tts_base_load_real.cpp:107,
+    // which asserts the same enumerator on the same package -- AND
+    // tests/qwen3_tts_voice_required_test.cpp:198, at UNIT tier, which needs no
+    // 2.5 GB package at all and is therefore the strongest of the three.
+    // Deleting this line alone changes nothing either of them does not already
+    // report.
     SYNTH_TEST_CHECK(capabilities.reference_transcript == SYNTH_REQUIREMENT_OPTIONAL);
 
     // --- Assertion 1: the prepared ICL Profile, against the oracle.
@@ -521,6 +609,16 @@ int main(int argc, char ** argv) {
         // preparation: a transcript names the transcript-assisted mode, and a
         // Profile that came back meaning the other one would be the silent
         // downgrade the whole D4 ruling exists to prevent.
+        //
+        // MASKED, this line and the next four groups with it: assertion 1's
+        // whole STRUCTURAL half is already pinned at unit tier on a synthetic
+        // fixture -- tests/qwen3_tts_profile_test.cpp:698 (mode), :740 (ids),
+        // :725 (x-vector width), :733 (groups), :823/:827 (frames, including
+        // the ceiling divide), :736 (code range) and :770 (codes_equal). What
+        // this block adds over them is the REAL package and the oracle: the
+        // frame count against upstream's own grid, and the two p95 gates. Do
+        // not read the structural lines as evidence of anything the unit tier
+        // does not already decide.
         SYNTH_TEST_CHECK(icl->speaker.mode == synth::qwen3tts::CloneMode::Icl);
         SYNTH_TEST_CHECK(icl->reference_text_ids == reference_text_ids);
         SYNTH_TEST_CHECK(!icl->speaker.x_vector.empty());
@@ -612,6 +710,28 @@ int main(int argc, char ** argv) {
         // The recorded code agreement below moves for the same reason and by
         // the same mechanism: 796 of 1616 differ from the WAV where 760 differ
         // from waveform.f32.
+        //
+        // MASKED AS A CELL, NOT AS A COMPARISON. Since 2026-08-14 the same two
+        // cells are also enforced by synthesize-qwen3-tts-codec-encoder-golden,
+        // which runs the committed validator over the driver's dumps -- so
+        // deleting the two checks below leaves the published numbers with an
+        // enforcer, which they did not have before that test existed. They are
+        // not interchangeable: that gate feeds the port the oracle's
+        // bfloat16-rounded waveform and this one feeds it the WAV, which is the
+        // whole subject of the paragraph above, and only that gate covers
+        // `codec.chain` and the other two cases.
+        //
+        // SCOPE, and it is narrower than "the gate passes". The same tolerance
+        // file records at `gate_scope_warning` that the SEMANTIC cell FAILS on
+        // base-ref-max -- p95 0.3478 against this 2.0e-2 -- because the
+        // statistic enters the flipped-frame tail above roughly a 5% semantic
+        // flip rate, and that case sits at 5.33% where base-icl-en sits at
+        // 3.96%. That was measured and knowingly left standing (021c799): it is
+        // not a port defect, since the port agrees with upstream-f32 on
+        // 100.000% of code decisions there. But it means the two lines below
+        // enforce a bound that is conditional on the reference's flip rate,
+        // demonstrated on ONE case, and a reader must not take "enforced" for
+        // "enforced over the reference lengths this family accepts".
         const size_t projected = size_t(encoding.projected);
         SYNTH_TEST_CHECK(projected > 0);
         SYNTH_TEST_CHECK(encoding.reconstruction.size() == 2u * size_t(icl->frames) * projected);
@@ -627,6 +747,13 @@ int main(int argc, char ** argv) {
         }
         SYNTH_TEST_CHECK(oracle_reconstruction.size() == encoding.reconstruction.size());
 
+        // Written unconditionally for POST-MORTEM INSPECTION, and read by
+        // nothing -- the same role tests/qwen3_tts_clone_real.cpp's own
+        // `x_vector.f32` write plays, and named as such so the next reader does
+        // not hunt for a consumer. It is what makes a p95 failure below
+        // diagnosable at all: the two figures printed are summary statistics
+        // over 101 frames, and locating a failure needs the frames. ~207 KB per
+        // run, into the build tree's fixtures directory.
         SYNTH_TEST_CHECK(write_f32(scratch_dir + "/rvq_reconstruction.f32", encoding.reconstruction));
 
         const size_t branch_stride = size_t(icl->frames) * projected;
@@ -702,10 +829,22 @@ int main(int argc, char ** argv) {
     }
     // Well below any plausible speech amplitude: this only needs to catch exact
     // or near-exact digital silence, not bound loudness.
+    //
+    // MASKED: tests/qwen3_tts_clone_real.cpp:611-619 runs the same
+    // finiteness/non-silence block over an ICL Profile built from this same
+    // clip, down to the same 1e-4f constant. The only line above with no twin
+    // there is `channels_icl == 1`.
     constexpr float kNonSilentThreshold = 1e-4f;
     SYNTH_TEST_CHECK(max_abs_icl > kNonSilentThreshold);
 
     // --- Assertion 3: the same Profile and seed reproduce identical PCM.
+    //
+    // MASKED, and the rule is not even mode-specific: the seed is resolved in
+    // src/synthesize.cpp AFTER the CloneMode switch closes, so this is the ICL
+    // twin of tests/qwen3_tts_clone_real.cpp:511 rather than a second rule.
+    // What it is load-bearing FOR is the two comparisons below it -- assertion
+    // 4's inequality and assertion 5's identity mean nothing unless repetition
+    // is already known to be exact.
     std::vector<float> pcm_icl_repeat;
     uint32_t           channels_icl_repeat = 0;
     uint32_t           rate_icl_repeat     = 0;
@@ -725,19 +864,34 @@ int main(int argc, char ** argv) {
     // can move a sample, so a dispatch that dropped either field would
     // reproduce the x-vector run exactly.
     //
-    // MASKED, and measured to be, which corrects the plan's own wording that
-    // "nothing else in this plan sees that from the outside". Deleting the
-    // three assignments in src/synthesize.cpp's CloneMode::Icl arm fails this
-    // line AND tests/qwen3_tts_clone_real.cpp:624 -- Task 11 added an
-    // equivalent ICL-against-x-vector differential there as a stopgap, in the
-    // x-vector plan's own gate, because this file did not exist yet, and its
-    // own comment says so. Both were run under the deletion on 2026-08-14 and
-    // both failed. Deleting THIS check alone changes nothing that test does
-    // not already report; what this file adds around it is the oracle anchor
-    // in assertion 1 and the envelope checks in assertions 5 and 7, none of
-    // which clone-real makes. If clone-real's assertion 7 is ever retired now
-    // that the ICL path has its own end-to-end gate, this becomes the sole
-    // owner of the claim -- retire it there, not here.
+    // MASKED BY TWO OTHER TESTS, which corrects the plan's own wording that
+    // "nothing else in this plan sees that from the outside" -- true when
+    // written, falsified by the plan's own later work. Deleting the three
+    // assignments in src/synthesize.cpp's CloneMode::Icl arm fails this line
+    // AND:
+    //
+    //   * tests/qwen3_tts_clone_real.cpp:624, an equivalent ICL-against-
+    //     x-vector differential Task 11 added as a stopgap inside the x-vector
+    //     plan's own gate, because this file did not exist yet; and
+    //   * tests/qwen3_tts_base_load_real.cpp:514
+    //     (`check_transcript_selects_icl_mode`), whose own header at :396-401
+    //     names this exact deletion -- "dropping either
+    //     `family_request.reference_codes` or `family_request.reference_text_ids`
+    //     at the seam is what it catches".
+    //
+    // The second is the STRONGER masker and was missed by the first audit here:
+    // base-load-real registers on the package alone (tests/CMakeLists.txt),
+    // while clone-real additionally needs the oracle x-vector sentinel, so
+    // there are checkouts where clone-real is absent and base_load_real:514
+    // still fires. An earlier revision of this comment predicted that retiring
+    // clone-real's assertion 7 would leave this line the sole owner of the
+    // claim. THAT WAS WRONG and is corrected here rather than left for someone
+    // to act on: base_load_real:514 would own it. Retire nothing on that
+    // premise.
+    //
+    // Found by searching the other qwen3-tts tests for the property, not by
+    // inversion -- an inversion tells you the check fires, never that another
+    // file's check fires too unless you also run that file.
     std::vector<float> pcm_x_vector;
     uint32_t           channels_x_vector = 0;
     uint32_t           rate_x_vector     = 0;
@@ -750,9 +904,17 @@ int main(int argc, char ** argv) {
     // Both durations, on the record. They are the quantity Task 11 showed to be
     // observable-but-never-detected -- a one-frame codec-track rotation moves
     // the ICL figure and no assertion in this file reads it (see the header).
-    // Printed rather than asserted, deliberately: the same input at different
-    // seeds gives either near-zero output or the 2048-frame runaway, so a frame
-    // count is not an expected value this suite may pin.
+    //
+    // Printed rather than asserted because THE VALUE IS BUILD-DEPENDENT, which
+    // the header records as a measurement: Release gives 24,960 here and
+    // RelWithDebInfo gives 48,000, from the same package, clip, transcript,
+    // text, seed, backend and (swept 1/2/4/8/20) thread count, each
+    // reproducible on re-run. It is the autoregressive stop decision that
+    // moves. An earlier revision of this comment gave a different reason -- a
+    // seed sweep collapsing to 4-12 frames or running away -- which was
+    // measured at 375 LOOPED reference frames against a mismatched transcript
+    // and does not describe this configuration at all; at the 101 matched
+    // frames used here the recorded spread is a stable 45/53/48/57/55.
     std::fprintf(stderr, "qwen3-tts-icl-real: PCM frames -- icl %zu (%.4f s), x-vector %zu (%.4f s)\n", pcm_icl.size(),
                  double(pcm_icl.size()) / double(rate_icl), pcm_x_vector.size(),
                  double(pcm_x_vector.size()) / double(rate_x_vector));
@@ -769,6 +931,16 @@ int main(int argc, char ** argv) {
     // D4 exists to prevent. A PCM comparison cannot see that (it would compare
     // an x-vector run against an x-vector run); the kind and the two ICL-only
     // tensors can.
+    //
+    // MASKED at unit tier, on a synthetic package:
+    // tests/qwen3_tts_profile_test.cpp:2448 and :2491 pin the reloaded grid
+    // (the latter through the same production `codes_equal`), :1971 pins the
+    // icl envelope's exact emitted key set, and :2531 pins the writer half of
+    // the downgrade defect directly -- the x-vector writer refusing an ICL
+    // payload. What this block adds is that all of it holds for a Profile
+    // prepared from real reference audio against the real package, and that
+    // the reloaded Profile still SYNTHESIZES to the same samples, which no
+    // unit-tier check can reach.
     synth_byte_buffer_t * icl_bytes = nullptr;
     SYNTH_TEST_CHECK(serialize_profile(icl_profile, icl_bytes));
     {
@@ -812,12 +984,27 @@ int main(int argc, char ** argv) {
     // The half that a future writer change cannot compensate for is pinned at
     // the unit tier, where tests/qwen3_tts_profile_test.cpp holds 800 bytes
     // produced by the PLAN 2 WRITER at commit 50912d9 and runs only the reader
-    // over them. This tier adds the half that needs the real package: that the
-    // ICL kind's arrival did not put ICL keys or ICL tensors into an x-vector
-    // envelope, and that such an envelope still synthesizes against a real
-    // 2.5 GB Model. Neither is expressible on the synthetic fixture, and the
-    // committed byte array cannot be regenerated for this package without a
-    // Plan 2 build.
+    // over them.
+    //
+    // MASKED, AND AN EARLIER REVISION OF THIS COMMENT CLAIMED NOVELTY IT DOES
+    // NOT HAVE. It said this tier adds "that such an envelope still synthesizes
+    // against a real 2.5 GB Model". It does not: tests/qwen3_tts_clone_real.cpp
+    // :549 (serialize), :555 (free), :563 (load from memory) and :570-573
+    // (synthesize and byte-compare against the pre-serialization PCM) is
+    // exactly that sequence on a real-package x-vector Profile, and
+    // tests/qwen3_tts_base_load_real.cpp:423 covers the round trip a third
+    // time. The claim is corrected rather than deleted, because the block does
+    // have one:
+    //
+    // THE NEGATIVE MARKERS are what is close to unique here -- that the ICL
+    // kind's arrival did not put ICL keys or ICL tensors into an x-vector
+    // envelope. Even those are reached at unit tier from the other side:
+    // tests/qwen3_tts_profile_test.cpp:1942 pins the x-vector writer's emitted
+    // key set by exact equality, and :2635 refuses an x-vector envelope
+    // declaring three tensors. What is left over is that the equality holds for
+    // an envelope written from REAL reference audio against the real package's
+    // own compatibility id, which is the only input a synthetic fixture cannot
+    // supply. Small, real, and not what the earlier comment said.
     synth_byte_buffer_t * x_vector_bytes = nullptr;
     SYNTH_TEST_CHECK(serialize_profile(x_vector_profile, x_vector_bytes));
     {

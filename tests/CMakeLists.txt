@@ -1236,6 +1236,77 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             TIMEOUT 3600)
     endif()
 
+    # The codec encoder's stage-wise gate: all three thresholds Task 12
+    # committed, over the three cases they were calibrated on.
+    #
+    # UNTIL THIS EXISTED THEY WERE INERT. scripts/validate-qwen3-tts-codec_encoder.py
+    # computes `codec.chain`, `codec.rvq_reconstruction.semantic` and
+    # `codec.rvq_reconstruction.acoustic`, and nothing invoked it -- it was the
+    # only unregistered validator in the tree, while every validate-vits-*,
+    # both validate-omnivoice-* and the other two validate-qwen3-tts-* scripts
+    # are CTest tests. `synthesize-tolerance-coverage`, the one thing Task 12
+    # did register, asserts that a cell and a same-named validator script both
+    # exist and never runs one, so it was structurally incapable of noticing
+    # that its own cells had no enforcer. `codec.chain` -- the primary gate,
+    # and the only one of the three independent of the two float32 codebook
+    # tables being bit-identical by construction -- had no consumer of ANY kind
+    # until this line; synthesize-qwen3-tts-icl-real covers the other two from
+    # the other end (a Voice Profile prepared from the WAV rather than the
+    # oracle's bfloat16-rounded waveform), and the two enforcements are
+    # deliberately not interchangeable -- see that test and the tolerance
+    # file's `registered_consumer` block.
+    #
+    # Guarded on THREE artifacts, all of them deliberately uncommitted, so an
+    # unmaterialized dump is a MISSING test rather than a passing one: the
+    # package, the oracle's own `codec_encoder` dump (which supplies both the
+    # reference AND the driver's input -- `waveform.f32`, never a WAV), and the
+    # upstream-float32 re-run, which is the half `codec.chain` actually gates.
+    # Without the third the validator can still compare port against oracle,
+    # but the comparison it exists for -- two float32 arithmetics, where a
+    # defect in this port would live -- is unavailable, so the gate is not
+    # registered at all rather than registered in a weaker form.
+    set(_synth_qwen3_tts_codec_upstream_root
+        "${CMAKE_SOURCE_DIR}/build/qwen3-tts-codec-encoder-f32")
+    set(_synth_qwen3_tts_codec_cases base-icl-en base-ref-min base-text-short)
+    set(_synth_qwen3_tts_codec_ok TRUE)
+    if(NOT EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}")
+        set(_synth_qwen3_tts_codec_ok FALSE)
+    else()
+        foreach(_synth_qwen3_tts_codec_case IN LISTS _synth_qwen3_tts_codec_cases)
+            foreach(_synth_qwen3_tts_codec_probe
+                    "${_synth_qwen3_tts_icl_prompt_root}/${_synth_qwen3_tts_codec_case}/codec_encoder/waveform.f32"
+                    "${_synth_qwen3_tts_icl_prompt_root}/${_synth_qwen3_tts_codec_case}/codec_encoder/rvq_reconstruction.f32"
+                    "${_synth_qwen3_tts_codec_upstream_root}/${_synth_qwen3_tts_codec_case}/codec_encoder/rvq_reconstruction.f32")
+                if(NOT EXISTS "${_synth_qwen3_tts_codec_probe}")
+                    set(_synth_qwen3_tts_codec_ok FALSE)
+                endif()
+            endforeach()
+        endforeach()
+    endif()
+    if(_synth_qwen3_tts_codec_ok)
+        if(NOT SYNTH_UV_EXECUTABLE)
+            find_program(SYNTH_UV_EXECUTABLE uv REQUIRED)
+        endif()
+        string(REPLACE ";" "," _synth_qwen3_tts_codec_case_arg "${_synth_qwen3_tts_codec_cases}")
+        add_test(NAME synthesize-qwen3-tts-codec-encoder-golden
+            COMMAND ${CMAKE_COMMAND}
+                -DSYNTH_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+                -DSYNTH_MODEL=${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}
+                -DSYNTH_DRIVER=$<TARGET_FILE:synthesize-qwen3-tts-codec-encoder-driver>
+                -DSYNTH_ORACLE_ROOT=${_synth_qwen3_tts_icl_prompt_root}
+                -DSYNTH_UPSTREAM_F32_ROOT=${_synth_qwen3_tts_codec_upstream_root}
+                -DSYNTH_OUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-codec-encoder
+                -DSYNTH_UV_EXECUTABLE=${SYNTH_UV_EXECUTABLE}
+                -DSYNTH_CASES=${_synth_qwen3_tts_codec_case_arg}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/check-qwen3-tts-codec-encoder.cmake)
+        set_tests_properties(synthesize-qwen3-tts-codec-encoder-golden PROPERTIES
+            LABELS "integration;qwen3-tts;golden"
+            # Three driver runs -- each one loads the ~2.5 GB package and runs
+            # the encoder graph twice over an 8-second clip -- then one numpy
+            # pass over 33 taps per case.
+            TIMEOUT 1800)
+    endif()
+
     # The Base variant's two standalone speaker-path validator modes. Both
     # drivers were built by synth_register_integration_target and then invoked
     # by nothing: that function only appends to the check target's build list,

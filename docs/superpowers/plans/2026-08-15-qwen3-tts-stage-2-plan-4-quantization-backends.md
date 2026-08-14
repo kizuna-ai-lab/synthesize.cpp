@@ -20,7 +20,7 @@ Concretely:
 - A redesigned semantic reconstruction statistic, because the one Plan 3 handed over fails a legitimate case and its failure is a property of the statistic (carry-over §1.3).
 - CUDA placement for the two new graphs, or the measured decision not to place them, plus the tolerance cells and the performance and memory figures — each figure naming its build.
 - The first ICL listening audit.
-- Staged ship artifacts: a Hugging Face card specification, a `docs/models/` page, a `docs/quantization.md` section for this family, and the family-record and spec updates.
+- Staged ship artifacts: a Hugging Face card specification, the family's first `docs/models/` page, a `docs/quantization.md` section for this family, and the family-record and spec updates.
 
 ## What Plan 4 does NOT deliver
 
@@ -49,6 +49,8 @@ synthesize-quantize: unknown qwen3-tts tensor: speaker_encoder.asp.conv.bias
 Exit 1, and the same for `--quant Q8_MIXED`. **No output file is produced.** (`build/` had `SYNTH_BUILD_TOOLS:BOOL=OFF`, so the tool had never been built in this worktree; reconfiguring with `-DSYNTH_BUILD_TOOLS=ON` is a prerequisite of Task 6 and not a repository change.)
 
 **Worse: the runtime already has an opinion, and it contradicts the tool.** `src/arch/qwen3-tts/catalog.cpp:134` splits halves on `name.compare(0, 6, "codec.") == 0`. So `codec.encoder.*` lands in `Half::Codec` → F32 under every profile, which is consistent. But `speaker_encoder.*` lands in `Half::Talker`, and `Resolver::conv` passes `Role::Matrix` for the weight (`catalog.cpp:100-104`) — so under `F16` the runtime **expects 38 `speaker_encoder.*` convolution weights to be F16**, and under `Q8_MIXED` **Q8_0**, for a package the tool refuses to produce. That is precisely the drift the comment at `catalog.cpp:31-35` says the role/name split exists to prevent: *"the quantizer classifies by name and the two must not drift apart."*
+
+**And the disagreement is about shape as well as type, which is the half that decides whether Task 8 has an input at all.** `Q8_MIXED`'s `matrix_weight_layout` is `TensorLayout::PackedMatrix` (`policy.cpp:49-50`). `quantize.cpp:210-215` demotes a `matrix_family` tensor back to `Native` **only** when `ggml_n_dims(tensor) < 3`, and a speaker-encoder convolution weight is three-dimensional `{kernel, in, out}` — so it stays packed, and `quantize.cpp:222-229` rewrites the emitted shape to `{ne[0] * ne[1], ne[2], 1, 1}` at `n_dims = 2`. `speaker_encoder.blocks.0.conv.weight` `{5, 128, 512}` would be written `{640, 512}`. The runtime resolves it **unpacked**: `Resolver::conv` calls `find(prefix + ".weight", { kernel, in, out }, Role::Matrix)` (`catalog.cpp:100-104`) and `find` compares axis by axis (`catalog.cpp:73-81`) — `ne[0]` 640 against a wanted 5 is a hard refusal. **qwen3-tts has no packed-shape branch; kokoro does** (`src/arch/kokoro/catalog.cpp:90-102`, `const int64_t packed = want[0] * want[1]`), which is what establishes this as a real gap rather than something handled generically. `F16`'s layout is `Native` (`policy.cpp:42`), so **an F16 cut cannot exercise any of this** — a green F16 load says nothing about `Q8_MIXED`. Task 6 carries both halves of the reconciliation and proves them on the layout that would break.
 
 **Task 6 has to close this, and it must say which of the two is right rather than making them agree by fiat.** Both directions are available and neither is obviously correct; the task states three outcomes and measures.
 
@@ -83,7 +85,7 @@ Plan 3's instruction: *"the statistic needs redesign — gate the flip rate sepa
 
 **5.20e-3 is ~1.33 bf16 units** (bf16 unit roundoff 2^-8 = 3.90625e-3, carry-over `:226-228`). Three consequences:
 
-- It is **~56× the committed `codec.chain` gate of 1.0e-3**. A `codec_encoder` cell under `backends.CUDA` cannot reuse the CPU threshold — the chain gate would fail a correct CUDA run by construction.
+- It is **5.2× the committed `codec.chain` gate of 1.0e-3** (`tests/tolerances/qwen3-tts.json:411`), and **~56× the `9.303e-05` that gate actually clears on CPU** (`:412`). **The two ratios are different quantities and only the first bounds a threshold** — 5.2× is what says a correct CUDA run fails the CPU gate by construction; 56× is what says the disagreement sits far outside the port's own measured scale. A `codec_encoder` cell under `backends.CUDA` therefore cannot reuse the CPU threshold.
 - It is **bigger than the input rounding the WAV-input arm already spends** (2.954e-03 on the waveform, 0.76 of one bf16 unit, `tests/tolerances/qwen3-tts.json:668`), so it is not absorbable inside existing headroom.
 - It is **directly a flip driver**: the RVQ argmin is a nearest-neighbour decision, and a 1.33-bf16-unit perturbation of the latent is larger than the codebook perturbation the spec's fourth erratum measured (mean relative 2.28e-3 to 2.52e-3, max 1.06e-2, `spec:395`), which alone flips 4.04–12.73% of codes. **A CUDA codec encoder should be expected to change codes**, and the 5% cliff would be crossed by the backend change alone on some cases.
 
@@ -95,7 +97,7 @@ Plan 3's instruction: *"the statistic needs redesign — gate the flip rate sepa
 
 - **Spec:** `docs/superpowers/specs/2026-08-11-qwen3-tts-stage-2-design.md`, §7 and §10, **including its five errata** (three added 2026-08-12, a fourth 2026-08-13, a fifth 2026-08-15 — `spec:3-18`). The fourth erratum's generalized rule governs everything this plan measures on the codec encoder (`spec:495-498`): *"where the port's arithmetic is deliberately more precise than the oracle's, the discrete output of a rounding-sensitive decision is not a gate — the continuous quantity it was rounded from is."* **The fifth erratum (`spec:443-456`) fires here**: the `278` table-alone divergence count *"was never reproduced, and no superseding value exists… Treat `278` as unverified rather than as a measurement, and re-measure the table-alone contribution before a later rung reasons from it."* Plan 4 is that later rung; Task 16 owns it, and no task may cite `278` as a measurement.
 - Carry-over ledger: `docs/superpowers/plans/2026-08-14-qwen3-tts-stage-2-plan-3-carryover.md`. Structural template: `docs/superpowers/plans/2026-08-13-qwen3-tts-stage-2-plan-3-icl-path.md`.
-- **Published packages stay byte-identical.** CustomVoice is live at `jiangzhuo9357/qwen3-tts-12hz-0-6b-customvoice-gguf` (created 2026-07-28, updated 2026-07-29) carrying BF16, F16 and Q8_MIXED, with digests pinned in `scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml:171-193` — BF16 `01dfad52dd507c26a14d101c4247d375257aa63b07e62706ec3daa0a33ea515d` (2,274,117,280 bytes, 657 tensors, 402 BF16 + 255 F32), F16 `f79ada91…` (266 F16 + 391 F32), Q8_MIXED `d1f9be7b…`. **The profile *names* `F16`, `Q8_MIXED` and `Q5_K_MIXED` are a public contract with already-shipped packages and cannot move** (`policy.cpp:29-35`). Any task that changes `policy.cpp` re-cuts all three CustomVoice packages and proves the digests unchanged; any task that changes `catalog.cpp:expected_type` proves the three published packages still load. The Base package's Profile Compatibility ID `34d4de22a329b6bc8347cb952b6fa16513320012628598ab59743679cc16806e` is unchanged or the change is that task's headline.
+- **Published packages stay byte-identical.** CustomVoice is live at `jiangzhuo9357/qwen3-tts-12hz-0-6b-customvoice-gguf` (created 2026-07-28, updated 2026-07-29) carrying BF16, F16 and Q8_MIXED, with digests pinned in `scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml:171-193` — BF16 `01dfad52dd507c26a14d101c4247d375257aa63b07e62706ec3daa0a33ea515d` (2,274,117,280 bytes, 657 tensors, 402 BF16 + 255 F32), F16 `f79ada91…` (266 F16 + 391 F32), Q8_MIXED `d1f9be7b…`. **The profile *names* `F16`, `Q8_MIXED` and `Q5_K_MIXED` are a public contract with already-shipped packages and cannot move** (`policy.cpp:29-35`). Any task that changes `policy.cpp` re-cuts all three CustomVoice packages and proves the digests unchanged; any task that changes `catalog.cpp`'s `expected_type` **or `Resolver::find`'s shape check** proves the three published packages still load — the shape check is on every tensor of every package, so a packed branch added for the Base package's convolutions is a change to CustomVoice's load path whether or not any CustomVoice tensor takes it. The Base package's Profile Compatibility ID `34d4de22a329b6bc8347cb952b6fa16513320012628598ab59743679cc16806e` is unchanged or the change is that task's headline.
 - **`ggml/` is a submodule and cannot carry a local change.** An edit vanishes at the next `git submodule update`. If a backend measurement wants a kernel ggml does not have, the answer is a different upstream operator, not a patched kernel — that is what emptied this project's patch set (`ggml-patches/README.md`), and other GGML TTS ports are worth reading first.
 - **Every test this plan writes must be load-bearing, proved by inverting the rule under it — and the inversion must name the dimension it perturbs.** The standing procedure (green → delete or invert the rule → confirm failure → restore → record in the commit message) is necessary and **not sufficient**. Plan 3 found two classes it structurally cannot see (carry-over §2.3): **mutual masking**, where deleting either check of a pair changes nothing (five pairs found, four in `src/arch/qwen3-tts/profile.cpp` and one at the request seam), and **inversion sets that all perturb one dimension** — Task 6 of Plan 3 shipped eight inversions that *all* changed the token sequence's length and none of which exercised the element-wise off-by-one the task existed to prevent. **Ask which dimension each inversion perturbs, not how many there are**, and span at least four of kind/presence/value/order/length. `tests/qwen3_tts_profile_test.cpp:436-453` and `:2199-2275`, and `tests/qwen3_tts_codec_encoder_test.cpp:717-732`, are the three in-tree lists that do this correctly.
 - **A standing hazard at one of those files:** the node-count assertion in `tests/qwen3_tts_codec_encoder_test.cpp` masks seven inversions' failure signals, all enumerated in the file with their isolated results (445 whole-frame and 449 ragged are both pinned, because the replicate pad grows 4 nodes when `extra_padding` ≠ 0). **Read that enumeration before adding an assertion there.**
@@ -105,6 +107,7 @@ Plan 3's instruction: *"the statistic needs redesign — gate the flip rate sepa
   cmake --build build-sanitize --target synthesize-check-unit
   ```
 - **`scripts/ci/clang-format.sh --check-diff origin/main` only checks TRACKED files.** Run it *after* `git add`. Plan 1's Task 10 shipped 8 violations by running it before.
+- **The two Python coverage gates run in the VITS environment, not this family's, and this plan invokes them through CTest.** `tests/CMakeLists.txt:139-147` registers `synthesize-golden-manifest-contract` and `:169-175` registers `synthesize-tolerance-coverage`, both `--project ${CMAKE_SOURCE_DIR}/scripts/envs/vits`, with the reason stated in the file: *"the VITS environment currently owns the repository's locked Python tooling; the test itself is not VITS-specific"*. `scripts/envs/qwen3-tts/` is the oracle environment and holds only `pyproject.toml` and `uv.lock`. Running these gates out of it either diverges from what CTest runs or fails to resolve. **Invoke them by CTest name, never by a hand-written `uv run` line** — the registered `synthesize-tolerance-coverage` also bundles `tests.python.test_tolerance_coverage_inversion`, which a hand-written invocation drops. Both register only when the tree is configured `-DSYNTH_BUILD_PYTHON_TESTS=ON`, which Task 1 Step 0 does.
 - **Every performance number names its build, and so does every generated frame count.** The `dev-*` presets inherit `RelWithDebInfo`, so ggml-cpu compiles at `-O2 -g -DNDEBUG` against a plain `Release` tree's `-O3 -DNDEBUG -mcpu=native`; `-O2` measured **2.19× slower** (`docs/testing.md:438-443`). The rule (`:455-467`): *"a `dev-*` preset … proves correctness — functional behavior, placement, token/tensor agreement — never wall-clock time."* Performance figures come from a `Release`-typed tree — the committed `rel-dgx-spark` preset, or the plain `cmake -S . -B build` default on a CPU-only host. `rel-dgx-spark` is a measurement tree, **not** a registered CI gate (`:479-483`). And the same rule applies to output *content*: identical input, seed and backend, threads swept 1/2/4/8/20 with no movement, but **Release gives 24,960 PCM frames and RelWithDebInfo gives 48,000**, each reproducible (carry-over §4). **No frame count may be pinned or quoted without naming its build.** This plan will therefore be looking at two different outputs of the same code, by design.
 - **`docs/backends.md`'s six gates apply to any backend claim** (`:486-497`): same cases as CPU; match reference and CPU tensors within tolerance; finite correctly shaped PCM; 12–32 cases; **prove actual device placement** and report latency, RTF and peak memory; repeated-run and resource-cleanup checks. And `:499-501`: *"Performance measurement is **required** for support, but no minimum speedup is."*
 - **Gate baseline.** The carry-over records the branch-end state as unit and sanitizer both **98% of 101**, with exactly two known pre-existing failures — `synthesize-python-api-wheel-test` and `synthesize-vits-python-unit`, both on gitignored VITS artifacts — and qwen3-tts integration **14/14** (carry-over §4). **A further eight VITS integration failures are reported as pre-existing at this plan's commissioning and are recorded nowhere in the tree.** Do not assume the number. **Task 1 Step 0 establishes the actual baseline by running both gates and writing the observed failure list into the task's commit message**; after that, any failure outside the recorded list is yours.
@@ -132,16 +135,19 @@ Plan 3's instruction: *"the statistic needs redesign — gate the flip rate sepa
 | `scripts/validate-qwen3-tts-replay.py` | modify | Pass the trim through `run_compare_x_vector`; widen `replay` once it can |
 | `tools/synthesize-quantize/policy.cpp` | modify | `classify_qwen3_speaker_encoder` and the `codec.encoder.*` arm; the resolver's new roles |
 | `tests/qwen3_tts_quantization_policy_test.cpp` | modify | The 237 new names, by name, with role inversions |
-| `src/arch/qwen3-tts/catalog.cpp` | modify | `expected_type` reconciled with the quantizer — **only if Task 6 rules that way** |
+| `src/arch/qwen3-tts/catalog.cpp` | modify | `expected_type` **and, for a packed layout, `Resolver::find`'s shape check** reconciled with the quantizer — **only if Task 6 rules that way** |
 | `tests/tolerances/qwen3-tts.json` | modify | Five cells: base/F16/CPU, base/Q8_MIXED/CPU, base/BF16/CUDA, base/F16/CUDA, and base/BF16/CPU `public` |
 | `src/arch/qwen3-tts/model.cpp` | modify | A twin pass for the new graphs, with its own prefix — **only if Task 12 rules that way** |
 | `src/arch/qwen3-tts/speaker-encoder-host.cpp`, `codec-encoder-host.cpp` | modify | The hard-wired `create_cpu_scheduler` becomes a plan decision — same condition |
 | `tests/CMakeLists.txt` | modify | `_synth_qwen3_tts_codec_upstream_root` gains an override; new tests registered |
 | `scripts/hf_cards/qwen3-tts-12hz-0-6b-base.yaml` | create | Does not exist for this variant |
+| `docs/models/qwen3-tts-12hz-0-6b-base.md` | create | The family's **first** `docs/models/` page; nearest analogue is `omnivoice-0-6b.md` |
 | `docs/quantization.md` | modify | This family has **no section at all** in it today |
 | `docs/backends.md` | modify | The Base variant's placement result, whichever way it lands |
 | `docs/porting/families/qwen3-tts.md` | modify | Record Stage 2 Plan 4 |
 | `docs/superpowers/specs/2026-08-11-qwen3-tts-stage-2-design.md` | modify | The fifth erratum's re-measurement |
+| `CLAUDE.md` | modify | Line 43's stale `SYNTH_CUDA_TF32=OFF` claim (Task 16) |
+| `scripts/dump_reference_qwen3_tts_codec_encoder.py` | modify | Line 984's stale "101 frames at most" string — the only editable source of it (Task 16) |
 
 ---
 
@@ -161,12 +167,12 @@ Base's reference stage set is **{`public`, `replay`, `codec_encoder`}**, so **ev
 | base / BF16 / CPU / `public` | — | **placeholder**: `checks: 0`, `all_passed: null` at `tests/tolerances/qwen3-tts.json:333-338` | Task 5 |
 | base / **F16** / CPU | `public`, `replay`, `codec_encoder` | absent | Task 7 |
 | base / **Q8_MIXED** / CPU | `public`, `replay`, `codec_encoder` | absent | Task 8 |
-| base / BF16 / **backends.CUDA** | `public`, `replay`, `codec_encoder` | absent | Task 13 |
-| base / F16 / **backends.CUDA** | `public`, `replay`, `codec_encoder` | absent | Task 13 |
+| base / BF16 / **backends.CUDA** | `public`, `replay`, `codec_encoder` | absent | Task 13, **only if Task 12 placed the graphs** — the sub-grid is all-or-nothing |
+| base / F16 / **backends.CUDA** | `public`, `replay`, `codec_encoder` | absent | Task 13, same condition |
 
 The placeholder at `:333-338` says what it is, in its own words: *"PROVISIONAL placeholder, not yet measured… `checks: 0` and `all_passed: null` are deliberately not customvoice's `8`/`true` -- copying those would claim a result that has never happened."* Replacing it is a real run of `scripts/validate-qwen3-tts-public.py`, not a copy of CustomVoice's numbers.
 
-**Validator support, as it stands.** `scripts/validate-qwen3-tts-replay.py` already takes `--profile` (default BF16), `--backend` (default CPU) and `--stage`, and resolves through `resolve_tolerance_stage(...)` (`:41-70`, `:99-101`), reading `backends` for anything that is not CPU (`:69`) — so `replay` cells are fillable today. `scripts/validate-qwen3-tts-codec_encoder.py` takes `--variant`, `--profile` and `--stage` (`:372-374`) but **no `--backend`**, and `load_gates` (`:315-334`) indexes straight through `profiles[profile]["stages"][stage]["probes"]` with no `backends` step. Task 11 adds that coordinate. The family's validator set is exactly {`codec_encoder`, `public`, `replay`}, so **adding any new stage name would also need a new validator** (`test_tolerance_coverage.py:160-213`) — this plan adds none.
+**Validator support, as it stands.** `scripts/validate-qwen3-tts-replay.py` already takes `--profile` (default BF16), `--backend` (default CPU) and `--stage`, and resolves through `resolve_tolerance_stage(...)` (`:41-70`, `:99-101`), reading `backends` for anything that is not CPU (`:69`) — so `replay` cells are fillable today. `scripts/validate-qwen3-tts-public.py` takes `--backend` too, but **spelled lowercase** (`:59`, `choices=("cpu", "cuda")`) because it passes the value straight to the runner (`:69`); it uppercases only when writing the report's `backend` field (`:150`). The grid keys `CPU`/`CUDA`, and `resolve_tolerance_stage` compares uppercased — so the two spellings meet correctly at the report, and any new code that reads `--backend` against the grid uppercases first rather than assuming the CLI spelling. `scripts/validate-qwen3-tts-codec_encoder.py` takes `--variant`, `--profile` and `--stage` (`:372-374`) but **no `--backend`**, and `load_gates` (`:315-334`) indexes straight through `profiles[profile]["stages"][stage]["probes"]` with no `backends` step. Task 11 adds that coordinate. The family's validator set is exactly {`codec_encoder`, `public`, `replay`}, so **adding any new stage name would also need a new validator** (`test_tolerance_coverage.py:160-213`) — this plan adds none.
 
 ---
 
@@ -215,8 +221,8 @@ Adding a manifest case moves `variants["qwen3-tts-12hz-0-6b-base"].case_count` (
 - [ ] **Step 5: Run the coverage tests and commit**
 
 ```bash
-uv run --project scripts/envs/qwen3-tts --locked python -m unittest \
-  tests.python.test_golden_manifests tests.python.test_tolerance_coverage -v
+ctest --test-dir build --output-on-failure \
+  -R '^synthesize-golden-manifest-contract$|^synthesize-tolerance-coverage$'
 git add tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json tests/tolerances/qwen3-tts.json
 git commit -m "qwen3-tts: a second reference recording, so the flip-rate data is not one clip"
 ```
@@ -241,15 +247,25 @@ The commit message carries the observed gate baseline from Step 0, the new case'
 
 - [ ] **Step 2: Commit one fixture, consumed twice**
 
-`tests/fixtures/qwen3-tts/percentile-cross-check.json` carries input vectors and the expected percentile for each, generated once by numpy and committed. It must include the cases where linear interpolation actually bites: n not congruent to 1 mod 20 (so the 95th percentile falls between two samples), n = 1, n = 2, ties, a vector whose values span several orders of magnitude, and one drawn from a real per-frame relative array so the fixture is not purely synthetic.
+`tests/fixtures/qwen3-tts/percentile-cross-check.json` carries input vectors and the expected percentile for each, generated once by numpy and committed. It must include the cases where linear interpolation actually bites: n not congruent to 1 mod 20 (so the 95th percentile falls between two samples), n = 1, n = 2, ties, a vector whose values span several orders of magnitude, and one drawn from a real per-frame relative array so the fixture is not purely synthetic. It also declares its own entry count, so a test cannot pass by consuming fewer entries than were committed.
+
+**And it carries one entry a level up: a `{frames, projected}` port/oracle pair with the expected p95 of the whole statistic**, not only of the percentile. `reconstruction_p95_relative` is not just `percentile_linear` — it divides each frame's L2 deviation by the **oracle** frame's own norm (`tests/qwen3_tts_icl_real.cpp:386-400`; `scripts/validate-qwen3-tts-codec_encoder.py:253-259`, where `relative = per_frame / norms` and `norms` is the *right* operand's). Operand order is load-bearing there and invisible to a fixture of pre-computed arrays — and Task 3 is about to change that function, not merely the percentile inside it.
 
 - [ ] **Step 3: Two tests, one fixture**
 
-`tests/qwen3_tts_percentile_test.cpp` (registered under `unit`) and `tests/python/test_percentile_agreement.py` each read the same file and each assert against the same expected values. A test that recomputes the expectation with the implementation it is testing proves nothing; the fixture is the third party.
+`tests/qwen3_tts_percentile_test.cpp` (registered under `unit`) and `tests/python/test_percentile_agreement.py` each read the same file and each assert against the same expected values — **both the percentile entries and the port/oracle entry, each side computing with its own implementation** (the C++ header from Step 1; the validator's own numpy expression on the Python side). A test that recomputes the expectation with the implementation it is testing proves nothing; the fixture is the third party. Each test also asserts it consumed the fixture's declared entry count.
 
 - [ ] **Step 4: Prove both are load-bearing, and name the dimension**
 
-Change the C++ interpolation from linear to nearest-rank and confirm the C++ test fails (**value** dimension). Change the fixture's expected value for one entry and confirm **both** tests fail (**value**). Reverse the input ordering for a case where order should not matter and confirm neither fails, then reverse it where it should and confirm both do (**order**). Restore everything. Record all four in the commit message.
+Five inversions, each naming a target that exists:
+
+1. **kind** — change the C++ from numpy's `"linear"` interpolation to nearest-rank and confirm the C++ test fails while the Python one still passes. That asymmetry *is* the cross-check working: it is a different definition of the same statistic, which is the disagreement class the two implementations can actually fall into.
+2. **value** — change the fixture's expected value for one entry and confirm **both** tests fail. The fixture is the third party; if only one side moves, one side is recomputing its own expectation.
+3. **length** — drop the last element of one input vector while leaving its expected value alone, and confirm both fail. The 95th percentile's rank is `0.95 · (n − 1)`, so n is load-bearing; this is the dimension the other four do not perturb.
+4. **presence** — delete one whole entry from the fixture and confirm both tests fail on the declared entry count rather than quietly testing fewer cases. A test that iterates a JSON array and asserts nothing about its length passes trivially when the array shrinks.
+5. **order** — **not on `percentile_linear`, which has no order to perturb.** It sorts a by-value copy before doing anything (`tests/qwen3_tts_icl_real.cpp:368-372`), so it is order-invariant unconditionally: there is no case where reversing its input should change the answer, and "confirm neither fails" would be an assertion that cannot fail. The order that exists is the *operand* order one level up. Swap the two operands of `reconstruction_p95_relative` on the fixture's port/oracle entry — so the port's norm becomes the denominator instead of the oracle's — and confirm both tests fail. Restore.
+
+Restore everything. Record all five in the commit message, each with the dimension it perturbed and, for the first, the fact that only one side failed and why that is the intended signal.
 
 - [ ] **Step 5: Gates and commit**
 
@@ -271,6 +287,7 @@ git commit -m "qwen3-tts: the C++ and Python percentiles cross-check against one
 
 **Files:**
 - Modify: `scripts/validate-qwen3-tts-codec_encoder.py`, `tests/qwen3_tts_icl_real.cpp`, `tests/tolerances/qwen3-tts.json`
+- Modify: `tests/qwen3_tts_percentile.h` and `tests/fixtures/qwen3-tts/percentile-cross-check.json` (Step 3 extends Task 2's fixture to the new statistic)
 
 **The ruling is Plan 3's and it is already made** (carry-over §1.3): *"the statistic needs redesign — gate the flip rate separately from the reconstruction error on non-flipped frames. The real evidence for `base-ref-max` is the 100% code agreement, not the p95."* The cell's own note (`tests/tolerances/qwen3-tts.json:684`) offers two branches and **deliberately declines to choose**: *"either scope this probe by reference length (and say so in the gate), or replace the percentile with a statistic that does not have a cliff in it (a flip-rate-conditioned measure, or the median, which sits at 0.0027 here and is stable across all four cases)."*
 
@@ -299,15 +316,36 @@ Measure both across all four existing cases (`base-icl-en`, `base-ref-min`, `bas
 
 The Python validator and the C++ arm at `tests/qwen3_tts_icl_real.cpp:817-828` are **both consumers of the same two cells** (`registered_consumers`, `:654`). A redesign that lands in one is a silent divergence. Extend Task 2's fixture with the masked statistic, so the cross-check covers the new shape and not only the old percentile.
 
-- [ ] **Step 4: Prove the new gates are load-bearing, naming dimensions**
+- [ ] **Step 4: Prove the new gates are load-bearing, naming dimensions — and naming them against the outcome Step 2 actually reached**
 
-Re-inject the symmetric pad and confirm **both** new gates fail (**value**). Invert the mask (condition on flipped frames instead of non-flipped) and confirm the statistic moves by the ratio the measurement predicts (**kind**). Drop the flip-rate gate entirely and confirm `base-ref-max`'s recorded rate stops being checked (**presence**). Restore.
+**Every inversion below names a target that exists only under a particular outcome. Run the set for the outcome you got, and record explicitly which set that was.** An inversion whose target Step 2's own scope decision removed is the failure mode that cost Plan 3 a task.
+
+**If Step 2 landed on outcome 1** (masked statistic *and* a gated flip rate):
+
+- Re-inject the symmetric pad and confirm **both** new gates fail (**value**).
+- Invert the mask — condition on flipped frames instead of non-flipped — and confirm the statistic moves by the ratio the measurement predicts (**kind**). **Run this on a case with a non-zero flip rate**: `base-ref-max` (5.33%) or `base-icl-en` / `base-text-short` (3.96% each). On `base-ref-min` the flip rate is **0.00%** (`tests/tolerances/qwen3-tts.json:678`), so the inverted mask selects the empty set and no ratio exists — assert the implementation's defined behaviour for an empty mask there instead, and state what that behaviour is.
+- Drop the flip-rate gate entirely and confirm `base-ref-max`'s recorded rate stops being checked (**presence**).
+
+**If Step 2 landed on outcome 2** (masked reconstruction gate committed; flip rate recorded and ungated) — **there is no flip-rate gate to drop, and the presence inversion moves to what this outcome did commit**:
+
+- Re-inject the symmetric pad and confirm the masked reconstruction gate fails (**value**).
+- Invert the mask, on a non-zero-flip-rate case, same as above (**kind**).
+- Remove the masked reconstruction probe from the tolerance cell and confirm the validator **refuses** rather than skipping the check (**presence**) — `load_gates`'s fatal-disagreement discipline is what should bite, and if it does not, that is a finding about `load_gates`, not a reason to skip the inversion.
+- Additionally confirm that the recorded-but-ungated flip rate is *recorded*: change its value in the cell and confirm nothing fails, then say so in the commit message. **That is not an inversion — it is the proof that this quantity is deliberately not a gate**, and labelling it as an inversion would be the mandated-check-that-cannot-fail this plan exists to avoid.
+
+**If Step 2 landed on outcome 3** (the redesign could not hold ≥80× and the plan stops to re-scope): no new gate was committed, so **no inversion is owed and none is invented**. Record the measured discrimination, the fact that the committed gate is unchanged, and that `gate_scope_warning` stands.
 
 - [ ] **Step 5: Gates and commit**
 
 ```bash
 ctest --test-dir build -R '^synthesize-tolerance-coverage$' --output-on-failure
 cmake --build build --target synthesize-check-unit
+cmake --build build-sanitize --target synthesize-check-unit
+scripts/ci/clang-format.sh --fix
+git add scripts/validate-qwen3-tts-codec_encoder.py tests/qwen3_tts_icl_real.cpp \
+        tests/qwen3_tts_percentile.h tests/fixtures/qwen3-tts/percentile-cross-check.json \
+        tests/tolerances/qwen3-tts.json
+scripts/ci/clang-format.sh --check-diff origin/main
 git commit -m "qwen3-tts: gate the semantic flip rate separately from reconstruction on non-flipped frames"
 ```
 
@@ -319,6 +357,7 @@ The commit message states which of Step 2's three outcomes ran, the measured dis
 
 **Files:**
 - Modify: `tests/qwen3_tts_xvector_driver.cpp`, `tests/qwen3_tts_codec_encoder_driver.cpp`, `scripts/validate-qwen3-tts-replay.py`
+- Modify: `tests/tolerances/qwen3-tts.json` (`replay.cases` and the `cases_not_extended` block, on Step 2's outcome)
 
 **One flag, two holes** (carry-over §3.4). The oracle side already has it — `scripts/dump_reference_qwen3_tts_base.py:187,224,275,323-343` takes `--trim-seconds`, and the manifest uses it: `trim_seconds: 1.0` for `base-ref-min` and `30.0` for `base-ref-max` (`tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json:782,892`). **The gap is entirely on the C++ driver side.**
 
@@ -336,13 +375,25 @@ With the flag in place, drive `base-ref-min` and `base-ref-max` through `run_com
 - **One or both deviate beyond the gate.** Then it is found, not accommodated — the gate is not widened, and the deviation is attributed (trim arithmetic, loop handling, or the port's ECAPA) before this task closes.
 - **The comparison still cannot be driven** for a reason the flag does not fix. Then record the actual blocker; `replay` stays at 2 with an updated note, and the "one recording" caveat stays on the x-vector residual.
 
-- [ ] **Step 3: Prove, gate, commit**
+- [ ] **Step 3: Prove, gate, commit — with the inversions scoped to Step 2's outcome**
 
-Delete the trim application inside the driver (keep the flag parsed) and confirm the `base-ref-min` comparison fails (**value**). Set the trim to a different duration and confirm it fails differently (**value**, distinct). Restore.
+**If Step 2 landed on outcome 1 or 2** (the comparison is drivable, whether or not it agreed):
+
+- Delete the trim application inside the driver, keeping the flag parsed, and confirm the `base-ref-min` comparison fails (**value**).
+- Set the trim to a different duration and confirm it fails differently (**value**, distinct).
+- Replace the over-length trim's loop with a truncation and confirm `base-ref-max` fails (**length**) — that is the exact hazard Step 1 warns about, `dump_reference_qwen3_tts_base.py:339-342`'s `np.tile` against an 8.08 s recording at 30.0 s, and it is the only one of the three that perturbs how many samples reach the encoder rather than which ones.
+
+**If Step 2 landed on outcome 3** (the comparison still cannot be driven for a reason the flag does not fix): `run_compare_x_vector` is not a usable witness, so the inversions target the driver directly, which *is* what this task committed. Drive the x-vector driver by hand on `base-ref-min`'s WAV with and without `--trim-seconds` and confirm the emitted x-vector differs (**value**); drive it at 30.0 s on the 8.08 s clip with the loop replaced by truncation and confirm the emitted frame count differs (**length**). **Do not invert a comparison this outcome established cannot run.**
+
+Restore in every case.
 
 ```bash
 cmake --build build --target synthesize-check-unit
 cmake --build build-sanitize --target synthesize-check-unit
+scripts/ci/clang-format.sh --fix
+git add tests/qwen3_tts_xvector_driver.cpp tests/qwen3_tts_codec_encoder_driver.cpp \
+        scripts/validate-qwen3-tts-replay.py tests/tolerances/qwen3-tts.json
+scripts/ci/clang-format.sh --check-diff origin/main
 git commit -m "qwen3-tts: the x-vector and codec-encoder drivers take --trim-seconds"
 ```
 
@@ -370,7 +421,7 @@ Record the actual `checks` count and `all_passed`, plus the build the run used. 
 - [ ] **Step 3: Commit**
 
 ```bash
-uv run --project scripts/envs/qwen3-tts --locked python -m unittest tests.python.test_tolerance_coverage -v
+ctest --test-dir build --output-on-failure -R '^synthesize-tolerance-coverage$'
 git add tests/tolerances/qwen3-tts.json
 git commit -m "qwen3-tts: base/BF16/CPU public is a measurement, not a placeholder"
 ```
@@ -381,7 +432,7 @@ git commit -m "qwen3-tts: base/BF16/CPU public is a measurement, not a placehold
 
 **Files:**
 - Modify: `tools/synthesize-quantize/policy.cpp`, `tests/qwen3_tts_quantization_policy_test.cpp`
-- Modify (conditionally, on Step 3's ruling): `src/arch/qwen3-tts/catalog.cpp`
+- Modify (conditionally, on Step 3's ruling): `src/arch/qwen3-tts/catalog.cpp` — **`expected_type` and, if any three-dimensional tensor ends up in a quantized role, `Resolver::find`'s shape check too**
 
 **This is the blocker. Every quantization measurement in this plan is downstream of it.** 237 tensor names are unclassified — 76 `speaker_encoder.*` + 161 emitted `codec.encoder.*`, which is exactly the Base/CustomVoice difference (894 − 657 = 237; the arithmetic is pinned at `tests/python/test_tolerance_coverage.py:172-180` and in the family record's census).
 
@@ -399,9 +450,11 @@ build/bin/synthesize-quantize models/qwen3-tts-12hz-0-6b-base/qwen3-tts-12hz-0-6
 # synthesize-quantize: unknown qwen3-tts tensor: speaker_encoder.asp.conv.bias
 ```
 
-- [ ] **Step 2: Establish the row arithmetic from the package, not from a claim**
+- [ ] **Step 2: Establish the row arithmetic *and the emitted rank* from the package, not from a claim**
 
-Under `Q8_MIXED` the profile's `matrix_weight_layout` is `TensorLayout::PackedMatrix` (`policy.cpp:49-50`), and `quantize.cpp:212-215` demotes a `matrix_family` tensor to `Native` only when `ggml_n_dims(tensor) < 3`. A speaker-encoder convolution weight is three-dimensional `{kernel, in, out}`, so it stays packed and its row becomes `ne[0] * ne[1]` = `kernel * in` (`:228`), checked against `ggml_blck_size(target.type)` at `:231-233`. Under `F16` the layout is `Native` (`policy.cpp:42`) and F16's block size is 1, so no row constraint arises there.
+Under `Q8_MIXED` the profile's `matrix_weight_layout` is `TensorLayout::PackedMatrix` (`policy.cpp:49-50`), and `quantize.cpp:210-215` demotes a `matrix_family` tensor to `Native` only when `ggml_n_dims(tensor) < 3`. A speaker-encoder convolution weight is three-dimensional `{kernel, in, out}`, so it stays packed and its row becomes `ne[0] * ne[1]` = `kernel * in` (`:228`), checked against `ggml_blck_size(target.type)` at `:230-232`. Under `F16` the layout is `Native` (`policy.cpp:42`) and F16's block size is 1, so no row constraint arises there.
+
+**Clearing the block size is necessary and not sufficient, and the insufficient half is the rank.** `quantize.cpp:222-229` also rewrites the emitted shape — `target_ne = { ne[0] * ne[1], ne[2], 1, 1 }`, `target_n_dims = 2` — so a packed `{5, 128, 512}` is written `{640, 512}`. The runtime's `Resolver::conv` resolves the same tensor at `{kernel, in, out}` and `Resolver::find` compares axis by axis with **no packed branch** (`catalog.cpp:73-86`); kokoro's resolver has exactly that branch (`src/arch/kokoro/catalog.cpp:90-102`) and qwen3-tts's does not. **So the row table below is only half the arithmetic.** For every tensor Step 3 puts in a quantized role, record both: the packed row size (does it clear 32? does it clear 256?) **and the emitted rank against the rank the resolver asks for**. A tensor that clears the block size and changes rank is still a package the runtime refuses, and Step 4 is where that refusal has to show up rather than in Task 8.
 
 **A correction the plan carries rather than repeating.** The research for this plan asserted the stem convolution `speaker_encoder.blocks.0.conv` (kernel 5, in = `mel_bins`, out 512 — `catalog.cpp:466`) has a packed row that is not a multiple of 32, offering 400 and 640 as the values for 80- and 128-bin front ends. **640 is 32 × 20**, and this package declares a 128-bin mel front end (`spec:65`; `mel_bins` is read from package metadata at `src/arch/qwen3-tts/weights.cpp:581`, not a literal). So the claim does not hold for this package as declared. It *would* hold at 80 bins (400 % 32 = 16), and **Q5_K's super-block of 256 is a separate and much tighter constraint** — 640 % 256 ≠ 0, 192 % 256 ≠ 0, 128 % 256 ≠ 0.
 
@@ -415,24 +468,32 @@ Under `Q8_MIXED` the profile's `matrix_weight_layout` is `TensorLayout::PackedMa
 
 **Three outcomes, and this task picks one on evidence:**
 
-- **The runtime is right and the tool should follow.** Speaker-encoder convolution weights classify `MatrixWeight`, and the quantizer emits them at the profile type. This is the outcome that makes Task 9's question live — is quantizing 76 tensors worth anything? — and it requires Step 2's row table to clear the block size for every profile actually cut.
+- **The runtime is right and the tool should follow.** Speaker-encoder convolution weights classify `MatrixWeight`, and the quantizer emits them at the profile type. This is the outcome that makes Task 9's question live — is quantizing 76 tensors worth anything? — and it requires Step 2's row table to clear the block size for every profile actually cut. **It also requires the rank reconciliation, and that is code, not a classification:** under `Q8_MIXED` these weights are emitted packed 2-D, so `Resolver::find` needs a kokoro-style packed branch (`src/arch/kokoro/catalog.cpp:90-102`) or the package the tool now emits is a package the runtime now refuses. The choice between adding that branch and instead demoting the layout to `Native` for three-dimensional matrix weights (which is a `policy.cpp` change, and therefore a re-cut of all three CustomVoice packages with the digest proof) is part of this ruling and is decided here, not deferred. Whichever is chosen, the shape check is a shared path and the published-package load proof in the Global Constraints applies.
 - **The tool's silence is right and the runtime should follow.** Speaker-encoder convolution weights classify `Sensitive` and stay F32, and `catalog.cpp:expected_type` changes so the runtime expects F32. This is the outcome §7 hints at without asserting ("small enough that quantizing it is unlikely to pay") — **but §7 forbids taking the hint as the answer**, so this outcome is only reachable from Task 9's measurement, not from the hint. If this task lands here provisionally, it says so and Task 9 confirms or overturns it.
-- **Neither side is uniformly right** — e.g. the stem takes `Sensitive` on a row-size or a sensitivity ground while the rest take `MatrixWeight`. Then the split is per-tensor, and the reason for each is recorded at the classifier, in the shape OmniVoice's `ConvKernel` role uses (*"The rule reads the name and never the rank"*, `docs/quantization.md:339-366`).
+- **Neither side is uniformly right** — e.g. the stem takes `Sensitive` on a row-size or a sensitivity ground while the rest take `MatrixWeight`. Then the split is per-tensor, and the reason for each is recorded at the classifier, in the shape OmniVoice's `ConvKernel` role uses (*"The rule reads the name and never the rank"*, `docs/quantization.md:339-366`). **The rank reconciliation of the first outcome applies to whichever tensors land in `MatrixWeight`** — if any of them is three-dimensional, the packed branch is owed exactly as it is there.
 
 **Whichever way it lands, `catalog.cpp:134`'s `"codec."` prefix test is a shared function and the published CustomVoice packages' load behaviour is a contract.** A change there re-cuts all three CustomVoice packages and proves the digests unchanged (`01dfad52…`, `f79ada91…`, `d1f9be7b…`) and that all three still load. If the reconciliation cannot be made without moving the published grid, **that is the finding**, and it is reported before the change is written rather than after.
 
-- [ ] **Step 4: Cut a Base package and watch the tool succeed**
+- [ ] **Step 4: Cut BOTH profiles this plan measures, and load both — the packed one first**
+
+**Cut `Q8_MIXED` before `F16`, and treat the `Q8_MIXED` load as the acceptance test for Step 3.** `F16`'s layout is `Native` (`policy.cpp:42`), so an F16 package preserves every tensor's rank and its load exercises only the *type* half of the reconciliation. `Q8_MIXED` is `PackedMatrix`, so it is the only one of the two that can expose the rank half. **A task that cuts F16 alone verifies itself on the one path that hides the defect.**
 
 ```bash
+build/bin/synthesize-quantize models/qwen3-tts-12hz-0-6b-base/qwen3-tts-12hz-0-6b-base-BF16.gguf \
+  build/qwen3-tts-12hz-0-6b-base-Q8_MIXED.gguf --quant Q8_MIXED
 build/bin/synthesize-quantize models/qwen3-tts-12hz-0-6b-base/qwen3-tts-12hz-0-6b-base-BF16.gguf \
   build/qwen3-tts-12hz-0-6b-base-F16.gguf --quant F16
 ```
 
-Record the tensor-type census of the output (the shape `scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml:171-193` uses: "402 BF16 + 255 F32" and so on) and its size. **The package must then load**, which is the real test of Step 3's ruling: `Resolver::find` (`catalog.cpp:61-88`) refuses a package whose tensor type disagrees with `expected_type`, so a package the tool emits and the runtime rejects means the reconciliation is wrong and Step 3 is reopened.
+Record the tensor-type census of each output (the shape `scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml:171-193` uses: "402 BF16 + 255 F32" and so on), each package's size, and **for `Q8_MIXED` the emitted rank of every tensor Step 3 put in a quantized role**. **Both packages must then load**, which is the real test of Step 3's ruling: `Resolver::find` (`catalog.cpp:61-88`) refuses a package whose tensor type *or shape* disagrees with what the resolver asks for, so a package the tool emits and the runtime rejects means the reconciliation is wrong and Step 3 is reopened. Load each one through the same seam Task 5 used, not by inspection.
+
+**These two files are Task 7's and Task 8's inputs.** Neither of those tasks cuts a package; both consume what this step produced, so if this step cannot produce one of them, the task that consumes it says so and stops rather than measuring nothing. `build/` is gitignored, so the packages are artifacts and the census and digests are what the commit message carries.
 
 - [ ] **Step 5: Prove the classifier is load-bearing, naming dimensions**
 
 Delete one speaker-encoder arm and confirm the by-name test fails for those tensors and only those (**presence**). Change one tensor's role from `MatrixWeight` to `Sensitive` and confirm the test fails on the expected type (**value**). Move a `codec.encoder.*` name into the talker arm and confirm the test catches the half (**kind**). Add a name that matches no arm and confirm it is still refused (**the `:120-126` block still bites**). Restore.
+
+**One more, owed only if Step 3's ruling added code to `catalog.cpp`** — and it names a target that exists only under that ruling, so it is skipped explicitly rather than silently if the ruling went the other way. If a packed branch was added to `Resolver::find`, remove it and confirm the `Q8_MIXED` package from Step 4 stops loading with a shape refusal naming the tensor (**length** — the emitted rank, which is the dimension none of the four above perturbs). If instead the ruling demoted the layout in `policy.cpp`, restore `PackedMatrix` for one three-dimensional weight and confirm the same load refusal. If Step 3 landed on the second outcome and nothing three-dimensional is quantized, record that no rank inversion is owed **and why** — the tensors it would perturb are F32 under every profile.
 
 - [ ] **Step 6: Gates and commit**
 
@@ -440,11 +501,15 @@ Delete one speaker-encoder arm and confirm the by-name test fails for those tens
 ctest --test-dir build -R '^synthesize-qwen3-tts-quantization-policy-test$' --output-on-failure
 cmake --build build --target synthesize-check-unit
 cmake --build build-sanitize --target synthesize-check-unit
-scripts/ci/clang-format.sh --fix && git add … && scripts/ci/clang-format.sh --check-diff origin/main
+scripts/ci/clang-format.sh --fix
+# catalog.cpp only if Step 3's ruling moved it.
+git add tools/synthesize-quantize/policy.cpp tests/qwen3_tts_quantization_policy_test.cpp \
+        src/arch/qwen3-tts/catalog.cpp
+scripts/ci/clang-format.sh --check-diff origin/main
 git commit -m "qwen3-tts: the quantizer classifies the Base package's 237 new tensors"
 ```
 
-The commit message states which of Step 3's three outcomes ran and why, the packed-row table from Step 2, and the CustomVoice digest proof if `policy.cpp` or `catalog.cpp` moved.
+The commit message states which of Step 3's three outcomes ran and why, the packed-row **and emitted-rank** table from Step 2, the two packages' censuses, sizes and digests from Step 4, and the CustomVoice digest-and-load proof if `policy.cpp` or `catalog.cpp` moved.
 
 ---
 
@@ -453,7 +518,9 @@ The commit message states which of Step 3's three outcomes ran and why, the pack
 **Files:**
 - Modify: `tests/tolerances/qwen3-tts.json`
 
-**F16 is a speed profile for this family, not a size one.** Stage 1 measured it (`docs/porting/families/qwen3-tts.md:1684-1688`, `:1596-1619`): 2168.9 MiB against a 2168 MiB source, RTF 1.21, talker logits cosine 0.999458, final 0.999430 — and wall clock **43.04 s → 9.64 s**, 4.5×, because ggml's CPU bf16 matmul is far slower than its F16 one. **That is Stage 1's CustomVoice measurement and it is not evidence about Base**, whose two new graphs Stage 1 did not contain. §7's whole instruction is that Stage 1's profiles are measured here rather than assumed to carry over.
+**Its input is Task 6 Step 4's `build/qwen3-tts-12hz-0-6b-base-F16.gguf`.** This task cuts nothing. If Task 6 could not emit or load that package, this task records that and stops.
+
+**F16 is a speed profile for this family, not a size one — and Stage 1 recorded its real-time factor on two different workloads, so the figure has to be quoted with one.** `docs/porting/families/qwen3-tts.md:1596-1619` measures the **37-frame case** (2.96 s of audio): 2168.9 MiB against a 2168 MiB source, wall clock **43.04 s → 9.64 s**, 4.5×, and **RTF 14.5 → 3.3**. `:1684-1687`'s profile comparison table measures the **9.6-second case** and reads **RTF 1.21** for the same profile (the Q8_MIXED section at `:1632-1633` reads 1.24 for that same case, run-to-run). Talker logits cosine 0.999458, final 0.999430. **Both figures are real and they are not the same measurement**; neither names its build. So quote the workload with the number, and do not compare a Base RTF against either without matching workload *and* build. **All of it is Stage 1's CustomVoice measurement and none of it is evidence about Base**, whose two new graphs Stage 1 did not contain. §7's whole instruction is that Stage 1's profiles are measured here rather than assumed to carry over.
 
 - [ ] **Step 1: Fill all three stages, because the coverage rule requires the set**
 
@@ -466,13 +533,13 @@ Every threshold is **measured in this task**; this plan prescribes none. Each me
 - [ ] **Step 2: Report which of three outcomes F16 produced**
 
 - **F16 pays and clears every gate.** Commit the three cells with their measured values, the size, and the profile's tensor-type census. This is the outcome that makes an `F16` Base package a ship candidate.
-- **F16 clears the gates but does not pay** — no meaningful size reduction and no meaningful speed gain on the Base package's graphs, or a gain confined to the talker half that Stage 1 already measured. Then commit the cells **and record "does not pay" as the result**, with the numbers. The profile being buildable is not a reason to publish it; `Q5_K_MIXED` is already buildable for this family and deliberately unpublished (1035 MiB, RTF 0.82, talker logits cosine 0.9648 — `docs/porting/families/qwen3-tts.md:1678-1712`).
+- **F16 clears the gates but does not pay.** The size half is decidable here — bytes on disk are a property of the package, not of the build that measured it — so "no meaningful size reduction against the 2.5 GB source" is a conclusion this task may reach and record. **The speed half is not decidable here unless this task's runs were on a `Release`-typed tree, and it must name that tree at the conclusion.** A wall-clock or RTF figure taken on the `dev-*` correctness tree is inadmissible under the performance rule (`docs/testing.md:455-467`; ggml-cpu at `-O2` measured 2.19× slow), so if the cells were filled on the correctness tree this outcome records the size result, records the timing as **not yet measured**, and hands the speed conclusion to Task 14 rather than asserting it. Either way commit the cells **and record what does and does not pay** as the result, with the numbers and the build behind each. The profile being buildable is not a reason to publish it; `Q5_K_MIXED` is already buildable for this family and deliberately unpublished (1035 MiB, RTF 0.82 on the 9.6-second case, talker logits cosine 0.9648 — `docs/porting/families/qwen3-tts.md:1678-1712`).
 - **F16 fails a gate.** Then attribute it before this task closes — decompose against upstream-f32 the way carry-over §2.1 mandates, so "the profile moved it" is separated from "the port moved it". A gate is not widened to admit a profile. **If the failure is the codec encoder's RVQ selections crossing the flip cliff, that is Task 10's subject and this task hands it over rather than adjudicating it.**
 
 - [ ] **Step 3: Commit**
 
 ```bash
-uv run --project scripts/envs/qwen3-tts --locked python -m unittest tests.python.test_tolerance_coverage -v
+ctest --test-dir build --output-on-failure -R '^synthesize-tolerance-coverage$'
 git add tests/tolerances/qwen3-tts.json
 git commit -m "qwen3-tts: measured base/F16 on CPU across public, replay and codec_encoder"
 ```
@@ -486,7 +553,9 @@ The commit message states the build, the case ids, the package size and tensor c
 **Files:**
 - Modify: `tests/tolerances/qwen3-tts.json`
 
-**What "MIXED" means here, so the result is read correctly.** `docs/quantization.md:56-57`: *"`Q8_MIXED` version 1 is the first accepted mixed Quantization Profile. It is a **conservative storage profile, not a claim that every weight or operation is Q8**."* And `:26`: *"A Quantization Profile records both storage type and required compute or accumulation precision by tensor group. A nominal profile name does not imply that every tensor uses the same type."* For qwen3-tts specifically the autoregressive half (talker + code predictor, 316 + 86 tensors, 1727.6 MiB of 2164) is entirely 2-D matrices with rows 1024 / 2048 / 3072 and quantizes; the codebooks, both kernel-1 projections, per-head norms, per-branch layer scales and SnakeBeta curves stay exact; six transposed convolutions stay F32 (`policy.cpp:502-507` — *"CUDA's F16 matrix multiply accumulates in half precision. There are six of them."*).
+**Its input is Task 6 Step 4's `build/qwen3-tts-12hz-0-6b-base-Q8_MIXED.gguf`** — the packed-layout package that step cuts first and loads first, precisely because this profile is the one whose layout can break. This task cuts nothing. If Task 6 could not emit or load that package, this task records that and stops; it does not cut its own.
+
+**What "MIXED" means here, so the result is read correctly.** The family-independent rule is `docs/quantization.md:26`: *"A Quantization Profile records both storage type and required compute or accumulation precision by tensor group. A nominal profile name does not imply that every tensor uses the same type."* The sentence often quoted alongside it — *"`Q8_MIXED` version 1 is the first accepted mixed Quantization Profile. It is a **conservative storage profile, not a claim that every weight or operation is Q8**"* — sits at `:56-57` under the heading `## VITS Q8_MIXED Profile` (`:55`) and continues "For VITS version 1, the complete text encoder…". **It is VITS's section, and in a task whose whole subject is refusing cross-family inheritance it is quoted as VITS's, not as the general definition.** `:26` is the general one and it carries the point on its own. For qwen3-tts specifically the autoregressive half (talker + code predictor, 316 + 86 tensors, 1727.6 MiB of 2164) is entirely 2-D matrices with rows 1024 / 2048 / 3072 and quantizes; the codebooks, both kernel-1 projections, per-head norms, per-branch layer scales and SnakeBeta curves stay exact; six transposed convolutions stay F32 (`policy.cpp:502-507` — *"CUDA's F16 matrix multiply accumulates in half precision. There are six of them."*).
 
 Stage 1's CustomVoice figures for orientation only: 1359.2 MiB, RTF 0.85, logits 0.995731, final 0.995634. **Base is not CustomVoice**, and whether the two new graphs are inside or outside the quantized set is Task 6's ruling, not an inheritance.
 
@@ -500,7 +569,7 @@ Q8_MIXED moved the talker's logits eight-fold on Stage 1 (`docs/porting/families
 
 - **Q8_MIXED pays and clears every gate**, including the flip rate. Commit the cells with size, speed and flip rates.
 - **Q8_MIXED pays on size but crosses the flip threshold.** Then it is **blocked**, exactly as OmniVoice's codec profiles are, and the block is recorded with the number that produced it. This is a correct and complete result — not a failure of this task, and not a reason to widen anything.
-- **Q8_MIXED does not pay on the Base package at all** — the new 237 tensors are a small enough share that the size difference from CustomVoice's ratio is uninteresting, or the wall clock does not move. Then record the numbers and the conclusion, and the profile is not published for this variant.
+- **Q8_MIXED does not pay on the Base package at all** — the new 237 tensors are a small enough share that the size difference from CustomVoice's ratio is uninteresting, or the wall clock does not move. **Same split as Task 7's second outcome:** the size half is decidable from the package and is recorded here; a "wall clock does not move" conclusion is admissible **only from a `Release`-typed tree, named at the conclusion**, and otherwise the timing is recorded as not yet measured and handed to Task 14. Record the numbers, each with the build that produced it, and the conclusion; the profile is not published for this variant.
 
 - [ ] **Step 4: Commit**
 
@@ -541,6 +610,7 @@ The existing BF16 baseline for the third: `min_cosine` 0.9999767764206815 with o
 §7 requires "the result recorded with the artifact that produced it" — the package digest, the case ids, the build type and preset, and the command line. A number without its artifact is not what §7 asked for.
 
 ```bash
+git add docs/porting/families/qwen3-tts.md
 git commit -m "qwen3-tts: the speaker encoder's quantization measured, not assumed"
 ```
 
@@ -570,6 +640,8 @@ Per `docs/quantization.md:355-361`'s shape: measure the codec encoder's RVQ drif
 - [ ] **Step 3: Record, with the artifact**
 
 ```bash
+# policy.cpp only if Step 2's first outcome changed a role; run clang-format if it did.
+git add docs/porting/families/qwen3-tts.md tools/synthesize-quantize/policy.cpp
 git commit -m "qwen3-tts: the conv-exempt precedent measured against this family, not imported"
 ```
 
@@ -580,11 +652,11 @@ git commit -m "qwen3-tts: the conv-exempt precedent measured against this family
 **Files:**
 - Modify: `scripts/validate-qwen3-tts-codec_encoder.py`, `tests/CMakeLists.txt`
 
-Two tooling gaps stand between Task 13 and a CUDA `codec_encoder` cell, and both are recorded.
+Two tooling gaps stand between Task 13 and a CUDA `codec_encoder` cell, and both are recorded. **The backend coordinate may end up unused** — if Task 12 declines the twin, no `backends` sub-grid is committed for this variant and nothing resolves through it. That is not a reason to defer it: Step 3's inversions exercise the *failure* path, which exists either way, and the override in Step 2 is needed by Task 14 regardless of Task 12. Say in the commit message which of the two it turned out to be.
 
 **The validator has no backend coordinate.** It takes `--variant`, `--profile`, `--stage` (`:372-374`) and `load_gates` (`:315-334`) indexes `document["variants"][variant]["profiles"][profile]["stages"][stage]["probes"]` with **no `backends` step**. `scripts/validate-qwen3-tts-replay.py` already has the shape to copy — `resolve_tolerance_stage(tolerances, variant, profile, backend, stage)` at `:41-70`, reading `backends` for anything that is not CPU at `:69`.
 
-**The golden test's upstream root is hardcoded.** `_synth_qwen3_tts_codec_upstream_root` (`tests/CMakeLists.txt:1268-1269`) is `${CMAKE_SOURCE_DIR}/build/qwen3-tts-codec-encoder-f32` with no override variable, so **a second build tree — `rel-dgx-spark`, which this plan needs for every performance figure — cannot point the golden test at its dumps** (carry-over §3.4, `:563-565`).
+**The golden test's upstream root is hardcoded.** `_synth_qwen3_tts_codec_upstream_root` (`tests/CMakeLists.txt:1270`, consumed at `:1281` and `:1299`) is `${CMAKE_SOURCE_DIR}/build/qwen3-tts-codec-encoder-f32` with no override variable, so **a second build tree — `rel-dgx-spark`, which this plan needs for every performance figure — cannot point the golden test at its dumps** (carry-over §3.4, `:563-565`).
 
 - [ ] **Step 1: Add `--backend`, following the replay validator's resolution shape exactly**
 
@@ -605,7 +677,8 @@ Point `--backend` at a name with no sub-grid and confirm it fails rather than si
 - [ ] **Step 5: Gates and commit**
 
 ```bash
-uv run --project scripts/envs/qwen3-tts --locked python -m unittest tests.python.test_tolerance_coverage -v
+ctest --test-dir build --output-on-failure -R '^synthesize-tolerance-coverage$'
+git add scripts/validate-qwen3-tts-codec_encoder.py tests/CMakeLists.txt
 git commit -m "qwen3-tts: the codec-encoder gate takes a backend coordinate and an overridable upstream root"
 ```
 
@@ -633,7 +706,7 @@ Both new host paths hard-wire a CPU scheduler: `speaker-encoder-host.cpp:189` an
 - [ ] **Step 2: Report which of three outcomes this produced**
 
 - **The twin is worth writing.** Then it is a **new pass with its own prefix**, per `model.cpp:523-540` — not the existing one widened by one `strncmp` — and the hard-wired `create_cpu_scheduler` calls become plan decisions, the way `model.cpp:795` already does it. **Placement is proven by probe, not asserted**, exactly as Stage 1 proved it, and the discrete-outputs exception is measured across the whole Golden suite or the RVQ argmin stays on the host.
-- **The twin is not worth writing.** Then the new graphs stay CPU-only, `model.cpp:523-540`'s comment is updated to say Plan 4 measured it rather than that a later plan might, **no Base CUDA cell is added to the grid**, and Task 13 records that instead of a measurement. This satisfies §7 in the sense §7 actually states — Stage 1's wiring is reused, and the codec decoder does move on a Base package too. **It is a complete outcome, not a shortfall**, and it is recorded with the numbers that produced it.
+- **The twin is not worth writing.** Then the new graphs stay CPU-only and `model.cpp:523-540`'s comment is updated to say Plan 4 measured it rather than that a later plan might. This satisfies §7 in the sense §7 actually states — Stage 1's wiring is reused, **and the codec decoder does move on a Base package too**, which has a consequence this outcome must state rather than skip. **Two of the three stages in a CUDA sub-grid stay measurable under this outcome and one does not:** `scripts/validate-qwen3-tts-public.py` takes `--backend cuda` (`:59`) and `scripts/validate-qwen3-tts-replay.py` takes `--backend` and resolves through `backends` (`:41-70`, `:100`), and both exercise real CUDA placement on a Base package via the Stage 1 decoder twin — while a `codec_encoder` CUDA cell would describe a placement that does not exist, because `codec-encoder-host.cpp:468` still hard-wires `create_cpu_scheduler`. **Measure the two that are measurable anyway**, because `docs/backends.md` gate 5 applies to the placement that demonstrably exists; hand the numbers to Task 13, which decides where they are recorded. **It is a complete outcome, not a shortfall**, and it is recorded with the numbers that produced it.
 - **The twin is written and does not pay, or does not place.** Then the measurement is recorded and the change is reverted rather than shipped dark. `docs/backends.md:490-497` gate 5 requires proving actual device placement; a twin that exists and does not place is worse than none, because the grid would then describe a backend nothing runs on.
 
 - [ ] **Step 3: Gates and commit (conditional on Step 2)**
@@ -646,6 +719,12 @@ cmake --build build-sanitize --target synthesize-check-unit
 If the twin lands, the unit tier already sweeps every device of type CPU / GPU / IGPU and builds the encoder fixture on each (`tests/qwen3_tts_codec_encoder_test.cpp:1320-1337`), so the *graph* is already CUDA-capable with synthetic weights — what is new is placing it through the real model. **Remember the node-count hazard in that file** before adding an assertion there.
 
 ```bash
+scripts/ci/clang-format.sh --fix
+# Under the second outcome only model.cpp's comment moves; under the third the
+# twin is reverted and only the comment and the recorded numbers remain.
+git add src/arch/qwen3-tts/model.cpp src/arch/qwen3-tts/speaker-encoder-host.cpp \
+        src/arch/qwen3-tts/codec-encoder-host.cpp
+scripts/ci/clang-format.sh --check-diff origin/main
 git commit -m "qwen3-tts: <the measured placement decision for the speaker and codec encoders>"
 ```
 
@@ -654,15 +733,25 @@ git commit -m "qwen3-tts: <the measured placement decision for the speaker and c
 ### Task 13: Fill base/BF16/CUDA and base/F16/CUDA — with thresholds derived, not copied
 
 **Files:**
-- Modify: `tests/tolerances/qwen3-tts.json`
+- Modify: `tests/tolerances/qwen3-tts.json` (only if a full sub-grid is committed)
+- Modify: `docs/backends.md`, `docs/porting/families/qwen3-tts.md` (where the CUDA measurements go when no sub-grid is committed)
 
-**Conditional on Task 12's outcome.** If Task 12 landed on "not worth writing", this task records that the Base variant carries no CUDA sub-grid and why, and stops — which is permitted, because `test_tolerance_coverage.py:152` reads `entry.get("backends", {})` and an absent key is legal. That is the same permitted hole CustomVoice's `Q8_MIXED` already occupies.
+**Conditional on Task 12's outcome, and the coverage rule makes the choice all-or-nothing.** `test_tolerance_coverage.py:152-158` asserts that **every** `backends.<name>` sub-grid carries **exactly** the reference stage set — for Base that is {`public`, `replay`, `codec_encoder`}. So a sub-grid cannot be committed with two of the three stages: one underivable cell kills the two derivable ones. An absent `backends` key is legal (`entry.get("backends", {})`), which is the permitted hole CustomVoice's `Q8_MIXED` already occupies.
 
-If Task 12 placed the graphs, two cells go in, each carrying all three stages: `base / BF16 / backends.CUDA` and `base / F16 / backends.CUDA`. That mirrors CustomVoice's shape, where BF16 and F16 have CUDA sub-grids (`:74-137`, `:198-261`) and Q8_MIXED does not.
+**Which cells exist under each of Task 12's outcomes:**
+
+- **Task 12 placed the graphs** (its first outcome). Two sub-grids go in, each carrying all three stages: `base / BF16 / backends.CUDA` and `base / F16 / backends.CUDA`. That mirrors CustomVoice's shape, where BF16 and F16 have CUDA sub-grids (`:74-137`, `:198-261`) and Q8_MIXED does not. The `codec_encoder` cells need Task 11's `--backend` coordinate; the `public` and `replay` cells need only the flags both validators already have.
+- **Task 12 declined the twin, or wrote it and reverted it** (its second and third outcomes). The `public` and `replay` CUDA measurements Task 12 took **are real and are recorded**, but they cannot go into a `backends.CUDA` sub-grid without a `codec_encoder` cell that would describe a placement nothing runs on. So: **no `backends` key is added to the Base variant**, and the two measurements are recorded in `docs/backends.md` and the family record instead, alongside Task 12's placement decision and the reason the third stage is absent — that the codec encoder ran on CPU under a CUDA request and a cell claiming otherwise would be the fabricated placeholder this tolerance file spent two plans removing. **Committing a `codec_encoder` CUDA cell whose figures are CPU figures is not an option**, whatever its `description` says.
+
+Under either branch, Step 3's outcomes apply per profile to whichever cells this task is committing.
+
+**What this task records in the two documents, and what it leaves to Task 14.** This task owns the *agreement* figures — thresholds, observed deviations, fault margins, flip rates — and Task 14 owns *latency, RTF and peak memory*, on a different build tree. They touch the same two files in sequence; neither writes the other's numbers, which is the same separation Task 14's own preamble states.
 
 - [ ] **Step 1: Derive the CUDA thresholds from TF32 scale — do not copy the CPU numbers**
 
-**The CPU `codec.chain` gate of 1.0e-3 cannot be reused.** The codec encoder's own CUDA-vs-CPU output disagreement on a real clip is **5.20e-03 relative** — **~56× that gate**, and **~1.33 bf16 units** — so the chain gate would fail a correct CUDA run by construction (`tests/qwen3_tts_codec_encoder_test.cpp:1416-1442`). The file's own tolerance split is the precedent to follow: `causal_tolerance = type == CPU ? 1e-4f : 2e-2f` (`:1441`), a 200× ratio, with the fault margin stated at `:1438-1440` — a symmetric pad reads ~1.7, which is 17,000× the CPU bound and **86× the accelerator one**. **The accelerator bound keeps 86× discrimination, and that is the property a derived threshold must preserve.**
+**The CPU `codec.chain` gate of 1.0e-3 cannot be reused.** The codec encoder's own CUDA-vs-CPU output disagreement on a real clip is **5.20e-03 relative** — **5.2× that gate**, and **~1.33 bf16 units** — so the chain gate would fail a correct CUDA run by construction (`tests/qwen3_tts_codec_encoder_test.cpp:1416-1442`). (5.20e-3 is ~56× the **observed** `9.303e-05` the CPU gate clears, not 56× the gate. **Derive from the measured 5.20e-3 and the fault margin, never by scaling the CPU gate by a ratio** — an earlier draft of this plan carried the 56 against the gate, and a threshold sized that way lands an order of magnitude too wide.)
+
+The file's own tolerance split is the precedent to follow: `causal_tolerance = type == CPU ? 1e-4f : 2e-2f` (`:1441`), a 200× ratio, with the fault margin stated at `:1438-1440` — a symmetric pad reads ~1.7, which is 17,000× the CPU bound and **86× the accelerator one**. **The accelerator bound keeps 86× discrimination, and that is the property a derived threshold must preserve** — a threshold is admissible if the injected fault clears it by a stated margin of that order, and the margin is recorded in the cell beside the threshold.
 
 Two options exist and this task picks one on the measurement: derive a CUDA-specific threshold at TF32 scale, or change the comparison so the CUDA cell compares **CUDA-against-CPU-port** rather than port-against-upstream-f32. The second is a different question than the CPU cell asks and must be labelled as such in the cell's `description` if chosen.
 
@@ -674,13 +763,15 @@ A 1.33-bf16-unit perturbation of the latent is larger than the codebook perturba
 
 - **Both CUDA cells clear derived thresholds that keep their discrimination.** Commit them with the derivation stated.
 - **CUDA clears the continuous gates but moves the codes past the flip threshold.** Then it is recorded as a *correctness-relevant* placement result: the graph runs and produces different reference codes, which is a change in the Voice, not a rounding difference. `docs/backends.md:490-497` gate 2 requires matching CPU tensors within tolerance — if a derived tolerance that admits this cannot also catch the injected fault, the placement does not ship and Task 12's decision is revisited.
-- **A cell cannot be derived without a threshold so wide it catches nothing.** Then the cell is not committed, the reason is recorded, and the Base variant carries no CUDA sub-grid for that profile — the permitted hole, taken deliberately.
+- **A cell cannot be derived without a threshold so wide it catches nothing.** Then **that profile's whole `backends.CUDA` sub-grid is not committed** — not just the stage that failed to derive, because the coverage rule admits no partial sub-grid — the reason is recorded per stage, and the Base variant carries no CUDA sub-grid for that profile. The permitted hole, taken deliberately. The measurements that *did* derive are recorded in the family record so the work is not lost with the cell.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-uv run --project scripts/envs/qwen3-tts --locked python -m unittest tests.python.test_tolerance_coverage -v
-git add tests/tolerances/qwen3-tts.json
+ctest --test-dir build --output-on-failure -R '^synthesize-tolerance-coverage$'
+# Stage whichever of these this task actually wrote -- the tolerance file when a
+# full sub-grid was committed, the docs when the measurements were recorded there.
+git add tests/tolerances/qwen3-tts.json docs/backends.md docs/porting/families/qwen3-tts.md
 git commit -m "qwen3-tts: the Base CUDA cells, with thresholds derived from TF32 scale"
 ```
 
@@ -717,6 +808,7 @@ Repeated-run and resource-cleanup checks. Note the ICL transcript-mismatch hang 
 - [ ] **Step 4: Commit**
 
 ```bash
+git add docs/backends.md docs/porting/families/qwen3-tts.md
 git commit -m "qwen3-tts: Base latency, RTF and peak memory, measured on Release"
 ```
 
@@ -733,7 +825,9 @@ The design's standard (`spec:509-510`): *"A listening audit precedes ship. Per t
 
 - [ ] **Step 1: Build the blind A/B page and offer it before concluding anything**
 
-The project's standing method: a blind A/B comparison, not a self-assessment. Cover, at minimum: BF16 against each surviving profile; CPU against CUDA if Task 12 placed the graphs; ICL against x-vector on the same reference clip; and **the second recording Task 1 added**, since one speaker is not an audit either.
+The project's standing method: a blind A/B comparison, not a self-assessment. Cover, at minimum: BF16 against each surviving profile; CPU against CUDA if Task 12 placed the graphs; ICL against x-vector on the same reference clip; and **a second speaker, if Task 1 produced one** — one speaker is not an audit either.
+
+**That last item is conditional, because Task 1's third outcome permits no second recording.** If Task 1 landed there, this audit covers the one recording that exists and **the coverage limitation is part of the recorded result, not a footnote** — the audit says, in the same sentence as its verdict, that it heard one speaker and one microphone, and that a voice-cloning path audited on a single reference clip is evidence about that clip. A `no_obvious_regression` recorded without that qualifier would claim more coverage than was heard, which is the same class of error as describing audio nobody listened to.
 
 - [ ] **Step 2: Do not describe audio nobody heard**
 
@@ -741,13 +835,14 @@ The rule the carry-over installed after eight violations: no claim that misalign
 
 - [ ] **Step 3: Three outcomes**
 
-- **`no_obvious_regression` across the audited set.** Recorded as evidence, with the profiles, backends and cases it covered. **It does not move the Validation Level** — `quality_evaluation` stays deferred per ADR 0017.
+- **`no_obvious_regression` across the audited set.** Recorded as evidence, with the profiles, backends and cases it covered — **and with the number of distinct recordings and speakers behind it**, which is one or two depending on Task 1. **It does not move the Validation Level** — `quality_evaluation` stays deferred per ADR 0017.
 - **A regression is audible on a profile.** Then that profile does not ship, regardless of what its tolerance cells say. This is the case the design's "a tolerance table is not audible evidence" sentence exists for.
 - **The audit cannot be run** — no listener available, or the ship decision is deferred. Then it is recorded as not run, `spec:532`'s gate ("audit recorded") is **not** met, and this plan does not claim it is. Publication was already gated on separate confirmation; this makes the gap explicit rather than quiet.
 
 - [ ] **Step 4: Commit**
 
 ```bash
+git add docs/porting/families/qwen3-tts.md
 git commit -m "qwen3-tts: the first ICL listening audit, and what it covered"
 ```
 
@@ -756,10 +851,11 @@ git commit -m "qwen3-tts: the first ICL listening audit, and what it covered"
 ### Task 16: Ship artifacts, the documentation obligations, and the fifth erratum's re-measurement
 
 **Files:**
-- Create: `scripts/hf_cards/qwen3-tts-12hz-0-6b-base.yaml`, a `docs/models/` page for the variant
+- Create: `scripts/hf_cards/qwen3-tts-12hz-0-6b-base.yaml`, `docs/models/qwen3-tts-12hz-0-6b-base.md`
 - Modify: `docs/quantization.md`, `docs/porting/families/qwen3-tts.md`, `docs/superpowers/specs/2026-08-11-qwen3-tts-stage-2-design.md`
+- Modify: `CLAUDE.md` (the stale `SYNTH_CUDA_TF32` sentence, Step 3), `scripts/dump_reference_qwen3_tts_codec_encoder.py` (the stale "101 frames at most" string, Step 3)
 
-**Three of these start from nothing.** `ls scripts/hf_cards/` returns only `kokoro-v1-0`, `omnivoice-0-6b`, `qwen3-tts-12hz-0-6b-customvoice`, `vits-ljspeech` and `vits-vctk` — **there is no Base card specification**. And **`docs/quantization.md` has no qwen3-tts section at all**: `grep -i qwen3` returns one incidental hit at `:183` describing OmniVoice's Qwen3-0.6B backbone. Every qwen3-tts profile fact lives only in the family record.
+**Three of these start from nothing.** `ls scripts/hf_cards/` returns only `kokoro-v1-0`, `omnivoice-0-6b`, `qwen3-tts-12hz-0-6b-customvoice`, `vits-ljspeech` and `vits-vctk` — **there is no Base card specification**. **`docs/quantization.md` has no qwen3-tts section at all**: `grep -i qwen3` returns one incidental hit at `:183` describing OmniVoice's Qwen3-0.6B backbone. Every qwen3-tts profile fact lives only in the family record. And **`docs/models/` has no qwen3-tts page of any kind** — `ls docs/models/` returns exactly `kokoro-v1-0.md`, `omnivoice-0-6b.md`, `vits-ljspeech.md`, `vits-vctk.md`, so there is no CustomVoice page to make a Base companion to. **This is the family's first `docs/models/` page**; model it on `omnivoice-0-6b.md`, the nearest analogue (a recent family, an unpublished-by-default posture, a profile table), and name it `docs/models/qwen3-tts-12hz-0-6b-base.md` after the variant, as every existing page is named after its own.
 
 - [ ] **Step 1: The card specification**
 
@@ -778,7 +874,10 @@ It carries a `Status: Confirmed 2026-08-10.` line at `:3` which moves with the c
 - **Re-measured.** Record the value, its method and its provenance in the erratum, the way the committed float32 re-run replaced other figures from that day.
 - **Not re-measured**, because no Plan 4 conclusion turned on it. Then say so explicitly in the family record and leave the erratum standing — the erratum's own structural argument does not depend on the count, and inheriting an unverified number silently is what the erratum exists to prevent.
 
-Also fix, while here, the stale items the carry-over lists that a Plan 4 measurement will read: `conventions.json`'s "101 frames at most" (`base-ref-max` is 375, and the generated artifact reproduces the stale line, carry-over §3.4), and `CLAUDE.md:43`'s claim that CUDA builds default to strict FP32 with `SYNTH_CUDA_TF32=OFF` — the option does not exist (`docs/backends.md:35-56`; `tests/python/test_cmake_presets.py:102` asserts its absence).
+Also fix, while here, the two stale items the carry-over lists that a Plan 4 measurement will read. **Both live in files this task must list and stage, and one of them is not the file the carry-over names:**
+
+- **"101 frames at most."** `conventions.json` is a **generated** artifact under `models/`, which the Global Constraints forbid committing — editing it would edit an ignored file and the next dump would overwrite it. The only editable source is the string literal at `scripts/dump_reference_qwen3_tts_codec_encoder.py:984`. Fix it there (`base-ref-max` is 375 frames, carry-over §3.4), and note that any already-generated `conventions.json` keeps the stale line until its case is re-dumped — which is a statement about the artifact, not a reason to hand-edit it.
+- **`CLAUDE.md:43`.** It claims CUDA builds "default to strict FP32 cuBLAS math (`SYNTH_CUDA_TF32=OFF`…)". The option does not exist (`docs/backends.md:35-56`; `tests/python/test_cmake_presets.py:102` asserts its absence). Correct the sentence to describe what is actually true — CUDA F32 matrix multiplies compute at TF32 and there is no build option to change it — leaving the rest of that paragraph (the toolchain pin, the cubin pinning, the `dev-*`-proves-correctness-never-timing rule) intact.
 
 - [ ] **Step 4: The family record's Stage 2 Plan 4 section**
 
@@ -789,8 +888,10 @@ Update the `Status:` line on every document touched, per `docs/` conventions.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/hf_cards/qwen3-tts-12hz-0-6b-base.yaml docs/quantization.md \
-        docs/porting/families/qwen3-tts.md docs/superpowers/specs/2026-08-11-qwen3-tts-stage-2-design.md
+git add scripts/hf_cards/qwen3-tts-12hz-0-6b-base.yaml docs/models/qwen3-tts-12hz-0-6b-base.md \
+        docs/quantization.md docs/porting/families/qwen3-tts.md \
+        docs/superpowers/specs/2026-08-11-qwen3-tts-stage-2-design.md \
+        CLAUDE.md scripts/dump_reference_qwen3_tts_codec_encoder.py
 git commit -m "qwen3-tts: stage the Base ship artifacts and record Stage 2 Plan 4"
 ```
 
@@ -802,11 +903,11 @@ The commit message states plainly that **nothing was uploaded and that publicati
 
 **1. The inherited gate may not survive its own redesign, and every conclusion in this plan is read through it.** This leads because it is the risk that can invalidate the rest. The committed semantic p95 already **fails** a legitimate case at 0.3478 against 2.0e-2, and the failure is a property of the statistic — a 95th percentile crossing into a flipped-frame tail at ~5% flips — not of the port, which agrees with upstream-f32 at 100.000% on that case. Widening was refused because 0.35 would leave the injected fault 4.6× above the gate instead of 80×. **The redesign must keep ≥80× on the semantic branch and 3.5× on the acoustic branch inside a real 1.64× headroom, and nothing guarantees a masked statistic can.** Worse, the flip-rate threshold the redesign needs has **no calibration data**: four numbers from **one recording**, one of which (3.96/3.96) is the same clip measured twice. And the perturbations this plan is about to introduce all push in the direction that breaks it — CUDA-vs-CPU on the codec encoder is **5.20e-3 ≈ 1.33 bf16 units**, larger than the codebook perturbation that alone flips 4.04–12.73% of codes, and OmniVoice's codec-half profiles were **blocked** precisely because quantization flipped RVQ tokens. **Mitigation:** Task 1 acquires a second recording *before* the statistic is committed, so the threshold is not calibrated on data Tasks 7, 8 and 13 then invalidate; Task 2 makes the two p95 implementations agree under a registered test before either is redesigned; Task 3 names its third outcome as "stop and re-scope" rather than "ship a weaker gate". **Residual risk:** if Task 3 lands on that third outcome, Tasks 7, 8 and 13 run against the old gate with `gate_scope_warning` intact, and every cell they commit carries that caveat explicitly — a smaller plan, honestly labelled, rather than a full one resting on a gate that does not discriminate.
 
-**2. The blocker's resolution may not be reachable without touching a published grid.** `catalog.cpp:134`'s `"codec."` prefix test is a shared function, and the three published CustomVoice packages' load behaviour is a contract with digests already on the Hub. If the only way to make runtime and tool agree about `speaker_encoder.*` moves that function's behaviour for CustomVoice too, the reconciliation cannot be done quietly. **Mitigation:** Task 6 Step 3 names this as a possible finding and requires it be reported before the change is written; the byte-identity proof for all three digests is a Global Constraint, not a task step, so it cannot be skipped by a task that did not anticipate needing it. **Residual risk:** the honest resolution may be a per-tensor split with a recorded reason at each classifier arm, which is more code than either uniform answer and is the outcome Task 6 lists third for exactly that reason.
+**2. The blocker's resolution may not be reachable without touching a published grid.** `catalog.cpp:134`'s `"codec."` prefix test and `Resolver::find`'s shape check are both shared code, and the three published CustomVoice packages' load behaviour is a contract with digests already on the Hub. The reconciliation has two halves — type *and* rank — and the rank half is the one that only `Q8_MIXED` can expose, which is why Task 6 cuts and loads that profile first rather than proving itself on F16's rank-preserving `Native` layout. If the only way to make runtime and tool agree about `speaker_encoder.*` moves that function's behaviour for CustomVoice too, the reconciliation cannot be done quietly. **Mitigation:** Task 6 Step 3 names this as a possible finding and requires it be reported before the change is written; the byte-identity proof for all three digests is a Global Constraint, not a task step, so it cannot be skipped by a task that did not anticipate needing it. **Residual risk:** the honest resolution may be a per-tensor split with a recorded reason at each classifier arm, which is more code than either uniform answer and is the outcome Task 6 lists third for exactly that reason.
 
 **3. §7's own hints are not answers, and the plan is arranged so they cannot become answers by default.** §7 says the speaker encoder is "small enough that quantizing it is unlikely to pay" and that the codec encoder "is convolution-heavy, which is the shape that produced the conv-exempt policy in another family" — and then forbids importing either precedent by analogy. **The failure mode is subtle: agreeing with §7's prior without measuring it looks identical, in the committed artifact, to measuring it and finding §7 right.** **Mitigation:** Tasks 9 and 10 each require the result be "recorded with the artifact that produced it" — package digest, case ids, build, command line — which is the discriminator. Task 10's second outcome is written specifically to name the opposite-direction analogy (inheriting qwen3-tts's own existing codec rule without measuring it) as equally forbidden.
 
-**4. Measuring the two new graphs on CUDA is new wiring, not reuse, and §7 does not authorize it.** §7 says the backend "reuses Stage 1's wiring", and Stage 1's twin pass covers `codec.decoder.*` only, by a decision recorded at `model.cpp:523-540` with its byte cost. Reading §7 as commissioning a twin pass for the two new graphs is a reading, not the text. **Mitigation:** Task 12 measures the CPU cost of the new graphs *before* writing a twin, so the ceiling on any speedup is known; its second outcome — the graphs stay CPU-only, no Base CUDA cell exists, and Stage 1's wiring is reused in the sense §7 actually states — is a complete result and is written as one. **Residual risk:** taking that outcome leaves the Base variant with no CUDA sub-grid, which is permitted by the coverage rule but is less than a reader might expect from a plan whose title says "backends". The family record must say why, in numbers.
+**4. Measuring the two new graphs on CUDA is new wiring, not reuse, and §7 does not authorize it.** §7 says the backend "reuses Stage 1's wiring", and Stage 1's twin pass covers `codec.decoder.*` only, by a decision recorded at `model.cpp:523-540` with its byte cost. Reading §7 as commissioning a twin pass for the two new graphs is a reading, not the text. **Mitigation:** Task 12 measures the CPU cost of the new graphs *before* writing a twin, so the ceiling on any speedup is known; its second outcome — the graphs stay CPU-only, no Base CUDA *sub-grid* exists, and Stage 1's wiring is reused in the sense §7 actually states — is a complete result and is written as one. **Residual risk:** taking that outcome leaves the Base variant with no CUDA sub-grid, which is permitted by the coverage rule but is less than a reader might expect from a plan whose title says "backends". It is also *less than what was measured*: the codec decoder does move on a Base package, so `public` and `replay` CUDA figures exist and are real, and the coverage rule's all-or-nothing sub-grid is the only reason they cannot be committed as cells. The family record must say why, in numbers, rather than leaving the absence to read as an absence of measurement.
 
 **5. Two build trees, two different outputs of the same code.** Correctness runs on `dev-*` (`RelWithDebInfo`, ggml at `-O2`) and performance on `Release` — and this project has already measured that the *same* input, seed and backend give **24,960 PCM frames on Release and 48,000 on RelWithDebInfo**, each reproducible, because the stop decision differs by build type. An RTF computed across the two trees is wrong by 2×; a frame count quoted without its build is meaningless. **Mitigation:** the constraint is stated globally rather than per-task, Task 14 computes RTF from same-tree figures only, and Task 11 gives the golden test's upstream root an override so a second build tree can drive it at all. **Residual risk:** `rel-dgx-spark` is not a registered CI gate, so nothing enforces that a future figure came from it — the discipline is the commit message and the card, not a test.
 
@@ -823,7 +924,7 @@ Stated plainly, so nothing here is read as more than it is.
 - **Publication.** `spec:532` and `spec:561-562`. Artifacts are staged; nothing is uploaded and nothing asks to be.
 - **Any movement of the Validation Level.** `port_validated` plus a listening audit is the delivery bar; **`quality_evaluation` stays deferred per ADR 0017**. Task 15's audit is evidence, not a level.
 - **A guaranteed profile set.** §7 assigns none, and `docs/backends.md:499-501` requires measurement without a minimum speedup. "This profile does not pay" and "this profile is blocked" are results this plan is written to be able to produce.
-- **A guaranteed CUDA cell for the Base variant.** Task 12's second outcome leaves the two new graphs on CPU, which is what §7's sentence about reusing Stage 1's wiring actually describes.
+- **A guaranteed CUDA cell for the Base variant.** Task 12's second outcome leaves the two new graphs on CPU, which is what §7's sentence about reusing Stage 1's wiring actually describes. The CUDA measurements that *are* available on a Base package under that outcome — `public` and `replay`, through the Stage 1 codec-decoder twin — are still taken and still recorded; what is not delivered is a `backends.CUDA` sub-grid, which the coverage rule will not accept without a `codec_encoder` cell.
 - **Stage 3 / Description Text**, the **1.7B Base variant**, **multi-clip enrollment**, **Native Streaming Synthesis**, **Voice Conversion** — §10 non-goals.
 - **The CLI path.** `examples/cli/` untouched.
 - **Any converter change or package re-cut**, unless a task proves one necessary and carries the byte-identity proof for the three published CustomVoice packages with it.
@@ -838,7 +939,9 @@ Stated plainly, so nothing here is read as more than it is.
 
 **Where I deviated from the research's suggested seams, and why.** Three places. Its sixteen items become sixteen tasks with a different composition: I **added** a second-reference-recording task at position 1, which the research raised only inside its "riskiest unknown" as a sequencing argument (*"which argues for acquiring a second reference recording before, not after, the statistic is committed"*) — making it a task is the only way that sequencing is actually enforced. I **merged** its items 15 and 16 into one documentation-and-artifacts task, following Plan 3's shape, because the card, the `docs/quantization.md` section, the family record and the spec erratum are one editorial pass over the same findings. And I **kept** its items 12 and 13 separate — the CUDA cells and the performance figures — against the temptation to merge them, because they are measured on two different build trees and merging them is exactly how a `dev-*` figure ends up in a card. Net: 16 tasks, the top of the research's 13–16 estimate, and the CUDA half (Tasks 11–13) is the compressible part the research identified, which Task 12's second outcome compresses on measurement rather than by prior decision.
 
-**One research claim I could not confirm and therefore did not carry as a specification.** The research states that the speaker encoder's stem convolution has a packed row that no Q8_0 block divides, offering 400 and 640 as the values for 80- and 128-bin front ends. **640 is 32 × 20**, and this package declares 128 mel bins (`spec:65`; `mel_bins` is read from package metadata at `weights.cpp:581`). The claim holds at 80 bins and not at 128, and Q5_K's 256-element super-block is a separate and much tighter constraint. Task 6 Step 2 therefore requires the row table be **derived from the actual package and committed**, and explicitly instructs the implementer not to restate either the research's arithmetic or mine as a finding.
+**One research claim I could not confirm and therefore did not carry as a specification.** The research states that the speaker encoder's stem convolution has a packed row that no Q8_0 block divides, offering 400 and 640 as the values for 80- and 128-bin front ends. **640 is 32 × 20**, and this package declares 128 mel bins (`spec:65`; `mel_bins` is read from package metadata at `weights.cpp:581`). The claim holds at 80 bins and not at 128, and Q5_K's 256-element super-block is a separate and much tighter constraint. Task 6 Step 2 therefore requires the row table be **derived from the actual package and committed**, and explicitly instructs the implementer not to restate either the research's arithmetic or mine as a finding. **It also requires the emitted *rank* beside the row**, because clearing the block size is necessary and not sufficient: `Q8_MIXED` packs a three-dimensional matrix weight to 2-D (`quantize.cpp:222-229`) and this family's resolver asks for it at three axes with no packed branch (`catalog.cpp:73-86`, against kokoro's `catalog.cpp:90-102`), so a row table alone would have certified a package the runtime refuses.
+
+**Two inherited figures this plan carried wrongly at first, corrected here rather than passed on.** Both were caught in the pre-flight scan of this document and both would have become thresholds. (1) The CUDA-vs-CPU codec-encoder disagreement of 5.20e-03 was described as "~56× the committed `codec.chain` gate of 1.0e-3". It is **5.2×** the gate; 56× is its ratio to the *observed* 9.303e-05 that gate clears. The conclusion survives — 5.2× still fails the CPU gate — but Task 13 derives a CUDA threshold at this scale, so the plan now states both ratios with what each bounds, and forbids sizing a threshold by scaling the CPU gate. (2) F16's real-time factor was quoted as a single number, 1.21, while citing two sections that measure two different workloads: `docs/porting/families/qwen3-tts.md:1611` reads **3.3** on the 37-frame case that produced the 43.04 → 9.64 s wall clock, and `:1684-1687`'s table reads **1.21** on the 9.6-second case (1.24 for the same case at `:1633`). Both are real; neither names its build. Task 7 now quotes each with its workload and warns against comparing a Base figure to either without matching workload and build.
 
 **Placeholder scan.** This plan prescribes **no numeric tolerance**. Every threshold in Tasks 3, 5, 7, 8, 13 is measured by the task that commits it. Every figure quoted above is either a committed in-tree value with its `file:line`, a measurement recorded in the carry-over or family record with its provenance, or the one command run against the real tool on 2026-08-15 — whose output is quoted verbatim.
 

@@ -48,7 +48,7 @@ below rather than assumed, and nothing is written if it fails.
 
 Usage:
 
-    scripts/envs/qwen3-tts/.venv/bin/python \\
+    uv run --project scripts/envs/qwen3-tts --locked python \\
         scripts/dump_reference_qwen3_tts_codec_encoder_float32.py \\
         --repo . \\
         --weights-dir models/qwen3-tts-12hz-0-6b-base \\
@@ -65,8 +65,11 @@ import sys
 import numpy as np
 import torch
 
-# The `encoder_valid_num_quantizers` slice: 1 semantic + 15 acoustic. Read off
-# the imported dumper rather than restated, so the two cannot drift.
+# What `speech_tokenizer.encode` is TOLD the input already is, which must equal the
+# feature extractor's own `sampling_rate` (24000, per the checkpoint's
+# speech_tokenizer/preprocessor_config.json). `_normalize_audio_inputs` resamples
+# anything else through librosa, and a resampled waveform is no longer the oracle's
+# own samples -- the bit-identity gate in the loop below is what would catch it.
 SAMPLE_RATE = 24000
 
 
@@ -94,8 +97,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--oracle-root", required=True, type=pathlib.Path,
                         help="Directory holding <case>/codec_encoder/waveform.f32.")
     parser.add_argument("--output-root", required=True, type=pathlib.Path,
-                        help="Where this run's artifacts go. MUST NOT be the oracle root: "
-                             "these are float32 artifacts and the committed oracle is bf16.")
+                        help="Where this run's artifacts go. MUST NOT overlap the oracle root "
+                             "in either direction: these are float32 artifacts and the "
+                             "committed oracle is bf16.")
     parser.add_argument("--case", action="append", required=True,
                         help="Case id under --oracle-root (repeatable).")
     parser.add_argument("--device", default="cpu",
@@ -105,10 +109,20 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if args.output_root.resolve() == args.oracle_root.resolve():
+    # Containment in EITHER direction, not just equality: `--output-root
+    # <oracle-root>/f32` writes one directory deeper, so it collides with nothing
+    # and an equality test waves it through. Equality is the degenerate case both
+    # `is_relative_to` calls already cover.
+    output_root = args.output_root.resolve()
+    oracle_root = args.oracle_root.resolve()
+    if output_root.is_relative_to(oracle_root) or oracle_root.is_relative_to(output_root):
         raise SystemExit(
-            "--output-root is the oracle root. These are float32 artifacts; writing them "
-            "there would overwrite the committed bfloat16 oracle the rest of the plan reads."
+            f"--output-root {output_root} overlaps --oracle-root {oracle_root}. These are "
+            "float32 artifacts and the oracle is bfloat16; one tree holding both, with "
+            "nothing in the layout saying which files are which, is a confounded "
+            "measurement -- the decomposition this script exists to produce would read "
+            "whichever dtype it happened to find. Telling them apart afterwards costs a "
+            "full regeneration. Point --output-root somewhere disjoint."
         )
     dumper = load_dumper(args.repo)
 
@@ -174,6 +188,8 @@ def main() -> int:
         dumper.write_f32(out / "downsample.f32", sink["downsample"][0])
         dumper.write_f32(out / "latents.f32", sink["latents"][0])
 
+        # The `encoder_valid_num_quantizers` slice: 1 semantic + 15 acoustic. Read off
+        # the imported dumper rather than restated, so the two cannot drift.
         kept = dumper.KEPT_QUANTIZER_COUNT
         frames = int(sink["downsample"][0].shape[-1])
         codes = np.empty((frames, kept), dtype=np.int32)

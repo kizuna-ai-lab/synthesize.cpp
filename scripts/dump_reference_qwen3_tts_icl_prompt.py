@@ -653,23 +653,44 @@ def load_cases_from_manifest(args: argparse.Namespace) -> list[tuple[RunCase, pa
 def resolve_reference_locator(
     locator: str, expected_sha256: Optional[str], cache_dir: pathlib.Path
 ) -> str:
-    """Fetch an http(s) reference-audio locator to a local cache, verified by digest."""
+    """Fetch an http(s) reference-audio locator to a local cache, verified by digest.
+
+    The digest is REQUIRED for a remote locator rather than checked when one
+    happens to be present. A missing digest used to mean the file was downloaded
+    and the comparison skipped entirely, while the refusal sentence below went on
+    naming a protection that had not run -- the failure mode is a reference clip
+    changing under a stable URL, which is exactly the case no check covered.
+
+    LATENT, NOT LIVE. Verified against
+    tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json: all 12 cases
+    name the one reference-audio locator
+    https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav, and
+    that artifact carries a sha256, so every case in the tree today already took
+    the verified branch and none of them reaches the new exit.
+    """
     if not (locator.startswith("http://") or locator.startswith("https://")):
         return locator
+    if expected_sha256 is None:
+        raise SystemExit(
+            f"{locator} is remote and carries no pinned sha256, so nothing could say what "
+            "was downloaded. Add a `sha256` to the manifest's source.artifacts entry whose "
+            'role is "reference-audio" and whose locator is this URL. (The explicit '
+            "--ref-audio form has no manifest to read a digest from; pass a local path "
+            "there.) Refusing to dump an ICL prompt against an unpinned reference."
+        )
     cache_dir.mkdir(parents=True, exist_ok=True)
     destination = cache_dir / locator.rsplit("/", 1)[-1]
     if not destination.exists():
         print(f"fetching {locator}", flush=True)
         with urllib.request.urlopen(locator, timeout=60) as response:  # noqa: S310
             destination.write_bytes(response.read())
-    if expected_sha256 is not None:
-        actual = hashlib.sha256(destination.read_bytes()).hexdigest()
-        if actual != expected_sha256:
-            raise SystemExit(
-                f"{destination}: sha256 {actual} does not match the manifest's "
-                f"{expected_sha256}. Refusing to dump an ICL prompt against an unpinned "
-                "reference. If a stale cached file is the cause, delete it and re-run."
-            )
+    actual = hashlib.sha256(destination.read_bytes()).hexdigest()
+    if actual != expected_sha256:
+        raise SystemExit(
+            f"{destination}: sha256 {actual} does not match the manifest's "
+            f"{expected_sha256}. Refusing to dump an ICL prompt against an unpinned "
+            "reference. If a stale cached file is the cause, delete it and re-run."
+        )
     return str(destination)
 
 

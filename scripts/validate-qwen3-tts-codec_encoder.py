@@ -325,7 +325,7 @@ def load_gates(path: pathlib.Path, variant: str, profile: str, stage_name: str):
     try:
         probes = document["variants"][variant]["profiles"][profile]["stages"][stage_name]["probes"]
     except KeyError as missing:
-        raise SystemExit(f"{path}: no {variant}/{profile}/{stage_name} cell ({missing})")
+        raise SystemExit(f"{path}: no {variant}/{profile}/{stage_name} cell ({missing})") from None
 
     chain = float(probes["codec.chain"]["rel_absmax"])
     reconstruction = {

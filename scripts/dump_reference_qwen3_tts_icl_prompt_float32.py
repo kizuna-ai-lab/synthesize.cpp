@@ -33,7 +33,7 @@ checked anyway -- the arm this script computes is compared against
 ``alignment.json``'s and the run aborts if they disagree.
 
 Writes ``text_track.f32``, ``codec_track.f32`` and ``icl_embed.f32`` per case
-under ``--output-root``, which MUST NOT be the oracle root, and prints the
+under ``--output-root``, which MUST NOT overlap the oracle root, and prints the
 upstream-f32-vs-oracle deviation for each. Pass ``--port-root`` to also report
 port-vs-upstream-f32, against tracks the integration test wrote there (see
 ``SYNTH_QWEN3_TTS_ICL_DUMP_DIR`` in tests/qwen3_tts_icl_prompt_real.cpp).
@@ -81,7 +81,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weights-dir", required=True, type=pathlib.Path)
     parser.add_argument("--oracle-root", required=True, type=pathlib.Path)
     parser.add_argument("--output-root", required=True, type=pathlib.Path,
-                        help="Where this run's float32 tracks go. MUST NOT be the oracle root.")
+                        help="Where this run's float32 tracks go. MUST NOT overlap the oracle "
+                             "root in either direction.")
     parser.add_argument("--port-root", type=pathlib.Path, default=None,
                         help="Directory holding <case>-text.f32 / <case>-codec.f32 written by "
                              "tests/qwen3_tts_icl_prompt_real.cpp under "
@@ -103,10 +104,20 @@ def relative(got: np.ndarray, reference: np.ndarray) -> float:
 @torch.inference_mode()
 def main() -> int:
     args = parse_args()
-    if args.output_root.resolve() == args.oracle_root.resolve():
+    # Containment in EITHER direction, not just equality: `--output-root
+    # <oracle-root>/f32` writes one directory deeper, so it collides with nothing
+    # and an equality test waves it through. Equality is the degenerate case both
+    # `is_relative_to` calls already cover.
+    output_root = args.output_root.resolve()
+    oracle_root = args.oracle_root.resolve()
+    if output_root.is_relative_to(oracle_root) or oracle_root.is_relative_to(output_root):
         raise SystemExit(
-            "--output-root is the oracle root. These are float32 artifacts; writing them "
-            "there would overwrite the committed bfloat16 oracle the rest of the plan reads."
+            f"--output-root {output_root} overlaps --oracle-root {oracle_root}. These are "
+            "float32 artifacts and the oracle is bfloat16; one tree holding both, with "
+            "nothing in the layout saying which files are which, is a confounded "
+            "measurement -- the decomposition this script exists to produce would read "
+            "whichever dtype it happened to find. Telling them apart afterwards costs a "
+            "full regeneration. Point --output-root somewhere disjoint."
         )
     dumper = load_dumper(args.repo)
 
@@ -138,12 +149,15 @@ def main() -> int:
         prompt_dir = args.oracle_root / case / "prompt"
         alignment = json.loads((prompt_dir / "alignment.json").read_text())
 
+        # Onto the talker's device, not left on the host. `--device cuda:0` puts the
+        # embedding tables there, and an id tensor that stayed behind makes the lookup
+        # inside the rebuild helpers a device mismatch rather than a slow path.
         ref_id = torch.from_numpy(
             np.fromfile(prompt_dir / "ref_text_ids.i32", dtype=np.int32).astype(np.int64)
-        ).unsqueeze(0)
+        ).unsqueeze(0).to(talker.device)
         text_id = torch.from_numpy(
             np.fromfile(prompt_dir / "target_text_ids.i32", dtype=np.int32).astype(np.int64)
-        ).unsqueeze(0)
+        ).unsqueeze(0).to(talker.device)
         grid = np.fromfile(args.oracle_root / case / "codes" / "reference.i32", dtype=np.int32)
         group_count = int(talker.config.num_code_groups)
         frames = grid.size // group_count
@@ -152,7 +166,9 @@ def main() -> int:
                 f"{case}: codes/reference.i32 holds {frames} frames, alignment.json says "
                 f"{alignment['ref_frames']}"
             )
-        ref_code = torch.from_numpy(grid.reshape(frames, group_count).astype(np.int64))
+        ref_code = torch.from_numpy(
+            grid.reshape(frames, group_count).astype(np.int64)
+        ).to(talker.device)
 
         text_track = dumper.rebuild_text_track(talker, ref_id, text_id, tts_eos)
         codec_track = dumper.rebuild_codec_track(talker, config, ref_code, torch.long)
@@ -179,9 +195,11 @@ def main() -> int:
 
         case_dir = args.output_root / case / "prompt"
         case_dir.mkdir(parents=True, exist_ok=True)
-        got_text = np.ascontiguousarray(aligned_text[0].to(torch.float32).numpy(), dtype=np.float32)
-        got_codec = np.ascontiguousarray(codec_track[0].to(torch.float32).numpy(), dtype=np.float32)
-        got_block = np.ascontiguousarray(block[0].to(torch.float32).numpy(), dtype=np.float32)
+        # `.cpu()` before `.numpy()`: numpy cannot see a CUDA tensor, and under
+        # `--device cuda:0` every one of these is one.
+        got_text = np.ascontiguousarray(aligned_text[0].to(torch.float32).cpu().numpy(), dtype=np.float32)
+        got_codec = np.ascontiguousarray(codec_track[0].to(torch.float32).cpu().numpy(), dtype=np.float32)
+        got_block = np.ascontiguousarray(block[0].to(torch.float32).cpu().numpy(), dtype=np.float32)
         got_text.tofile(case_dir / "text_track.f32")
         got_codec.tofile(case_dir / "codec_track.f32")
         got_block.tofile(case_dir / "icl_embed.f32")

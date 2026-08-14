@@ -622,6 +622,7 @@
                   "observed_p95_relative_l2": 0.004103,
                   "headroom": 4.9,
                   "fault_injection_p95_relative_l2": 1.601,
+                  "observed_p95_relative_l2_from_wav_input": 0.004033,
                   "note": "A PERCENTILE, NEVER A MAXIMUM, and that is measured rather than predicted. One flipped code displaces the reconstruction by about a full codebook-row separation (median |dRecon|/||e_i-e_j|| = 1.21), so this branch's per-frame maximum is 235.8 absolute against a median of 0.55, with 4 of 101 frames flipping. No bf16-scale maximum survives that, and widening one until it fit would destroy the gate. The statistic is the 95th percentile of the per-frame L2 deviation, relative to the reference frame's own L2 norm.\n\n2.0e-2 is 5x one bf16 unit, where the design says this branch's median belongs; it flips on only 4 of 101 frames so the tail stays contained. Injected fault p95 1.601, a 78x discrimination.\n\nThe two branches get separate keys and are NEVER averaged: they are an order of magnitude apart in rms (13.5 against 3.11) and, more to the point, differ sharply in dynamic range -- this branch moves 0.004 -> 1.20 under the fault (300x) while the acoustic branch moves only 0.25 -> 1.15 (4.6x). Averaging would blunt the sharper instrument with the duller one."
                 },
                 "codec.rvq_reconstruction.acoustic": {
@@ -629,6 +630,7 @@
                   "observed_p95_relative_l2": 0.2491,
                   "headroom": 2.0,
                   "fault_injection_p95_relative_l2": 1.741,
+                  "observed_p95_relative_l2_from_wav_input": 0.304719,
                   "note": "Same percentile statistic and same never-averaged rule as the semantic branch; see its note for why a maximum is unsatisfiable here.\n\nNOT at bf16 scale, and it cannot be. This branch aggregates fifteen stages and disagreement with the bf16 oracle grows monotonically down the cascade (4, 6, 20, 34, ... 74 of 101 frames), so almost every frame carries at least one flip and the branch sits in the flip tail at the MEDIAN (0.1317), not only at its p95. The design's predicted 0.18 absolute L2 for this branch is 39x too small against a measured median of 7.014 absolute and must not be used.\n\nHEADROOM IS ~2x HERE AND IT IS DRAWN FROM ONE RECORDING. base-ref-min is a byte-exact prefix of base-icl-en and base-text-short is that same clip again at full length: three cases, one speaker, one microphone. A second speaker would be independent corroboration and there is not one, so this figure and the semantic one should be revisited the first time a second reference clip exists, rather than treated as settled by three passing cases. Injected fault p95 1.741, a 3.5x discrimination -- the narrowest of the three gates."
                 }
               },
@@ -646,6 +648,18 @@
                   "base-text-short": 52.97
                 },
                 "note": "RECORDED AS EVIDENCE; NOTHING GATES ON IT. A correction is folded in here, because this file briefly stated the wrong thing: it read '4.04% of frame-stage decisions disagree (95.96% agreement)', conflating two different quantities. The erratum's 4.04% bounds the CODEBOOK TABLE's own contribution -- what differs when the same latent is quantized against a bf16 table versus an f32 one -- and is a FLOOR on divergence, not the observed rate. Measured end to end, port and oracle agree on 52.970% of frame-stage decisions for base-icl-en (760 of 1616 differ) and 53.846% for base-ref-min (96 of 208). Divergence grows monotonically across the 16 RVQ columns (4, 6, 20, 34 ... 74 of 101 frames for base-icl-en), which is the cascade the acoustic reconstruction gate is built around.\n\nTHE NUMBER THAT MATTERS FOR THIS PORT is the other one: port versus upstream-f32 agrees on 100.000% of decisions, 0 of 1616, on every case. The port reproduces float32 upstream exactly; the ~47% divergence is entirely the oracle's bf16 codebook, which is why codes were removed as a gate in the first place."
+              },
+              "registered_consumer": {
+                "measured": "2026-08-14",
+                "test": "synthesize-qwen3-tts-icl-real (tests/qwen3_tts_icl_real.cpp, assertion 1)",
+                "case": "base-icl-en",
+                "input": "models/qwen3-tts-reference-audio/clone.wav",
+                "observed_p95_relative_l2": {
+                  "semantic": 0.004033,
+                  "acoustic": 0.304719
+                },
+                "observed_code_agreement_percent": 50.743,
+                "note": "WHO ACTUALLY RUNS THESE TWO CELLS, and on what. scripts/validate-qwen3-tts-codec_encoder.py computes every figure in this stage, and NOTHING INVOKES IT -- it is registered with no CTest test, in this file or in CI, so it runs by hand or not at all. The only registered enforcement of `codec.rvq_reconstruction.semantic` and `.acoustic` is Plan 3 Task 13's end-to-end test, which prepares an ICL Voice Profile from the pinned reference clip and compares that Profile's own dequantized reconstruction against `rvq_reconstruction.f32` using the identical statistic (numpy-linear p95 of the per-frame L2 relative to the oracle frame's own norm).\n\nIT FEEDS A DIFFERENT INPUT, DELIBERATELY, AND THAT IS WHY THE FIGURES DIFFER. The oracle's `codec_encoder/waveform.f32` is EXACTLY `bfloat16(clone.wav)` -- verified element for element on 2026-08-14, because the reference model loads in bfloat16 -- and the validator hands the port that rounded waveform so its comparison holds the input identical and isolates the port's arithmetic. The end-to-end test hands the port the WAV, because that is what a caller hands the library, so it carries one extra input rounding (rel_absmax 2.954e-03 on the waveform, 0.76 of one bf16 unit). Cost, measured: the semantic branch is unchanged for practical purposes (0.004103 -> 0.004033) and the acoustic branch spends 22% more of its budget (0.2491 -> 0.304719), clearing by 1.64x instead of 2.0x.\n\nNOTHING WAS WIDENED. Both thresholds are unchanged and both comparisons pass; the acoustic injected fault (1.741) still sits 3.5x above its threshold. This is recorded so that a reader who runs the validator by hand and the test under CTest and gets two different numbers for what looks like one comparison finds the reason here instead of hunting a regression. The same input difference moves the recorded code agreement from 52.970% (760 of 1616 differ) to 50.743% (796 differ); neither gates anything.\n\nWHAT THE END-TO-END TEST DOES NOT COVER, stated so nobody reads a passing CTest run as more than it is: it enforces these two cells on ONE case, and it enforces nothing from `codec.chain` -- the primary gate, and the only one independent of the shared codebook table -- which needs the upstream float32 re-run and stays hand-run with the validator."
               },
               "gate_scope_warning": {
                 "measured": "2026-08-14",

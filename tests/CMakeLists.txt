@@ -1120,6 +1120,122 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             TIMEOUT 3600)
     endif()
 
+    # Stage 2 Plan 3's completion gate for the end-to-end half of the spec's
+    # Sec.8: reference audio AND TRANSCRIPT in, cloned audio out. Guarded on
+    # five things rather than the clone test's three, and every one of them for
+    # the reason docs/testing.md gives: a gate against committed tolerances "is
+    # not registered without it", so an unmaterialized oracle artifact shows up
+    # as a MISSING test rather than a passing one. The binary has no skip
+    # branch -- handed a path it cannot read, it fails.
+    #
+    #   * the package and the pinned clip, as the clone test is guarded;
+    #   * base-icl-en's `codec_encoder/rvq_reconstruction.f32`. This test is the
+    #     ONLY REGISTERED enforcement of the two codec.rvq_reconstruction cells:
+    #     scripts/validate-qwen3-tts-codec_encoder.py computes and prints them,
+    #     but nothing in this file or in CI invokes that script, so it is run by
+    #     hand or not at all -- the same "a registered target is not a
+    #     registered test" gap the two speaker-path validator modes below were
+    #     added to close. It enforces them on a DIFFERENT input, too (the WAV
+    #     rather than the oracle's bfloat16-rounded waveform.f32); the test file
+    #     records what that costs;
+    #   * base-icl-en's `codes/reference.i32`, which supplies the frame count
+    #     upstream actually produced AND the recorded agreement rate;
+    #   * base-icl-en's `prompt/alignment.json`, from which the reference
+    #     TRANSCRIPT is written out to a fixture rather than retyped in the
+    #     test. That matters more here than anywhere else in this file: a
+    #     reference clip paired with a transcript that does not match it makes
+    #     synthesis run to the 2048-frame ceiling -- about eight minutes,
+    #     non-OK, zero audio -- which is upstream's own pathology (Task 12) and
+    #     not something this registration may risk introducing by transcription.
+    #
+    # The transcript goes through a file rather than an argument for the reason
+    # the reference-transcript block above states: arbitrary text containing a
+    # semicolon would be split into two arguments by CMake. `string(JSON GET)`
+    # carries an ERROR_VARIABLE for the same reason it does there -- a
+    # deliberately-uncommitted artifact must not be able to abort the configure.
+    set(_synth_qwen3_tts_icl_real_case
+        "${_synth_qwen3_tts_icl_prompt_root}/base-icl-en")
+    set(_synth_qwen3_tts_icl_real_recon
+        "${_synth_qwen3_tts_icl_real_case}/codec_encoder/rvq_reconstruction.f32")
+    set(_synth_qwen3_tts_icl_real_codes
+        "${_synth_qwen3_tts_icl_real_case}/codes/reference.i32")
+    set(_synth_qwen3_tts_icl_real_alignment
+        "${_synth_qwen3_tts_icl_real_case}/prompt/alignment.json")
+    set(_synth_qwen3_tts_icl_real_ok FALSE)
+    if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}" AND EXISTS "${SYNTH_QWEN3_TTS_REFERENCE_WAV}"
+            AND EXISTS "${_synth_qwen3_tts_icl_real_recon}" AND EXISTS "${_synth_qwen3_tts_icl_real_codes}"
+            AND EXISTS "${_synth_qwen3_tts_icl_real_alignment}")
+        file(READ "${_synth_qwen3_tts_icl_real_alignment}" _synth_qwen3_tts_icl_real_json)
+        string(JSON _synth_qwen3_tts_icl_real_text
+            ERROR_VARIABLE _synth_qwen3_tts_icl_real_text_error
+            GET "${_synth_qwen3_tts_icl_real_json}" inputs ref_text)
+        if(_synth_qwen3_tts_icl_real_text_error STREQUAL "NOTFOUND"
+                AND NOT _synth_qwen3_tts_icl_real_text STREQUAL "")
+            set(_synth_qwen3_tts_icl_real_fixtures
+                "${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-icl-real")
+            file(MAKE_DIRECTORY "${_synth_qwen3_tts_icl_real_fixtures}")
+            set(_synth_qwen3_tts_icl_real_transcript
+                "${_synth_qwen3_tts_icl_real_fixtures}/base-icl-en-transcript.txt")
+            file(WRITE "${_synth_qwen3_tts_icl_real_transcript}" "${_synth_qwen3_tts_icl_real_text}")
+            set(_synth_qwen3_tts_icl_real_ok TRUE)
+        else()
+            message(STATUS "qwen3-tts icl-real skipped: base-icl-en's alignment.json has no usable "
+                "inputs.ref_text (${_synth_qwen3_tts_icl_real_text_error})")
+        endif()
+    endif()
+    if(_synth_qwen3_tts_icl_real_ok)
+        # Both p95 bounds come from the committed grid, never from a literal in
+        # the test -- the same rule (and the same FATAL_ERROR on an absent cell)
+        # the icl-prompt registration above states: a tolerance restated in a
+        # test file is a description of the test rather than its source. Two
+        # keys and never one: the semantic and acoustic branches are an order of
+        # magnitude apart in rms and that file forbids averaging them.
+        file(READ "${CMAKE_SOURCE_DIR}/tests/tolerances/qwen3-tts.json"
+            _synth_qwen3_tts_icl_real_tolerance_json)
+        foreach(_synth_qwen3_tts_icl_real_branch semantic acoustic)
+            string(JSON _synth_qwen3_tts_icl_real_gate
+                ERROR_VARIABLE _synth_qwen3_tts_icl_real_gate_error
+                GET "${_synth_qwen3_tts_icl_real_tolerance_json}"
+                    variants qwen3-tts-12hz-0-6b-base profiles BF16 stages codec_encoder
+                    probes "codec.rvq_reconstruction.${_synth_qwen3_tts_icl_real_branch}" p95_relative_l2)
+            if(_synth_qwen3_tts_icl_real_gate_error)
+                message(FATAL_ERROR
+                    "tests/tolerances/qwen3-tts.json has no "
+                    "variants/qwen3-tts-12hz-0-6b-base/profiles/BF16/stages/codec_encoder/probes/"
+                    "\"codec.rvq_reconstruction.${_synth_qwen3_tts_icl_real_branch}\"/p95_relative_l2 -- "
+                    "synthesize-qwen3-tts-icl-real enforces that cell and must not fall back to a literal "
+                    "(${_synth_qwen3_tts_icl_real_gate_error})")
+            endif()
+            set(_synth_qwen3_tts_icl_real_${_synth_qwen3_tts_icl_real_branch}
+                "${_synth_qwen3_tts_icl_real_gate}")
+        endforeach()
+
+        add_executable(synthesize-qwen3-tts-icl-real qwen3_tts_icl_real.cpp)
+        target_include_directories(synthesize-qwen3-tts-icl-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
+        target_link_libraries(synthesize-qwen3-tts-icl-real PRIVATE synthesize ggml)
+        synth_register_integration_target(synthesize-qwen3-tts-icl-real)
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-icl-real/scratch")
+        add_test(NAME synthesize-qwen3-tts-icl-real
+            COMMAND synthesize-qwen3-tts-icl-real
+                ${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}
+                ${SYNTH_QWEN3_TTS_REFERENCE_WAV}
+                ${_synth_qwen3_tts_icl_real_transcript}
+                ${_synth_qwen3_tts_icl_real_recon}
+                ${_synth_qwen3_tts_icl_real_codes}
+                ${_synth_qwen3_tts_icl_real_semantic}
+                ${_synth_qwen3_tts_icl_real_acoustic}
+                ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-icl-real/scratch)
+        set_tests_properties(synthesize-qwen3-tts-icl-real PROPERTIES
+            LABELS "integration;qwen3-tts;abi"
+            # Five full autoregressive synthesis passes over a two-word sentence
+            # (assertions 2, 3, 4, 5 and 7), plus two ECAPA-TDNN encodes and
+            # three codec-encoder passes over the 8-second clip (assertion 1
+            # prepares the ICL Profile and then re-runs the encoder, and the
+            # public seam prepares both Profiles again). Sized like the clone
+            # test's, which budgets the same shape.
+            TIMEOUT 3600)
+    endif()
+
     # The Base variant's two standalone speaker-path validator modes. Both
     # drivers were built by synth_register_integration_target and then invoked
     # by nothing: that function only appends to the check target's build list,

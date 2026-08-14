@@ -62,10 +62,18 @@ ggml_tensor * build_code_predictor(ggml_context *               context,
                                    uint32_t                     lm_head,
                                    const CodePredictorCache &   cache);
 
-// Sums each acoustic code's embedding from its own group's table, which is what
-// the talker consumes as the next frame's input. `codes` is an I32 vector of
-// code_group_count - 1 ids, one per acoustic group in order. The talker adds its
-// own embedding of the semantic code to this.
+// Sums each acoustic code's embedding from its own group's table, for one or
+// many frames at once. Returns [hidden_size, frames].
+//
+// `codes` is a contiguous I32 tensor shaped GGML `[frames, code_group_count-1]`
+// -- `ne[0]` is the FRAME index and is fastest, `ne[1]` selects the acoustic
+// group and must equal the table count. Group-major, in other words, which is
+// what makes each group's ids a contiguous 1-D view: ggml_get_rows cannot read
+// a strided index tensor, so the alternative is a copy inside the graph.
+//
+// A decode step is the frames == 1 case and passes `[1, code_group_count-1]`,
+// the same fifteen int32s it always did. The talker adds its own embedding of
+// group 0 to whatever comes back; nothing here reads the semantic code.
 ggml_tensor * sum_code_embeddings(ggml_context * context, const CodePredictorWeights & weights, ggml_tensor * codes);
 
 }  // namespace synth::qwen3tts

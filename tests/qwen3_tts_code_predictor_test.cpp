@@ -191,7 +191,9 @@ bool build_fixture(ggml_backend_dev_t device, Fixture & fixture) {
     fixture.prefill_pos  = ggml_new_tensor_1d(pctx, GGML_TYPE_I32, 2);
     fixture.step_pos     = ggml_new_tensor_1d(pctx, GGML_TYPE_I32, 1);
     fixture.prefill_mask = ggml_new_tensor_2d(pctx, GGML_TYPE_F32, 2, 2);
-    fixture.codes        = ggml_new_tensor_1d(pctx, GGML_TYPE_I32, kCodeGroups - 1);
+    // [frames, groups-1] at one frame: sum_code_embeddings reads a group's ids
+    // as a contiguous run of ne[0], so a decode step is the ne[0] == 1 case.
+    fixture.codes        = ggml_new_tensor_2d(pctx, GGML_TYPE_I32, 1, kCodeGroups - 1);
 
     fixture.buffer = ggml_backend_alloc_ctx_tensors(pctx, fixture.backend);
     if (fixture.buffer == nullptr) {
@@ -462,9 +464,19 @@ int check_rejections() {
     SYNTH_TEST_CHECK(synth::qwen3tts::code_predictor_embed(ctx, weights, 1, ids) == nullptr);
     SYNTH_TEST_CHECK(synth::qwen3tts::code_predictor_embed(ctx, weights, 0, input) == nullptr);
 
-    // The summed embedding needs exactly one code per acoustic group.
-    ggml_tensor * two_codes = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 2);
-    SYNTH_TEST_CHECK(synth::qwen3tts::sum_code_embeddings(ctx, weights, two_codes) == nullptr);
+    // The summed embedding needs one column per acoustic group -- `ne[1]`, the
+    // SLOW axis, because `ne[0]` is the frame count and is free. This fixture
+    // has one table, so a two-group grid is the mismatch.
+    ggml_tensor * two_groups = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 1, 2);
+    SYNTH_TEST_CHECK(synth::qwen3tts::sum_code_embeddings(ctx, weights, two_groups) == nullptr);
+    // The strided-grid refusal cannot be exercised on a ONE-table fixture:
+    // ggml_is_contiguous skips dimensions of extent 1, so every [frames, 1]
+    // view it accepts is contiguous by that definition. It is exercised in
+    // tests/qwen3_tts_icl_prompt_test.cpp instead, where there are fifteen.
+    // A four-dimensional grid: ggml_get_rows would read ne[2]/ne[3] as batch
+    // indices against a two-dimensional table.
+    ggml_tensor * batched = ggml_new_tensor_4d(ctx, GGML_TYPE_I32, 1, 1, 2, 1);
+    SYNTH_TEST_CHECK(synth::qwen3tts::sum_code_embeddings(ctx, weights, batched) == nullptr);
     SYNTH_TEST_CHECK(synth::qwen3tts::sum_code_embeddings(ctx, weights, input) == nullptr);
 
     SYNTH_TEST_CHECK(ggml_graph_n_nodes(graph) == 0);

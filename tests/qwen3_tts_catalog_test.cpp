@@ -759,6 +759,133 @@ int check_customvoice_leaves_the_speaker_encoder_empty() {
     return 0;
 }
 
+// The same regression the speaker-encoder checks above guard, on the other
+// region Plan 1 resolved into a discarded scratch struct: 161 codec-encoder
+// names, every one of them written into a local nothing read. The sweep cannot
+// catch that -- it asks only whether a name was *resolved*, never whether the
+// pointer was *kept* -- so the pointers are asserted here, each field by name.
+// A loop asserting "at least one is non-null" would pass with 160 dropped.
+int check_codec_encoder_resolver_keeps_every_pointer() {
+    const synth::qwen3tts::HParams h       = base_hparams();
+    const std::vector<Entry>       entries = base_entries(h);
+    Context                        context = make_context();
+    populate(context.get(), entries, nullptr);
+
+    synth::qwen3tts::ModelWeights weights;
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_OK);
+
+    const synth::qwen3tts::CodecEncoderWeights & encoder = weights.codec_encoder;
+    SYNTH_TEST_CHECK(encoder.stem.weight != nullptr && encoder.stem.bias != nullptr);
+
+    SYNTH_TEST_CHECK(encoder.stages.size() == kCodecEncoderStageWidths.size());
+    for (size_t stage = 0; stage < encoder.stages.size(); ++stage) {
+        const synth::qwen3tts::CodecEncoderStage & into = encoder.stages[stage];
+        SYNTH_TEST_CHECK(into.bottleneck_in.weight != nullptr && into.bottleneck_in.bias != nullptr);
+        SYNTH_TEST_CHECK(into.bottleneck_out.weight != nullptr && into.bottleneck_out.bias != nullptr);
+        SYNTH_TEST_CHECK(into.stride_conv.weight != nullptr && into.stride_conv.bias != nullptr);
+        // The strided convolution's kernel widens per stage, so a resolver that
+        // bound every stage to the same one would be visible here even though
+        // the null checks above could not see it.
+        SYNTH_TEST_CHECK(into.stride_conv.weight->ne[0] == kCodecEncoderDownsampleKernels[stage]);
+        SYNTH_TEST_CHECK(into.stride_conv.weight->ne[2] == kCodecEncoderStageWidths[stage]);
+    }
+
+    SYNTH_TEST_CHECK(encoder.tail.weight != nullptr && encoder.tail.bias != nullptr);
+    // The frame downsampler carries no bias, so only the weight exists to keep.
+    SYNTH_TEST_CHECK(encoder.downsample != nullptr);
+    SYNTH_TEST_CHECK(encoder.downsample->ne[0] == kCodecEncoderDownsampleConvKernel);
+
+    SYNTH_TEST_CHECK(encoder.layers.size() == kCodecEncoderTransformerLayerCount);
+    for (const synth::qwen3tts::CodecEncoderTransformerLayerWeights & layer : encoder.layers) {
+        // Standard LayerNorm on both branches: weight *and* bias, unlike the
+        // decoder's RMSNorm, so dropping the bias half must fail here.
+        SYNTH_TEST_CHECK(layer.input_layernorm.weight != nullptr && layer.input_layernorm.bias != nullptr);
+        SYNTH_TEST_CHECK(layer.q_proj != nullptr);
+        SYNTH_TEST_CHECK(layer.k_proj != nullptr);
+        SYNTH_TEST_CHECK(layer.v_proj != nullptr);
+        SYNTH_TEST_CHECK(layer.o_proj != nullptr);
+        SYNTH_TEST_CHECK(layer.self_attn_layer_scale != nullptr);
+        SYNTH_TEST_CHECK(layer.post_attention_layernorm.weight != nullptr &&
+                         layer.post_attention_layernorm.bias != nullptr);
+        SYNTH_TEST_CHECK(layer.fc1 != nullptr);
+        SYNTH_TEST_CHECK(layer.fc2 != nullptr);
+        SYNTH_TEST_CHECK(layer.mlp_layer_scale != nullptr);
+    }
+
+    SYNTH_TEST_CHECK(encoder.semantic.input_proj != nullptr && encoder.semantic.output_proj != nullptr);
+    SYNTH_TEST_CHECK(encoder.semantic.codebooks.size() == h.codec.decoder.semantic_quantizer_count);
+    for (const ggml_tensor * codebook : encoder.semantic.codebooks) {
+        SYNTH_TEST_CHECK(codebook != nullptr);
+    }
+    SYNTH_TEST_CHECK(encoder.acoustic.input_proj != nullptr && encoder.acoustic.output_proj != nullptr);
+    // The encoder's acoustic cascade runs deeper than synthesis reads back, so
+    // its length is the encoder's own constant rather than the decoder's
+    // `quantizer_count - semantic_quantizer_count`.
+    SYNTH_TEST_CHECK(encoder.acoustic.codebooks.size() == kCodecEncoderAcousticQuantizerCount);
+    for (const ggml_tensor * codebook : encoder.acoustic.codebooks) {
+        SYNTH_TEST_CHECK(codebook != nullptr);
+    }
+    // The two cascades quantize into the same table but are separate tensors;
+    // binding one to the other would leave both non-null.
+    SYNTH_TEST_CHECK(encoder.semantic.input_proj != encoder.acoustic.input_proj);
+    SYNTH_TEST_CHECK(encoder.semantic.output_proj != encoder.acoustic.output_proj);
+    return 0;
+}
+
+// The acoustic codebooks differ only by index. A resolver that wrote all 31
+// into one slot would leave 30 aliases of the 31st, which the null checks above
+// cannot see.
+int check_codec_encoder_codebooks_are_distinct_tensors() {
+    const synth::qwen3tts::HParams h       = base_hparams();
+    const std::vector<Entry>       entries = base_entries(h);
+    Context                        context = make_context();
+    populate(context.get(), entries, nullptr);
+
+    synth::qwen3tts::ModelWeights weights;
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_OK);
+
+    std::set<const ggml_tensor *> seen;
+    for (const ggml_tensor * codebook : weights.codec_encoder.semantic.codebooks) {
+        SYNTH_TEST_CHECK(seen.insert(codebook).second);
+    }
+    for (const ggml_tensor * codebook : weights.codec_encoder.acoustic.codebooks) {
+        SYNTH_TEST_CHECK(seen.insert(codebook).second);
+    }
+    SYNTH_TEST_CHECK(seen.size() == h.codec.decoder.semantic_quantizer_count + kCodecEncoderAcousticQuantizerCount);
+
+    // The eight transformer layers are likewise separate: a loop that resolved
+    // layer 0 eight times would satisfy every null check above.
+    std::set<const ggml_tensor *> projections;
+    for (const synth::qwen3tts::CodecEncoderTransformerLayerWeights & layer : weights.codec_encoder.layers) {
+        SYNTH_TEST_CHECK(projections.insert(layer.q_proj).second);
+    }
+    SYNTH_TEST_CHECK(projections.size() == kCodecEncoderTransformerLayerCount);
+    return 0;
+}
+
+// A CustomVoice package carries no codec encoder (`small_hparams` leaves
+// `has_speaker_encoder == false`, the same discriminator that gates both new
+// regions), and the struct must say so rather than carrying stale pointers
+// from a previous resolve.
+int check_customvoice_leaves_the_codec_encoder_empty() {
+    const synth::qwen3tts::HParams h = small_hparams();
+    SYNTH_TEST_CHECK(!h.has_speaker_encoder);
+    const std::vector<Entry> entries = expected_entries(h);
+    Context                  context = make_context();
+    populate(context.get(), entries, nullptr);
+
+    synth::qwen3tts::ModelWeights weights;
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_OK);
+    SYNTH_TEST_CHECK(weights.codec_encoder.stages.empty());
+    SYNTH_TEST_CHECK(weights.codec_encoder.layers.empty());
+    SYNTH_TEST_CHECK(weights.codec_encoder.stem.weight == nullptr);
+    SYNTH_TEST_CHECK(weights.codec_encoder.tail.weight == nullptr);
+    SYNTH_TEST_CHECK(weights.codec_encoder.downsample == nullptr);
+    SYNTH_TEST_CHECK(weights.codec_encoder.semantic.codebooks.empty());
+    SYNTH_TEST_CHECK(weights.codec_encoder.acoustic.codebooks.empty());
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -776,5 +903,8 @@ int main() {
     SYNTH_TEST_CHECK(check_speaker_encoder_resolver_keeps_every_pointer() == 0);
     SYNTH_TEST_CHECK(check_res2net_convolutions_are_seven_distinct_tensors() == 0);
     SYNTH_TEST_CHECK(check_customvoice_leaves_the_speaker_encoder_empty() == 0);
+    SYNTH_TEST_CHECK(check_codec_encoder_resolver_keeps_every_pointer() == 0);
+    SYNTH_TEST_CHECK(check_codec_encoder_codebooks_are_distinct_tensors() == 0);
+    SYNTH_TEST_CHECK(check_customvoice_leaves_the_codec_encoder_empty() == 0);
     return 0;
 }

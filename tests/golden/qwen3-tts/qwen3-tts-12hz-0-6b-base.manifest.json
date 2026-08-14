@@ -120,7 +120,8 @@
       "coverage": [
         "upstream-example",
         "baseline",
-        "voice-clone-icl"
+        "voice-clone-icl",
+        "alignment-arm-pad"
       ],
       "input": {
         "kind": "text_utf8",
@@ -324,7 +325,8 @@
       },
       "coverage": [
         "transcript-assisted",
-        "icl-mode"
+        "icl-mode",
+        "alignment-arm-pad"
       ],
       "input": {
         "kind": "text_utf8",
@@ -432,7 +434,8 @@
       "coverage": [
         "second-language",
         "icl-mode",
-        "non-latin-script"
+        "non-latin-script",
+        "alignment-arm-pad"
       ],
       "input": {
         "kind": "text_utf8",
@@ -540,7 +543,8 @@
       "coverage": [
         "third-language",
         "icl-mode",
-        "non-latin-script"
+        "non-latin-script",
+        "alignment-arm-pad"
       ],
       "input": {
         "kind": "text_utf8",
@@ -745,7 +749,8 @@
       },
       "coverage": [
         "reference-duration-min",
-        "min-frames-per-clip"
+        "min-frames-per-clip",
+        "alignment-arm-truncate"
       ],
       "input": {
         "kind": "text_utf8",
@@ -853,7 +858,9 @@
       },
       "coverage": [
         "reference-duration-max",
-        "max-frames-per-clip"
+        "max-frames-per-clip",
+        "alignment-arm-pad",
+        "upstream-unstable-stopping"
       ],
       "input": {
         "kind": "text_utf8",
@@ -961,7 +968,8 @@
       },
       "coverage": [
         "one-word-target-text",
-        "short-utterance"
+        "short-utterance",
+        "alignment-arm-pad"
       ],
       "input": {
         "kind": "text_utf8",
@@ -1068,7 +1076,9 @@
       },
       "coverage": [
         "near-max-input-tokens",
-        "long-sequence"
+        "long-sequence",
+        "alignment-arm-truncate",
+        "known-non-terminating"
       ],
       "input": {
         "kind": "text_utf8",
@@ -1122,7 +1132,7 @@
         "resource_cleanup"
       ],
       "expected": {
-        "status": "ok",
+        "status": "non_terminating_at_max_new_tokens",
         "artifacts": [
           {
             "name": "speaker.x_vector",
@@ -1148,21 +1158,6 @@
             "name": "codes.acoustic",
             "path": "codes/acoustic.i32",
             "format": "i32le"
-          },
-          {
-            "name": "audio.pcm",
-            "path": "audio.pcm",
-            "format": "f32le"
-          },
-          {
-            "name": "result",
-            "path": "result.json",
-            "format": "json"
-          },
-          {
-            "name": "metadata",
-            "path": "metadata.json",
-            "format": "json"
           }
         ]
       }
@@ -1174,7 +1169,8 @@
         "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
       },
       "coverage": [
-        "alternate-stochastic-path"
+        "alternate-stochastic-path",
+        "alignment-arm-pad"
       ],
       "input": {
         "kind": "text_utf8",
@@ -1280,7 +1276,8 @@
         "locator": "docs/porting/families/qwen3-tts.md#reference-contract"
       },
       "coverage": [
-        "alternate-stochastic-path"
+        "alternate-stochastic-path",
+        "alignment-arm-pad"
       ],
       "input": {
         "kind": "text_utf8",

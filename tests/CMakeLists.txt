@@ -149,6 +149,33 @@ if(SYNTH_BUILD_PYTHON_TESTS)
         LABELS "unit;python;golden"
         TIMEOUT 120
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    # Family-independent cross-check that every committed tolerance grid is full
+    # and that every validator script has a measurement behind it.
+    #
+    # THIS WAS NOT REGISTERED UNTIL 2026-08-14, and the omission is the whole
+    # reason it is here. tests/python/test_tolerance_coverage.py existed and was
+    # correct, but nothing ran it: a validator committed under a name matching no
+    # measured stage (scripts/validate-qwen3-tts-codec-encoder.py, hyphen where
+    # the stage is codec_encoder) left it failing for BOTH qwen3-tts variants
+    # across six tasks, and it surfaced only when a task happened to invoke it by
+    # hand. A check that guards against unmeasured claims is worth exactly as
+    # much as its registration.
+    #
+    # Same environment reasoning as the manifest contract above: the VITS
+    # environment owns the repository's locked Python tooling, and neither test
+    # is VITS-specific. It reads tests/tolerances/*.json and globs scripts/, so
+    # it needs no model, no build artifact and no network -- hence `unit`.
+    add_test(
+        NAME synthesize-tolerance-coverage
+        COMMAND ${SYNTH_UV_EXECUTABLE} run
+            --project ${CMAKE_SOURCE_DIR}/scripts/envs/vits
+            --locked python -m unittest
+            tests.python.test_tolerance_coverage
+            tests.python.test_tolerance_coverage_inversion)
+    set_tests_properties(synthesize-tolerance-coverage PROPERTIES
+        LABELS "unit;python;golden"
+        TIMEOUT 120
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 if(SYNTH_BUILD_SHARED AND UNIX AND NOT APPLE)
     add_test(NAME synthesize-shared-exports
@@ -168,8 +195,11 @@ synth_add_unit_test(synthesize-qwen3-tts-voice-required-test qwen3_tts_voice_req
 synth_add_unit_test(synthesize-qwen3-tts-decoder-layer-test qwen3_tts_decoder_layer_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-talker-test qwen3_tts_talker_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-prompt-slot-test qwen3_tts_prompt_slot_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-icl-prompt-test qwen3_tts_icl_prompt_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-icl-request-test qwen3_tts_icl_request_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-codec-ops-test qwen3_tts_codec_ops_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-codec-test qwen3_tts_codec_test.cpp)
+synth_add_unit_test(synthesize-qwen3-tts-codec-encoder-test qwen3_tts_codec_encoder_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-code-predictor-test qwen3_tts_code_predictor_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-sampling-test qwen3_tts_sampling_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-mel-test qwen3_tts_mel_test.cpp)
@@ -506,6 +536,18 @@ set_tests_properties(synthesize-qwen3-tts-wav-reader-test PROPERTIES LABELS "uni
 synth_register_unit_target(synthesize-qwen3-tts-wav-reader-test)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-wav-reader)
 
+# A thin adapter, not a test: runs the codec encoder graph over a real package
+# and writes every stage tap in the oracle's own layout, so Task 1's
+# codec_encoder/*.f32 dumps can be diffed against them. Registered as an
+# INTEGRATION target -- it needs the real ~2.5 GB Base package -- and it takes
+# the oracle's own waveform.f32 rather than a WAV, which is why it carries no
+# WAV reader of its own. See the file header for why that is a correctness
+# requirement and not a shortcut.
+add_executable(synthesize-qwen3-tts-codec-encoder-driver qwen3_tts_codec_encoder_driver.cpp)
+target_include_directories(synthesize-qwen3-tts-codec-encoder-driver PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(synthesize-qwen3-tts-codec-encoder-driver PRIVATE synthesize ggml)
+synth_register_integration_target(synthesize-qwen3-tts-codec-encoder-driver)
+
 # A tiny driver, not a test: runs Model::prepare_x_vector over a real WAV file
 # against a real package so scripts/validate-qwen3-tts-replay.py
 # --compare-x-vector can diff it against Task 1's oracle dump. Needs a real
@@ -797,6 +839,240 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             TIMEOUT 300)
     endif()
 
+    # The reference transcript's ids against the ones upstream passed. Needs the
+    # real Base package -- what this checks is that THIS vocabulary spends 3 and
+    # 2 tokens on the reference turn's markers, which no synthetic fixture can
+    # decide -- and the oracle's ICL prompt dump, which is deliberately not
+    # committed, so it is sentinel-gated the way the x-vector gate above is.
+    #
+    # Each case's transcript is written out of the oracle's own alignment.json
+    # rather than repeated here: the ids and the transcript that produced them
+    # have to come from the same dump or the comparison means nothing. It goes
+    # through a file rather than an argument because a transcript is arbitrary
+    # text and CMake would split one containing a semicolon into two arguments.
+    #
+    # Two ways a partial dump could turn a missing artifact into a project-wide
+    # problem, both closed here rather than left to probability. The sentinel
+    # covers `alignment.json` as well as the ids, because a dump carrying ids
+    # and no alignment would have registered a test with ZERO cases -- and the
+    # binary's own argument check then FAILS it with a usage message instead of
+    # the test simply not existing, which is the opposite of what a sentinel is
+    # for. And `string(JSON GET)` aborts the whole `cmake` configure on a key it
+    # cannot find, so it carries an ERROR_VARIABLE: a locally-materialized,
+    # deliberately-uncommitted artifact must not be able to stop the project
+    # from configuring. A case that fails either check drops out with a status
+    # message, and the registration below is skipped entirely if that empties
+    # the list.
+    set(_synth_qwen3_tts_icl_prompt_root
+        "${CMAKE_SOURCE_DIR}/build/goldens/qwen3-tts/qwen3-tts-12hz-0-6b-base")
+    set(_synth_qwen3_tts_ref_ids_sentinel
+        "${_synth_qwen3_tts_icl_prompt_root}/base-icl-en/prompt/ref_text_ids.i32")
+    set(_synth_qwen3_tts_ref_alignment_sentinel
+        "${_synth_qwen3_tts_icl_prompt_root}/base-icl-en/prompt/alignment.json")
+    set(_synth_qwen3_tts_ref_args "")
+    if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}" AND EXISTS "${_synth_qwen3_tts_ref_ids_sentinel}"
+            AND EXISTS "${_synth_qwen3_tts_ref_alignment_sentinel}")
+        set(_synth_qwen3_tts_ref_fixtures
+            "${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-reference-transcript")
+        file(MAKE_DIRECTORY "${_synth_qwen3_tts_ref_fixtures}")
+        foreach(_synth_qwen3_tts_ref_case base-icl-en base-ref-min base-text-short)
+            set(_synth_qwen3_tts_ref_ids
+                "${_synth_qwen3_tts_icl_prompt_root}/${_synth_qwen3_tts_ref_case}/prompt/ref_text_ids.i32")
+            set(_synth_qwen3_tts_ref_alignment
+                "${_synth_qwen3_tts_icl_prompt_root}/${_synth_qwen3_tts_ref_case}/prompt/alignment.json")
+            if(EXISTS "${_synth_qwen3_tts_ref_ids}" AND EXISTS "${_synth_qwen3_tts_ref_alignment}")
+                file(READ "${_synth_qwen3_tts_ref_alignment}" _synth_qwen3_tts_ref_alignment_json)
+                string(JSON _synth_qwen3_tts_ref_text
+                    ERROR_VARIABLE _synth_qwen3_tts_ref_text_error
+                    GET "${_synth_qwen3_tts_ref_alignment_json}" inputs ref_text)
+                if(_synth_qwen3_tts_ref_text_error STREQUAL "NOTFOUND"
+                        AND NOT _synth_qwen3_tts_ref_text STREQUAL "")
+                    set(_synth_qwen3_tts_ref_transcript
+                        "${_synth_qwen3_tts_ref_fixtures}/${_synth_qwen3_tts_ref_case}.txt")
+                    file(WRITE "${_synth_qwen3_tts_ref_transcript}" "${_synth_qwen3_tts_ref_text}")
+                    list(APPEND _synth_qwen3_tts_ref_args
+                        "${_synth_qwen3_tts_ref_case}"
+                        "${_synth_qwen3_tts_ref_transcript}"
+                        "${_synth_qwen3_tts_ref_ids}")
+                else()
+                    message(STATUS "qwen3-tts reference-transcript case ${_synth_qwen3_tts_ref_case} "
+                        "skipped: alignment.json has no usable inputs.ref_text "
+                        "(${_synth_qwen3_tts_ref_text_error})")
+                endif()
+            endif()
+        endforeach()
+    endif()
+    if(_synth_qwen3_tts_ref_args)
+        add_executable(synthesize-qwen3-tts-reference-transcript-real
+            qwen3_tts_reference_transcript_real.cpp)
+        target_include_directories(synthesize-qwen3-tts-reference-transcript-real
+            PRIVATE ${CMAKE_SOURCE_DIR}/src)
+        target_link_libraries(synthesize-qwen3-tts-reference-transcript-real PRIVATE synthesize)
+        synth_register_integration_target(synthesize-qwen3-tts-reference-transcript-real)
+        add_test(NAME synthesize-qwen3-tts-reference-transcript-real
+            COMMAND synthesize-qwen3-tts-reference-transcript-real
+                ${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}
+                ${_synth_qwen3_tts_ref_args})
+        set_tests_properties(synthesize-qwen3-tts-reference-transcript-real PROPERTIES
+            LABELS "integration;qwen3-tts;golden"
+            # Loading the ~2.5 GB package once and tokenizing a sentence; the
+            # budget is the load, and it is the same one the load test above
+            # sizes for.
+            TIMEOUT 300)
+    endif()
+
+    # The ICL prompt block against the two tracks upstream actually summed,
+    # per track and then summed. Guarded exactly the way the block above is,
+    # and for the same two reasons: a partial dump must neither register a
+    # zero-case test (which the binary's own usage check would then FAIL) nor
+    # abort the configure through `string(JSON GET)` on a missing key.
+    #
+    # T1, T2, the arm, the trailing length, the frame count, the hidden size
+    # and the prefix length are read OUT OF alignment.json here and passed in.
+    # The arm in particular is upstream's own executed-return reading; the test
+    # must never recompute `T1 > T2` for itself, which would restate the
+    # assumption instead of checking it.
+    #
+    # `trailing.token_ids` goes out as a fixture file rather than as arguments:
+    # it is 31 ids on base-ref-min and would swamp the command line. It is the
+    # ONLY published artifact that separates the two arms -- both of them emit a
+    # T2-position block -- so it is passed even when empty, which is itself the
+    # pad arm's signature.
+    set(_synth_qwen3_tts_icl_args "")
+    set(_synth_qwen3_tts_icl_fixtures "${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-icl-prompt")
+    file(MAKE_DIRECTORY "${_synth_qwen3_tts_icl_fixtures}")
+    if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}" AND EXISTS "${_synth_qwen3_tts_ref_alignment_sentinel}")
+        foreach(_synth_qwen3_tts_icl_case base-icl-en base-ref-min base-text-short)
+            set(_synth_qwen3_tts_icl_dir
+                "${_synth_qwen3_tts_icl_prompt_root}/${_synth_qwen3_tts_icl_case}/prompt")
+            set(_synth_qwen3_tts_icl_codes
+                "${_synth_qwen3_tts_icl_prompt_root}/${_synth_qwen3_tts_icl_case}/codes/reference.i32")
+            set(_synth_qwen3_tts_icl_alignment "${_synth_qwen3_tts_icl_dir}/alignment.json")
+            if(EXISTS "${_synth_qwen3_tts_icl_alignment}" AND EXISTS "${_synth_qwen3_tts_icl_codes}"
+                    AND EXISTS "${_synth_qwen3_tts_icl_dir}/text_track.f32"
+                    AND EXISTS "${_synth_qwen3_tts_icl_dir}/codec_track.f32"
+                    AND EXISTS "${_synth_qwen3_tts_icl_dir}/icl_embed.f32"
+                    AND EXISTS "${_synth_qwen3_tts_icl_dir}/target_text_ids.i32"
+                    AND EXISTS "${_synth_qwen3_tts_icl_dir}/trailing.f32")
+                file(READ "${_synth_qwen3_tts_icl_alignment}" _synth_qwen3_tts_icl_json)
+                set(_synth_qwen3_tts_icl_fields "")
+                set(_synth_qwen3_tts_icl_ok TRUE)
+                # `/` separates a nested key path; CMake would flatten `;` here.
+                foreach(_synth_qwen3_tts_icl_key
+                        "inputs/language" "T1" "T2" "branch" "trailing_positions" "ref_frames" "hidden_size"
+                        "placement/prefix_positions" "trailing/ends_with_tts_eos")
+                    string(REPLACE "/" ";" _synth_qwen3_tts_icl_path "${_synth_qwen3_tts_icl_key}")
+                    string(JSON _synth_qwen3_tts_icl_value
+                        ERROR_VARIABLE _synth_qwen3_tts_icl_error
+                        GET "${_synth_qwen3_tts_icl_json}" ${_synth_qwen3_tts_icl_path})
+                    if(NOT _synth_qwen3_tts_icl_error STREQUAL "NOTFOUND"
+                            OR _synth_qwen3_tts_icl_value STREQUAL "")
+                        set(_synth_qwen3_tts_icl_ok FALSE)
+                        message(STATUS "qwen3-tts icl-prompt case ${_synth_qwen3_tts_icl_case} skipped: "
+                            "alignment.json has no usable ${_synth_qwen3_tts_icl_key} "
+                            "(${_synth_qwen3_tts_icl_error})")
+                        break()
+                    endif()
+                    list(APPEND _synth_qwen3_tts_icl_fields "${_synth_qwen3_tts_icl_value}")
+                endforeach()
+                # The trailing schedule's own token ids, one per line into a
+                # fixture. LENGTH on a missing key would abort the configure,
+                # so it carries the same ERROR_VARIABLE the scalars do; an
+                # EMPTY array is legitimate and is the pad arm's own record.
+                if(_synth_qwen3_tts_icl_ok)
+                    string(JSON _synth_qwen3_tts_icl_id_count
+                        ERROR_VARIABLE _synth_qwen3_tts_icl_id_error
+                        LENGTH "${_synth_qwen3_tts_icl_json}" trailing token_ids)
+                    if(NOT _synth_qwen3_tts_icl_id_error STREQUAL "NOTFOUND")
+                        set(_synth_qwen3_tts_icl_ok FALSE)
+                        message(STATUS "qwen3-tts icl-prompt case ${_synth_qwen3_tts_icl_case} skipped: "
+                            "alignment.json has no usable trailing.token_ids "
+                            "(${_synth_qwen3_tts_icl_id_error})")
+                    else()
+                        set(_synth_qwen3_tts_icl_ids "")
+                        if(_synth_qwen3_tts_icl_id_count GREATER 0)
+                            math(EXPR _synth_qwen3_tts_icl_last "${_synth_qwen3_tts_icl_id_count} - 1")
+                            foreach(_synth_qwen3_tts_icl_index RANGE 0 ${_synth_qwen3_tts_icl_last})
+                                string(JSON _synth_qwen3_tts_icl_id
+                                    GET "${_synth_qwen3_tts_icl_json}" trailing token_ids
+                                        ${_synth_qwen3_tts_icl_index})
+                                string(APPEND _synth_qwen3_tts_icl_ids "${_synth_qwen3_tts_icl_id}\n")
+                            endforeach()
+                        endif()
+                        set(_synth_qwen3_tts_icl_ids_file
+                            "${_synth_qwen3_tts_icl_fixtures}/${_synth_qwen3_tts_icl_case}-trailing-ids.txt")
+                        file(WRITE "${_synth_qwen3_tts_icl_ids_file}" "${_synth_qwen3_tts_icl_ids}")
+                    endif()
+                endif()
+                if(_synth_qwen3_tts_icl_ok)
+                    list(GET _synth_qwen3_tts_icl_fields 0 _synth_qwen3_tts_icl_language)
+                    list(GET _synth_qwen3_tts_icl_fields 1 _synth_qwen3_tts_icl_t1)
+                    list(GET _synth_qwen3_tts_icl_fields 2 _synth_qwen3_tts_icl_t2)
+                    list(GET _synth_qwen3_tts_icl_fields 3 _synth_qwen3_tts_icl_branch)
+                    list(GET _synth_qwen3_tts_icl_fields 4 _synth_qwen3_tts_icl_trailing)
+                    list(GET _synth_qwen3_tts_icl_fields 5 _synth_qwen3_tts_icl_frames)
+                    list(GET _synth_qwen3_tts_icl_fields 6 _synth_qwen3_tts_icl_hidden)
+                    list(GET _synth_qwen3_tts_icl_fields 7 _synth_qwen3_tts_icl_prefix)
+                    list(GET _synth_qwen3_tts_icl_fields 8 _synth_qwen3_tts_icl_ends_with_eos)
+                    if(_synth_qwen3_tts_icl_ends_with_eos)
+                        set(_synth_qwen3_tts_icl_ends_with_eos 1)
+                    else()
+                        set(_synth_qwen3_tts_icl_ends_with_eos 0)
+                    endif()
+                    list(APPEND _synth_qwen3_tts_icl_args
+                        "${_synth_qwen3_tts_icl_case}"
+                        "${_synth_qwen3_tts_icl_dir}"
+                        "${_synth_qwen3_tts_icl_codes}"
+                        "${_synth_qwen3_tts_icl_language}"
+                        "${_synth_qwen3_tts_icl_t1}"
+                        "${_synth_qwen3_tts_icl_t2}"
+                        "${_synth_qwen3_tts_icl_branch}"
+                        "${_synth_qwen3_tts_icl_trailing}"
+                        "${_synth_qwen3_tts_icl_frames}"
+                        "${_synth_qwen3_tts_icl_hidden}"
+                        "${_synth_qwen3_tts_icl_prefix}"
+                        "${_synth_qwen3_tts_icl_ids_file}"
+                        "${_synth_qwen3_tts_icl_ends_with_eos}")
+                endif()
+            endif()
+        endforeach()
+    endif()
+    if(_synth_qwen3_tts_icl_args)
+        # The prompt.icl_embed bound comes from the committed grid, not from a
+        # literal in the test. It used to be five copies of 2.0e-2 in
+        # qwen3_tts_icl_prompt_real.cpp, which meant the published tolerance was
+        # a description of the test rather than its source: editing the JSON
+        # changed nothing that ran. Read here, passed as argv[2], and the test
+        # refuses a bound that is absent or out of range.
+        file(READ "${CMAKE_SOURCE_DIR}/tests/tolerances/qwen3-tts.json"
+            _synth_qwen3_tts_icl_tolerance_json)
+        string(JSON _synth_qwen3_tts_icl_embed_gate
+            ERROR_VARIABLE _synth_qwen3_tts_icl_embed_error
+            GET "${_synth_qwen3_tts_icl_tolerance_json}"
+                variants qwen3-tts-12hz-0-6b-base profiles BF16 stages replay
+                probes "prompt.icl_embed" max_relative)
+        if(_synth_qwen3_tts_icl_embed_error)
+            message(FATAL_ERROR
+                "tests/tolerances/qwen3-tts.json has no "
+                "variants/qwen3-tts-12hz-0-6b-base/profiles/BF16/stages/replay/probes/"
+                "\"prompt.icl_embed\"/max_relative -- synthesize-qwen3-tts-icl-prompt-real "
+                "enforces that cell and must not fall back to a literal "
+                "(${_synth_qwen3_tts_icl_embed_error})")
+        endif()
+        add_executable(synthesize-qwen3-tts-icl-prompt-real qwen3_tts_icl_prompt_real.cpp)
+        target_include_directories(synthesize-qwen3-tts-icl-prompt-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
+        target_link_libraries(synthesize-qwen3-tts-icl-prompt-real PRIVATE synthesize ggml)
+        synth_register_integration_target(synthesize-qwen3-tts-icl-prompt-real)
+        add_test(NAME synthesize-qwen3-tts-icl-prompt-real
+            COMMAND synthesize-qwen3-tts-icl-prompt-real
+                ${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}
+                ${_synth_qwen3_tts_icl_embed_gate}
+                ${_synth_qwen3_tts_icl_args})
+        set_tests_properties(synthesize-qwen3-tts-icl-prompt-real PROPERTIES
+            LABELS "integration;qwen3-tts;golden"
+            TIMEOUT 600)
+    endif()
+
     # Stage 2 Plan 2's completion gate: reference audio in, cloned audio out,
     # entirely through the public seam, against the real Base package and its
     # pinned reference clip. Guarded on the wav too -- a locally-materialized
@@ -832,14 +1108,205 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                 ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-clone-real)
         set_tests_properties(synthesize-qwen3-tts-clone-real PROPERTIES
             LABELS "integration;qwen3-tts;abi;golden"
-            # Four full autoregressive synthesis passes over a two-word
-            # sentence (assertions 2/3, 4, and 5) plus two ECAPA-TDNN
-            # encode passes (assertion 1's direct call and assertion 4's
-            # second Profile) against the real ~2.5 GB Base package -- the
+            # Five full autoregressive synthesis passes over a two-word
+            # sentence (assertions 2/3, 4, 5 and 7) plus three ECAPA-TDNN
+            # encode passes (assertion 1's direct call, assertion 4's second
+            # Profile, and assertion 7's ICL Profile, which also runs one
+            # codec-encoder pass over the 8-second clip) against the real
+            # ~2.5 GB Base package -- the
             # same per-call budget tests/qwen3_tts_base_load_real.cpp's own
             # TIMEOUT reasoning already sizes for a single such call, times
             # roughly four, with headroom for the sanitizer build.
             TIMEOUT 3600)
+    endif()
+
+    # Stage 2 Plan 3's completion gate for the end-to-end half of the spec's
+    # Sec.8: reference audio AND TRANSCRIPT in, cloned audio out. Guarded on
+    # five things rather than the clone test's three, and every one of them for
+    # the reason docs/testing.md gives: a gate against committed tolerances "is
+    # not registered without it", so an unmaterialized oracle artifact shows up
+    # as a MISSING test rather than a passing one. The binary has no skip
+    # branch -- handed a path it cannot read, it fails.
+    #
+    #   * the package and the pinned clip, as the clone test is guarded;
+    #   * base-icl-en's `codec_encoder/rvq_reconstruction.f32`. This test is one
+    #     of the two registered enforcements of the codec.rvq_reconstruction
+    #     cells -- the other being synthesize-qwen3-tts-codec-encoder-golden
+    #     below, which drives the committed validator and additionally covers
+    #     `codec.chain` and the other two cases. They are not interchangeable:
+    #     this one enforces them on a DIFFERENT input (the WAV, rather than the
+    #     oracle's bfloat16-rounded waveform.f32), and the test file records
+    #     what that costs. (These lines claimed sole enforcement until
+    #     2026-08-14 -- true when written and falsified by the golden gate
+    #     registered further down in this same file, which is the "partial
+    #     correction" failure the branch names elsewhere.)
+    #   * base-icl-en's `codes/reference.i32`, which supplies the frame count
+    #     upstream actually produced AND the recorded agreement rate;
+    #   * base-icl-en's `prompt/alignment.json`, from which the reference
+    #     TRANSCRIPT is written out to a fixture rather than retyped in the
+    #     test. That matters more here than anywhere else in this file: a
+    #     reference clip paired with a transcript that does not match it makes
+    #     synthesis run to the 2048-frame ceiling -- about eight minutes,
+    #     non-OK, zero audio -- which is upstream's own pathology (Task 12) and
+    #     not something this registration may risk introducing by transcription.
+    #
+    # The transcript goes through a file rather than an argument for the reason
+    # the reference-transcript block above states: arbitrary text containing a
+    # semicolon would be split into two arguments by CMake. `string(JSON GET)`
+    # carries an ERROR_VARIABLE for the same reason it does there -- a
+    # deliberately-uncommitted artifact must not be able to abort the configure.
+    set(_synth_qwen3_tts_icl_real_case
+        "${_synth_qwen3_tts_icl_prompt_root}/base-icl-en")
+    set(_synth_qwen3_tts_icl_real_recon
+        "${_synth_qwen3_tts_icl_real_case}/codec_encoder/rvq_reconstruction.f32")
+    set(_synth_qwen3_tts_icl_real_codes
+        "${_synth_qwen3_tts_icl_real_case}/codes/reference.i32")
+    set(_synth_qwen3_tts_icl_real_alignment
+        "${_synth_qwen3_tts_icl_real_case}/prompt/alignment.json")
+    set(_synth_qwen3_tts_icl_real_ok FALSE)
+    if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}" AND EXISTS "${SYNTH_QWEN3_TTS_REFERENCE_WAV}"
+            AND EXISTS "${_synth_qwen3_tts_icl_real_recon}" AND EXISTS "${_synth_qwen3_tts_icl_real_codes}"
+            AND EXISTS "${_synth_qwen3_tts_icl_real_alignment}")
+        file(READ "${_synth_qwen3_tts_icl_real_alignment}" _synth_qwen3_tts_icl_real_json)
+        string(JSON _synth_qwen3_tts_icl_real_text
+            ERROR_VARIABLE _synth_qwen3_tts_icl_real_text_error
+            GET "${_synth_qwen3_tts_icl_real_json}" inputs ref_text)
+        if(_synth_qwen3_tts_icl_real_text_error STREQUAL "NOTFOUND"
+                AND NOT _synth_qwen3_tts_icl_real_text STREQUAL "")
+            set(_synth_qwen3_tts_icl_real_fixtures
+                "${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-icl-real")
+            file(MAKE_DIRECTORY "${_synth_qwen3_tts_icl_real_fixtures}")
+            set(_synth_qwen3_tts_icl_real_transcript
+                "${_synth_qwen3_tts_icl_real_fixtures}/base-icl-en-transcript.txt")
+            file(WRITE "${_synth_qwen3_tts_icl_real_transcript}" "${_synth_qwen3_tts_icl_real_text}")
+            set(_synth_qwen3_tts_icl_real_ok TRUE)
+        else()
+            message(STATUS "qwen3-tts icl-real skipped: base-icl-en's alignment.json has no usable "
+                "inputs.ref_text (${_synth_qwen3_tts_icl_real_text_error})")
+        endif()
+    endif()
+    if(_synth_qwen3_tts_icl_real_ok)
+        # Both p95 bounds come from the committed grid, never from a literal in
+        # the test -- the same rule (and the same FATAL_ERROR on an absent cell)
+        # the icl-prompt registration above states: a tolerance restated in a
+        # test file is a description of the test rather than its source. Two
+        # keys and never one: the semantic and acoustic branches are an order of
+        # magnitude apart in rms and that file forbids averaging them.
+        file(READ "${CMAKE_SOURCE_DIR}/tests/tolerances/qwen3-tts.json"
+            _synth_qwen3_tts_icl_real_tolerance_json)
+        foreach(_synth_qwen3_tts_icl_real_branch semantic acoustic)
+            string(JSON _synth_qwen3_tts_icl_real_gate
+                ERROR_VARIABLE _synth_qwen3_tts_icl_real_gate_error
+                GET "${_synth_qwen3_tts_icl_real_tolerance_json}"
+                    variants qwen3-tts-12hz-0-6b-base profiles BF16 stages codec_encoder
+                    probes "codec.rvq_reconstruction.${_synth_qwen3_tts_icl_real_branch}" p95_relative_l2)
+            if(_synth_qwen3_tts_icl_real_gate_error)
+                message(FATAL_ERROR
+                    "tests/tolerances/qwen3-tts.json has no "
+                    "variants/qwen3-tts-12hz-0-6b-base/profiles/BF16/stages/codec_encoder/probes/"
+                    "\"codec.rvq_reconstruction.${_synth_qwen3_tts_icl_real_branch}\"/p95_relative_l2 -- "
+                    "synthesize-qwen3-tts-icl-real enforces that cell and must not fall back to a literal "
+                    "(${_synth_qwen3_tts_icl_real_gate_error})")
+            endif()
+            set(_synth_qwen3_tts_icl_real_${_synth_qwen3_tts_icl_real_branch}
+                "${_synth_qwen3_tts_icl_real_gate}")
+        endforeach()
+
+        add_executable(synthesize-qwen3-tts-icl-real qwen3_tts_icl_real.cpp)
+        target_include_directories(synthesize-qwen3-tts-icl-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
+        target_link_libraries(synthesize-qwen3-tts-icl-real PRIVATE synthesize ggml)
+        synth_register_integration_target(synthesize-qwen3-tts-icl-real)
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-icl-real/scratch")
+        add_test(NAME synthesize-qwen3-tts-icl-real
+            COMMAND synthesize-qwen3-tts-icl-real
+                ${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}
+                ${SYNTH_QWEN3_TTS_REFERENCE_WAV}
+                ${_synth_qwen3_tts_icl_real_transcript}
+                ${_synth_qwen3_tts_icl_real_recon}
+                ${_synth_qwen3_tts_icl_real_codes}
+                ${_synth_qwen3_tts_icl_real_semantic}
+                ${_synth_qwen3_tts_icl_real_acoustic}
+                ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-icl-real/scratch)
+        set_tests_properties(synthesize-qwen3-tts-icl-real PROPERTIES
+            LABELS "integration;qwen3-tts;abi"
+            # Five full autoregressive synthesis passes over a two-word sentence
+            # (assertions 2, 3, 4, 5 and 7), plus two ECAPA-TDNN encodes and
+            # three codec-encoder passes over the 8-second clip (assertion 1
+            # prepares the ICL Profile and then re-runs the encoder, and the
+            # public seam prepares both Profiles again). Sized like the clone
+            # test's, which budgets the same shape.
+            TIMEOUT 3600)
+    endif()
+
+    # The codec encoder's stage-wise gate: all three thresholds Task 12
+    # committed, over the three cases they were calibrated on.
+    #
+    # UNTIL THIS EXISTED THEY WERE INERT. scripts/validate-qwen3-tts-codec_encoder.py
+    # computes `codec.chain`, `codec.rvq_reconstruction.semantic` and
+    # `codec.rvq_reconstruction.acoustic`, and nothing invoked it -- it was the
+    # only unregistered validator in the tree, while every validate-vits-*,
+    # both validate-omnivoice-* and the other two validate-qwen3-tts-* scripts
+    # are CTest tests. `synthesize-tolerance-coverage`, the one thing Task 12
+    # did register, asserts that a cell and a same-named validator script both
+    # exist and never runs one, so it was structurally incapable of noticing
+    # that its own cells had no enforcer. `codec.chain` -- the primary gate,
+    # and the only one of the three independent of the two float32 codebook
+    # tables being bit-identical by construction -- had no consumer of ANY kind
+    # until this line; synthesize-qwen3-tts-icl-real covers the other two from
+    # the other end (a Voice Profile prepared from the WAV rather than the
+    # oracle's bfloat16-rounded waveform), and the two enforcements are
+    # deliberately not interchangeable -- see that test and the tolerance
+    # file's `registered_consumers` block.
+    #
+    # Guarded on THREE artifacts, all of them deliberately uncommitted, so an
+    # unmaterialized dump is a MISSING test rather than a passing one: the
+    # package, the oracle's own `codec_encoder` dump (which supplies both the
+    # reference AND the driver's input -- `waveform.f32`, never a WAV), and the
+    # upstream-float32 re-run, which is the half `codec.chain` actually gates.
+    # Without the third the validator can still compare port against oracle,
+    # but the comparison it exists for -- two float32 arithmetics, where a
+    # defect in this port would live -- is unavailable, so the gate is not
+    # registered at all rather than registered in a weaker form.
+    set(_synth_qwen3_tts_codec_upstream_root
+        "${CMAKE_SOURCE_DIR}/build/qwen3-tts-codec-encoder-f32")
+    set(_synth_qwen3_tts_codec_cases base-icl-en base-ref-min base-text-short)
+    set(_synth_qwen3_tts_codec_ok TRUE)
+    if(NOT EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}")
+        set(_synth_qwen3_tts_codec_ok FALSE)
+    else()
+        foreach(_synth_qwen3_tts_codec_case IN LISTS _synth_qwen3_tts_codec_cases)
+            foreach(_synth_qwen3_tts_codec_probe
+                    "${_synth_qwen3_tts_icl_prompt_root}/${_synth_qwen3_tts_codec_case}/codec_encoder/waveform.f32"
+                    "${_synth_qwen3_tts_icl_prompt_root}/${_synth_qwen3_tts_codec_case}/codec_encoder/rvq_reconstruction.f32"
+                    "${_synth_qwen3_tts_codec_upstream_root}/${_synth_qwen3_tts_codec_case}/codec_encoder/rvq_reconstruction.f32")
+                if(NOT EXISTS "${_synth_qwen3_tts_codec_probe}")
+                    set(_synth_qwen3_tts_codec_ok FALSE)
+                endif()
+            endforeach()
+        endforeach()
+    endif()
+    if(_synth_qwen3_tts_codec_ok)
+        if(NOT SYNTH_UV_EXECUTABLE)
+            find_program(SYNTH_UV_EXECUTABLE uv REQUIRED)
+        endif()
+        string(REPLACE ";" "," _synth_qwen3_tts_codec_case_arg "${_synth_qwen3_tts_codec_cases}")
+        add_test(NAME synthesize-qwen3-tts-codec-encoder-golden
+            COMMAND ${CMAKE_COMMAND}
+                -DSYNTH_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+                -DSYNTH_MODEL=${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}
+                -DSYNTH_DRIVER=$<TARGET_FILE:synthesize-qwen3-tts-codec-encoder-driver>
+                -DSYNTH_ORACLE_ROOT=${_synth_qwen3_tts_icl_prompt_root}
+                -DSYNTH_UPSTREAM_F32_ROOT=${_synth_qwen3_tts_codec_upstream_root}
+                -DSYNTH_OUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-codec-encoder
+                -DSYNTH_UV_EXECUTABLE=${SYNTH_UV_EXECUTABLE}
+                -DSYNTH_CASES=${_synth_qwen3_tts_codec_case_arg}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/check-qwen3-tts-codec-encoder.cmake)
+        set_tests_properties(synthesize-qwen3-tts-codec-encoder-golden PROPERTIES
+            LABELS "integration;qwen3-tts;golden"
+            # Three driver runs -- each one loads the ~2.5 GB package and runs
+            # the encoder graph twice over an 8-second clip -- then one numpy
+            # pass over 33 taps per case.
+            TIMEOUT 1800)
     endif()
 
     # The Base variant's two standalone speaker-path validator modes. Both

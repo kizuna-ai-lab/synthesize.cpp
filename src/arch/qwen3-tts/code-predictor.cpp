@@ -80,19 +80,28 @@ ggml_tensor * build_code_predictor(ggml_context *               context,
 }
 
 ggml_tensor * sum_code_embeddings(ggml_context * context, const CodePredictorWeights & weights, ggml_tensor * codes) {
-    if (context == nullptr || codes == nullptr || codes->type != GGML_TYPE_I32 || weights.codec_embedding.empty() ||
-        codes->ne[0] != static_cast<int64_t>(weights.codec_embedding.size())) {
+    if (context == nullptr || codes == nullptr || codes->type != GGML_TYPE_I32 || weights.codec_embedding.empty()) {
+        return nullptr;
+    }
+    // [frames, groups], frames fastest. Contiguity is what makes each group's
+    // run a 1-D view; ne[2]/ne[3] are pinned because ggml_get_rows would read
+    // the higher dimensions as batch indices.
+    if (codes->ne[1] != static_cast<int64_t>(weights.codec_embedding.size()) || codes->ne[0] < 1 || codes->ne[2] != 1 ||
+        codes->ne[3] != 1 || !ggml_is_contiguous(codes)) {
         return nullptr;
     }
 
     ggml_tensor * total = nullptr;
     for (size_t table = 0; table < weights.codec_embedding.size(); ++table) {
-        ggml_tensor * one = ggml_view_1d(context, codes, 1, static_cast<size_t>(table) * codes->nb[0]);
-        ggml_tensor * row = code_predictor_embed(context, weights, static_cast<uint32_t>(table), one);
-        if (row == nullptr) {
+        // Group `table`'s ids across every frame, in one lookup. The tables are
+        // summed in group order, and the order is the whole content of the sum:
+        // permuting two groups gives a different vector, not the same one.
+        ggml_tensor * group = ggml_view_1d(context, codes, codes->ne[0], static_cast<size_t>(table) * codes->nb[1]);
+        ggml_tensor * rows  = code_predictor_embed(context, weights, static_cast<uint32_t>(table), group);
+        if (rows == nullptr) {
             return nullptr;
         }
-        total = total == nullptr ? row : ggml_add(context, total, row);
+        total = total == nullptr ? rows : ggml_add(context, total, rows);
     }
     return total;
 }

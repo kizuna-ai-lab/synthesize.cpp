@@ -275,12 +275,24 @@ inline bool has_preset_voice_catalog(const HParams & hparams) {
 // requires the second bit on any Model that can create a v1 Profile, because
 // every successfully prepared v1 Profile can be serialized -- published from
 // hparams.profile's already-validated limits. `reference_transcript` and
-// `reference_language` stay SYNTH_REQUIREMENT_UNSUPPORTED: this rung
-// implements the x-vector clone mode only, and D4 (this plan's own ruling)
-// fixes the clone mode at preparation, so an optional transcript would invite
-// a caller to pass one and receive the weaker clone it did not ask for. Plan
-// 3 flips both to OPTIONAL in the same change that lands transcript-assisted
-// (ICL) cloning.
+// `reference_language` are SYNTH_REQUIREMENT_OPTIONAL since Plan 3 landed
+// transcript-assisted (ICL) cloning: BOTH clone modes now exist, and D4 (this
+// plan's own ruling) fixes the mode at preparation, so the transcript's
+// PRESENCE selects between them -- absent selects x-vector, present selects
+// ICL, decided in src/voice-profile.cpp's create_from_reference dispatch.
+// OPTIONAL and not REQUIRED, because a caller supplying neither field still
+// gets a working x-vector Profile; `reference_language` follows the
+// transcript and is validated against this package's declared languages when
+// present. They were UNSUPPORTED for the whole of Plan 2, which implemented
+// the x-vector mode only: advertising a mode with no implementation behind it
+// would have invited a caller to pass a transcript and receive the weaker
+// clone it did not ask for, and the flip therefore landed in the same change
+// as the selector rather than before it.
+//
+// The flip moved these two fields and NOTHING else in the snapshot. It is a
+// statement about the runtime, not about the package: the source flags, the
+// six reference limits, the schema identity and the compatibility id are all
+// still read from the same declared ProfileContract.
 //
 // A CustomVoice package (PresetCatalog) reports NOTHING: zero source flags
 // and, with them, zero in every field that describes a source, per

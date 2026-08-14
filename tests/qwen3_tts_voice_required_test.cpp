@@ -186,11 +186,18 @@ int test_base_capability_publishes_both_sources_together() {
     SYNTH_TEST_CHECK(info.source_flags ==
                      (SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE));
 
-    // Plan 2 implements one of two modes, so a transcript names a mode with no
-    // implementation behind it. Plan 3 flips both of these to OPTIONAL in the
-    // same change that lands ICL.
-    SYNTH_TEST_CHECK(info.reference_transcript == SYNTH_REQUIREMENT_UNSUPPORTED);
-    SYNTH_TEST_CHECK(info.reference_language == SYNTH_REQUIREMENT_UNSUPPORTED);
+    // OPTIONAL since Plan 3 landed ICL: both clone modes now exist, and the
+    // transcript's presence selects between them (D4). OPTIONAL and not
+    // REQUIRED -- a caller supplying neither field still gets a working
+    // x-vector Profile -- and not UNSUPPORTED, which is what Plan 2 reported
+    // while the transcript named a mode with no implementation behind it.
+    // Equality, not membership: reporting OPTIONAL here while
+    // src/voice-profile.cpp still refused a transcript would be the same
+    // capability lie in the opposite direction, which is why the flip and the
+    // mode selector landed in one change.
+    SYNTH_TEST_CHECK(info.reference_transcript == SYNTH_REQUIREMENT_OPTIONAL);
+    SYNTH_TEST_CHECK(info.reference_language == SYNTH_REQUIREMENT_OPTIONAL);
+    // Description Text belongs to Stage 3 and is not part of this flip.
     SYNTH_TEST_CHECK(info.description_language == SYNTH_REQUIREMENT_UNSUPPORTED);
 
     SYNTH_TEST_CHECK(info.reference_target_sample_rate == 24000);

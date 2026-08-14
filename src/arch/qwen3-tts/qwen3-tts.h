@@ -1,5 +1,6 @@
 #pragma once
 
+#include "codec-encoder-host.h"
 #include "model-info.h"
 #include "speaker-encoder-host.h"
 #include "synthesize.h"
@@ -14,9 +15,14 @@ struct ggml_backend_device;
 
 namespace synth::qwen3tts {
 
-// SpeakerEncoderWeights is already forward-declared by speaker-encoder-host.h
-// above; HParams needs its own declaration for Model::hparams() below.
+// SpeakerEncoderWeights and CodecEncoderWeights are already forward-declared by
+// speaker-encoder-host.h and codec-encoder-host.h above; HParams, TalkerWeights
+// and CodePredictorWeights need their own declarations for the accessors below.
+// Declared rather than included: catalog.h pulls in ggml types this header keeps
+// out of its callers.
 struct HParams;
+struct TalkerWeights;
+struct CodePredictorWeights;
 
 struct ModelInfo {
     std::string family = "qwen3-tts";
@@ -136,7 +142,64 @@ struct SynthesisRequest {
     // (weights.cpp), so a Profile prepared against this same Model always
     // satisfies it.
     const std::vector<float> * x_vector = nullptr;
+
+    // The transcript-assisted (ICL) reference, which is an ADDITION to
+    // `x_vector` rather than an alternative to it: D5 marks the `[1024]`
+    // speaker embedding `yes` in both of its columns, so an ICL request
+    // carries all four of these fields and an x-vector request carries only
+    // the one above. Borrowed, not owned -- the same shape `replay_codes`
+    // uses -- from the `std::shared_ptr` payload of the
+    // `synth_voice_profile_t` the caller supplied, whose lifetime the handle
+    // owns for the whole synthesis call (src/synthesize.cpp's dispatch).
+    //
+    // `reference_codes` is `code_group_count * reference_frames` values in
+    // codec-encoder-host.h's settled GROUP-FASTEST order, exactly as
+    // IclProfile::codes stores it: there is no transpose at this boundary or
+    // any other. `reference_text_ids` is what upstream calls `ref_id` -- the
+    // reference transcript through its own turn wrapper and slice, NOT the
+    // target text, which travels in `token_ids` as always.
+    //
+    // The four move together. A half-present set is refused by
+    // validate_speaker_sources below rather than synthesized, because it is
+    // the state that produces a plausible-sounding wrong prompt: dropping the
+    // codes alone leaves the reference transcript prefixed to the target text
+    // with no audio to align it against, and dropping the ids alone shifts
+    // the whole two-track alignment by however many ids went missing.
+    const std::vector<int32_t> * reference_codes    = nullptr;
+    const std::vector<int32_t> * reference_text_ids = nullptr;
+    uint64_t                     reference_frames   = 0;
 };
+
+// The request's speaker-source fields, checked as a SET rather than one at a
+// time, before `run_synthesis` builds anything from them.
+//
+// A free function rather than a private step of run_synthesis because
+// run_synthesis needs a `Model`, a `Model` needs a real 2.5 GB GGUF, and a
+// `unit` test may not load one -- so every rule below would otherwise be
+// reachable only from an integration test, and the half-present ICL states
+// would be reachable from NO test at all: src/synthesize.cpp's dispatch sets
+// the ICL fields as a group, so nothing downstream of it can construct one.
+// tests/qwen3_tts_xvector_length_test.cpp already records that missing
+// harness as the reason its own two cases must be integration tests; this
+// signature is the harness, for these rules.
+//
+// Rules, in the order they are checked:
+//   * a preset Voice and an external embedding are mutually exclusive -- a
+//     request carries one speaker source or the other, never both;
+//   * an `x_vector` must be exactly `hparams.talker.hidden_size` floats;
+//   * the ICL fields are all-present or all-absent, and `reference_text_ids`
+//     present-but-empty counts as absent-but-claimed, i.e. half;
+//   * ICL requires an `x_vector`, because upstream inserts the speaker
+//     embedding in both modes (D5).
+//
+// NOT re-checked here: `reference_codes->size() == reference_frames *
+// code_group_count`, and the per-code table bounds. Those belong to
+// talker-host.cpp's reference_is_well_formed, which build_talker_prompt calls
+// on every ICL request; duplicating them here would create a pair of checks
+// where deleting either one alone changes nothing observable.
+//
+// Returns SYNTH_ERR_INVALID_ARG for any violation, SYNTH_OK otherwise.
+synth_status_t validate_speaker_sources(const HParams & hparams, const SynthesisRequest & request);
 
 // The talker attends over the whole utterance, so its cache grows with it: at
 // 28 layers, 8 key/value heads and a head width of 128, one frame costs 229 kB.
@@ -174,6 +237,19 @@ class Model {
     // lives with the family rather than with the caller.
     synth_status_t tokenize_request(const std::string & text, std::vector<int32_t> & token_ids) const;
 
+    // Tokenizes a reference transcript for transcript-assisted cloning, which
+    // is NOT tokenize_request over different text: the reference wraps a
+    // reference transcript in a shorter turn (bpe.h's qwen_reference_turn) and
+    // slices the tokenized result at 3 and -2 where a request is sliced at 3
+    // and -5. The ids returned are what upstream passes as `ref_id`, so they
+    // are the sliced ones -- the turn's own markers are not in them.
+    //
+    // Not a `std::vector<int32_t>` return: an empty or whitespace-only
+    // transcript is SYNTH_ERR_INVALID_ARG per the design's §9 error table, and
+    // the limit and package-defect paths in qwen_reference_transcript_ids have
+    // their own statuses too.
+    synth_status_t tokenize_reference_transcript(const std::string & text, std::vector<int32_t> & token_ids) const;
+
     // Resolves a preset Voice and the codec language token for a request. A
     // speaker carrying a dialect override wins over the requested language.
     synth_status_t resolve_voice(const std::string & voice_id,
@@ -202,6 +278,17 @@ class Model {
                                     const char *&              out_diagnostic_code,
                                     const char *&              out_diagnostic_message) const;
 
+    // Reference audio to the [16, T] reference code grid, for the ICL path.
+    // Split out from Voice Profile preparation on exactly the reasoning
+    // prepare_x_vector's own comment gives: this half is deterministic and is
+    // compared against the oracle on its own. The two are siblings and not
+    // alternatives -- an ICL Profile carries both an x-vector and a code grid.
+    synth_status_t prepare_codec_reference(const std::vector<float> & pcm_24k,
+                                           int                        threads,
+                                           CodecEncoding &            output,
+                                           const char *&              out_diagnostic_code,
+                                           const char *&              out_diagnostic_message) const;
+
     // What arch/qwen3-tts/profile.h's create_x_vector_profile needs from a
     // live Model, exposed as two small accessors rather than that function
     // taking a `Model &` directly -- see its own header comment for why:
@@ -214,6 +301,21 @@ class Model {
     // these from a REAL Loaded Model rather than a synthetic HParams fixture.
     const HParams &               hparams() const;
     const SpeakerEncoderWeights & speaker_encoder_weights() const;
+    // The speech tokenizer's encoder half, for the ICL path. Both empty on a
+    // CustomVoice package, which carries neither -- see build_model_weights.
+    // Exposed on the same reasoning as the accessor above: the graph it feeds
+    // takes a weights struct rather than a Model, so a synthetic fixture can
+    // drive it, and only a caller holding a REAL Loaded Model needs this.
+    const CodecEncoderWeights &   codec_encoder_weights() const;
+    // The two tables the ICL prompt's codec track reads: group 0 through the
+    // talker's own codec embedding, groups 1..15 through the code predictor's.
+    // Exposed on the same reasoning as the two accessors above -- the graph
+    // seam (talker.h's build_talker_prefill_input, code-predictor.h's
+    // sum_code_embeddings) takes weights structs, so a synthetic fixture drives
+    // it, and only a caller comparing against the real package's own embedding
+    // rows needs these.
+    const TalkerWeights &         talker_weights() const;
+    const CodePredictorWeights &  code_predictor_weights() const;
 
   private:
     // The language half of resolve_voice, for a request whose speaker is an

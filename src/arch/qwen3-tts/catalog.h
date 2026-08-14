@@ -155,13 +155,66 @@ struct SpeakerEncoderWeights {
     Conv1dWeights                           fc;        // pooled statistics -> enc_dim
 };
 
+// One downsampling stage of the codec encoder's convolutional stem: a
+// narrow-then-wide residual bottleneck (`layers.<3n+1>.block.1` and `.3`)
+// followed by a strided convolution (`layers.<3n+3>`) that widens the channel
+// count while shortening the sequence. The activation-only position between
+// them carries no tensor.
+struct CodecEncoderStage {
+    Conv1dWeights bottleneck_in;   // kernel 3, width -> width/2
+    Conv1dWeights bottleneck_out;  // kernel 1, width/2 -> width
+    Conv1dWeights stride_conv;     // kernel {8,10,12,16}, width -> {128,256,512,1024}
+};
+
+// The codec encoder's transformer layer. Standard LayerNorm (weight *and*
+// bias) and a plain two-layer MLP, unlike CodecTransformerLayerWeights above,
+// which is RMSNorm and gated: the two are built from the same
+// per-branch-scale idea but are not the same block, so they do not share a
+// struct.
+struct CodecEncoderTransformerLayerWeights {
+    LayerNormWeights input_layernorm;
+    ggml_tensor *    q_proj                = nullptr;
+    ggml_tensor *    k_proj                = nullptr;
+    ggml_tensor *    v_proj                = nullptr;
+    ggml_tensor *    o_proj                = nullptr;
+    ggml_tensor *    self_attn_layer_scale = nullptr;
+    LayerNormWeights post_attention_layernorm;
+    ggml_tensor *    fc1             = nullptr;
+    ggml_tensor *    fc2             = nullptr;
+    ggml_tensor *    mlp_layer_scale = nullptr;
+};
+
+// The speech tokenizer's encoder half, which Base variants carry: waveform in,
+// codes out. Plan 1 resolved these 161 names into a discarded scratch struct
+// because no graph could reach them; Plan 3's ICL path is that graph, so the
+// pointers are kept.
+//
+// The quantizer cascades reuse CodecQuantizerWeights: the encoder's tables have
+// the decoder's shape and differ only in where the name puts them (`layers.<n>`
+// rather than `vq.layers.<n>`), which is the resolver's problem and not the
+// struct's. The acoustic cascade runs deeper here than the decoder ever reads
+// back -- 31 stages against `quantizer_count - semantic_quantizer_count` -- so
+// its length is not derived from the decoder's.
+struct CodecEncoderWeights {
+    Conv1dWeights                                    stem;    // encoder.layers.0.conv, kernel 7, 1 -> 64
+    std::vector<CodecEncoderStage>                   stages;  // four
+    Conv1dWeights                                    tail;    // encoder.layers.14.conv, kernel 3, -> codebook_dim
+    // codec.encoder.downsample.conv.weight: the frame downsampler, kernel 4,
+    // hidden -> hidden. It carries no bias, so there is no Conv1dWeights here.
+    ggml_tensor *                                    downsample = nullptr;
+    std::vector<CodecEncoderTransformerLayerWeights> layers;  // eight
+    CodecQuantizerWeights                            semantic;
+    CodecQuantizerWeights                            acoustic;
+};
+
 struct ModelWeights {
     TalkerWeights         talker;
     CodePredictorWeights  code_predictor;
     CodecDecoderWeights   codec;
-    // Empty (default-constructed) for a CustomVoice package -- see
+    // Both empty (default-constructed) for a CustomVoice package -- see
     // build_model_weights's doc comment below.
     SpeakerEncoderWeights speaker_encoder;
+    CodecEncoderWeights   codec_encoder;
 };
 
 // Resolves the whole catalog against a loaded package.
@@ -174,12 +227,11 @@ struct ModelWeights {
 //
 // When `hparams.has_speaker_encoder` is set (Base variants), the catalog also
 // covers `speaker_encoder.*` and `codec.encoder.*`: the ECAPA-TDNN speaker
-// encoder and the speech tokenizer's encoder half. The speaker encoder is
-// resolved into `ModelWeights::speaker_encoder` and read by
-// speaker-encoder.cpp's graph (Plan 2); the codec encoder still has no graph
-// builder -- Plan 3 adds one -- so it is resolved here purely to bring its
-// names into the sweep. Either way, a Base package that carries these
-// uncatalogued is refused rather than silently accepted.
+// encoder and the speech tokenizer's encoder half. Each is resolved into its
+// own member -- `ModelWeights::speaker_encoder` for speaker-encoder.cpp's
+// graph (Plan 2), `ModelWeights::codec_encoder` for the ICL path's (Plan 3) --
+// and a Base package that carries either uncatalogued is refused rather than
+// silently accepted.
 // `codec_context`, when non-null, holds same-named twins of the codec half and
 // the codec is bound against those instead. That is what lets the codec run on
 // an accelerator while the talker and the code predictor stay on the CPU, which

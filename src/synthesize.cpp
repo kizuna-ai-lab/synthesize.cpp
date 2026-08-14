@@ -189,12 +189,34 @@ synth_sink_result_t SYNTH_CALL collect_audio(void * user_data, const synth_audio
 //
 // Nor is it a graph failure. Routing it through the generic branch also emitted a
 // `synthesis.graph_failed` diagnostic, which the sibling paths do not.
+//
+// IT IS STILL WORTH A DIAGNOSTIC OF ITS OWN, which it did not have until Plan
+// 3's Task 11 measured what a caller actually experiences on this path. The
+// separation above removed the WRONG diagnostic and left none, so a limit stop
+// arrived as a bare status: no code, no message, and -- for the ICL request
+// that motivated this -- eight minutes of CPU beforehand and no audio. Two of
+// this family's four routes here are reachable from an ordinary caller input,
+// so the sink now carries `synthesis.output_limit` and a message naming which
+// route it was. `message` is a static string chosen at the call site; a null
+// sink is ignored by emit_diagnostic as everywhere else.
 synth_status_t report_output_limit(const synth::AudioDeliveryInfo & info,
                                    const synth_audio_sink_t *       sink,
-                                   synth_result_t *                 out_result) {
+                                   synth_result_t *                 out_result,
+                                   const synth_diagnostic_sink_t *  diagnostics,
+                                   const char *                     message) {
     (void) synth::deliver_complete_audio(nullptr, 0, info, sink, out_result);
+    emit_diagnostic(diagnostics, SYNTH_ERR_OUTPUT_LIMIT, "synthesis.output_limit", message);
     return SYNTH_ERR_OUTPUT_LIMIT;
 }
+
+// The two messages every family's limit stop chooses between. A preflight
+// refusal and a stop during generation are different things to a caller: the
+// first is arithmetic on the request and can be fixed by changing the request,
+// the second means the model ran and never stopped.
+constexpr const char * kOutputLimitBelowOneFrame =
+    "the request's output limit is smaller than one of this Model Variant's native frames";
+constexpr const char * kOutputLimitDuringGeneration =
+    "synthesis reached the effective output limit before the model produced its stop condition";
 
 void reset_result(synth_result_t * result) {
     if (result != nullptr) {
@@ -941,7 +963,8 @@ synth_status_t synth_synthesize(synth_context_t *          context,
                     // A limit smaller than one frame cannot be met by
                     // emitting anything, and asking for zero frames would be
                     // read as unset.
-                    return report_output_limit(delivery_info, sink, out_result);
+                    return report_output_limit(delivery_info, sink, out_result, prepared.diagnostics,
+                                               kOutputLimitBelowOneFrame);
                 }
             } else {
                 family_request.max_output_frames = 0;  // the family applies its own package cap
@@ -954,7 +977,8 @@ synth_status_t synth_synthesize(synth_context_t *          context,
             // stop arrives here rather than at the delivering check further
             // down.
             if (status == SYNTH_ERR_OUTPUT_LIMIT) {
-                return report_output_limit(delivery_info, sink, out_result);
+                return report_output_limit(delivery_info, sink, out_result, prepared.diagnostics,
+                                           kOutputLimitDuringGeneration);
             }
             if (status != SYNTH_OK) {
                 emit_diagnostic(prepared.diagnostics, status, "synthesis.graph_failed", synth_status_string(status));
@@ -1072,18 +1096,6 @@ synth_status_t synth_synthesize(synth_context_t *          context,
                 }
                 const auto & clone =
                     *static_cast<const synth::qwen3tts::XVectorProfile *>(prepared.voice_profile->payload.get());
-                // Plan 3 adds CloneMode::Icl; until then, D4 (this plan's own
-                // ruling) fixes the mode at preparation and every Profile this
-                // family can create or load carries CloneMode::XVector, so
-                // this is unreachable today -- guarded now so that landing
-                // Icl does not also have to remember to add this refusal. A
-                // Profile whose payload says otherwise is refused rather than
-                // silently downgraded to the mode it did not ask for.
-                if (clone.mode != synth::qwen3tts::CloneMode::XVector) {
-                    emit_diagnostic(prepared.diagnostics, SYNTH_ERR_UNSUPPORTED_VOICE, "synthesis.voice_unsupported",
-                                    "this build supports x-vector Voice Profiles only");
-                    return SYNTH_ERR_UNSUPPORTED_VOICE;
-                }
                 // request.voice_id stays empty above, so model.cpp's own
                 // external/voice_id mutual-exclusivity check is always
                 // satisfied here. The guarantee is
@@ -1093,7 +1105,70 @@ synth_status_t synth_synthesize(synth_context_t *          context,
                 // variant's empty Preset Voice Catalog, which happens to hold
                 // as well and would stop holding the day a Base-shaped
                 // package shipped a catalog.
-                family_request.x_vector = &clone.x_vector;
+                //
+                // BOTH modes carry the x-vector. D5's table marks the [1024]
+                // speaker embedding `yes` in both of its columns, because
+                // upstream inserts it regardless of mode, which is why
+                // IclProfile carries a whole XVectorProfile as its first
+                // member rather than an alternative to one -- and why this
+                // assignment sits above the switch instead of inside its
+                // XVector arm.
+                family_request.x_vector   = &clone.x_vector;
+                // NO `default:` ARM, DELIBERATELY. A `default:` beside two
+                // arms that already cover every enumerator gives the runtime
+                // refusal below and silently gives up the COMPILE-TIME one:
+                // -Wswitch (on in this build) warns about an unhandled
+                // enumerator only while the switch is exhaustive, so adding a
+                // third CloneMode would build clean and be caught at run time
+                // by a test someone has to think to write. Set here, refused
+                // after the switch, and a new enumerator that reaches neither
+                // arm is a warning at the line that has to change.
+                bool clone_mode_supported = false;
+                switch (clone.mode) {
+                    case synth::qwen3tts::CloneMode::XVector:
+                        clone_mode_supported = true;
+                        break;
+                    case synth::qwen3tts::CloneMode::Icl:
+                        {
+                            // The same pointer, read back at its real type. The
+                            // `clone` reference above IS this object's `speaker`
+                            // member -- IclProfile is standard-layout with
+                            // XVectorProfile first, and profile.h holds that
+                            // property with static_asserts -- so the two casts
+                            // name one object and `clone.x_vector` above is
+                            // `icl.speaker.x_vector`.
+                            //
+                            // Borrowed, not copied: `prepared.voice_profile`
+                            // owns the shared_ptr payload for the whole call, the
+                            // same lifetime `family_request.replay_codes` already
+                            // relies on. `groups` is not passed -- the family
+                            // checks the grid against its own
+                            // talker.code_group_count in
+                            // talker-host.cpp's reference_is_well_formed, and a
+                            // second copy of that number here would be a check
+                            // that could not fail on its own.
+                            const auto & icl = *static_cast<const synth::qwen3tts::IclProfile *>(
+                                prepared.voice_profile->payload.get());
+                            family_request.reference_codes    = &icl.codes;
+                            family_request.reference_text_ids = &icl.reference_text_ids;
+                            family_request.reference_frames   = icl.frames;
+                            clone_mode_supported              = true;
+                            break;
+                        }
+                }
+                // Unreachable for every Profile this family can create or load
+                // today, and kept for the same reason its predecessor was kept
+                // through Plan 2: a third clone mode added later must be
+                // refused by name rather than silently downgraded to whichever
+                // arm happens to fall through. The message names both
+                // supported modes because the ABI has exactly one voice-error
+                // status and the diagnostic text is the only thing separating
+                // this refusal from the two above it.
+                if (!clone_mode_supported) {
+                    emit_diagnostic(prepared.diagnostics, SYNTH_ERR_UNSUPPORTED_VOICE, "synthesis.voice_unsupported",
+                                    "this build supports x-vector and transcript-assisted Voice Profiles only");
+                    return SYNTH_ERR_UNSUPPORTED_VOICE;
+                }
             }
             family_request.seed              = actual_seed;
             family_request.threads           = context->threads;
@@ -1114,7 +1189,8 @@ synth_status_t synth_synthesize(synth_context_t *          context,
                 if (family_request.max_frames == 0) {
                     // A limit smaller than one frame cannot be met by emitting
                     // anything, and asking for zero frames would be read as unset.
-                    return report_output_limit(delivery_info, sink, out_result);
+                    return report_output_limit(delivery_info, sink, out_result, prepared.diagnostics,
+                                               kOutputLimitBelowOneFrame);
                 }
             } else {
                 family_request.max_frames = 0;  // the family applies kDefaultMaxFrames
@@ -1127,8 +1203,45 @@ synth_status_t synth_synthesize(synth_context_t *          context,
             // rather than at a delivering check further down. Taking the generic
             // branch left every resolved result field zeroed and called it a
             // graph failure.
+            //
+            // A limit stop here means the talker never produced its stop code.
+            // For a transcript-assisted request one cause has been MEASURED --
+            // a reference clip paired with a transcript that is not what it
+            // says: 2026-08-14, the real 8-second pinned clip with the
+            // transcript replaced by "hello there", 475.9 s of CPU, the full
+            // 2048-frame default ceiling, zero audio. That is an
+            // imperfect-ASR-transcript input rather than a contrived one, so
+            // naming it saves a caller from a bare status after eight minutes.
+            //
+            // THE MESSAGE NAMES IT AS A POSSIBILITY AND MUST NOT ASSERT IT AS
+            // THE CAUSE, and an earlier revision of this string did exactly
+            // that ("the measured cause is..."). The condition below is any
+            // ICL request, and this tree contains two ICL limit stops with
+            // entirely different causes: tests/qwen3_tts_base_load_real.cpp
+            // reaches it with a MATCHING transcript and a caller-set
+            // `max_output_frames` that no model could satisfy, and
+            // `base-text-long` reaches it on arithmetic -- a 4,749-character
+            // text needing roughly 4,000 frames against a 2,048 budget. A
+            // caller in either position, told "the measured cause is your
+            // reference transcript", re-records a clip that was never wrong.
+            // Only the TRIGGER was ever identified; nothing was root-caused,
+            // and the family record says so in the same words.
+            //
+            // The Preset-Voice sibling states the principle from the other
+            // side: tests/qwen3_tts_output_limit_test.cpp asserts this string
+            // is ABSENT for a request carrying no reference, "because naming a
+            // reference transcript here would be misdirection". The same
+            // objection applies within the ICL arm whenever the cause is the
+            // caller's cap or the caller's text.
             if (status == SYNTH_ERR_OUTPUT_LIMIT) {
-                return report_output_limit(delivery_info, sink, out_result);
+                return report_output_limit(
+                    delivery_info, sink, out_result, prepared.diagnostics,
+                    family_request.reference_codes != nullptr ?
+                        "synthesis reached the effective output limit before the model produced its stop "
+                        "condition; for a transcript-assisted Voice Profile, check the output limit and the "
+                        "length of the requested text first, and note that one measured cause is a reference "
+                        "transcript that does not match its reference audio" :
+                        kOutputLimitDuringGeneration);
             }
             // A Voice refusal is not a graph failure. run_synthesis resolves
             // the Voice before it builds anything (Model::resolve_voice), so

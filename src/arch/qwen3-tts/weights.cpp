@@ -781,12 +781,28 @@ void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & i
     // that can create a v1 Profile, because every successfully prepared v1
     // Profile can be serialized.
     info.source_flags         = SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE;
-    // UNSUPPORTED, not OPTIONAL: this rung implements the x-vector mode only.
-    // D4 fixes the clone mode at preparation, so an optional transcript would
-    // invite a caller to pass one and receive the weaker clone it did not ask
-    // for. Plan 3 flips both in the change that lands ICL.
-    info.reference_transcript = SYNTH_REQUIREMENT_UNSUPPORTED;
-    info.reference_language   = SYNTH_REQUIREMENT_UNSUPPORTED;
+    // OPTIONAL, both of them, since Plan 3 landed the transcript-assisted
+    // (ICL) mode next to the x-vector one. BOTH MODES NOW EXIST, and D4 fixes
+    // the clone mode at preparation, so the transcript's PRESENCE is what
+    // selects between them: absent selects x-vector, present selects ICL
+    // (src/voice-profile.cpp's create_from_reference dispatch, the one site in
+    // the chain holding a live Model and therefore able to reach the BPE
+    // tables). Neither field is REQUIRED -- a caller supplying neither still
+    // gets a working x-vector Profile -- and neither is UNSUPPORTED any
+    // longer, which it was for the whole of Plan 2 precisely because
+    // advertising a mode with no implementation behind it would have invited a
+    // caller to pass a transcript and receive the weaker clone it did not ask
+    // for. `reference_language` follows the transcript, as it did when it was
+    // refused: optional, and validated against this package's declared
+    // languages when present.
+    //
+    // Nothing else here moves. This is a statement about the RUNTIME, not
+    // about the package: `source_flags`, the six reference limits, the schema
+    // identity and the compatibility id are all read from the same declared
+    // ProfileContract they were before, and Description Text and Random Seed
+    // stay unadvertised.
+    info.reference_transcript = SYNTH_REQUIREMENT_OPTIONAL;
+    info.reference_language   = SYNTH_REQUIREMENT_OPTIONAL;
 
     info.reference_target_sample_rate = hparams.profile.reference_sample_rate;
     info.reference_target_channels    = hparams.profile.reference_channels;

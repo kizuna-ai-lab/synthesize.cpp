@@ -278,6 +278,9 @@ struct Model::Impl {
     ggml_backend_buffer_t               codec_buffer   = nullptr;
     HParams                             hparams;
     std::shared_ptr<const TextFrontend> frontend;
+    // The same tokenizer wrapping nothing, for the reference transcript's own
+    // turn; see where it is built for why it cannot be the one above.
+    std::shared_ptr<const TextFrontend> reference_frontend;
     ModelWeights                        weights;
 
     ~Impl() {
@@ -394,6 +397,18 @@ const SpeakerEncoderWeights & Model::speaker_encoder_weights() const {
     return implementation_->weights.speaker_encoder;
 }
 
+const CodecEncoderWeights & Model::codec_encoder_weights() const {
+    return implementation_->weights.codec_encoder;
+}
+
+const TalkerWeights & Model::talker_weights() const {
+    return implementation_->weights.talker;
+}
+
+const CodePredictorWeights & Model::code_predictor_weights() const {
+    return implementation_->weights.code_predictor;
+}
+
 uint32_t Model::samples_per_frame() const {
     return implementation_->hparams.codec.hop_length;
 }
@@ -410,6 +425,18 @@ synth_status_t Model::tokenize_request(const std::string & text, std::vector<int
     // The frontend applies the turn wrapper itself, so this hands it the text.
     return implementation_->frontend->prepare(SYNTH_INPUT_TEXT_UTF8, text.data(), text.size(),
                                               implementation_->hparams.max_input_tokens, token_ids);
+}
+
+synth_status_t Model::tokenize_reference_transcript(const std::string & text, std::vector<int32_t> & token_ids) const {
+    token_ids.clear();
+    if (implementation_->reference_frontend == nullptr) {
+        return SYNTH_ERR_TEXT_FRONTEND;
+    }
+    // The reference turn goes on here rather than in the frontend, which is
+    // why this uses the unwrapped one; the rule itself, and everything it
+    // refuses, lives in bpe.cpp where a unit test can reach it.
+    return qwen_reference_transcript_ids(*implementation_->reference_frontend, text,
+                                         implementation_->hparams.max_input_tokens, token_ids);
 }
 
 synth_status_t Model::resolve_voice(const std::string & voice_id,
@@ -501,10 +528,16 @@ synth_status_t Model::load(const std::string &      path,
         // build_model_weights binds against the twin context: it calls
         // resolve_codec there, which resolves `codec.decoder.*` and nothing
         // else. A Base package also carries 161 `codec.encoder.*` tensors,
-        // and twinning those mirrored 224,674,944 bytes onto the device that
-        // no graph ever bound -- there is no codec encoder graph until Plan 2,
-        // and when there is one it needs a twin pass of its own rather than
-        // this one widened by accident.
+        // and twinning those would mirror 224,674,944 bytes onto the device
+        // for a graph that is not bound against the twin.
+        //
+        // There IS a codec encoder graph now -- codec-encoder.cpp, the ICL
+        // path's -- and it is deliberately still outside this pass. It is
+        // bound against `weights_context`, so it reads the CPU-resident
+        // originals wherever its caller's BackendPlan puts the computation,
+        // exactly as speaker-encoder.cpp's ECAPA graph does. Moving it onto an
+        // accelerator is a twin pass of its own, with its own prefix; it is not
+        // this one widened by one strncmp.
         const bool split = implementation->backend_plan->primary() != implementation->backend_plan->cpu_backend();
         if (split) {
             ggml_init_params twin_params{};
@@ -561,6 +594,42 @@ synth_status_t Model::load(const std::string &      path,
                 return status;
             }
             implementation->frontend = std::shared_ptr<const TextFrontend>(std::move(frontend));
+
+            // The same tables again, wrapping nothing. The reference
+            // transcript is wrapped in a *different* turn (bpe.h's
+            // qwen_reference_turn), and the frontend above cannot be reused
+            // for it: the core runs that one for every request
+            // (synthesis-request.cpp), so it must keep applying the assistant
+            // turn, and it would apply it on top of the reference turn rather
+            // than instead of it.
+            //
+            // This is a second copy of the vocabulary and merge tables rather
+            // than a second view of them, which the shared make_bpe_frontend
+            // does not offer. The cost was measured rather than assumed: on
+            // the Base package, loading with this frontend takes the peak
+            // resident set from 5 594 676 KB to 5 639 716 KB, +45 MB or
+            // 0.8 %. Sharing the tables would mean reshaping BpeFrontend for
+            // a saving that size, which is a change to a file omnivoice also
+            // loads and is not this slice's to make.
+            //
+            // Two alternatives, so the record does not imply there was only
+            // one. Sharing the tables is the first, above. The second is
+            // building this lazily on the first tokenize_reference_transcript
+            // call, which would take the cost to zero for every preset-voice
+            // load that never clones -- but a Loaded Model is immutable and
+            // shareable across threads (see this file's header), so lazy
+            // construction needs a once_flag or a mutex on a path that is
+            // otherwise free of both. Eager and measured is the smaller
+            // change; if the 45 MB ever matters, lazy is the cheaper of the
+            // two to reach for, and Task 10 wires the first real caller.
+            config.prefix.clear();
+            config.suffix.clear();
+            std::unique_ptr<TextFrontend> reference_frontend;
+            status = make_bpe_frontend(config, reference_frontend);
+            if (status != SYNTH_OK) {
+                return status;
+            }
+            implementation->reference_frontend = std::shared_ptr<const TextFrontend>(std::move(reference_frontend));
         }
 
         // Every graph runs on the CPU scheduler, so the weights live in the CPU
@@ -755,6 +824,90 @@ synth_status_t Model::prepare_x_vector(const std::vector<float> & pcm_24k,
                                     out_diagnostic_code, out_diagnostic_message);
 }
 
+synth_status_t Model::prepare_codec_reference(const std::vector<float> & pcm_24k,
+                                              int                        threads,
+                                              CodecEncoding &            output,
+                                              const char *&              out_diagnostic_code,
+                                              const char *&              out_diagnostic_message) const {
+    output                  = CodecEncoding{};
+    out_diagnostic_code     = nullptr;
+    out_diagnostic_message  = nullptr;
+    const Impl &    impl    = *implementation_;
+    const HParams & hparams = impl.hparams;
+    // A CustomVoice package resolves no CodecEncoderWeights at all
+    // (build_model_weights leaves weights.codec_encoder default-constructed for
+    // it), so this refuses before encode_codec_reference ever sees a weights
+    // struct with every pointer null -- the same guard, on the same flag, that
+    // prepare_x_vector above uses. `has_speaker_encoder` covers both halves:
+    // the catalog resolves `speaker_encoder.*` and `codec.encoder.*` under that
+    // one flag, and a package carrying either uncatalogued is refused at load.
+    if (!hparams.has_speaker_encoder) {
+        return SYNTH_ERR_UNSUPPORTED_VOICE;
+    }
+    return encode_codec_reference(hparams, impl.weights.codec_encoder, pcm_24k, threads, output, out_diagnostic_code,
+                                  out_diagnostic_message);
+}
+
+synth_status_t validate_speaker_sources(const HParams & hparams, const SynthesisRequest & request) {
+    // A preset Voice and an external embedding are mutually exclusive at this
+    // rung: a request carries one speaker source or the other, never both. A
+    // caller that supplies an x-vector and also names a voice_id gets no
+    // guess at which one wins -- it is refused outright, the way an unknown
+    // voice_id or an unsupported language already is.
+    const bool external = request.x_vector != nullptr;
+    if (external && !request.voice_id.empty()) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if (external) {
+        // This is the real enforcement, not the graph's. run_synthesis's
+        // t_speaker_embedding is always constructed at
+        // hparams.talker.hidden_size, independent of request.x_vector's
+        // actual length, so build_talker_prefill_input's own width check
+        // (talker.cpp, comparing speaker_embedding->ne[0] against
+        // text->ne[0]) can never see a mismatch from that call site -- it
+        // guards a tensor built the wrong width some other way, not a short
+        // vector reaching here. Without this check, the
+        // ggml_backend_tensor_set there (`ggml_nbytes(t_speaker_embedding) =
+        // hidden_size * 4 bytes`, read out of `*request.x_vector` regardless
+        // of its actual size) is an unchecked heap over-read for a short
+        // vector.
+        if (request.x_vector->size() != hparams.talker.hidden_size) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        // Documents the same invariant at the point it is established, for a
+        // reader stepping through in a debugger. Not what protects a release
+        // build: NDEBUG is defined in both trees this project ships (Release
+        // and RelWithDebInfo -- see arch/omnivoice/frontend-host.cpp's
+        // tokenize-marker comment), which makes this inert there. The check
+        // above is what actually refuses a malformed request.
+        assert(request.x_vector->size() == hparams.talker.hidden_size);
+    }
+
+    // The ICL set, all-present or all-absent. `reference_text_ids` pointing
+    // at an EMPTY vector is counted as present-and-broken rather than as
+    // absent, because nothing downstream would refuse it: build_talker_prompt
+    // requires target text and never requires reference text, so an empty
+    // `ref_id` silently shortens the text track by however many ids it should
+    // have carried and moves the min(T1, T2) alignment with it. An empty
+    // `reference_codes` needs no clause of its own -- `reference_frames == 0`
+    // is the half-present state it produces, and that is checked here.
+    const bool has_codes  = request.reference_codes != nullptr;
+    const bool has_ids    = request.reference_text_ids != nullptr && !request.reference_text_ids->empty();
+    const bool has_frames = request.reference_frames != 0;
+    if (has_codes != has_ids || has_codes != has_frames) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    // An ICL prompt still carries the speaker embedding: D5's table marks it
+    // `yes` in BOTH mode columns, and IclProfile carries a whole
+    // XVectorProfile as its first member for that reason. A reference with no
+    // embedding beside it is not a cheaper ICL request, it is an ICL request
+    // with the speaker slot left reading an inert codec_pad row.
+    if (has_codes && !external) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    return SYNTH_OK;
+}
+
 synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisOutput & output) const {
     output                  = SynthesisOutput{};
     const Impl &    impl    = *implementation_;
@@ -767,15 +920,16 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         return SYNTH_ERR_INVALID_ARG;
     }
 
-    // A preset Voice and an external embedding are mutually exclusive at this
-    // rung: a request carries one speaker source or the other, never both. A
-    // caller that supplies an x-vector and also names a voice_id gets no
-    // guess at which one wins -- it is refused outright, the way an unknown
-    // voice_id or an unsupported language already is.
-    const bool external = request.x_vector != nullptr;
-    if (external && !request.voice_id.empty()) {
-        return SYNTH_ERR_INVALID_ARG;
+    // Every rule about which speaker sources may appear together, in one
+    // place and reachable without a loaded package; see its own header
+    // comment for why it is a free function.
+    synth_status_t sources = validate_speaker_sources(hparams, request);
+    if (sources != SYNTH_OK) {
+        return sources;
     }
+    const bool external = request.x_vector != nullptr;
+    // Checked as a set above, so one field decides for all four.
+    const bool icl      = request.reference_codes != nullptr;
 
     uint32_t       speaker_token  = 0;
     bool           has_language   = false;
@@ -792,29 +946,6 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     if (status != SYNTH_OK) {
         return status;
     }
-    if (external) {
-        // This is the real enforcement, not the graph's. t_speaker_embedding
-        // below is always constructed at hparams.talker.hidden_size,
-        // independent of request.x_vector's actual length, so
-        // build_talker_prefill_input's own width check (talker.cpp, comparing
-        // speaker_embedding->ne[0] against text->ne[0]) can never see a
-        // mismatch from this call site -- it guards a tensor built the wrong
-        // width some other way, not a short vector reaching here. Without
-        // this check, ggml_backend_tensor_set below (`ggml_nbytes(t_speaker_embedding)
-        // = hidden_size * 4 bytes`, read out of `*request.x_vector`
-        // regardless of its actual size) is an unchecked heap over-read for a
-        // short vector.
-        if (request.x_vector->size() != hparams.talker.hidden_size) {
-            return SYNTH_ERR_INVALID_ARG;
-        }
-        // Documents the same invariant at the point it is established, for a
-        // reader stepping through in a debugger. Not what protects a release
-        // build: NDEBUG is defined in both trees this project ships (Release
-        // and RelWithDebInfo -- see arch/omnivoice/frontend-host.cpp's
-        // tokenize-marker comment), which makes this inert there. The check
-        // above is what actually refuses a malformed request.
-        assert(request.x_vector->size() == hparams.talker.hidden_size);
-    }
 
     TalkerPromptRequest prompt_request;
     prompt_request.role_tokens.assign(request.token_ids.begin(),
@@ -829,6 +960,25 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     prompt_request.speaker_is_external = external;
     prompt_request.has_language        = has_language;
     prompt_request.language_token      = language_token;
+    if (icl) {
+        // The reference ids cross as `uint32_t` here and arrive as `int32_t`
+        // from the Profile. The narrowing is safe because the only two ways an
+        // IclProfile is ever built -- create_icl_profile and
+        // load_icl_profile -- both refuse an id outside
+        // `[0, talker.text_vocab_size)`, and profile.h records why the
+        // negative half of that bound is load-bearing rather than symmetry:
+        // -1 arrives at ggml_get_rows as roughly 4e9 and aborts the process.
+        prompt_request.has_reference = true;
+        prompt_request.reference_text_tokens.reserve(request.reference_text_ids->size());
+        for (int32_t id : *request.reference_text_ids) {
+            prompt_request.reference_text_tokens.push_back(uint32_t(id));
+        }
+        // Copied rather than borrowed: TalkerPromptRequest owns its grid, and
+        // build_talker_prompt's own reference_is_well_formed is what checks
+        // this one against the package's two vocabulary bounds.
+        prompt_request.reference_codes  = *request.reference_codes;
+        prompt_request.reference_frames = request.reference_frames;
+    }
 
     TalkerPrompt prompt;
     status = build_talker_prompt(hparams, prompt_request, prompt);
@@ -838,10 +988,46 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
 
     std::vector<int32_t> prompt_text;
     std::vector<int32_t> prompt_codec;
-    int64_t              codec_offset = 0;
-    status                            = flatten_talker_prompt(hparams, prompt, prompt_text, prompt_codec, codec_offset);
+    // The ICL block's groups 1..15, group-major, [frames, code_group_count-1]
+    // -- empty for every non-ICL request, because only append_icl_block ever
+    // puts acoustic codes on a position.
+    std::vector<int32_t> prompt_acoustic;
+    int64_t              codec_offset    = 0;
+    int64_t              acoustic_offset = -1;
+    status = flatten_talker_prompt(hparams, prompt, prompt_text, prompt_codec, codec_offset, prompt_acoustic,
+                                   acoustic_offset);
     if (status != SYNTH_OK) {
         return status;
+    }
+    // UNREACHABLE IN BOTH DIRECTIONS, AND DELIBERATELY KEPT -- the successor
+    // to the one-sided version of this guard Task 7 left here against a mode
+    // that did not yet exist.
+    //
+    // `!icl && !prompt_acoustic.empty()` is that original: without it, a
+    // reference's fifteen acoustic groups would reach the graph call below
+    // with build_talker_prefill_input's acoustic parameters still at their
+    // defaults and be dropped in silence rather than refused.
+    // `icl && prompt_acoustic.empty()` is the direction that only became
+    // possible once the wiring landed: an ICL request whose block carried no
+    // acoustic codes at all would then build the x-vector prompt and
+    // synthesize plausible audio in the wrong voice, which is exactly the
+    // class of failure this plan exists to make visible rather than audible.
+    //
+    // `acoustic_offset` is deliberately NOT checked beside this: flatten sets
+    // it if and only if it emitted acoustic codes, so a second clause reading
+    // `acoustic_offset >= 0` would be a check neither half of which could
+    // ever fail alone.
+    //
+    // IT ALSO DOES ONE THING NEITHER DIRECTION ABOVE NAMES, and it is the only
+    // thing that does: `acoustic_frames` below divides `prompt_acoustic.size()`
+    // by `groups - 1`. A package declaring `code_group_count == 1` makes that a
+    // division by zero. reference_is_well_formed refuses `groups < 2` for an
+    // ICL request, so `icl` and a one-group package cannot both hold by the
+    // time control reaches here -- but that refusal lives in another file, and
+    // this is the line standing between a malformed package and UB. Do not
+    // delete it on the grounds that both directions are unreachable.
+    if (icl == prompt_acoustic.empty()) {
+        return SYNTH_ERR_INTERNAL;
     }
 
     const int64_t prefill    = int64_t(prompt.positions.size());
@@ -867,7 +1053,9 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     ggml_tensor *  t_prompt_mask  = ggml_new_tensor_2d(ictx, GGML_TYPE_F32, prefill, prefill);
     ggml_tensor *  t_step_text    = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, 1);
     ggml_tensor *  t_step_pos     = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, 1);
-    ggml_tensor *  t_acoustic     = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, int64_t(groups) - 1);
+    // [frames, groups-1] with one frame: the same fifteen int32s a 1-D tensor
+    // held, in the shape sum_code_embeddings reads a group's ids out of.
+    ggml_tensor *  t_acoustic     = ggml_new_tensor_2d(ictx, GGML_TYPE_I32, 1, int64_t(groups) - 1);
     ggml_tensor *  t_semantic     = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, 1);
     ggml_tensor *  t_previous     = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, 1);
     ggml_tensor *  t_hidden       = ggml_new_tensor_2d(ictx, GGML_TYPE_F32, hparams.code_predictor.hidden_size, 1);
@@ -879,6 +1067,16 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     // before this parameter pair existed.
     ggml_tensor *  t_speaker_embedding =
         external ? ggml_new_tensor_2d(ictx, GGML_TYPE_F32, int64_t(hparams.talker.hidden_size), 1) : nullptr;
+    // The ICL block's acoustic grid, in the same [frames, groups-1]
+    // group-major shape t_acoustic above holds for a single decode step --
+    // one tensor per reference frame rather than one per step, which is what
+    // lets sum_code_embeddings run the whole block in the prefill's own
+    // graph. Null for every non-ICL request, so
+    // build_talker_prefill_input's acoustic parameters stay at their defaults
+    // and the x-vector and preset paths are byte-identical to before.
+    const int64_t acoustic_frames = icl ? int64_t(prompt_acoustic.size()) / (int64_t(groups) - 1) : 0;
+    ggml_tensor * t_prefill_acoustic =
+        icl ? ggml_new_tensor_2d(ictx, GGML_TYPE_I32, acoustic_frames, int64_t(groups) - 1) : nullptr;
     if (!inputs.commit(impl.backend_plan->cpu_backend())) {
         return SYNTH_ERR_OOM;
     }
@@ -887,6 +1085,9 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     ggml_backend_tensor_set(t_prompt_codec, prompt_codec.data(), 0, ggml_nbytes(t_prompt_codec));
     if (external) {
         ggml_backend_tensor_set(t_speaker_embedding, request.x_vector->data(), 0, ggml_nbytes(t_speaker_embedding));
+    }
+    if (icl) {
+        ggml_backend_tensor_set(t_prefill_acoustic, prompt_acoustic.data(), 0, ggml_nbytes(t_prefill_acoustic));
     }
     {
         std::vector<int32_t> sequential(size_t(prefill), 0);
@@ -978,8 +1179,21 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
         ggml_tensor * positions = nullptr;
         ggml_tensor * mask      = nullptr;
         if (frame == 0) {
+            // The reference block's groups 1..15 are summed by the SAME
+            // sum_code_embeddings a decode step uses, over `acoustic_frames`
+            // frames instead of one, and accumulated on top of the two
+            // streams starting at POSITION `acoustic_offset` (talker.h). Null
+            // and -1 for every non-ICL request.
+            ggml_tensor * prefill_acoustic = nullptr;
+            if (icl) {
+                prefill_acoustic = sum_code_embeddings(tctx, impl.weights.code_predictor, t_prefill_acoustic);
+                if (prefill_acoustic == nullptr) {
+                    return SYNTH_ERR_INTERNAL;
+                }
+            }
             input = build_talker_prefill_input(tctx, impl.weights.talker, t_prompt_text, t_prompt_codec, codec_offset,
-                                               t_speaker_embedding, prompt.external_speaker_index);
+                                               t_speaker_embedding, prompt.external_speaker_index, prefill_acoustic,
+                                               acoustic_offset);
             positions = t_prompt_pos;
             mask      = t_prompt_mask;
         } else {

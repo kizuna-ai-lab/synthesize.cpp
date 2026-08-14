@@ -2063,9 +2063,22 @@ of the five, landing within 3 frames of baseline.
 Carried unresolved through Plans 1 and 2; Plan 2 could not settle it because
 its regeneration ran in x-vector mode, which is not evidence about ICL. Plan 3
 has ICL, so the case was driven again and the surrounding space measured with
-`scripts/measure_qwen3_tts_icl_reference_length.py` (28 runs, one model load,
+`scripts/measure_qwen3_tts_icl_reference_length.py` (29 runs: 14 arm A, 5 arm B,
+10 arm C, in two invocations and therefore two model loads -- the five seeds at
+375 frames, which is the claim that matters, do share one load,
 target text / clip / language / sampling / `max_new_tokens` all fixed; only
 `trim_seconds`, the reference transcript's repeat count, and the seed vary).
+
+**WHICH SIDE WAS MEASURED, stated first because everything below depends on it.**
+Every number in this section comes from the **PyTorch reference implementation**,
+driven through the committed oracle dumper. **This port was not compared on this
+case.** That is a narrower claim than the plan's Step 3 asked for and a stronger
+one than "the port has a bug": what is established is that the collapse and the
+runaway are properties of the *reference implementation* under an incoherent
+reference, so there is no port defect to hunt here. Of the plan's three outcomes,
+only the third ("the oracle no longer reproduces it") is settled -- it is ruled
+out. Outcomes 1 and 2, which ask whether the *port* reproduces 9 frames, remain
+undistinguished; see "What Step 3 still needs" below.
 
 **It reproduces exactly.** `base-ref-max` gives 9 generated frames, 0.72 s,
 `peak_abs` 0.474609375, `rms` 0.0686, 8 distinct semantic codes, 375 reference
@@ -2095,8 +2108,27 @@ That is a transcript-audio mismatch manufactured by the bound itself.
 
 **At 375 frames the output is not a function of anything -- it is unstable.**
 Five seeds at the identical input: 9, 8, 12, 4, and one run to the 2048-frame
-ceiling. Repeating the transcript to match the loop count moves seed 0 from 9
-to 66 frames.
+ceiling.
+
+**The matched-transcript control, published whole, including where it does
+nothing.** Repeating the reference transcript to match the loop count, seed 0:
+
+| reference frames | 125 | 200 | 250 | 300 | 375 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| transcript x1 | 42 | 43 | 100 | 43 | **9** |
+| transcript matched | 112 | 44 | 102 | 40 | **66** |
+
+It recovers strongly at two points (125 and 375) and changes **nothing** at the
+other three. So "matching the transcript fixes it" is not what the data says,
+and the honest reading is narrower: an incoherent reference is a condition under
+which the stopping decision *may* go wrong, not a dial that sets output length.
+
+**This control is n=1 per point, and that limitation bites hardest exactly where
+it is quoted most.** The phenomenon being controlled for is instability, so a
+single matched draw (66) against a single unmatched draw (9) rests entirely on
+66 sitting outside the unmatched spread {4, 8, 9, 12} -- which it does, but one
+draw cannot show the matched condition is *stable*. A seed scatter on the matched
+arm is the missing measurement; it was not run.
 
 **So the anomaly reproduces, with a mechanism that is not the trend**: an
 incoherent reference, not reference length. The structural hypothesis offered
@@ -2111,6 +2143,36 @@ one ICL length pathology. They are: the seed scatter above produces *both*
 symptoms from a *single* input configuration, four collapses and one runaway,
 differing only in seed. An incoherent reference makes the stopping decision
 unreliable in both directions.
+
+#### What Step 3 still needs, and what the port half now does say
+
+The plan's Step 3 asks for a comparison **on the port**, and its outcomes 1 and 2
+turn on whether the port also renders 9 frames. That comparison has not been
+made, and the reason is worth stating precisely rather than as "not done":
+
+**What was driven on the port.** The port's codec encoder now runs on
+`base-ref-max`'s reference audio -- 720,000 samples, 375 frames -- and agrees
+with upstream float32 on **100.000% of code decisions (0 of 6000)**, with the
+continuous chain at `rel_absmax` 8.431e-05, *tighter* than base-icl-en's
+9.303e-05. So the deterministic half of the port handles this input correctly,
+and whatever the 9 frames are, they are not a codec-encoder defect. (That run
+also surfaced a gate-scoping problem unrelated to the anomaly; see
+`tests/tolerances/qwen3-tts.json`'s `gate_scope_warning`.)
+
+**What cannot be answered this way.** The frame count is decided by the talker's
+sampled EOS, and the port samples with its own RNG rather than PyTorch's, so
+"does the port emit 9" has no single deterministic answer to compare -- the
+oracle itself emits 9, 8, 12, 4 or 2047 depending only on the seed. A meaningful
+port comparison is therefore *distributional*: drive the port's own synthesis at
+several seeds on this input and ask whether its frame counts scatter the same
+way. What that needs is a way to hand the port the looped 30 s reference --
+either `trim_seconds` in the x-vector/synthesis drivers, or the looped waveform
+materialized once as a WAV. **The same missing `trim_seconds` also blocks
+widening the `replay` stage** (see that stage's `cases_not_extended`), so one
+driver flag closes both holes; it belongs in the carryover, not only here.
+
+Until then: the pathology is established **in the reference implementation**, and
+the port is neither implicated nor cleared on it.
 
 #### The alignment arms, measured across all ten ICL cases (2026-08-14)
 
@@ -2159,6 +2221,23 @@ codes there: it is still speaking, because its 4,749-character text needs
 roughly 4,000 frames against a 2,048 budget. That one is arithmetic, and the
 case as specified cannot terminate; it is recorded as a known non-terminating
 input rather than treated as this defect.
+
+**The manifest was corrected to match, on 2026-08-14.** `base-text-long`
+declared `expected.status: "ok"` and required `audio.pcm`, `result.json` and
+`metadata.json` -- artifacts it cannot produce, which is why it is the only case
+directory without a `result.json`. A contract that describes a known-failing
+case as passing is worse than no entry at all, so the declared status is now
+`non_terminating_at_max_new_tokens` and the artifact list is the five it does
+deterministically produce (the speaker and prompt halves and the drawn codes).
+**The case stays deliberately**: it is one of only two that reach the truncate
+alignment arm and the only one that reaches it by making `T1` large, so deleting
+it would drop truncate coverage to a single case.
+
+`base-ref-max` carries a `upstream-unstable-stopping` coverage tag for the same
+reason -- a reader of the manifest alone would not otherwise expect 0.72 s of
+audio from an 11-word sentence, and would have no way to know the 9 is a
+property of the reference implementation under an incoherent reference rather
+than a target the port must reproduce.
 
 **No listening pass had happened when this table was measured.** `intake.json`
 records `perceptual_evaluation_performed: false` for every point, and its

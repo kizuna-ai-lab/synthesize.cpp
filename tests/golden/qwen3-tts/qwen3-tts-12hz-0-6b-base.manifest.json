@@ -859,7 +859,8 @@
       "coverage": [
         "reference-duration-max",
         "max-frames-per-clip",
-        "alignment-arm-pad"
+        "alignment-arm-pad",
+        "upstream-unstable-stopping"
       ],
       "input": {
         "kind": "text_utf8",
@@ -1076,7 +1077,8 @@
       "coverage": [
         "near-max-input-tokens",
         "long-sequence",
-        "alignment-arm-truncate"
+        "alignment-arm-truncate",
+        "known-non-terminating"
       ],
       "input": {
         "kind": "text_utf8",
@@ -1130,7 +1132,7 @@
         "resource_cleanup"
       ],
       "expected": {
-        "status": "ok",
+        "status": "non_terminating_at_max_new_tokens",
         "artifacts": [
           {
             "name": "speaker.x_vector",
@@ -1156,21 +1158,6 @@
             "name": "codes.acoustic",
             "path": "codes/acoustic.i32",
             "format": "i32le"
-          },
-          {
-            "name": "audio.pcm",
-            "path": "audio.pcm",
-            "format": "f32le"
-          },
-          {
-            "name": "result",
-            "path": "result.json",
-            "format": "json"
-          },
-          {
-            "name": "metadata",
-            "path": "metadata.json",
-            "format": "json"
           }
         ]
       }

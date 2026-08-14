@@ -1038,6 +1038,27 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         endforeach()
     endif()
     if(_synth_qwen3_tts_icl_args)
+        # The prompt.icl_embed bound comes from the committed grid, not from a
+        # literal in the test. It used to be five copies of 2.0e-2 in
+        # qwen3_tts_icl_prompt_real.cpp, which meant the published tolerance was
+        # a description of the test rather than its source: editing the JSON
+        # changed nothing that ran. Read here, passed as argv[2], and the test
+        # refuses a bound that is absent or out of range.
+        file(READ "${CMAKE_SOURCE_DIR}/tests/tolerances/qwen3-tts.json"
+            _synth_qwen3_tts_icl_tolerance_json)
+        string(JSON _synth_qwen3_tts_icl_embed_gate
+            ERROR_VARIABLE _synth_qwen3_tts_icl_embed_error
+            GET "${_synth_qwen3_tts_icl_tolerance_json}"
+                variants qwen3-tts-12hz-0-6b-base profiles BF16 stages replay
+                probes "prompt.icl_embed" max_relative)
+        if(_synth_qwen3_tts_icl_embed_error)
+            message(FATAL_ERROR
+                "tests/tolerances/qwen3-tts.json has no "
+                "variants/qwen3-tts-12hz-0-6b-base/profiles/BF16/stages/replay/probes/"
+                "\"prompt.icl_embed\"/max_relative -- synthesize-qwen3-tts-icl-prompt-real "
+                "enforces that cell and must not fall back to a literal "
+                "(${_synth_qwen3_tts_icl_embed_error})")
+        endif()
         add_executable(synthesize-qwen3-tts-icl-prompt-real qwen3_tts_icl_prompt_real.cpp)
         target_include_directories(synthesize-qwen3-tts-icl-prompt-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
         target_link_libraries(synthesize-qwen3-tts-icl-prompt-real PRIVATE synthesize ggml)
@@ -1045,6 +1066,7 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         add_test(NAME synthesize-qwen3-tts-icl-prompt-real
             COMMAND synthesize-qwen3-tts-icl-prompt-real
                 ${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}
+                ${_synth_qwen3_tts_icl_embed_gate}
                 ${_synth_qwen3_tts_icl_args})
         set_tests_properties(synthesize-qwen3-tts-icl-prompt-real PROPERTIES
             LABELS "integration;qwen3-tts;golden"

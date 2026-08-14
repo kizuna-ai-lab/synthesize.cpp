@@ -86,6 +86,15 @@ BF16_UNIT = 2.0 ** -8
 # THE PRIMARY GATE IS THE CONTINUOUS CHAIN, not either code or reconstruction
 # comparison. It is the only one of the three that is independent of the
 # codebook table being shared by construction.
+# THESE THREE CONSTANTS ARE FALLBACKS, NOT THE SOURCE. Since 2026-08-14 the
+# enforced values are READ FROM tests/tolerances/qwen3-tts.json (--tolerances),
+# the way scripts/validate-qwen3-tts-replay.py has always resolved its cell.
+# They were module constants first, and the tolerance grid was then written by
+# transcribing them -- so the JSON was a copy of the enforced numbers rather
+# than their source, and editing the published gate changed nothing. Now the
+# JSON is the source and these are used only when no tolerance file is
+# supplied; load_gates() refuses to run if the two disagree, so a transcription
+# can no longer drift silently.
 STAGE_REL_ABSMAX = 1.0e-3
 #   measured worst 9.303e-05 (transformer_l7, all three cases) -> 10.8x headroom
 #   injected fault 1.649e+00                                   -> 1650x discrimination
@@ -294,6 +303,43 @@ def check_case(port: pathlib.Path, upstream: pathlib.Path, oracle: pathlib.Path,
     return ok
 
 
+def load_gates(path: pathlib.Path, variant: str, profile: str, stage_name: str):
+    """Resolve the enforced gates from the committed tolerance grid.
+
+    The grid is the source; this module's constants are a fallback. Both are
+    checked against each other and a disagreement is fatal rather than silently
+    resolved in favour of either -- the failure this guards against is a
+    transcribed copy drifting from the number a reviewer actually approved,
+    which is how the grid came to exist in the first place.
+    """
+    document = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        probes = document["variants"][variant]["profiles"][profile]["stages"][stage_name]["probes"]
+    except KeyError as missing:
+        raise SystemExit(f"{path}: no {variant}/{profile}/{stage_name} cell ({missing})")
+
+    chain = float(probes["codec.chain"]["rel_absmax"])
+    reconstruction = {
+        branch: float(probes[f"codec.rvq_reconstruction.{branch}"]["p95_relative_l2"])
+        for branch in ("semantic", "acoustic")
+    }
+
+    drift = []
+    if chain != STAGE_REL_ABSMAX:
+        drift.append(f"chain rel_absmax: file {chain} vs module {STAGE_REL_ABSMAX}")
+    for branch, value in reconstruction.items():
+        if value != RECONSTRUCTION_P95_RELATIVE[branch]:
+            drift.append(
+                f"{branch} p95: file {value} vs module {RECONSTRUCTION_P95_RELATIVE[branch]}"
+            )
+    if drift:
+        raise SystemExit(
+            "the committed grid and this module's fallback constants disagree, which means one of "
+            "them was edited alone:\n  " + "\n  ".join(drift)
+        )
+    return chain, reconstruction
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -302,7 +348,28 @@ def main() -> int:
     parser.add_argument("--upstream-f32", required=True, type=pathlib.Path, dest="upstream")
     parser.add_argument("--oracle", required=True, type=pathlib.Path)
     parser.add_argument("--case", action="append", required=True)
+    parser.add_argument(
+        "--tolerances",
+        type=pathlib.Path,
+        default=pathlib.Path("tests/tolerances/qwen3-tts.json"),
+        help="The committed grid these gates come from. Pass --no-tolerances to fall back to "
+             "this module's constants.",
+    )
+    parser.add_argument(
+        "--no-tolerances",
+        action="store_true",
+        help="Ignore the tolerance file and use this module's fallback constants.",
+    )
+    parser.add_argument("--variant", default="qwen3-tts-12hz-0-6b-base")
+    parser.add_argument("--profile", default="BF16")
+    parser.add_argument("--stage", default="codec_encoder")
     args = parser.parse_args()
+
+    global STAGE_REL_ABSMAX, RECONSTRUCTION_P95_RELATIVE
+    if not args.no_tolerances:
+        STAGE_REL_ABSMAX, RECONSTRUCTION_P95_RELATIVE = load_gates(
+            args.tolerances, args.variant, args.profile, args.stage
+        )
 
     ok = True
     for case in args.case:

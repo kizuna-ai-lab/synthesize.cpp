@@ -4,7 +4,7 @@
   "suite_version": 2,
   "status": "per-variant; see variants.<name>.status",
   "reference_stage": "source-bf16-oracle-vs-f32-cpu",
-  "note": "Measured 2026-07-28 from the first working reference and implementation across all eighteen Golden cases, then reviewed and committed. Regenerating these from a later run would defeat their purpose: a tolerance is an input to validation, not an output of it.\n\nThe oracle runs bfloat16 on CUDA and the port runs F32 on CPU, so these thresholds cover a dtype and a device difference as well as an implementation one.\n\nThis file briefly claimed that was \"the comparison the contract asks for\" while the contract's dtype section forbade it. The contract was revised on 2026-07-30: the prohibition was a rule no BF16-checkpoint family could follow, because the same document pins the oracle to the checkpoint's dtype and the replay to CPU, and ggml computes a stored BF16 weight through F32. An unequal-arithmetic comparison is now permitted on three conditions, and this stage meets all three: it is named in reference_stage above, the deep talker probes gate on cosine rather than max-abs, and structural exactness comes from the replayed codes rather than from any threshold here.\n\nThe condition the revision imposes and this file does not yet satisfy: **the dtype and implementation components of each threshold are not separated.** They are measurable without the port -- the talker probes are captured on the prefill, which draws nothing, so the same oracle at two dtypes can be compared directly -- and that measurement has not been run. Until it is, every figure below is a combined one, and a regression could hide inside the dtype allowance.\n\nTalker probes gate on cosine similarity, not max-abs. The deep layers carry outlier channels ahead of the final norm: max-abs reaches 17.4 at L27 while cosine holds at 0.99992, and a max-abs threshold would report catastrophic failure on a correct port. This was predicted from the reference port before any measurement existed and the measurements have the same shape. Max-abs is recorded per probe as observed, for review rather than for gating.\n\nThe waveform gates on both. A listener hears the waveform, and a cosine over it would hide a constant offset.\n\nEvery threshold is five times the measured deviation in (1 - cosine). That headroom is wide enough to absorb run-to-run variation and far tighter than any defect this suite has caught: a transposed code stream gave cosine 0.017, and a prompt built one position short gave -0.01.\n\nThe grid is keyed on Quantization Profile, Execution Backend and stage, which is what tests/python/test_tolerance_coverage.py checks. BF16 is recorded on CPU only: the source profile was never swept on CUDA, and listing a cell that was not measured is the hole that test exists to close.\n\nBF16 was swept on CUDA on 2026-07-29; the note above about it being CPU-only is superseded by the cell itself.\n\nA retracted claim, kept because the reasoning error is the useful part. This file previously recorded that requesting SYNTH_BACKEND_CUDA at the public seam moved the sampled path onto the accelerator, on the evidence that the dialect case drew ten frames on CUDA against eleven on CPU. That comparison used two different binaries -- a Release CPU build against the CUDA preset -- and optimization level alone changes CPU float contraction enough to move a draw. Re-run with one binary across five cases in three languages and three Voices, CPU and CUDA return identical frame counts every time; only the waveform differs, which is the codec's arithmetic. The placement is what stage 7 measured: the codec moves, the sampled path does not.\n\ncase_count corrected to 20 on 2026-07-31 when the manifest cross-check landed; the per-stage 'cases' fields record each sweep's size at measurement time and are deliberately unchanged.\n\nRestructured to per-variant `case_count` on 2026-08-11's review round: this file used to carry a flat top-level `case_count: 20` (the historical sentence directly above this one, from 2026-07-31, describes what that number meant while it was the only one -- it is not retracted, only superseded). That flat key was correct for qwen3-tts-12hz-0-6b-customvoice alone but silently meaningless once qwen3-tts-12hz-0-6b-base's manifest (12 cases) started pointing at this same file: tests/python/test_golden_manifests.py's test_tolerance_case_count_matches_manifest read exactly one top-level key, so a second variant sharing this file did not fail that check, it disabled it for the whole family. tests/tolerances/vits.json already carries two variants this same way (`variants.<name>.case_count`), which this file now follows: `variants.qwen3-tts-12hz-0-6b-customvoice.case_count` is the same 20 the historical sentence above describes, moved rather than changed; `variants.qwen3-tts-12hz-0-6b-base.case_count` is 12, tracking that manifest's own case count, not a measurement -- see `variants.qwen3-tts-12hz-0-6b-base`'s own note for what is and is not actually measured there.\n\ntest_tolerance_case_count_matches_manifest was extended in the same commit to check `variants.<name>.case_count` when a file uses this shape, rather than only the flat key -- which also means it now actually runs for VITS's two variants for the first time; it silently skipped both before, for the identical reason it silently skipped qwen3-tts.\n\nA second review round on 2026-08-11 found this file's first restructuring had broken scripts/validate-qwen3-tts-replay.py, which reads this grid by profile/backend/stage with no variant coordinate: moving `profiles` under `variants.<name>` left it unable to resolve any cell, including for the published customvoice variant. Fixed in the validator, not by moving `profiles` back -- it already loads the manifest and therefore already knows `manifest[\"variant\"]`, the coordinate it was missing. That round also found that qwen3-tts-12hz-0-6b-base's checked stage set (`variants.qwen3-tts-12hz-0-6b-base.profiles`) had briefly included `speaker_encoder`/`codec_encoder` alongside `public`/`replay`, which made tests/python/test_tolerance_coverage.py's validator-coverage check pass for a stage with no validator and no measurement behind it -- proved by constructing exactly that state for a `vocoder_polish` stage on the published customvoice grid and watching the relaxed check let it through. `speaker_encoder`/`codec_encoder` moved out to `provisional_variants.qwen3-tts-12hz-0-6b-base`, a sibling key `measured_variants()` does not read, and the validator-coverage check is exact equality again.\n\nThe branch's final review, 2026-08-12: the top-level `suite_version` and `status` were the last two fields left describing one variant while the file described two. `status: thresholds-committed-and-enforced` and `suite_version: 2` were both true of qwen3-tts-12hz-0-6b-customvoice and both false of qwen3-tts-12hz-0-6b-base, whose grid holds placeholders and whose manifest is at suite_version 1. Both now sit per-variant beside `case_count`, following the same restructuring as that key. The top-level `suite_version` is kept at 2 and the top-level `status` now points at the per-variant fields rather than asserting one of them: tests/python/test_tolerance_coverage.py requires a top-level `status` to exist, and a file-wide claim about a file describing two variants at different maturities cannot be true.",
+  "note": "Measured 2026-07-28 from the first working reference and implementation across all eighteen Golden cases, then reviewed and committed. Regenerating these from a later run would defeat their purpose: a tolerance is an input to validation, not an output of it.\n\nThe oracle runs bfloat16 on CUDA and the port runs F32 on CPU, so these thresholds cover a dtype and a device difference as well as an implementation one.\n\nThis file briefly claimed that was \"the comparison the contract asks for\" while the contract's dtype section forbade it. The contract was revised on 2026-07-30: the prohibition was a rule no BF16-checkpoint family could follow, because the same document pins the oracle to the checkpoint's dtype and the replay to CPU, and ggml computes a stored BF16 weight through F32. An unequal-arithmetic comparison is now permitted on three conditions, and this stage meets all three: it is named in reference_stage above, the deep talker probes gate on cosine rather than max-abs, and structural exactness comes from the replayed codes rather than from any threshold here.\n\nThe condition the revision imposes and this file does not yet satisfy: **the dtype and implementation components of each threshold are not separated.** They are measurable without the port -- the talker probes are captured on the prefill, which draws nothing, so the same oracle at two dtypes can be compared directly -- and that measurement has not been run. Until it is, every figure below is a combined one, and a regression could hide inside the dtype allowance.\n\nTalker probes gate on cosine similarity, not max-abs. The deep layers carry outlier channels ahead of the final norm: max-abs reaches 17.4 at L27 while cosine holds at 0.99992, and a max-abs threshold would report catastrophic failure on a correct port. This was predicted from the reference port before any measurement existed and the measurements have the same shape. Max-abs is recorded per probe as observed, for review rather than for gating.\n\nThe waveform gates on both. A listener hears the waveform, and a cosine over it would hide a constant offset.\n\nEvery threshold is five times the measured deviation in (1 - cosine). That headroom is wide enough to absorb run-to-run variation and far tighter than any defect this suite has caught: a transposed code stream gave cosine 0.017, and a prompt built one position short gave -0.01.\n\nThe grid is keyed on Quantization Profile, Execution Backend and stage, which is what tests/python/test_tolerance_coverage.py checks. BF16 is recorded on CPU only: the source profile was never swept on CUDA, and listing a cell that was not measured is the hole that test exists to close.\n\nBF16 was swept on CUDA on 2026-07-29; the note above about it being CPU-only is superseded by the cell itself.\n\nA retracted claim, kept because the reasoning error is the useful part. This file previously recorded that requesting SYNTH_BACKEND_CUDA at the public seam moved the sampled path onto the accelerator, on the evidence that the dialect case drew ten frames on CUDA against eleven on CPU. That comparison used two different binaries -- a Release CPU build against the CUDA preset -- and optimization level alone changes CPU float contraction enough to move a draw. Re-run with one binary across five cases in three languages and three Voices, CPU and CUDA return identical frame counts every time; only the waveform differs, which is the codec's arithmetic. The placement is what stage 7 measured: the codec moves, the sampled path does not.\n\ncase_count corrected to 20 on 2026-07-31 when the manifest cross-check landed; the per-stage 'cases' fields record each sweep's size at measurement time and are deliberately unchanged.\n\nRestructured to per-variant `case_count` on 2026-08-11's review round: this file used to carry a flat top-level `case_count: 20` (the historical sentence directly above this one, from 2026-07-31, describes what that number meant while it was the only one -- it is not retracted, only superseded). That flat key was correct for qwen3-tts-12hz-0-6b-customvoice alone but silently meaningless once qwen3-tts-12hz-0-6b-base's manifest (12 cases) started pointing at this same file: tests/python/test_golden_manifests.py's test_tolerance_case_count_matches_manifest read exactly one top-level key, so a second variant sharing this file did not fail that check, it disabled it for the whole family. tests/tolerances/vits.json already carries two variants this same way (`variants.<name>.case_count`), which this file now follows: `variants.qwen3-tts-12hz-0-6b-customvoice.case_count` is the same 20 the historical sentence above describes, moved rather than changed; `variants.qwen3-tts-12hz-0-6b-base.case_count` is 12, tracking that manifest's own case count, not a measurement -- see `variants.qwen3-tts-12hz-0-6b-base`'s own note for what is and is not actually measured there.\n\ntest_tolerance_case_count_matches_manifest was extended in the same commit to check `variants.<name>.case_count` when a file uses this shape, rather than only the flat key -- which also means it now actually runs for VITS's two variants for the first time; it silently skipped both before, for the identical reason it silently skipped qwen3-tts.\n\nA second review round on 2026-08-11 found this file's first restructuring had broken scripts/validate-qwen3-tts-replay.py, which reads this grid by profile/backend/stage with no variant coordinate: moving `profiles` under `variants.<name>` left it unable to resolve any cell, including for the published customvoice variant. Fixed in the validator, not by moving `profiles` back -- it already loads the manifest and therefore already knows `manifest[\"variant\"]`, the coordinate it was missing. That round also found that qwen3-tts-12hz-0-6b-base's checked stage set (`variants.qwen3-tts-12hz-0-6b-base.profiles`) had briefly included `speaker_encoder`/`codec_encoder` alongside `public`/`replay`, which made tests/python/test_tolerance_coverage.py's validator-coverage check pass for a stage with no validator and no measurement behind it -- proved by constructing exactly that state for a `vocoder_polish` stage on the published customvoice grid and watching the relaxed check let it through. `speaker_encoder`/`codec_encoder` moved out to `provisional_variants.qwen3-tts-12hz-0-6b-base`, a sibling key `measured_variants()` does not read, and the validator-coverage check was exact equality again. **Both halves of that sentence stopped being true on 2026-08-14 and it is corrected here rather than left to contradict the variant note two hundred lines below.** `provisional_variants` is GONE -- `codec_encoder` was its last occupant and now sits in the Base BF16 grid as a real measured stage. And the coverage check is no longer exact equality: it requires every validator to have a measurement in at least ONE variant and every measured stage to have a validator, because exact per-variant equality became unsatisfiable once a capability existed in one variant and not another (this variant has a codec encoder; customvoice's package does not contain one).\n\nThe branch's final review, 2026-08-12: the top-level `suite_version` and `status` were the last two fields left describing one variant while the file described two. `status: thresholds-committed-and-enforced` and `suite_version: 2` were both true of qwen3-tts-12hz-0-6b-customvoice and both false of qwen3-tts-12hz-0-6b-base, whose grid holds placeholders and whose manifest is at suite_version 1. Both now sit per-variant beside `case_count`, following the same restructuring as that key. The top-level `suite_version` is kept at 2 and the top-level `status` now points at the per-variant fields rather than asserting one of them: tests/python/test_tolerance_coverage.py requires a top-level `status` to exist, and a file-wide claim about a file describing two variants at different maturities cannot be true.",
   "variants": {
     "qwen3-tts-12hz-0-6b-customvoice": {
       "case_count": 20,
@@ -345,6 +345,48 @@
                   "min_cosine": 0.9999767764206815,
                   "observed_min_cosine": 0.9999953552841363,
                   "observed_max_abs": 0.021114349365234375
+                },
+                "prompt.icl_embed": {
+                  "max_relative": 0.02,
+                  "observed_max_relative": 0.008734,
+                  "observed_worst_component": "block / prefill-tail",
+                  "observed_worst_case": "base-ref-min",
+                  "headroom": 2.29,
+                  "cases": 3,
+                  "case_ids": [
+                    "base-icl-en",
+                    "base-ref-min",
+                    "base-text-short"
+                  ],
+                  "normalizer": "relative deviation = ||port - oracle|| / ||oracle||, per compared tensor. NOT a cosine, so this file's `1 - 5*(1 - observed)` cosine rule does not apply to it; the analogous widening would be 5x the measured deviation.",
+                  "observed_by_component": {
+                    "text_track": {
+                      "base-icl-en": 0.005628,
+                      "base-ref-min": 0.00581,
+                      "base-text-short": 0.002333
+                    },
+                    "codec_track": {
+                      "base-icl-en": 0.002232,
+                      "base-ref-min": 0.002338,
+                      "base-text-short": 0.002232
+                    },
+                    "block": {
+                      "base-icl-en": 0.008368,
+                      "base-ref-min": 0.008734,
+                      "base-text-short": 0.004184
+                    },
+                    "prefill_tail": {
+                      "base-icl-en": 0.008368,
+                      "base-ref-min": 0.008734,
+                      "base-text-short": 0.004184
+                    },
+                    "trailing": {
+                      "base-icl-en": 0.002333,
+                      "base-ref-min": 0.00378,
+                      "base-text-short": 0.002333
+                    }
+                  },
+                  "note": "The two-track ICL prompt: text track, codec track, their summed block, the block as it sits in the assembled prefill, and the trailing schedule -- five comparisons against the oracle's own dump, all gated at the same bound. Enforced by tests/qwen3_tts_icl_prompt_real.cpp, which since 2026-08-14 READS this number rather than carrying its own copy of it.\n\nREQUIRED BY THE PLAN AND MISSING UNTIL NOW. Step 4 lists `prompt.icl_embed` as a committed probe; it existed only as five hardcoded `2.0e-2` literals in C++, so the one deliverable of this task -- the tolerance contract -- had a hole in it that no test could see.\n\nTHE GATE IS DELIBERATELY TIGHTER THAN THIS FILE'S WIDENING RULE WOULD MAKE IT, and that is why it was not recomputed. 2.0e-2 is the value already enforced; the measured worst is 8.734e-03, so it carries 2.29x headroom. Applying a 5x widening to the measurement would give 4.37e-02 and LOOSEN a gate that is currently passing -- an enforced bound is never relaxed to match a formula. The 2.0e-2 also has its own justification, which the C++ comment records: bfloat16's unit roundoff is 2**-8 = 3.906e-03, so this is about five bf16 roundings, and the port's float32 arithmetic over the package's bf16 tables accumulates on top of one rounding.\n\nIt is not wide enough for a shifted track to hide in: a one-position shift moves these deviations by O(1) relative, which Task 7's rule-deletion round measured directly. Note that `block` and `prefill_tail` are identical in all three cases -- expected, since the block is concatenated unchanged at the end of the prefill, and the pair is what shows that placement did not perturb it."
                 }
               },
               "backend": "CPU",
@@ -372,208 +414,208 @@
                   "headroom": 10.8,
                   "fault_injection_rel_absmax": 1.649,
                   "note": "THE PRIMARY GATE, and the only one of the three independent of the codebook table being shared by construction. One threshold enforced PER STAGE across all 33 taps (waveform, seanet_stage0-3, seanet_tail, transformer_l0-7, downsample, latents, rvq_residual_s00-15, rvq_reconstruction) by scripts/validate-qwen3-tts-codec_encoder.py, which prints every stage's own figure -- so a drifting stage is LOCATED in the validator's output, and this cell records the gate plus the worst stage that cleared it. Rolling the taps into one summary number is what the eleven-plus taps exist to avoid; one threshold applied to each of them is not that, it is how the validator is written.\n\n`rel_absmax` is max|a-b| divided by the REFERENCE tensor's own absolute maximum -- one scalar scale for the whole tensor, not a per-element |d|/|x|. Quoting it against a `rel_rms` threshold is a review round the validator's own header exists to avoid repeating.\n\nThe comparison gated here is port vs upstream-f32, BOTH float32, where a defect in this port would live. Port vs the bfloat16 oracle is a different quantity that is expected to sit at bf16 scale and is not gated by this number. 1.0e-3 is still a quarter of one bf16 unit (2^-8), so it cannot be passed by a port that merely rounds like bf16 -- it demands float32 agreement with upstream. The injected fault is upstream's own symmetric (non-causal) MimiConv1d padding split, which builds the same shapes from the same weights and a different encoder: it reads 1.649, a 1650x discrimination.",
-                  "normalizer": "rel_absmax = max|a-b| / max|reference|, one scalar scale for the whole tensor -- NOT a per-element |d|/|x|, and not rel_rms. The gated comparison is port vs upstream-f32 (both float32); port vs oracle is recorded beside it and carries the oracle's bf16 rounding.",
+                  "normalizer": "rel_absmax = max|a-b| / max|reference|, one scalar scale for the whole tensor -- NOT a per-element |d|/|x|, and not rel_rms. The gated comparison is port vs upstream-f32 (both float32); the second column, `observed_upstream_f32_vs_oracle_rel_absmax`, is upstream-f32 against the oracle -- it isolates the oracle's own bf16 rounding and does not involve this port at all.",
                   "per_stage": {
                     "waveform": {
                       "rel_absmax": 0.0,
                       "bf16_units": 0.0,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.0
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.0
                     },
                     "seanet_stage0": {
                       "rel_absmax": 9.752e-07,
                       "bf16_units": 0.00025,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.007056
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.007056
                     },
                     "seanet_stage1": {
                       "rel_absmax": 7.252e-06,
                       "bf16_units": 0.00186,
                       "worst_case": "base-ref-min",
-                      "observed_port_vs_oracle_rel_absmax": 0.03655
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.03655
                     },
                     "seanet_stage2": {
                       "rel_absmax": 4.121e-06,
                       "bf16_units": 0.00105,
                       "worst_case": "base-ref-min",
-                      "observed_port_vs_oracle_rel_absmax": 0.029
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.029
                     },
                     "seanet_stage3": {
                       "rel_absmax": 1.145e-05,
                       "bf16_units": 0.00293,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.0505
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.0505
                     },
                     "seanet_tail": {
                       "rel_absmax": 2.281e-05,
                       "bf16_units": 0.00584,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.0426
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.0426
                     },
                     "transformer_l0": {
                       "rel_absmax": 9.817e-07,
                       "bf16_units": 0.00025,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.003133
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.003133
                     },
                     "transformer_l1": {
                       "rel_absmax": 8.021e-07,
                       "bf16_units": 0.00021,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.004025
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.004025
                     },
                     "transformer_l2": {
                       "rel_absmax": 8.069e-07,
                       "bf16_units": 0.00021,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.004725
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.004725
                     },
                     "transformer_l3": {
                       "rel_absmax": 8.091e-07,
                       "bf16_units": 0.00021,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.007427
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.007427
                     },
                     "transformer_l4": {
                       "rel_absmax": 8.118e-07,
                       "bf16_units": 0.00021,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.005551
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.005551
                     },
                     "transformer_l5": {
                       "rel_absmax": 9.038e-07,
                       "bf16_units": 0.00023,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.006931
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.006931
                     },
                     "transformer_l6": {
                       "rel_absmax": 8.373e-07,
                       "bf16_units": 0.00021,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.009598
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.009598
                     },
                     "transformer_l7": {
                       "rel_absmax": 9.303e-05,
                       "bf16_units": 0.02382,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.4054
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.4054
                     },
                     "downsample": {
                       "rel_absmax": 1.928e-05,
                       "bf16_units": 0.00494,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.1373
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.1373
                     },
                     "latents": {
                       "rel_absmax": 1.928e-05,
                       "bf16_units": 0.00494,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.1373
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.1373
                     },
                     "rvq_residual_s00": {
                       "rel_absmax": 1.309e-05,
                       "bf16_units": 0.00335,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.1411
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.1411
                     },
                     "rvq_residual_s01": {
                       "rel_absmax": 1.244e-05,
                       "bf16_units": 0.00318,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.08997
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.08997
                     },
                     "rvq_residual_s02": {
                       "rel_absmax": 2.868e-05,
                       "bf16_units": 0.00734,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.5111
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.5111
                     },
                     "rvq_residual_s03": {
                       "rel_absmax": 3.876e-05,
                       "bf16_units": 0.00992,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.5422
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.5422
                     },
                     "rvq_residual_s04": {
                       "rel_absmax": 3.951e-05,
                       "bf16_units": 0.01011,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.6877
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.6877
                     },
                     "rvq_residual_s05": {
                       "rel_absmax": 4.494e-05,
                       "bf16_units": 0.0115,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.6428
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.6428
                     },
                     "rvq_residual_s06": {
                       "rel_absmax": 4.476e-05,
                       "bf16_units": 0.01146,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.7733
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.7733
                     },
                     "rvq_residual_s07": {
                       "rel_absmax": 4.73e-05,
                       "bf16_units": 0.01211,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.9278
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.9278
                     },
                     "rvq_residual_s08": {
                       "rel_absmax": 5.545e-05,
                       "bf16_units": 0.0142,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.9475
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.9475
                     },
                     "rvq_residual_s09": {
                       "rel_absmax": 5.716e-05,
                       "bf16_units": 0.01463,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.8501
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.8501
                     },
                     "rvq_residual_s10": {
                       "rel_absmax": 5.969e-05,
                       "bf16_units": 0.01528,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.827
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.827
                     },
                     "rvq_residual_s11": {
                       "rel_absmax": 6.346e-05,
                       "bf16_units": 0.01625,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.8779
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.8779
                     },
                     "rvq_residual_s12": {
                       "rel_absmax": 6.769e-05,
                       "bf16_units": 0.01733,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.8367
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.8367
                     },
                     "rvq_residual_s13": {
                       "rel_absmax": 7.131e-05,
                       "bf16_units": 0.01826,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.889
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.889
                     },
                     "rvq_residual_s14": {
                       "rel_absmax": 7.623e-05,
                       "bf16_units": 0.01951,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.9896
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.9896
                     },
                     "rvq_residual_s15": {
                       "rel_absmax": 7.813e-05,
                       "bf16_units": 0.02,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.9307
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.9307
                     },
                     "rvq_reconstruction": {
                       "rel_absmax": 0.0,
                       "bf16_units": 0.0,
                       "worst_case": "base-icl-en",
-                      "observed_port_vs_oracle_rel_absmax": 0.6451
+                      "observed_upstream_f32_vs_oracle_rel_absmax": 0.6451
                     }
                   },
-                  "per_stage_note": "Every tap the validator compares, worst over the three cases, measured 2026-08-14 -- the figures this grid previously did not carry. One threshold (rel_absmax above) is enforced against each of them; these are the observations it clears, not 33 separate gates.\n\nWHERE THE PORT IS TIGHT, which the next plan will want. Thirteen of the 33 taps sit below 0.003 of one bf16 unit, and the eight transformer layers l0-l6 hold ~8e-07 (0.0002 bf16 units) -- four orders of magnitude under the gate. Two taps are EXACTLY zero: `waveform` (the port is handed the oracle's own waveform, so this is an input check, not a result) and `rvq_reconstruction` (see the stage note -- a consistency check whose operands are shared by construction).\n\nWHERE IT IS LOOSEST, and it is a cascade rather than a defect: transformer_l7 at 9.303e-05 (0.0238 bf16 units) is the worst single tap, and the RVQ residuals climb monotonically s00 -> s15 (1.3e-05 -> 7.8e-05) because each stage subtracts the previous one's reconstruction and inherits its error. Every one of them remains an order of magnitude under the gate."
+                  "per_stage_note": "Every tap the validator compares, worst over the three cases, measured 2026-08-14 -- the figures this grid previously did not carry. One threshold (rel_absmax above) is enforced against each of them; these are the observations it clears, not 33 separate gates.\n\nWHERE THE PORT IS TIGHT, which the next plan will want. Thirteen of the 33 taps sit below 0.003 of one bf16 unit, and the eight transformer layers l0-l6 hold ~8e-07 (0.0002 bf16 units) -- four orders of magnitude under the gate. Two taps are EXACTLY zero: `waveform` (the port is handed the oracle's own waveform, so this is an input check, not a result) and `rvq_reconstruction` (see the stage note -- a consistency check whose operands are shared by construction).\n\nWHERE IT IS LOOSEST, and it is a cascade rather than a defect: transformer_l7 at 9.303e-05 (0.0238 bf16 units) is the worst single tap, and the RVQ residuals climb monotonically s00 -> s15 (1.3e-05 -> 7.8e-05) because each stage subtracts the previous one's reconstruction and inherits its error. Every one of them remains an order of magnitude under the gate.\n\nA KEY WAS RENAMED ON 2026-08-14 AND NO VALUE MOVED. These second figures were committed as `observed_port_vs_oracle_rel_absmax`; they are what scripts/validate-qwen3-tts-codec_encoder.py:206 computes, which is deviation(upstream_f32, oracle) -- printed under its own `upstream-f32 vs oracle` column header -- so they are now named that. The two quantities are numerically close (transformer_l7 is 0.4054 upstream-f32-vs-oracle against 0.4055 port-vs-oracle, a 4th-significant-digit difference) which is exactly why the mislabel survived review once. In a file that spends paragraphs naming which two things were compared, and immediately after correcting a different figure that was wrong for the same reason, the name has to be the measurement."
                 },
                 "codec.rvq_reconstruction.semantic": {
                   "p95_relative_l2": 0.02,
@@ -604,6 +646,22 @@
                   "base-text-short": 52.97
                 },
                 "note": "RECORDED AS EVIDENCE; NOTHING GATES ON IT. A correction is folded in here, because this file briefly stated the wrong thing: it read '4.04% of frame-stage decisions disagree (95.96% agreement)', conflating two different quantities. The erratum's 4.04% bounds the CODEBOOK TABLE's own contribution -- what differs when the same latent is quantized against a bf16 table versus an f32 one -- and is a FLOOR on divergence, not the observed rate. Measured end to end, port and oracle agree on 52.970% of frame-stage decisions for base-icl-en (760 of 1616 differ) and 53.846% for base-ref-min (96 of 208). Divergence grows monotonically across the 16 RVQ columns (4, 6, 20, 34 ... 74 of 101 frames for base-icl-en), which is the cascade the acoustic reconstruction gate is built around.\n\nTHE NUMBER THAT MATTERS FOR THIS PORT is the other one: port versus upstream-f32 agrees on 100.000% of decisions, 0 of 1616, on every case. The port reproduces float32 upstream exactly; the ~47% divergence is entirely the oracle's bf16 codebook, which is why codes were removed as a gate in the first place."
+              },
+              "gate_scope_warning": {
+                "measured": "2026-08-14",
+                "case": "base-ref-max",
+                "reference_code_frames": 375,
+                "result": "semantic branch FAILS the committed gate: p95 relative 0.3478 against 2.0e-2",
+                "chain_rel_absmax": 8.431e-05,
+                "acoustic_p95_relative_l2": 0.2946,
+                "port_vs_upstream_f32_code_agreement_percent": 100.0,
+                "semantic_flip_rate_percent": {
+                  "base-ref-min": 0.0,
+                  "base-icl-en": 3.96,
+                  "base-text-short": 3.96,
+                  "base-ref-max": 5.33
+                },
+                "note": "NOTHING BELOW WAS WIDENED, AND base-ref-max WAS NOT ADDED TO `cases`. This records a gate that does not hold on a case outside the three it was calibrated on, because the rule this suite follows is that a deviation above scale gets FOUND, not accommodated.\n\nIT IS NOT A PORT DEFECT, and three independent readings say so. On base-ref-max the port agrees with upstream-f32 on 100.000% of code decisions (0 of 6000); the continuous chain gate PASSES at 8.431e-05, tighter than base-icl-en's 9.303e-05; and the acoustic branch passes at 0.2946. The only failing quantity is the semantic reconstruction against the bfloat16 ORACLE -- a comparison in which this port does not appear on the deviating side.\n\nTHE GATE SITS ON A CLIFF AT A 5% SEMANTIC FLIP RATE, and that is the actual finding. The statistic is the 95th percentile of per-frame deviation, so it only enters the flipped-frame tail once more than 5% of frames carry a semantic flip. The three calibration cases sit at 0.00%, 3.96% and 3.96% -- all below the line, so their p95 measures unflipped frames and lands at 0.004. base-ref-max sits at 5.33%, the p95 lands inside the tail, and the figure jumps 87x to 0.3478. The gate did not drift; the percentile crossed a discontinuity.\n\nSo `2.0e-2` is not a bound on this port's semantic reconstruction in general -- it is a bound conditional on the reference's semantic flip rate staying under ~5%, which in practice means short references. That condition is undocumented in the gate itself and is exactly the kind of hidden precondition a later plan would trip over. Widening the gate to ~0.35 would make it pass here and destroy its power everywhere else: the injected fault it is meant to catch reads 1.601, only 4.6x above 0.35 rather than 78x above 0.02.\n\nWHAT THE NEXT PLAN MUST DECIDE, and this task deliberately does not: either scope this probe by reference length (and say so in the gate), or replace the percentile with a statistic that does not have a cliff in it (a flip-rate-conditioned measure, or the median, which sits at 0.0027 here and is stable across all four cases). Until then the codec_encoder stage covers references up to 101 frames, which is what `cases: 3` and `case_ids` describe."
               }
             }
           }

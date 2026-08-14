@@ -186,6 +186,9 @@ struct CaseSpec {
     size_t      prefix_positions   = 0;
     std::string trailing_ids_path;
     bool        trailing_ends_with_tts_eos = false;
+    // From tests/tolerances/qwen3-tts.json at configure time, never a
+    // literal in this file. See the checks in check_case().
+    double      max_relative               = 0.0;
 };
 
 // One integer per line, possibly none: alignment.json's `trailing.token_ids` is
@@ -481,31 +484,46 @@ int check_case(const synth::qwen3tts::Model & model, ggml_backend_t backend, con
     // rounding with room -- not a scale this test invented, and not one wide
     // enough for a shifted track to hide in: a one-position shift moves these
     // by O(1) relative, which Task 7's rule-deletion round measured.
-    SYNTH_TEST_CHECK(text_deviation.relative() < 2.0e-2);
-    SYNTH_TEST_CHECK(codec_deviation.relative() < 2.0e-2);
-    SYNTH_TEST_CHECK(block_deviation.relative() < 2.0e-2);
-    SYNTH_TEST_CHECK(tail_deviation.relative() < 2.0e-2);
-    SYNTH_TEST_CHECK(trailing_deviation.relative() < 2.0e-2);
+    //
+    // THE BOUND IS NO LONGER WRITTEN HERE. It arrives as argv[2], read at
+    // configure time from tests/tolerances/qwen3-tts.json --
+    // variants/qwen3-tts-12hz-0-6b-base/profiles/BF16/stages/replay/probes/
+    // "prompt.icl_embed"/max_relative -- the same way this test already takes
+    // T1, T2 and the arm from alignment.json rather than restating them. Five
+    // copies of a literal in a test file are not a committed tolerance, and a
+    // reviewer editing the published grid must be able to change what runs.
+    SYNTH_TEST_CHECK(text_deviation.relative() < spec.max_relative);
+    SYNTH_TEST_CHECK(codec_deviation.relative() < spec.max_relative);
+    SYNTH_TEST_CHECK(block_deviation.relative() < spec.max_relative);
+    SYNTH_TEST_CHECK(tail_deviation.relative() < spec.max_relative);
+    SYNTH_TEST_CHECK(trailing_deviation.relative() < spec.max_relative);
     return 0;
 }
 
 }  // namespace
 
 int main(int argc, char ** argv) {
-    // <model> then thirteen-field records per case:
+    // <model> <icl-embed-max-relative> then thirteen-field records per case:
     //   <case-id> <prompt-dir> <codes> <language> <T1> <T2> <branch>
     //   <trailing> <frames> <hidden> <prefix> <trailing-ids-file> <ends-eos>
     // The fields come out of alignment.json at configure time, so the arm this
     // test checks against is the one upstream's own executed return reported --
     // never something recomputed here.
     constexpr int kFields = 13;
-    if (argc < 2 + kFields || (argc - 2) % kFields != 0) {
+    // argv[2] is the committed prompt.icl_embed bound; records start at 3.
+    if (argc < 3 + kFields || (argc - 3) % kFields != 0) {
         std::printf(
-            "usage: %s <model> (<case-id> <prompt-dir> <codes> <language> <T1> <T2> <branch> <trailing> "
+            "usage: %s <model> <icl-embed-max-relative> (<case-id> <prompt-dir> <codes> <language> <T1> <T2> <branch> "
+            "<trailing> "
             "<frames> <hidden> <prefix> <trailing-ids-file> <ends-with-tts-eos>)...\n",
             argv[0]);
         return 1;
     }
+
+    const double max_relative = std::strtod(argv[2], nullptr);
+    // A missing or malformed bound must not silently become 0 (every check
+    // fails) or a huge number (every check passes).
+    SYNTH_TEST_CHECK(max_relative > 0.0 && max_relative < 1.0);
 
     std::unique_ptr<synth::qwen3tts::Model> model;
     SYNTH_TEST_CHECK(synth::qwen3tts::Model::load_cpu(argv[1], model) == SYNTH_OK);
@@ -517,8 +535,9 @@ int main(int argc, char ** argv) {
     SYNTH_TEST_CHECK(backend != nullptr);
 
     int status = 0;
-    for (int index = 2; index + kFields - 1 < argc; index += kFields) {
+    for (int index = 3; index + kFields - 1 < argc; index += kFields) {
         CaseSpec spec;
+        spec.max_relative               = max_relative;
         spec.case_id                    = argv[index];
         spec.prompt_dir                 = argv[index + 1];
         spec.codes_path                 = argv[index + 2];

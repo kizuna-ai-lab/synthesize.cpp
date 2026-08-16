@@ -22,6 +22,7 @@
 #include "policy.h"
 #include "test-assert.h"
 
+#include <set>
 #include <string>
 
 using synth::quantize::find_profile;
@@ -42,6 +43,272 @@ TargetSpec resolve(const Profile & profile, const char * name) {
     }
     return spec;
 }
+
+// ---------------------------------------------------------------------------
+// The Base package's 237 tensors, every one by name.
+//
+// Until Plan 4 Task 6 the quantizer could not cut a Base package AT ALL: these
+// 237 names classified Unknown and synthesize-quantize failed on the first one
+// it met. The count is exactly the Base/CustomVoice difference, 894 - 657, and
+// it is 76 speaker_encoder + 161 codec.encoder.
+//
+// Listed by name rather than matched by prefix, and the lists below are
+// transcribed from the real BF16 package rather than from the catalog, so a
+// classifier that recognises a PREFIX while mis-shaping a member of it still
+// fails here. The standing example for why this is by-name: a resolver that
+// aliased all 31 acoustic codebooks to slot 0 left every name resolved, every
+// pointer non-null and a by-name test passing -- only a set insertion caught
+// it, which is why the counts below are asserted through std::set.
+// kSpeakerEncoderConvWeights: 38
+const char * const kSpeakerEncoderConvWeights[] = {
+    "speaker_encoder.asp.conv.weight",
+    "speaker_encoder.asp.tdnn.conv.weight",
+    "speaker_encoder.blocks.0.conv.weight",
+    "speaker_encoder.blocks.1.res2net_block.blocks.0.conv.weight",
+    "speaker_encoder.blocks.1.res2net_block.blocks.1.conv.weight",
+    "speaker_encoder.blocks.1.res2net_block.blocks.2.conv.weight",
+    "speaker_encoder.blocks.1.res2net_block.blocks.3.conv.weight",
+    "speaker_encoder.blocks.1.res2net_block.blocks.4.conv.weight",
+    "speaker_encoder.blocks.1.res2net_block.blocks.5.conv.weight",
+    "speaker_encoder.blocks.1.res2net_block.blocks.6.conv.weight",
+    "speaker_encoder.blocks.1.se_block.conv1.weight",
+    "speaker_encoder.blocks.1.se_block.conv2.weight",
+    "speaker_encoder.blocks.1.tdnn1.conv.weight",
+    "speaker_encoder.blocks.1.tdnn2.conv.weight",
+    "speaker_encoder.blocks.2.res2net_block.blocks.0.conv.weight",
+    "speaker_encoder.blocks.2.res2net_block.blocks.1.conv.weight",
+    "speaker_encoder.blocks.2.res2net_block.blocks.2.conv.weight",
+    "speaker_encoder.blocks.2.res2net_block.blocks.3.conv.weight",
+    "speaker_encoder.blocks.2.res2net_block.blocks.4.conv.weight",
+    "speaker_encoder.blocks.2.res2net_block.blocks.5.conv.weight",
+    "speaker_encoder.blocks.2.res2net_block.blocks.6.conv.weight",
+    "speaker_encoder.blocks.2.se_block.conv1.weight",
+    "speaker_encoder.blocks.2.se_block.conv2.weight",
+    "speaker_encoder.blocks.2.tdnn1.conv.weight",
+    "speaker_encoder.blocks.2.tdnn2.conv.weight",
+    "speaker_encoder.blocks.3.res2net_block.blocks.0.conv.weight",
+    "speaker_encoder.blocks.3.res2net_block.blocks.1.conv.weight",
+    "speaker_encoder.blocks.3.res2net_block.blocks.2.conv.weight",
+    "speaker_encoder.blocks.3.res2net_block.blocks.3.conv.weight",
+    "speaker_encoder.blocks.3.res2net_block.blocks.4.conv.weight",
+    "speaker_encoder.blocks.3.res2net_block.blocks.5.conv.weight",
+    "speaker_encoder.blocks.3.res2net_block.blocks.6.conv.weight",
+    "speaker_encoder.blocks.3.se_block.conv1.weight",
+    "speaker_encoder.blocks.3.se_block.conv2.weight",
+    "speaker_encoder.blocks.3.tdnn1.conv.weight",
+    "speaker_encoder.blocks.3.tdnn2.conv.weight",
+    "speaker_encoder.fc.weight",
+    "speaker_encoder.mfa.conv.weight",
+};
+
+// kSpeakerEncoderBiases: 38
+const char * const kSpeakerEncoderBiases[] = {
+    "speaker_encoder.asp.conv.bias",
+    "speaker_encoder.asp.tdnn.conv.bias",
+    "speaker_encoder.blocks.0.conv.bias",
+    "speaker_encoder.blocks.1.res2net_block.blocks.0.conv.bias",
+    "speaker_encoder.blocks.1.res2net_block.blocks.1.conv.bias",
+    "speaker_encoder.blocks.1.res2net_block.blocks.2.conv.bias",
+    "speaker_encoder.blocks.1.res2net_block.blocks.3.conv.bias",
+    "speaker_encoder.blocks.1.res2net_block.blocks.4.conv.bias",
+    "speaker_encoder.blocks.1.res2net_block.blocks.5.conv.bias",
+    "speaker_encoder.blocks.1.res2net_block.blocks.6.conv.bias",
+    "speaker_encoder.blocks.1.se_block.conv1.bias",
+    "speaker_encoder.blocks.1.se_block.conv2.bias",
+    "speaker_encoder.blocks.1.tdnn1.conv.bias",
+    "speaker_encoder.blocks.1.tdnn2.conv.bias",
+    "speaker_encoder.blocks.2.res2net_block.blocks.0.conv.bias",
+    "speaker_encoder.blocks.2.res2net_block.blocks.1.conv.bias",
+    "speaker_encoder.blocks.2.res2net_block.blocks.2.conv.bias",
+    "speaker_encoder.blocks.2.res2net_block.blocks.3.conv.bias",
+    "speaker_encoder.blocks.2.res2net_block.blocks.4.conv.bias",
+    "speaker_encoder.blocks.2.res2net_block.blocks.5.conv.bias",
+    "speaker_encoder.blocks.2.res2net_block.blocks.6.conv.bias",
+    "speaker_encoder.blocks.2.se_block.conv1.bias",
+    "speaker_encoder.blocks.2.se_block.conv2.bias",
+    "speaker_encoder.blocks.2.tdnn1.conv.bias",
+    "speaker_encoder.blocks.2.tdnn2.conv.bias",
+    "speaker_encoder.blocks.3.res2net_block.blocks.0.conv.bias",
+    "speaker_encoder.blocks.3.res2net_block.blocks.1.conv.bias",
+    "speaker_encoder.blocks.3.res2net_block.blocks.2.conv.bias",
+    "speaker_encoder.blocks.3.res2net_block.blocks.3.conv.bias",
+    "speaker_encoder.blocks.3.res2net_block.blocks.4.conv.bias",
+    "speaker_encoder.blocks.3.res2net_block.blocks.5.conv.bias",
+    "speaker_encoder.blocks.3.res2net_block.blocks.6.conv.bias",
+    "speaker_encoder.blocks.3.se_block.conv1.bias",
+    "speaker_encoder.blocks.3.se_block.conv2.bias",
+    "speaker_encoder.blocks.3.tdnn1.conv.bias",
+    "speaker_encoder.blocks.3.tdnn2.conv.bias",
+    "speaker_encoder.fc.bias",
+    "speaker_encoder.mfa.conv.bias",
+};
+
+// kCodecEncoderTensors: 161
+const char * const kCodecEncoderTensors[] = {
+    "codec.encoder.downsample.conv.weight",
+    "codec.encoder.enc_transformer.layers.0.input_layernorm.bias",
+    "codec.encoder.enc_transformer.layers.0.input_layernorm.weight",
+    "codec.encoder.enc_transformer.layers.0.mlp.fc1.weight",
+    "codec.encoder.enc_transformer.layers.0.mlp.fc2.weight",
+    "codec.encoder.enc_transformer.layers.0.mlp_scale.scale",
+    "codec.encoder.enc_transformer.layers.0.post_attn_norm.bias",
+    "codec.encoder.enc_transformer.layers.0.post_attn_norm.weight",
+    "codec.encoder.enc_transformer.layers.0.self_attn.k_proj.weight",
+    "codec.encoder.enc_transformer.layers.0.self_attn.o_proj.weight",
+    "codec.encoder.enc_transformer.layers.0.self_attn.q_proj.weight",
+    "codec.encoder.enc_transformer.layers.0.self_attn.v_proj.weight",
+    "codec.encoder.enc_transformer.layers.0.self_attn_scale.scale",
+    "codec.encoder.enc_transformer.layers.1.input_layernorm.bias",
+    "codec.encoder.enc_transformer.layers.1.input_layernorm.weight",
+    "codec.encoder.enc_transformer.layers.1.mlp.fc1.weight",
+    "codec.encoder.enc_transformer.layers.1.mlp.fc2.weight",
+    "codec.encoder.enc_transformer.layers.1.mlp_scale.scale",
+    "codec.encoder.enc_transformer.layers.1.post_attn_norm.bias",
+    "codec.encoder.enc_transformer.layers.1.post_attn_norm.weight",
+    "codec.encoder.enc_transformer.layers.1.self_attn.k_proj.weight",
+    "codec.encoder.enc_transformer.layers.1.self_attn.o_proj.weight",
+    "codec.encoder.enc_transformer.layers.1.self_attn.q_proj.weight",
+    "codec.encoder.enc_transformer.layers.1.self_attn.v_proj.weight",
+    "codec.encoder.enc_transformer.layers.1.self_attn_scale.scale",
+    "codec.encoder.enc_transformer.layers.2.input_layernorm.bias",
+    "codec.encoder.enc_transformer.layers.2.input_layernorm.weight",
+    "codec.encoder.enc_transformer.layers.2.mlp.fc1.weight",
+    "codec.encoder.enc_transformer.layers.2.mlp.fc2.weight",
+    "codec.encoder.enc_transformer.layers.2.mlp_scale.scale",
+    "codec.encoder.enc_transformer.layers.2.post_attn_norm.bias",
+    "codec.encoder.enc_transformer.layers.2.post_attn_norm.weight",
+    "codec.encoder.enc_transformer.layers.2.self_attn.k_proj.weight",
+    "codec.encoder.enc_transformer.layers.2.self_attn.o_proj.weight",
+    "codec.encoder.enc_transformer.layers.2.self_attn.q_proj.weight",
+    "codec.encoder.enc_transformer.layers.2.self_attn.v_proj.weight",
+    "codec.encoder.enc_transformer.layers.2.self_attn_scale.scale",
+    "codec.encoder.enc_transformer.layers.3.input_layernorm.bias",
+    "codec.encoder.enc_transformer.layers.3.input_layernorm.weight",
+    "codec.encoder.enc_transformer.layers.3.mlp.fc1.weight",
+    "codec.encoder.enc_transformer.layers.3.mlp.fc2.weight",
+    "codec.encoder.enc_transformer.layers.3.mlp_scale.scale",
+    "codec.encoder.enc_transformer.layers.3.post_attn_norm.bias",
+    "codec.encoder.enc_transformer.layers.3.post_attn_norm.weight",
+    "codec.encoder.enc_transformer.layers.3.self_attn.k_proj.weight",
+    "codec.encoder.enc_transformer.layers.3.self_attn.o_proj.weight",
+    "codec.encoder.enc_transformer.layers.3.self_attn.q_proj.weight",
+    "codec.encoder.enc_transformer.layers.3.self_attn.v_proj.weight",
+    "codec.encoder.enc_transformer.layers.3.self_attn_scale.scale",
+    "codec.encoder.enc_transformer.layers.4.input_layernorm.bias",
+    "codec.encoder.enc_transformer.layers.4.input_layernorm.weight",
+    "codec.encoder.enc_transformer.layers.4.mlp.fc1.weight",
+    "codec.encoder.enc_transformer.layers.4.mlp.fc2.weight",
+    "codec.encoder.enc_transformer.layers.4.mlp_scale.scale",
+    "codec.encoder.enc_transformer.layers.4.post_attn_norm.bias",
+    "codec.encoder.enc_transformer.layers.4.post_attn_norm.weight",
+    "codec.encoder.enc_transformer.layers.4.self_attn.k_proj.weight",
+    "codec.encoder.enc_transformer.layers.4.self_attn.o_proj.weight",
+    "codec.encoder.enc_transformer.layers.4.self_attn.q_proj.weight",
+    "codec.encoder.enc_transformer.layers.4.self_attn.v_proj.weight",
+    "codec.encoder.enc_transformer.layers.4.self_attn_scale.scale",
+    "codec.encoder.enc_transformer.layers.5.input_layernorm.bias",
+    "codec.encoder.enc_transformer.layers.5.input_layernorm.weight",
+    "codec.encoder.enc_transformer.layers.5.mlp.fc1.weight",
+    "codec.encoder.enc_transformer.layers.5.mlp.fc2.weight",
+    "codec.encoder.enc_transformer.layers.5.mlp_scale.scale",
+    "codec.encoder.enc_transformer.layers.5.post_attn_norm.bias",
+    "codec.encoder.enc_transformer.layers.5.post_attn_norm.weight",
+    "codec.encoder.enc_transformer.layers.5.self_attn.k_proj.weight",
+    "codec.encoder.enc_transformer.layers.5.self_attn.o_proj.weight",
+    "codec.encoder.enc_transformer.layers.5.self_attn.q_proj.weight",
+    "codec.encoder.enc_transformer.layers.5.self_attn.v_proj.weight",
+    "codec.encoder.enc_transformer.layers.5.self_attn_scale.scale",
+    "codec.encoder.enc_transformer.layers.6.input_layernorm.bias",
+    "codec.encoder.enc_transformer.layers.6.input_layernorm.weight",
+    "codec.encoder.enc_transformer.layers.6.mlp.fc1.weight",
+    "codec.encoder.enc_transformer.layers.6.mlp.fc2.weight",
+    "codec.encoder.enc_transformer.layers.6.mlp_scale.scale",
+    "codec.encoder.enc_transformer.layers.6.post_attn_norm.bias",
+    "codec.encoder.enc_transformer.layers.6.post_attn_norm.weight",
+    "codec.encoder.enc_transformer.layers.6.self_attn.k_proj.weight",
+    "codec.encoder.enc_transformer.layers.6.self_attn.o_proj.weight",
+    "codec.encoder.enc_transformer.layers.6.self_attn.q_proj.weight",
+    "codec.encoder.enc_transformer.layers.6.self_attn.v_proj.weight",
+    "codec.encoder.enc_transformer.layers.6.self_attn_scale.scale",
+    "codec.encoder.enc_transformer.layers.7.input_layernorm.bias",
+    "codec.encoder.enc_transformer.layers.7.input_layernorm.weight",
+    "codec.encoder.enc_transformer.layers.7.mlp.fc1.weight",
+    "codec.encoder.enc_transformer.layers.7.mlp.fc2.weight",
+    "codec.encoder.enc_transformer.layers.7.mlp_scale.scale",
+    "codec.encoder.enc_transformer.layers.7.post_attn_norm.bias",
+    "codec.encoder.enc_transformer.layers.7.post_attn_norm.weight",
+    "codec.encoder.enc_transformer.layers.7.self_attn.k_proj.weight",
+    "codec.encoder.enc_transformer.layers.7.self_attn.o_proj.weight",
+    "codec.encoder.enc_transformer.layers.7.self_attn.q_proj.weight",
+    "codec.encoder.enc_transformer.layers.7.self_attn.v_proj.weight",
+    "codec.encoder.enc_transformer.layers.7.self_attn_scale.scale",
+    "codec.encoder.encoder.layers.0.conv.bias",
+    "codec.encoder.encoder.layers.0.conv.weight",
+    "codec.encoder.encoder.layers.1.block.1.conv.bias",
+    "codec.encoder.encoder.layers.1.block.1.conv.weight",
+    "codec.encoder.encoder.layers.1.block.3.conv.bias",
+    "codec.encoder.encoder.layers.1.block.3.conv.weight",
+    "codec.encoder.encoder.layers.10.block.1.conv.bias",
+    "codec.encoder.encoder.layers.10.block.1.conv.weight",
+    "codec.encoder.encoder.layers.10.block.3.conv.bias",
+    "codec.encoder.encoder.layers.10.block.3.conv.weight",
+    "codec.encoder.encoder.layers.12.conv.bias",
+    "codec.encoder.encoder.layers.12.conv.weight",
+    "codec.encoder.encoder.layers.14.conv.bias",
+    "codec.encoder.encoder.layers.14.conv.weight",
+    "codec.encoder.encoder.layers.3.conv.bias",
+    "codec.encoder.encoder.layers.3.conv.weight",
+    "codec.encoder.encoder.layers.4.block.1.conv.bias",
+    "codec.encoder.encoder.layers.4.block.1.conv.weight",
+    "codec.encoder.encoder.layers.4.block.3.conv.bias",
+    "codec.encoder.encoder.layers.4.block.3.conv.weight",
+    "codec.encoder.encoder.layers.6.conv.bias",
+    "codec.encoder.encoder.layers.6.conv.weight",
+    "codec.encoder.encoder.layers.7.block.1.conv.bias",
+    "codec.encoder.encoder.layers.7.block.1.conv.weight",
+    "codec.encoder.encoder.layers.7.block.3.conv.bias",
+    "codec.encoder.encoder.layers.7.block.3.conv.weight",
+    "codec.encoder.encoder.layers.9.conv.bias",
+    "codec.encoder.encoder.layers.9.conv.weight",
+    "codec.encoder.quantizer.acoustic_rvq.input_proj.weight",
+    "codec.encoder.quantizer.acoustic_rvq.layers.0.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.1.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.10.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.11.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.12.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.13.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.14.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.15.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.16.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.17.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.18.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.19.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.2.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.20.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.21.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.22.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.23.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.24.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.25.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.26.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.27.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.28.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.29.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.3.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.30.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.4.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.5.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.6.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.7.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.8.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.layers.9.codebook",
+    "codec.encoder.quantizer.acoustic_rvq.output_proj.weight",
+    "codec.encoder.quantizer.semantic_rvq.input_proj.weight",
+    "codec.encoder.quantizer.semantic_rvq.layers.0.codebook",
+    "codec.encoder.quantizer.semantic_rvq.output_proj.weight",
+};
+
+// totals: 38 + 38 + 161 = 237
 
 }  // namespace
 
@@ -123,6 +390,95 @@ int main() {
     SYNTH_TEST_CHECK(!resolve_qwen3_tts_target_spec(*q8, "talker.model.layers.0.not_a_tensor", ignored));
     SYNTH_TEST_CHECK(!resolve_qwen3_tts_target_spec(*q8, "codec.decoder.nonsense.weight", ignored));
     SYNTH_TEST_CHECK(!resolve_qwen3_tts_target_spec(*q8, "", ignored));
+
+    // ---- the Base package's 237, by name --------------------------------
+
+    // The 38 speaker-encoder convolution WEIGHTS are held at the profile's
+    // halved fallback -- F16 under all three -- at native three-axis shape.
+    //
+    // Never the block type and never packed, and that is arithmetic. A block
+    // runs along ne[0], which for these is the KERNEL extent: 1, 3 and 5 across
+    // the 38, against Q8_0's block of 32 and Q5_K's super-block of 256. The
+    // quantizer's own row-size check refuses every one of them, so "Q8_0 at
+    // native shape" is not a worse option here, it is an impossible one. The
+    // packed [kernel * in, out] alternative is what Kokoro emits, and this
+    // family implements neither half of it.
+    std::set<std::string> speaker_weight_names;
+    for (const char * name : kSpeakerEncoderConvWeights) {
+        SYNTH_TEST_CHECK(speaker_weight_names.insert(name).second);
+        SYNTH_TEST_CHECK(resolve(*f16, name).type == GGML_TYPE_F16);
+        SYNTH_TEST_CHECK(resolve(*q8, name).type == GGML_TYPE_F16);
+        SYNTH_TEST_CHECK(resolve(*q5, name).type == GGML_TYPE_F16);
+        SYNTH_TEST_CHECK(resolve(*f16, name).layout == TensorLayout::Native);
+        SYNTH_TEST_CHECK(resolve(*q8, name).layout == TensorLayout::Native);
+        SYNTH_TEST_CHECK(resolve(*q5, name).layout == TensorLayout::Native);
+    }
+    SYNTH_TEST_CHECK(speaker_weight_names.size() == 38);
+
+    // Their 38 biases are per-channel vectors and stay F32, which is what
+    // src/arch/qwen3-tts/catalog.cpp's Resolver::conv already expects for them.
+    std::set<std::string> speaker_bias_names;
+    for (const char * name : kSpeakerEncoderBiases) {
+        SYNTH_TEST_CHECK(speaker_bias_names.insert(name).second);
+        SYNTH_TEST_CHECK(resolve(*f16, name).type == GGML_TYPE_F32);
+        SYNTH_TEST_CHECK(resolve(*q8, name).type == GGML_TYPE_F32);
+        SYNTH_TEST_CHECK(resolve(*q5, name).type == GGML_TYPE_F32);
+        SYNTH_TEST_CHECK(resolve(*q8, name).layout == TensorLayout::Native);
+    }
+    SYNTH_TEST_CHECK(speaker_bias_names.size() == 38);
+
+    // All 161 codec.encoder tensors stay F32 under every profile, which is the
+    // same answer the runtime already gives them: src/arch/qwen3-tts/catalog.cpp
+    // splits halves on the `codec.` prefix, so the encoder was never on the
+    // disagreeing side of the contradiction Task 6 settled. What was missing was
+    // RECOGNITION -- they classified Unknown and stopped the tool.
+    std::set<std::string> codec_encoder_names;
+    for (const char * name : kCodecEncoderTensors) {
+        SYNTH_TEST_CHECK(codec_encoder_names.insert(name).second);
+        SYNTH_TEST_CHECK(resolve(*f16, name).type == GGML_TYPE_F32);
+        SYNTH_TEST_CHECK(resolve(*q8, name).type == GGML_TYPE_F32);
+        SYNTH_TEST_CHECK(resolve(*q5, name).type == GGML_TYPE_F32);
+        SYNTH_TEST_CHECK(resolve(*q8, name).layout == TensorLayout::Native);
+    }
+    SYNTH_TEST_CHECK(codec_encoder_names.size() == 161);
+
+    // 76 + 161 = 237 = 894 - 657, the Base/CustomVoice tensor difference, and
+    // all distinct.
+    std::set<std::string> all_new_names;
+    all_new_names.insert(speaker_weight_names.begin(), speaker_weight_names.end());
+    all_new_names.insert(speaker_bias_names.begin(), speaker_bias_names.end());
+    all_new_names.insert(codec_encoder_names.begin(), codec_encoder_names.end());
+    SYNTH_TEST_CHECK(all_new_names.size() == 237);
+
+    // Recognition under the two new prefixes is by name, not by prefix: a
+    // plausible-looking tensor that is not one of the 237 is still an error.
+    // Without this, a classifier could pass everything above by returning a
+    // role for anything starting `speaker_encoder.`.
+    SYNTH_TEST_CHECK(!resolve_qwen3_tts_target_spec(*q8, "speaker_encoder.nonsense.weight", ignored));
+    SYNTH_TEST_CHECK(!resolve_qwen3_tts_target_spec(*q8, "speaker_encoder.blocks.0.conv.gamma", ignored));
+    SYNTH_TEST_CHECK(!resolve_qwen3_tts_target_spec(*q8, "speaker_encoder.blocks.0.not_conv.weight", ignored));
+    SYNTH_TEST_CHECK(!resolve_qwen3_tts_target_spec(*q8, "speaker_encoder.blocks.x.conv.weight", ignored));
+    SYNTH_TEST_CHECK(!resolve_qwen3_tts_target_spec(*q8, "codec.encoder.nonsense.weight", ignored));
+    SYNTH_TEST_CHECK(
+        !resolve_qwen3_tts_target_spec(*q8, "codec.encoder.quantizer.mystery_rvq.input_proj.weight", ignored));
+    SYNTH_TEST_CHECK(
+        !resolve_qwen3_tts_target_spec(*q8, "codec.encoder.enc_transformer.layers.0.mlp.fc3.weight", ignored));
+
+    // The halved fallback the ConvKernel role reads is the profile's
+    // `transpose_weight_type` column, and for all three halved profiles that is
+    // F16. Asserted against the profile table rather than restated, so a row
+    // that changed would fail here instead of silently moving 38 tensors.
+    SYNTH_TEST_CHECK(f16->transpose_weight_type == GGML_TYPE_F16);
+    SYNTH_TEST_CHECK(q8->transpose_weight_type == GGML_TYPE_F16);
+    SYNTH_TEST_CHECK(q5->transpose_weight_type == GGML_TYPE_F16);
+
+    // And the arithmetic that forces it: no speaker-encoder kernel extent
+    // clears either block size, so a native block quantization of these is
+    // impossible rather than merely undesirable.
+    for (const int64_t kernel : { int64_t(1), int64_t(3), int64_t(5) }) {
+        SYNTH_TEST_CHECK(kernel % ggml_blck_size(GGML_TYPE_Q8_0) != 0);
+        SYNTH_TEST_CHECK(kernel % ggml_blck_size(GGML_TYPE_Q5_K) != 0);
+    }
 
     return 0;
 }

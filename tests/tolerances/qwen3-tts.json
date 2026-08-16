@@ -895,6 +895,16 @@
                   "acoustic_flip_rate": "RECORDED AND UNGATED, so there is no inversion to run. Changing any value in codec.acoustic_flip_rate_ungated makes nothing fail, and that is the proof it is evidence rather than a gate -- labelling it an inversion would be the mandated-check-that-cannot-fail this suite refuses."
                 },
                 "gate_result_for_the_commit_that_owed_these": "a574814 recorded its build-sanitize run as still building and therefore unverified. It came back afterwards at 103 tests with only the two pre-existing failures Task 1 recorded by name, so that commit's gate claim is complete. It is written here rather than amended into the commit because the branch was already pushed and this project does not rewrite pushed history."
+              },
+              "cross_profile_identity": {
+                "measured": "2026-08-17",
+                "by": "Plan 4 Task 7",
+                "claim": "the codec encoder's output is BYTE-IDENTICAL between the BF16 and F16 packages",
+                "evidence": "20 of 20 sha256 comparisons match -- latents.f32, rvq_reconstruction.f32, codes.i32 and downsample.f32, over all five cases -- with the port driven from build/qwen3-tts-12hz-0-6b-base-F16.gguf against the same oracle waveforms",
+                "why": "the F16 profile does not touch this half at all. src/arch/qwen3-tts/catalog.cpp splits halves on the `codec.` prefix, so every codec tensor is F32 under every profile, and Plan 4 Task 6's census confirmed all 161 codec.encoder.* tensors are F32 in BOTH packages. The graph reads the same weights, so it computes the same numbers.",
+                "consequence_for_the_grid": "an F16 `codec_encoder` cell is NOT an independent measurement of this port. Its figures are the BF16 figures, arrived at by running the same F32 weights through the same graph. The coverage rule requires the cell to exist, so it will exist -- but it must say this, or it reads as five more cases of evidence when it is the same computation recorded twice. That is the same error this stage's own `cases_not_extended` block refused when it declined to raise `cases` from 2 to 10 on ten byte-identical x-vectors.",
+                "what_it_does_not_cover": "the talker half, which IS halved under F16 and is where an F16 cell's `public` and `replay` stages carry real information. Those two were not measured by this observation and are still owed.",
+                "how_the_stale_binary_was_caught": "the first F16 run reported 449 graph nodes on base-icl-en where BF16 reports 445, and a package's dtype cannot change a node count. The cause was a driver binary left over from Task 3's fault injection: that script restored codec-encoder.cpp on exit but did not rebuild, so build/bin still held the symmetric-pad build, whose padding_right is non-zero even when extra_padding is 0 and therefore takes the ragged replicate-pad branch on every case. Rebuilt and re-driven; the node counts then matched BF16 exactly (445/449/445/445/445) and so did narrowest_gap. Recorded because the node count is what made a wrong measurement visible at all."
               }
             }
           }

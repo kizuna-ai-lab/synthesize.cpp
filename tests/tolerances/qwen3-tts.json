@@ -339,12 +339,46 @@
             "replay": {
               "phase": "oracle_replay",
               "description": "The Base variant's deterministic conditioning half on CPU: reference audio through the mel front end and the ECAPA-TDNN speaker encoder, compared against the oracle's own x-vector. The autoregressive half is not yet replayed here -- only the two x-vector-only cases can be driven end to end until Plan 3 lands ICL.",
-              "cases": 2,
+              "cases": 4,
               "probes": {
                 "speaker.x_vector": {
                   "min_cosine": 0.9999767764206815,
-                  "observed_min_cosine": 0.9999953552841363,
-                  "observed_max_abs": 0.021114349365234375
+                  "observed_min_cosine": 0.99999467,
+                  "observed_max_abs": 0.021114349365234375,
+                  "cases": 4,
+                  "case_ids": [
+                    "base-xvector-en",
+                    "base-xvector-zh",
+                    "base-ref-min",
+                    "base-ref-max"
+                  ],
+                  "observed_by_case": {
+                    "base-xvector-en": {
+                      "cosine": 0.99999536,
+                      "max_abs": 0.0211143,
+                      "samples": 193920,
+                      "mel_frames": 757
+                    },
+                    "base-xvector-zh": {
+                      "cosine": 0.99999536,
+                      "max_abs": 0.0211143,
+                      "samples": 193920,
+                      "mel_frames": 757
+                    },
+                    "base-ref-min": {
+                      "cosine": 0.99999467,
+                      "max_abs": 0.0171118,
+                      "samples": 24000,
+                      "mel_frames": 93
+                    },
+                    "base-ref-max": {
+                      "cosine": 0.99999705,
+                      "max_abs": 0.0111361,
+                      "samples": 720000,
+                      "mel_frames": 2812
+                    }
+                  },
+                  "note": "WIDENED FROM TWO CASES TO FOUR ON 2026-08-17 by Plan 4 Task 4, and the two that were added are the only two that add anything: base-ref-min and base-ref-max are the only cases in this variant whose x-vector differs from the other ten, because their reference audio is trimmed to 1 s and looped to 30 s. The other ten are byte-identical to base-xvector-en -- one sha256 across ten of thirteen cases -- because they all point at the same untrimmed clone.wav and the speaker path reads nothing else.\n\nWHAT UNBLOCKED IT was giving the x-vector driver `--trim-seconds`, which it had never had: run_compare_x_vector hands the driver a WAV path, so before this the port encoded the full clip while the oracle encoded a trimmed one and the comparison failed for a reason that was not the port's arithmetic. The flag matches scripts/dump_reference_qwen3_tts_base.py's exactly, INCLUDING the half a reader would get wrong from its name: an over-length request LOOPS the clip (np.tile) rather than truncating it. base-ref-max asks 30 s of an 8.08 s recording and the driver now reports looped=true repeats=4, landing on exactly 720000 samples.\n\nWHAT IT BOUGHT, stated as a measurement rather than as a count. The residual now rests on THREE distinct clip lengths -- 24000, 193920 and 720000 samples, 93, 757 and 2812 mel frames -- where it rested on one. All four pass. The observed worst got slightly WORSE, from 0.9999953552841363 to 0.99999467 on base-ref-min, which is the point of adding cases: the previous figure was the worst of one clip length. Headroom against the committed 0.9999767764206815 is 4.5x in (1 - cosine) terms.\n\nIT IS STILL ONE RECORDING. All four cases are clone.wav at three lengths. base-icl-en-second-speaker is a genuinely different speaker but is not x_vector_only and carries no trim, so it is not selected here; a second SPEAKER in this comparison is coverage this stage still does not have."
                 },
                 "prompt.icl_embed": {
                   "max_relative": 0.02,
@@ -391,13 +425,20 @@
               },
               "backend": "CPU",
               "note": "Measured 2026-08-12 on CPU (build/, CMAKE_BUILD_TYPE=Release) over base-xvector-en and base-xvector-zh, via scripts/validate-qwen3-tts-replay.py --compare-x-vector against the real qwen3-tts-12hz-0-6b-base-BF16.gguf and models/qwen3-tts-reference-audio/clone.wav. The gate is 5x the measured deviation in (1 - cosine), the rule this file's own top-level note states for every other probe here. max_abs is recorded but does not gate: an x-vector is a direction consumed by a dot product against the prompt, so cosine is the quantity that matters, the same reasoning that leaves max_abs ungated on the talker probes above and gating only on audio.pcm.\n\nOnly one independent measurement, not two: both cases point at the identical reference clip with no trim, and every file under speaker/ is byte-identical between them (conventions.json's own measurement_coverage note) -- only the synthesis text and language differ, which the speaker path never reads. Running both is what shows the whole pipeline (load, resample, encode, mel, ECAPA, x-vector) is deterministic case to case, not a second data point on the residual.\n\nThe residual is bfloat16 quantization of the *oracle*, not a port defect. The oracle's own speaker_encoder weights run in torch.bfloat16 and its dumped tensors round-trip through bfloat16 exactly for seven of the eight speaker/*.f32 files -- verified directly, max abs diff 0.0 -- everything except mel.f32, whose bf16 round-trip differs by up to ~0.031 (conventions.json's own artifact_dtypes note). At the x-vector's own largest element (|ref| = 7.28), 0.02111 is 0.68 of one bfloat16 ulp; recomputing the oracle's own final ASP/FC layer directly in float64 disagrees with the oracle's recorded x_vector by more (0.022367) than this port does. A tolerance whose story was 'the filterbank rounds differently' would be wrong: the mel front end that feeds this graph is essentially exact on its own (max_abs 3.31e-4 against the oracle, and against a float64 truth the port's own mel is *closer* -- 1.14e-4 against the oracle's 2.21e-4). The budget spent here is almost entirely the ECAPA graph's bf16-quantized-weights arithmetic across 38 convolutions, not the mel stage -- the mel comparison above was run specifically to rule the mel stage out before this number was committed, not merely alongside it.",
-              "cases_not_extended": {
-                "measured": "2026-08-14",
-                "identical_x_vector_cases": 10,
-                "distinct_x_vector_cases": [
+              "cases_extended": {
+                "measured": "2026-08-17",
+                "by": "Plan 4 Task 4",
+                "from_cases": 2,
+                "to_cases": 4,
+                "outcome": "first of three -- both added cases agree within the existing gate; nothing was widened",
+                "added": [
                   "base-ref-min",
                   "base-ref-max"
                 ],
+                "worst_min_cosine": 0.99999467,
+                "worst_max_abs": 0.0211143,
+                "gate_min_cosine": 0.9999767764206815,
+                "supersedes": "the `cases_not_extended` block measured 2026-08-14, which recorded that these two were the only cases that would add a data point and that the missing driver flag was what made them undrivable. Both halves of that were correct; the flag now exists.",
                 "note": "Task 12 was asked to extend this stage past its two cases and MEASURED THAT DOING SO WOULD ADD NOTHING, so it stayed at two. All ten ICL cases now have oracle dumps, and their speaker/x_vector.f32 files are BYTE-IDENTICAL to the two x-vector cases already here -- one sha256 across ten of the twelve cases. That is expected rather than surprising: every one of them points at the same untrimmed clone.wav, and the speaker path reads nothing else (not the text, not the language, not the seed). Raising `cases` from 2 to 10 on that evidence would multiply the same measurement by five and call it coverage.\n\nTHE ONLY TWO CASES THAT WOULD ADD A DATA POINT are base-ref-min and base-ref-max, whose x-vectors do differ (three distinct digests across the twelve) because their reference audio is trimmed to 1 s and looped to 30 s respectively. They are also the two this comparison cannot currently drive: run_compare_x_vector hands the driver the WAV path and the driver has no trim, so the port would encode the full clip while the oracle encoded a trimmed one, and the comparison would fail for a reason that is not the port's arithmetic. Giving the driver `trim_seconds` is what would make this stage genuinely wider, and it is not done here; the x-vector residual therefore still rests on ONE reference clip, exactly as this stage's own probe note already says."
               }
             },

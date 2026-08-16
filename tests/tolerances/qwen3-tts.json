@@ -908,6 +908,90 @@
               }
             }
           }
+        },
+        "F16": {
+          "stages": {
+            "public": {
+              "backend": "CPU",
+              "description": "The public C seam driven end to end against the F16 Base package, through a reference-audio Voice Profile. Same seven checks and same three structural skips as the BF16 cell -- the Voice kind is a property of the package's catalogue, not of its Quantization Profile.",
+              "checks": 7,
+              "all_passed": true,
+              "skipped": 3,
+              "voice_kind": "reference_audio",
+              "measured": "2026-08-17",
+              "build": "build-integration, CMAKE_BUILD_TYPE=Release",
+              "max_output_frames": 983040,
+              "note": "THE AUDIO DIFFERS FROM BF16 AND THAT IS THE POINT OF THE CELL. Seed 7 through reference A gives 96a143de53c1c29a here against 9eef2beaf63cb60e under BF16, so the F16 profile does reach the talker. Every relation the checks assert -- a seed reproduces, a different seed does not, a different Voice does not -- holds within this profile, which is what a behavioural stage can claim.\n\nThe three skips are the same three and for the same structural reason: a Voice Profile has no id for the seam to echo, and a dialect speaker is a Preset Voice this package does not catalogue."
+            },
+            "replay": {
+              "backend": "CPU",
+              "cases": 4,
+              "case_ids": [
+                "base-xvector-en",
+                "base-xvector-zh",
+                "base-ref-min",
+                "base-ref-max"
+              ],
+              "measured": "2026-08-17",
+              "probes": {
+                "speaker.x_vector": {
+                  "min_cosine": 0.9999767764206815,
+                  "observed_min_cosine": 0.99999501,
+                  "observed_max_abs": 0.0215769,
+                  "observed_by_case": {
+                    "base-xvector-en": {
+                      "cosine": 0.99999501,
+                      "max_abs": 0.0215769
+                    },
+                    "base-xvector-zh": {
+                      "cosine": 0.99999501,
+                      "max_abs": 0.0215769
+                    },
+                    "base-ref-min": {
+                      "cosine": 0.99999521,
+                      "max_abs": 0.0187035
+                    },
+                    "base-ref-max": {
+                      "cosine": 0.99999603,
+                      "max_abs": 0.0108986
+                    }
+                  },
+                  "note": "THE SAME BOUND AS BF16, AND IT IS NOT TIGHTER HERE BECAUSE IT DOES NOT NEED TO BE. Halving the speaker encoder's 38 convolution weights to F16 costs nothing measurable: the worst cosine is 0.99999501 against BF16's 0.99999467 -- very slightly BETTER, which is run-to-run scale rather than an improvement.\n\nWHY: the residual is the ORACLE's, not the port's. The BF16 cell already records that at the x-vector's largest element the max_abs is 0.68 of one bfloat16 ulp, and that recomputing the oracle's own final ASP/FC layer in float64 disagrees with the oracle by MORE than the port does. An F16 port weight is still finer than the oracle's bf16 storage, so the comparison is bounded by the oracle at both profiles."
+                }
+              },
+              "probes_not_measured": {
+                "prompt.icl_embed": "measured for BF16 over three cases and NOT re-measured here. The coverage rule requires the same STAGE set per profile, not the same probe set, and asserting a probe this task did not run would be the fabricated placeholder this file spent two plans removing."
+              }
+            },
+            "codec_encoder": {
+              "backend": "CPU",
+              "measured": "2026-08-17",
+              "cases": 5,
+              "case_ids": [
+                "base-icl-en",
+                "base-ref-min",
+                "base-text-short",
+                "base-ref-max",
+                "base-icl-en-second-speaker"
+              ],
+              "identical_to": "BF16",
+              "probes": {
+                "codec.chain": {
+                  "rel_absmax": 0.001
+                },
+                "codec.rvq_reconstruction.semantic": {
+                  "p95_relative_l2": 0.02
+                },
+                "codec.rvq_reconstruction.acoustic": {
+                  "p95_relative_l2": 0.5
+                },
+                "codec.semantic_flip_rate": {
+                  "max_fraction": 0.2
+                }
+              },
+              "note": "BYTE-IDENTICAL TO THE BF16 CELL, MEASURED RATHER THAN ASSUMED: 20 of 20 sha256 comparisons match over latents.f32, rvq_reconstruction.f32, codes.i32 and downsample.f32 across all five cases, with the port driven from the F16 package.\n\nIt is identical by construction. src/arch/qwen3-tts/catalog.cpp splits halves on the `codec.` prefix, so every codec tensor is F32 under EVERY profile; Plan 4 Task 6's census confirmed all 161 codec.encoder.* tensors are F32 in both packages. The graph reads the same weights and computes the same numbers.\n\nTHIS CELL IS THEREFORE NOT INDEPENDENT EVIDENCE, and it says so rather than presenting five cases twice. It exists because tests/python/test_tolerance_coverage.py requires every profile to carry the reference profile's full stage set; the thresholds are the BF16 ones because the computation is the BF16 one. See `cross_profile_identity` in the BF16 codec_encoder cell for the evidence."
+            }
+          }
         }
       }
     }

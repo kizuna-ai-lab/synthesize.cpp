@@ -1290,9 +1290,23 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         "${_synth_qwen3_tts_icl_real_case}/codes/reference.i32")
     set(_synth_qwen3_tts_icl_real_alignment
         "${_synth_qwen3_tts_icl_real_case}/prompt/alignment.json")
+    # A FOURTH uncommitted artifact since Plan 4 Task 3: the upstream-float32
+    # codes, which are the other half of the codebook mask the gated statistic
+    # is computed over. Guarded like the other three, so a missing dump is a
+    # missing test rather than a passing one -- without it the mask would keep
+    # every frame and the gate would silently be the pre-redesign one, which is
+    # exactly the cliff this task removed.
+    # The upstream-float32 dump root, shared with the codec-encoder golden gate
+    # further down. Set here rather than there because this registration comes
+    # first and both need it.
+    set(_synth_qwen3_tts_codec_upstream_root
+        "${CMAKE_SOURCE_DIR}/build/qwen3-tts-codec-encoder-f32")
+    set(_synth_qwen3_tts_icl_real_upstream_codes
+        "${_synth_qwen3_tts_codec_upstream_root}/base-icl-en/codec_encoder/codes.i32")
     set(_synth_qwen3_tts_icl_real_ok FALSE)
     if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}" AND EXISTS "${SYNTH_QWEN3_TTS_REFERENCE_WAV}"
             AND EXISTS "${_synth_qwen3_tts_icl_real_recon}" AND EXISTS "${_synth_qwen3_tts_icl_real_codes}"
+            AND EXISTS "${_synth_qwen3_tts_icl_real_upstream_codes}"
             AND EXISTS "${_synth_qwen3_tts_icl_real_alignment}")
         file(READ "${_synth_qwen3_tts_icl_real_alignment}" _synth_qwen3_tts_icl_real_json)
         string(JSON _synth_qwen3_tts_icl_real_text
@@ -1338,6 +1352,21 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             set(_synth_qwen3_tts_icl_real_${_synth_qwen3_tts_icl_real_branch}
                 "${_synth_qwen3_tts_icl_real_gate}")
         endforeach()
+        # The third gate, added by Plan 4 Task 3 and resolved the same way for
+        # the same reason.
+        string(JSON _synth_qwen3_tts_icl_real_flip
+            ERROR_VARIABLE _synth_qwen3_tts_icl_real_flip_error
+            GET "${_synth_qwen3_tts_icl_real_tolerance_json}"
+                variants qwen3-tts-12hz-0-6b-base profiles BF16 stages codec_encoder
+                probes "codec.semantic_flip_rate" max_fraction)
+        if(_synth_qwen3_tts_icl_real_flip_error)
+            message(FATAL_ERROR
+                "tests/tolerances/qwen3-tts.json has no "
+                "variants/qwen3-tts-12hz-0-6b-base/profiles/BF16/stages/codec_encoder/probes/"
+                "\"codec.semantic_flip_rate\"/max_fraction -- synthesize-qwen3-tts-icl-real enforces "
+                "that cell and must not fall back to a literal "
+                "(${_synth_qwen3_tts_icl_real_flip_error})")
+        endif()
 
         add_executable(synthesize-qwen3-tts-icl-real qwen3_tts_icl_real.cpp)
         target_include_directories(synthesize-qwen3-tts-icl-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -1353,7 +1382,9 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                 ${_synth_qwen3_tts_icl_real_codes}
                 ${_synth_qwen3_tts_icl_real_semantic}
                 ${_synth_qwen3_tts_icl_real_acoustic}
-                ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-icl-real/scratch)
+                ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-icl-real/scratch
+                ${_synth_qwen3_tts_icl_real_upstream_codes}
+                ${_synth_qwen3_tts_icl_real_flip})
         set_tests_properties(synthesize-qwen3-tts-icl-real PROPERTIES
             LABELS "integration;qwen3-tts;abi"
             # Five full autoregressive synthesis passes over a two-word sentence
@@ -1394,8 +1425,10 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     # but the comparison it exists for -- two float32 arithmetics, where a
     # defect in this port would live -- is unavailable, so the gate is not
     # registered at all rather than registered in a weaker form.
-    set(_synth_qwen3_tts_codec_upstream_root
-        "${CMAKE_SOURCE_DIR}/build/qwen3-tts-codec-encoder-f32")
+    # Defined further up since Plan 4 Task 3, because synthesize-qwen3-tts-icl-real
+    # now needs the same root for its codebook mask and is registered before this
+    # block. It was set here and used only here until then; setting it twice
+    # would be two places to edit.
     set(_synth_qwen3_tts_codec_cases base-icl-en base-ref-min base-text-short)
     set(_synth_qwen3_tts_codec_ok TRUE)
     if(NOT EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}")

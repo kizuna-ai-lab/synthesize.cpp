@@ -121,27 +121,98 @@ STAGE_REL_ABSMAX = 1.0e-3
 # fault p95 recorded three lines below nor anything else in the file; they are
 # replaced by the recorded ones rather than left as an unattributable
 # statistic.)
+# REDESIGNED 2026-08-17 BY PLAN 4 TASK 3, AND THE MASK IS THE WHOLE CHANGE.
+#
+# The statistic below is no longer the p95 over every frame. It is the p95 over
+# the frames the ORACLE'S OWN CODEBOOK did not flip -- the frames where
+# upstream-f32 and the bf16 oracle select the same code. The threshold numbers
+# did not have to move to make that work; what moved is which frames they are
+# computed over.
+#
+# WHY THE OLD ONE HAD TO GO. It sat on a cliff: a 95th percentile only enters
+# the flipped-frame tail once more than 5% of frames carry a flip, so
+# base-ref-max at 5.333% read 0.3478 against this same 2.0e-2 while the three
+# calibration cases at 0.00/3.96/3.96% read 0.004. That was recorded as
+# `gate_scope_warning` and left standing, because widening 2.0e-2 to 0.35 would
+# have left the injected fault 4.6x above the gate instead of 80x.
+#
+# WHY THE MASK IS TAKEN FROM upstream-f32 VS THE ORACLE AND NOT FROM THE PORT.
+# This is the half that decides whether the redesign works at all, and the
+# obvious mask -- condition on the frames where the PORT and the oracle agree --
+# was measured and FAILS. Under the injected symmetric-pad fault the port flips
+# 89-100% of frames, so conditioning on port-vs-oracle agreement selects exactly
+# the frames the fault did not reach: the masked statistic reads 0.003511
+# against a clean 0.003576, i.e. discrimination ~1x, and on base-ref-min and on
+# every acoustic branch it is undefined because no frame survives. A mask that
+# mentions the port cannot see a fault in the port. The upstream-f32-vs-oracle
+# mask contains no port at all, so the fault cannot move it: it drops the same
+# ~5% of frames clean and faulted, and the fault's frames stay in.
+#
+# MEASURED, over five cases and two recordings, port fed the oracle's own
+# bfloat16 waveform:
+#
+#   branch     clean p95 (worst)   faulted p95 (best)   discrimination
+#   semantic   0.004103            1.601                390x - 474x
+#   acoustic   0.003818            1.734                586x - 644x
+#
+# against the >=80x the redesign was required to keep on the semantic branch and
+# the 3.5x it was required not to lose on the acoustic one. The acoustic branch
+# improves by a factor of ~170, because the old unmasked figure (0.2491) sat in
+# the flip tail at the MEDIAN, not only at the p95 -- that is what the removed
+# comment below described, and the mask is what fixes it rather than a wider
+# bound.
+#
+# THE TWO BRANCHES STILL GET SEPARATE KEYS AND ARE STILL NEVER AVERAGED. They
+# remain an order of magnitude apart in rms (13.5 against 3.11).
 RECONSTRUCTION_P95_RELATIVE = {
     "semantic": 2.0e-2,
-    #   measured p95 0.004103 (worst case) -> 4.9x headroom
-    #   injected fault p95 1.601           -> 80x discrimination
-    #   5x one bf16 unit, which is where the design says this branch's median
-    #   belongs; it flips on only 4 of 101 frames so the tail stays contained.
+    #   codebook-masked p95 0.004103 (worst of five) -> 4.9x headroom
+    #   injected fault      1.601 (best of five)     -> 80.05x discrimination
+    #   Unchanged from the pre-redesign value, and that is not a coincidence:
+    #   base-ref-min has no codebook flips at all, so its masked and unmasked
+    #   figures are the same number. What changed is that base-ref-max now
+    #   reads 0.003756 here instead of 0.3478, so the gate holds on all five.
     "acoustic": 5.0e-1,
-    #   measured p95 0.2491 (worst case)   -> 2.0x headroom, and that figure is
-    #   the OTHER input: it is measured with the port fed the oracle's own
-    #   bfloat16 waveform, which is what this script does. The registered
-    #   end-to-end consumer feeds the port the WAV and reads 0.304719, i.e.
-    #   1.64x. See `registered_consumers` in the tolerance file.
-    #   injected fault p95 1.741           -> 3.5x discrimination
-    #   NOT at bf16 scale, and it cannot be. This branch aggregates fifteen
-    #   stages, disagreement with the bf16 oracle grows monotonically down the
-    #   cascade (4, 6, 20, 34, ... 74 of 101 frames), so almost every frame
-    #   carries at least one flip and the branch sits in the FLIP TAIL at the
-    #   MEDIAN (0.1317), not only at its p95. The design's predicted 0.18
-    #   absolute L2 for this branch is 39x too small against a measured median
-    #   of 7.014 absolute and must not be used.
+    #   codebook-masked p95 0.003818 here (worst of five) -> 131x headroom
+    #   codebook-masked p95 0.181149 in the OTHER consumer -> 2.76x headroom
+    #   injected fault      1.734 (best of five)          -> 3.5x discrimination
+    #
+    #   A 25x TIGHTENING TO 2.0e-2 WAS MEASURED, ATTEMPTED AND WITHDRAWN. The
+    #   masked figure this script reads (0.003818) is at bf16 scale and would
+    #   justify it. tests/qwen3_tts_icl_real.cpp reads 0.181149 for the same
+    #   statistic on the same case, because it feeds the port the WAV where this
+    #   script feeds it the oracle's own bfloat16-rounded waveform, and this
+    #   branch aggregates fifteen stages so a 2.954e-03 input rounding compounds
+    #   down the cascade. The semantic branch does not have that problem: the two
+    #   consumers agree there to six digits, 0.003576 against 0.00357636.
+    #
+    #   The tightening passed all five cases here and failed the C++ arm on its
+    #   first run, which is exactly what `registered_consumers` in the tolerance
+    #   file exists to catch.
 }
+
+# Gated separately from the reconstruction, which is Plan 3's ruling carried out:
+# "gate the flip rate separately from the reconstruction error on non-flipped
+# frames".
+#
+# MEASURED, same five cases:
+#   semantic  clean 0.000 / 1.705 / 3.960 / 3.960 / 5.333 %
+#             fault 89.205 / 96.040 / 96.040 / 97.333 / 100.000 %
+# No overlap, and the gap is 16.7x. The threshold below sits between them:
+# 3.75x above the worst clean case and 4.46x below the best faulted one.
+#
+# ONLY THE SEMANTIC BRANCH IS GATED. The acoustic flip rate is RECORDED AND
+# UNGATED, and the reason is a measurement rather than caution: it reads
+# 75.568 / 79.208 / 79.208 / 83.200 / 84.615 % clean against 100.000% faulted,
+# a separation of 1.18x. Fifteen acoustic columns mean a frame counts as
+# flipped if ANY of them does, so the clean rate is already near saturation and
+# no threshold can separate the two populations. A gate there would be one that
+# cannot fail, which this suite refuses to commit.
+#
+# A flip rate is bounded above by 100%, so its discrimination is structurally
+# limited in a way the reconstruction's is not. It is a second instrument, not
+# a replacement for the first.
+SEMANTIC_FLIP_RATE = 0.20
 #
 # HEADROOM IS ~2x ON THE ACOUSTIC BRANCH AND IT IS DRAWN FROM ONE RECORDING.
 # base-ref-min is a byte-exact prefix of base-icl-en and base-text-short is the
@@ -241,10 +312,38 @@ def check_case(port: pathlib.Path, upstream: pathlib.Path, oracle: pathlib.Path,
         "upstream-f32": read(upstream, case, "rvq_reconstruction").reshape(shape),
         "oracle": read(oracle, case, "rvq_reconstruction").reshape(shape),
     }
+    # Read BEFORE the reconstruction loop rather than after it, because the loop
+    # now needs the flip mask. Nothing else about the codes block moved; it is
+    # still recorded as evidence below and still gates nothing on its own.
+    codes = {
+        "port": read(port, case, "codes", np.int32).reshape(frames, 16),
+        "upstream-f32": read(upstream, case, "codes", np.int32).reshape(frames, 16),
+        "oracle": codes_oracle.reshape(frames, 16),
+    }
+
+    # The per-frame flip mask, per branch.
+    #
+    # The reconstruction is [2, frames, projected] with branch 0 semantic and
+    # branch 1 acoustic; the codes are [frames, 16] with column 0 semantic and
+    # columns 1..15 acoustic. So a frame's semantic branch is flipped when its
+    # column 0 differs, and its acoustic branch is flipped when ANY of the
+    # fifteen acoustic columns does. `differ` is exactly what the codes block
+    # below already computes -- what was missing was the mask, not the data.
+    def flip_mask(left: str, right: str, branch: int) -> np.ndarray:
+        differ = codes[left] != codes[right]
+        return differ[:, 0] if branch == 0 else differ[:, 1:].any(axis=1)
+
+    # The mask is the SAME for every pairing and for the whole case: it is the
+    # bf16 codebook's own disagreement with float32, and no pairing's operands
+    # change it. Computed once, per branch, so it cannot accidentally be taken
+    # from a pairing that mentions the port.
     for branch, name in ((0, "semantic"), (1, "acoustic")):
         reference_rms = np.sqrt(np.mean(recon["oracle"][branch].astype(np.float64) ** 2))
-        print(f"\n  reconstruction[{name}]  oracle rms {reference_rms:.4g}")
-        gated = 0.0
+        codebook_mask = flip_mask("upstream-f32", "oracle", branch)
+        dropped = int(codebook_mask.sum())
+        print(f"\n  reconstruction[{name}]  oracle rms {reference_rms:.4g}  "
+              f"codebook mask drops {dropped} of {codebook_mask.size} frames")
+        gated = float("nan")
         for label, left, right in (("port vs upstream-f32", "port", "upstream-f32"),
                                    ("port vs oracle      ", "port", "oracle"),
                                    ("upstream-f32 vs orcl", "upstream-f32", "oracle")):
@@ -253,23 +352,46 @@ def check_case(port: pathlib.Path, upstream: pathlib.Path, oracle: pathlib.Path,
             per_frame = np.linalg.norm(a - b, axis=-1)
             norms = np.linalg.norm(b, axis=-1)
             relative = per_frame / norms
+            kept = relative[~codebook_mask]
+            masked = float(np.percentile(kept, 95)) if kept.size else float("nan")
             print(f"    {label}  per-frame L2 abs: median {np.median(per_frame):.4g} "
                   f"p95 {np.percentile(per_frame, 95):.4g} max {per_frame.max():.4g} "
                   f"| /||ref||: median {np.median(relative):.4g} "
-                  f"p95 {np.percentile(relative, 95):.4g}")
+                  f"p95 {np.percentile(relative, 95):.4g} "
+                  f"| CODEBOOK-MASKED p95 {masked:.4g} over {kept.size}")
             if right == "oracle" and left == "port":
-                gated = float(np.percentile(relative, 95))
+                gated = masked
         bound = RECONSTRUCTION_P95_RELATIVE[name]
-        verdict = "PASS" if gated <= bound else "FAIL"
-        ok = ok and gated <= bound
-        print(f"    [{verdict}] port-vs-oracle p95 relative {gated:.4g}; gate {bound:.3g}")
+        # A case in which the codebook flips EVERY frame leaves the statistic
+        # undefined, and that is a refusal rather than a pass. It has never been
+        # observed -- the mask drops 0 to 20 of 13 to 375 frames across the five
+        # committed cases -- but a NaN compares false against every bound, so
+        # without this the gate would silently stop gating.
+        if not np.isfinite(gated):
+            print(f"    [FAIL] {name}: the codebook mask left no frames, so the masked p95 is "
+                  "undefined; this is a refusal, not a pass")
+            ok = False
+        else:
+            verdict = "PASS" if gated <= bound else "FAIL"
+            ok = ok and gated <= bound
+            print(f"    [{verdict}] port-vs-oracle CODEBOOK-MASKED p95 relative {gated:.4g}; "
+                  f"gate {bound:.3g}")
+
+        # The flip rate, gated on the semantic branch and recorded on the other.
+        port_flips = flip_mask("port", "oracle", branch)
+        rate = float(port_flips.sum()) / float(port_flips.size)
+        if name == "semantic":
+            verdict = "PASS" if rate <= SEMANTIC_FLIP_RATE else "FAIL"
+            ok = ok and rate <= SEMANTIC_FLIP_RATE
+            print(f"    [{verdict}] semantic flip rate {100.0 * rate:.3f}%; "
+                  f"gate {100.0 * SEMANTIC_FLIP_RATE:.1f}%")
+        else:
+            print(f"    [--] acoustic flip rate {100.0 * rate:.3f}% -- RECORDED, GATING NOTHING. "
+                  "Fifteen columns mean a frame counts as flipped if any one does, so the clean "
+                  "rate is already near saturation (75.6-84.6%) against 100.0% under the injected "
+                  "fault: a separation of 1.18x, which no threshold can use.")
 
     # ---- codes: RECORDED, GATING NOTHING --------------------------------
-    codes = {
-        "port": read(port, case, "codes", np.int32).reshape(frames, 16),
-        "upstream-f32": read(upstream, case, "codes", np.int32).reshape(frames, 16),
-        "oracle": codes_oracle.reshape(frames, 16),
-    }
     print("\n  codes -- recorded as evidence; NOTHING below branches on it, and no")
     print("  threshold is derived from it. The erratum's 4.04%/12.73% bound the")
     print("  codebook's contribution alone and are a floor on divergence, not a budget.")
@@ -332,6 +454,10 @@ def load_gates(path: pathlib.Path, variant: str, profile: str, stage_name: str):
         branch: float(probes[f"codec.rvq_reconstruction.{branch}"]["p95_relative_l2"])
         for branch in ("semantic", "acoustic")
     }
+    # Added by Plan 4 Task 3 and read through the same fatal-disagreement
+    # discipline as the other two, because a threshold that only one side knows
+    # about is the drift this function exists to catch.
+    flip_rate = float(probes["codec.semantic_flip_rate"]["max_fraction"])
 
     drift = []
     if chain != STAGE_REL_ABSMAX:
@@ -341,12 +467,14 @@ def load_gates(path: pathlib.Path, variant: str, profile: str, stage_name: str):
             drift.append(
                 f"{branch} p95: file {value} vs module {RECONSTRUCTION_P95_RELATIVE[branch]}"
             )
+    if flip_rate != SEMANTIC_FLIP_RATE:
+        drift.append(f"semantic flip rate: file {flip_rate} vs module {SEMANTIC_FLIP_RATE}")
     if drift:
         raise SystemExit(
             "the committed grid and this module's fallback constants disagree, which means one of "
             "them was edited alone:\n  " + "\n  ".join(drift)
         )
-    return chain, reconstruction
+    return chain, reconstruction, flip_rate
 
 
 def main() -> int:
@@ -374,9 +502,9 @@ def main() -> int:
     parser.add_argument("--stage", default="codec_encoder")
     args = parser.parse_args()
 
-    global STAGE_REL_ABSMAX, RECONSTRUCTION_P95_RELATIVE
+    global STAGE_REL_ABSMAX, RECONSTRUCTION_P95_RELATIVE, SEMANTIC_FLIP_RATE
     if not args.no_tolerances:
-        STAGE_REL_ABSMAX, RECONSTRUCTION_P95_RELATIVE = load_gates(
+        STAGE_REL_ABSMAX, RECONSTRUCTION_P95_RELATIVE, SEMANTIC_FLIP_RATE = load_gates(
             args.tolerances, args.variant, args.profile, args.stage
         )
 

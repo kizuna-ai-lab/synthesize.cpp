@@ -23,6 +23,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace synth::qwen3_tts::testing {
@@ -68,6 +70,72 @@ inline double reconstruction_p95_relative(const float * port, const float * orac
         relative.push_back(std::sqrt(difference) / std::sqrt(reference));
     }
     return percentile_linear(relative, 95.0);
+}
+
+// The same statistic over a SUBSET of frames, which is what Plan 4 Task 3 made
+// the gated quantity.
+//
+// `keep[frame]` selects the frames that count. The mask the committed gate uses
+// is "upstream-f32 and the bf16 oracle chose the same code here", which contains
+// no port at all -- see the redesign note in
+// scripts/validate-qwen3-tts-codec_encoder.py for why a mask that mentions the
+// port measures 1x discrimination and is refused.
+//
+// Returns NaN when the mask keeps nothing. That is deliberate and the caller
+// must treat it as a refusal: a NaN compares false against every bound, so a
+// caller that let it through would have a gate that silently stopped gating.
+inline double reconstruction_p95_relative_masked(const float *             port,
+                                                 const float *             oracle,
+                                                 size_t                    frames,
+                                                 size_t                    projected,
+                                                 const std::vector<char> & keep) {
+    std::vector<double> relative;
+    relative.reserve(frames);
+    for (size_t frame = 0; frame < frames; ++frame) {
+        if (frame >= keep.size() || keep[frame] == 0) {
+            continue;
+        }
+        double difference = 0.0;
+        double reference  = 0.0;
+        for (size_t column = 0; column < projected; ++column) {
+            const double a = double(port[frame * projected + column]);
+            const double b = double(oracle[frame * projected + column]);
+            difference += (a - b) * (a - b);
+            reference += b * b;
+        }
+        relative.push_back(std::sqrt(difference) / std::sqrt(reference));
+    }
+    if (relative.empty()) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return percentile_linear(relative, 95.0);
+}
+
+// The codebook mask itself: keep[frame] is 1 where upstream-f32 and the oracle
+// agree on this branch's codes. `groups` is 16 for this family; column 0 is the
+// semantic branch and columns 1..groups-1 are the acoustic one, so a frame is
+// acoustically flipped if ANY of the fifteen differs.
+inline std::vector<char> codebook_keep_mask(const std::vector<int32_t> & upstream,
+                                            const std::vector<int32_t> & oracle,
+                                            size_t                       frames,
+                                            size_t                       groups,
+                                            bool                         semantic) {
+    std::vector<char> keep(frames, 0);
+    if (upstream.size() < frames * groups || oracle.size() < frames * groups || groups == 0) {
+        return keep;
+    }
+    for (size_t frame = 0; frame < frames; ++frame) {
+        bool flipped = false;
+        if (semantic) {
+            flipped = upstream[frame * groups] != oracle[frame * groups];
+        } else {
+            for (size_t group = 1; group < groups && !flipped; ++group) {
+                flipped = upstream[frame * groups + group] != oracle[frame * groups + group];
+            }
+        }
+        keep[frame] = flipped ? 0 : 1;
+    }
+    return keep;
 }
 
 }  // namespace synth::qwen3_tts::testing

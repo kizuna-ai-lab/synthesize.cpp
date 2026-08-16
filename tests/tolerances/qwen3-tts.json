@@ -66,9 +66,10 @@
             "public": {
               "backend": "CPU",
               "description": "The public C seam driven end to end: seed reporting and repeatability, Voice and language resolution.",
-              "checks": 8,
+              "checks": 10,
               "all_passed": true,
-              "note": "Behavioural rather than numeric. This stage has no probes: it gates on relations between runs -- that one seed reproduces and another does not, that a Voice change moves the audio -- which hold within a backend and cannot be expressed as a threshold against the oracle."
+              "note": "Behavioural rather than numeric. This stage has no probes: it gates on relations between runs -- that one seed reproduces and another does not, that a Voice change moves the audio -- which hold within a backend and cannot be expressed as a threshold against the oracle.\n\nRE-MEASURED 2026-08-17 AND THE COUNT WAS STALE: 8 -> 10. Plan 4 Task 5 ran this validator against this same published BF16 package as a regression check, after teaching it a second kind of Voice, and all TEN of its checks passed. The 8 recorded here was an honest number when it was written and had become a claim about a validator that has since grown; this file's own top note complains about exactly that shape ('an honest historical number that read as a current claim'), so it is corrected rather than left beside a freshly measured neighbour.\n\nONLY THIS CELL MOVED. The F16/CPU, Q8_MIXED/CPU, BF16/CUDA and F16/CUDA public cells still record 8 and were NOT re-run by this task. Copying 10 into them would be asserting a measurement that did not happen, which is the error this whole cell exists to avoid.",
+              "remeasured": "2026-08-17"
             }
           },
           "backends": {
@@ -332,9 +333,33 @@
           "stages": {
             "public": {
               "backend": "CPU",
-              "description": "PROVISIONAL placeholder, not yet measured. No public-seam check has ever been run against qwen3-tts-12hz-0-6b-base: no C++ port or converter output exists yet for it (Tasks 4 through 10 build that). This key exists only so this variant's stage set satisfies tests/python/test_tolerance_coverage.py's family-wide validator check (scripts/validate-qwen3-tts-public.py exists and is family-wide, not per-variant) ahead of any real run against this variant. `checks: 0` and `all_passed: null` are deliberately not customvoice's `8`/`true` -- copying those would claim a result that has never happened.",
-              "checks": 0,
-              "all_passed": null
+              "description": "The public C seam driven end to end against the real Base package: seed reporting and repeatability, Voice and language resolution. Measured 2026-08-17 by Plan 4 Task 5, replacing the PROVISIONAL placeholder (checks 0 / all_passed null) that stood here because no public-seam run had ever been made against this variant.",
+              "checks": 7,
+              "all_passed": true,
+              "skipped": 3,
+              "voice_kind": "reference_audio",
+              "measured": "2026-08-17",
+              "build": "build-integration, CMAKE_BUILD_TYPE=Release, SYNTH_BUILD_INTEGRATION_TESTS=ON",
+              "max_output_frames": 983040,
+              "references": [
+                "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+                "https://zhu-han.github.io/omnivoice/audios/seedtts/prompt/seedtts_ref_en_1.wav"
+              ],
+              "skipped_checks": [
+                {
+                  "check": "the resolved Voice is reported",
+                  "inapplicable_because": "a Voice Profile has no id, so the seam has nothing to resolve or echo and resolved_voice comes back empty. Observed, not assumed."
+                },
+                {
+                  "check": "a dialect speaker synthesizes",
+                  "inapplicable_because": "a dialect speaker is a Preset Voice and this package catalogues none"
+                },
+                {
+                  "check": "a dialect speaker differs from a plain one",
+                  "inapplicable_because": "a dialect speaker is a Preset Voice and this package catalogues none"
+                }
+              ],
+              "note": "WHY THE COUNT DIFFERS FROM customvoice's, which is the question the placeholder was written to force. It is not that a few checks happened not to apply: scripts/validate-qwen3-tts-public.py was written entirely around Preset Voices, and this package catalogues NONE -- its committed manifest declares `preset_ids: []` and its Voice Profile sources are reference_audio and serialized_profile. Every one of the ten checks names a Voice, so before this task not one of them could run here, and that is why the cell was a placeholder rather than a failure.\n\nWHAT WAS ADDED to make it runnable, since the plan's file table listed only this file. tests/qwen3_tts_public_real.c gained a `ref:PATH` Voice, which prepares a Voice Profile through synth_voice_profile_create_from_reference and puts it on request.voice_profile instead of a voice_id -- the path a Base-package caller actually has. The validator gained --reference (passed twice) and branches on it. Everything after the Voice is identical for the two kinds, so the seven checks that DO run here are the same seven checks, not weaker ones.\n\nTHE THREE SKIPS ARE STRUCTURAL, and each is recorded above with what was observed rather than inferred. `a different Voice changes the audio` survives in the form that means something for a package without a catalogue: two different reference RECORDINGS, which is the first use this suite has made of the second recording Task 1 added.\n\nONE CHECK FAILED ON THE FIRST RUN AND IT WAS NOT A PACKAGE DEFECT. At the validator's default --max-frames of 46080 (1.92 s) the random-seed synthesis returned SYNTH_ERR_OUTPUT_LIMIT (15). The seeded runs at 7 and 8 draw 23040 frames, comfortably inside it; a random seed drew past it. That default was calibrated on customvoice, whose preset path is short and stable; the Base clone path's length varies with the drawn seed. Re-run at 983040, the runner's own default, and all seven pass. The cap is recorded above because a check count means nothing without it."
             },
             "replay": {
               "phase": "oracle_replay",

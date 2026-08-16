@@ -1,6 +1,6 @@
 # Qwen3-TTS Family Selection and Port Plan
 
-Status: Confirmed 2026-08-14. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
+Status: Confirmed 2026-08-17. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
 complete and published. Intake, the oracle and conversion are done; stages 4
 through 7 have their measured work done: oracle replay and the public seam
 pass, and the codec runs on CUDA while the autoregressive half stays on the CPU
@@ -17,9 +17,11 @@ accepted on 2026-07-26; the intake packet is
 `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`. **Stage 2
 (`qwen3-tts-12hz-0.6b-base`) has Plans 1, 2 and 3 done** -- the package, the
 x-vector clone path, and the transcript-assisted (ICL) clone path, all on CPU;
-Plan 4 (quantization, CUDA and the listening pass) is not started, Stage 3
-(Description Text) is not started, and the Base variant is **not published**.
-See the three Stage 2 paragraphs below.
+Plan 4 (quantization, CUDA and the listening pass) is **in progress since
+2026-08-17** — its landed pieces are recorded in their own sections below, the
+first being "The second reference recording"; nothing in it is finished until
+this line says so. Stage 3 (Description Text) is not started, and the Base
+variant is **not published**. See the three Stage 2 paragraphs below.
 
 **Until 2026-08-12 this line read "Q8_MIXED, the public backend control and
 stage 8 are not done. Port validation is not started."** All four clauses were
@@ -2990,7 +2992,10 @@ agreement rates below are recorded as evidence and gate nothing.**
 > says "three cases", or prints two columns side by side, or notes that "the
 > three calibration cases sit at 0.00/3.96/3.96%" — the identical 3.96/3.96
 > being that clip measured twice — **none of it is independent corroboration**.
-> A second speaker would be, and there is not one. `tests/tolerances/qwen3-tts.json`,
+> A second speaker would be, and **since 2026-08-17 there is one** — see "The
+> second reference recording" below, which also records what it changed and
+> what it did not. Everything above this sentence describes the four cases that
+> existed before it. `tests/tolerances/qwen3-tts.json`,
 > `scripts/dump_reference_qwen3_tts_codec_encoder.py` and
 > `scripts/validate-qwen3-tts-codec_encoder.py` have all stated this from the
 > start; this file — the one a later variant's implementer is directed to —
@@ -3012,6 +3017,104 @@ error. What it does not buy is a proof that this port's *selections* match
 upstream's, and nothing here may be read as though it did. The 100.000% row
 above is the strongest available substitute and it is a comparison against
 upstream's own float32 run, not against the shipped bf16 oracle.
+
+### The second reference recording
+
+Added 2026-08-17 by Stage 2 Plan 4 Task 1, as `base-icl-en-second-speaker`.
+Every flip-rate figure this family had came from one recording, and the task
+that was about to derive a flip-rate threshold from them could not tell a
+property of the port from a property of that clip.
+
+**Provenance and licence, recorded here because the Golden Manifest cannot hold
+them.** The plan directed that provenance and licence be written into "the
+manifest case description"; the manifest schema
+(`docs/schemas/synthesize-golden-manifest-v1.schema.json`) declares `case` with
+`additionalProperties: false` and no `description` member, so there is nowhere
+in the case object to put them. They live here instead, and the case's
+`origin.locator` points at this section — which is what `origin` is for.
+
+| | |
+| --- | --- |
+| locator | `https://zhu-han.github.io/omnivoice/audios/seedtts/prompt/seedtts_ref_en_1.wav` |
+| sha256 | `57f25abc75c2e7cc4d3c9a6e45f54160034bc714b2ba952407dae7f91d6d31f3` |
+| format | 24 kHz, mono, 16-bit PCM WAV — the package's own native rate, so nothing resamples |
+| duration | 14.071916 s (337,726 samples), inside the declared 1 s–30 s bounds |
+| reference code frames | 176 |
+| transcript | "Some call me nature. Others call me Mother Nature. I've been here for over four point and five billion years, twenty-two thousand five hundred times longer than you." |
+| licence | **Not stated upstream.** It is the Seed-TTS eval English reference set, served from the OmniVoice demo site; `BytedanceSpeech/seed-tts-eval` carries no `LICENSE` file at all. |
+
+**Why this clip and not a cleaner-licensed one.** This repository already pins
+and consumes these exact bytes: the same locator and the same digest are a
+`reference-audio` artifact of `tests/golden/omnivoice/omnivoice-0-6b.manifest.json`,
+and both committed OmniVoice clone goldens drive it. Reusing it adds a second
+consumer of a dependency this tree already has, rather than a new one. The
+alternative considered and rejected was upstream Qwen's own second demo asset,
+`tokenizer_demo_1.wav` (24 kHz mono, 10.53 s), whose licence posture is
+cleaner — same Apache-2.0 repository as `clone.wav` — but which publishes **no
+transcript**, so an ICL case built on it would rest on a machine transcription,
+and transcript mismatch is this family's one known catastrophic input (475.91 s
+of CPU to `SYNTH_ERR_OUTPUT_LIMIT` with zero audio). The licence gap is recorded
+above rather than resolved; it is the one thing this choice does not fix.
+
+It is a genuinely different recording and not a transform of `clone.wav`: a
+different speaker, a different corpus and a different recording chain, with
+`ref_rms` 0.12291 against the port's own encoder. That distinction is the whole
+point — the flip rate is a property of where a recording's latents fall
+relative to the codebook, and a pitch-shifted or noise-added copy of one clip
+moves along the same manifold and corroborates nothing.
+
+**What it measured.** Dumped through the Base oracle, the ICL-prompt oracle,
+the codec-encoder oracle and both float32 twins, all at the same
+`dtype=torch.bfloat16` the other cases use (pinned at
+`scripts/dump_reference_qwen3_tts_base.py:585`, not passed by the caller). It
+takes the ICL alignment's **pad** arm (T1 50, T2 177), and all 25 of the
+prompt oracle's checks pass, including the bitwise agreement between the
+assembled block and the Base dumper's own `icl_embed.f32`.
+
+Against the committed BF16/CPU `codec_encoder` gates, on the `Release`-typed
+`build/` tree, it **passes every one**:
+
+| quantity | measured | gate |
+| --- | ---: | ---: |
+| chain `rel_absmax` (worst stage `rvq_residual_s15`) | 2.483e-05 — 0.0064 of one bf16 unit | 1.0e-3 |
+| semantic reconstruction p95 relative | 0.004152 | 2.0e-2 |
+| acoustic reconstruction p95 relative | 0.2988 | 5.0e-1 |
+| port vs upstream-f32 code agreement | **100.000%** (0 of 2816) | recorded, gates nothing |
+
+The chain figure is **tighter than any of the other four cases**, including the
+8.431e-05 that `base-ref-max` clears.
+
+**The finding, which is not the one the plan expected.** Its semantic flip rate
+is **1.70%** (3 of 176). Ordered by reference length the five rates now read:
+
+| case | reference code frames | semantic flip rate | recording |
+| --- | ---: | ---: | --- |
+| `base-ref-min` | 13 | 0.00% | `clone.wav`, trimmed to 1.0 s |
+| `base-icl-en` | 101 | 3.96% | `clone.wav`, full 8.08 s |
+| `base-text-short` | 101 | 3.96% | `clone.wav`, full 8.08 s |
+| **`base-icl-en-second-speaker`** | **176** | **1.70%** | **`seedtts_ref_en_1.wav`, full 14.07 s** |
+| `base-ref-max` | 375 | 5.33% | `clone.wav`, **looped** to 30.0 s |
+
+**That sequence is not monotone.** A longer reference from a second speaker
+sits at less than half the rate of the shorter same-speaker cases. So reference
+length does not order the flip rate, and "scope this probe by reference length"
+— the first of the two branches `gate_scope_warning` offered the next plan — is
+**refuted as a sufficient rule**. Plan 4 Task 1 Step 3 predicted three outcomes
+and attached to its first one the inference that "the cliff is confirmed as a
+function of reference length rather than of speaker": the measurement lands in
+that outcome by its threshold (below ~5%) and **contradicts its inference**.
+Both halves are recorded, because the plan's sentence is not evidence.
+
+One confound is named rather than left implicit: `base-ref-max` is not a longer
+recording. It is `clone.wav` **looped** to 30 s by `np.tile`
+(`scripts/dump_reference_qwen3_tts_base.py:339-342`), roughly 3.7 repeats, so
+its 5.33% may carry seam discontinuities rather than anything about length.
+That makes the 375-frame point the weakest of the five for a length argument,
+not the strongest.
+
+**What this does not establish.** One additional speaker is two recordings, not
+a corpus. Nobody has listened to this case's output — Task 15 owns that — and
+the Validation Level does not move.
 
 ### Measured tolerances
 

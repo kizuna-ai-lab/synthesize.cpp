@@ -176,6 +176,28 @@ if(SYNTH_BUILD_PYTHON_TESTS)
         LABELS "unit;python;golden"
         TIMEOUT 120
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    # The Python half of the p95 cross-check; synthesize-qwen3-tts-percentile-test
+    # is the C++ half, and both answer to
+    # tests/fixtures/qwen3-tts/percentile-cross-check.json.
+    #
+    # Same environment reasoning as the two above -- the VITS environment owns
+    # the repository's locked Python tooling and this test is not VITS-specific.
+    # It needs numpy and nothing else: no model, no build artifact, no network.
+    # The pin matters here in a way it does not for the other two: the fixture's
+    # expected values were generated under numpy 1.26.4, which is what both this
+    # environment and scripts/envs/qwen3-tts lock, so a bump that changed
+    # np.percentile's default interpolation would fail this test rather than
+    # silently move the target the C++ side is measured against.
+    add_test(
+        NAME synthesize-qwen3-tts-percentile-agreement
+        COMMAND ${SYNTH_UV_EXECUTABLE} run
+            --project ${CMAKE_SOURCE_DIR}/scripts/envs/vits
+            --locked python -m unittest
+            tests.python.test_percentile_agreement)
+    set_tests_properties(synthesize-qwen3-tts-percentile-agreement PROPERTIES
+        LABELS "unit;python;qwen3-tts"
+        TIMEOUT 120
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 if(SYNTH_BUILD_SHARED AND UNIX AND NOT APPLE)
     add_test(NAME synthesize-shared-exports
@@ -535,6 +557,111 @@ add_test(NAME synthesize-qwen3-tts-wav-reader-test
 set_tests_properties(synthesize-qwen3-tts-wav-reader-test PROPERTIES LABELS "unit;qwen3-tts")
 synth_register_unit_target(synthesize-qwen3-tts-wav-reader-test)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-wav-reader)
+
+# The p95 statistic's two implementations, held to one committed fixture.
+#
+# tests/tolerances/qwen3-tts.json recorded the gap this closes: the C++ arm in
+# qwen3_tts_icl_real.cpp transcribes the validator's percentile by hand and the
+# two "have NO registered cross-check -- they were compared once, manually".
+# Plan 4 Task 2 lifted the arithmetic into tests/qwen3_tts_percentile.h so a
+# `unit` test can reach it (icl_real.cpp is integration-tier and
+# synthesize-check-unit never builds it), and the fixture is the third party
+# both sides answer to.
+#
+# THE FIXTURE IS JSON AND THIS TREE HAS NO C++ JSON PARSER, so CMake projects it
+# into a flat whitespace-separated file the test reads -- the same shape the ICL
+# prompt test already uses for alignment.json's token ids, and for the same
+# reason. The JSON stays the single committed source. The layout is documented
+# at the top of qwen3_tts_percentile_test.cpp and written below; the two must be
+# read together.
+#
+# Both the DECLARED `entry_count` and the ACTUAL array LENGTH are written, and
+# the test asserts they agree. That is what makes deleting an entry from the
+# fixture a test failure rather than a quieter test -- and it is written this
+# way round deliberately: driving the loop from the declared count instead would
+# make `string(JSON GET)` abort the whole configure on the missing index, which
+# is a broken build rather than a failing assertion.
+set(_synth_qwen3_tts_percentile_json
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/qwen3-tts/percentile-cross-check.json")
+# Editing the fixture must re-run configure, or the projection below goes stale
+# and the value/length/presence inversions would silently keep passing.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${_synth_qwen3_tts_percentile_json}")
+file(READ "${_synth_qwen3_tts_percentile_json}" _synth_qwen3_tts_percentile_doc)
+
+string(JSON _synth_qwen3_tts_percentile_percent
+    GET "${_synth_qwen3_tts_percentile_doc}" percentile percent)
+string(JSON _synth_qwen3_tts_percentile_declared
+    GET "${_synth_qwen3_tts_percentile_doc}" percentile entry_count)
+string(JSON _synth_qwen3_tts_percentile_actual
+    LENGTH "${_synth_qwen3_tts_percentile_doc}" percentile entries)
+set(_synth_qwen3_tts_percentile_flat
+    "${_synth_qwen3_tts_percentile_percent}\n${_synth_qwen3_tts_percentile_declared}\n${_synth_qwen3_tts_percentile_actual}\n")
+if(_synth_qwen3_tts_percentile_actual GREATER 0)
+    math(EXPR _synth_qwen3_tts_percentile_last "${_synth_qwen3_tts_percentile_actual} - 1")
+    foreach(_synth_qwen3_tts_percentile_i RANGE 0 ${_synth_qwen3_tts_percentile_last})
+        string(JSON _synth_qwen3_tts_percentile_n
+            LENGTH "${_synth_qwen3_tts_percentile_doc}" percentile entries
+                ${_synth_qwen3_tts_percentile_i} values)
+        string(JSON _synth_qwen3_tts_percentile_expected
+            GET "${_synth_qwen3_tts_percentile_doc}" percentile entries
+                ${_synth_qwen3_tts_percentile_i} expected)
+        string(APPEND _synth_qwen3_tts_percentile_flat
+            "${_synth_qwen3_tts_percentile_n}\n${_synth_qwen3_tts_percentile_expected}\n")
+        math(EXPR _synth_qwen3_tts_percentile_vlast "${_synth_qwen3_tts_percentile_n} - 1")
+        foreach(_synth_qwen3_tts_percentile_j RANGE 0 ${_synth_qwen3_tts_percentile_vlast})
+            string(JSON _synth_qwen3_tts_percentile_v
+                GET "${_synth_qwen3_tts_percentile_doc}" percentile entries
+                    ${_synth_qwen3_tts_percentile_i} values ${_synth_qwen3_tts_percentile_j})
+            string(APPEND _synth_qwen3_tts_percentile_flat "${_synth_qwen3_tts_percentile_v}\n")
+        endforeach()
+    endforeach()
+endif()
+
+string(JSON _synth_qwen3_tts_recon_declared
+    GET "${_synth_qwen3_tts_percentile_doc}" reconstruction entry_count)
+string(JSON _synth_qwen3_tts_recon_actual
+    LENGTH "${_synth_qwen3_tts_percentile_doc}" reconstruction entries)
+string(APPEND _synth_qwen3_tts_percentile_flat
+    "${_synth_qwen3_tts_recon_declared}\n${_synth_qwen3_tts_recon_actual}\n")
+if(_synth_qwen3_tts_recon_actual GREATER 0)
+    math(EXPR _synth_qwen3_tts_recon_last "${_synth_qwen3_tts_recon_actual} - 1")
+    foreach(_synth_qwen3_tts_recon_i RANGE 0 ${_synth_qwen3_tts_recon_last})
+        foreach(_synth_qwen3_tts_recon_key frames projected
+                expected_p95_relative expected_p95_relative_operands_swapped)
+            string(JSON _synth_qwen3_tts_recon_value
+                GET "${_synth_qwen3_tts_percentile_doc}" reconstruction entries
+                    ${_synth_qwen3_tts_recon_i} ${_synth_qwen3_tts_recon_key})
+            string(APPEND _synth_qwen3_tts_percentile_flat "${_synth_qwen3_tts_recon_value}\n")
+        endforeach()
+        foreach(_synth_qwen3_tts_recon_side port oracle)
+            string(JSON _synth_qwen3_tts_recon_count
+                LENGTH "${_synth_qwen3_tts_percentile_doc}" reconstruction entries
+                    ${_synth_qwen3_tts_recon_i} ${_synth_qwen3_tts_recon_side})
+            math(EXPR _synth_qwen3_tts_recon_vlast "${_synth_qwen3_tts_recon_count} - 1")
+            foreach(_synth_qwen3_tts_recon_j RANGE 0 ${_synth_qwen3_tts_recon_vlast})
+                string(JSON _synth_qwen3_tts_recon_v
+                    GET "${_synth_qwen3_tts_percentile_doc}" reconstruction entries
+                        ${_synth_qwen3_tts_recon_i} ${_synth_qwen3_tts_recon_side}
+                        ${_synth_qwen3_tts_recon_j})
+                string(APPEND _synth_qwen3_tts_percentile_flat "${_synth_qwen3_tts_recon_v}\n")
+            endforeach()
+        endforeach()
+    endforeach()
+endif()
+
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-percentile)
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-percentile/cross-check.txt"
+    "${_synth_qwen3_tts_percentile_flat}")
+
+add_executable(synthesize-qwen3-tts-percentile-test qwen3_tts_percentile_test.cpp)
+target_include_directories(synthesize-qwen3-tts-percentile-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME synthesize-qwen3-tts-percentile-test
+    COMMAND synthesize-qwen3-tts-percentile-test
+        ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-percentile/cross-check.txt)
+set_tests_properties(synthesize-qwen3-tts-percentile-test PROPERTIES LABELS "unit;qwen3-tts")
+synth_register_unit_target(synthesize-qwen3-tts-percentile-test)
 
 # A thin adapter, not a test: runs the codec encoder graph over a real package
 # and writes every stage tap in the oracle's own layout, so Task 1's

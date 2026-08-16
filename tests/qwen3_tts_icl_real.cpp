@@ -197,6 +197,7 @@
 #include "arch/qwen3-tts/qwen3-tts.h"
 #include "arch/qwen3-tts/weights.h"
 #include "model-info.h"
+#include "qwen3_tts_percentile.h"
 #include "synthesize.h"
 #include "test-assert.h"
 
@@ -360,45 +361,16 @@ bool write_f32(const std::string & path, const std::vector<float> & values) {
     return bool(file);
 }
 
-// numpy.percentile's default ("linear") interpolation, over a copy that this
-// function is free to sort. The statistic is transcribed from
-// scripts/validate-qwen3-tts-codec_encoder.py rather than approximated: that
-// script is where the committed gate was measured, and a nearest-rank
-// percentile here would compare a different number against it.
-double percentile_linear(std::vector<double> values, double percent) {
-    if (values.empty()) {
-        return 0.0;
-    }
-    std::sort(values.begin(), values.end());
-    const double position = percent / 100.0 * double(values.size() - 1);
-    const size_t low      = size_t(std::floor(position));
-    const size_t high     = size_t(std::ceil(position));
-    if (low == high) {
-        return values[low];
-    }
-    return values[low] + (values[high] - values[low]) * (position - double(low));
-}
-
-// The p95 of the per-frame L2 deviation, relative to the REFERENCE frame's own
-// L2 norm -- one branch of the [2, frames, projected] reconstruction. Same
-// statistic, same operand order (`b` is the oracle and is the denominator) as
-// scripts/validate-qwen3-tts-codec_encoder.py:243-252.
-double reconstruction_p95_relative(const float * port, const float * oracle, size_t frames, size_t projected) {
-    std::vector<double> relative;
-    relative.reserve(frames);
-    for (size_t frame = 0; frame < frames; ++frame) {
-        double difference = 0.0;
-        double reference  = 0.0;
-        for (size_t column = 0; column < projected; ++column) {
-            const double a = double(port[frame * projected + column]);
-            const double b = double(oracle[frame * projected + column]);
-            difference += (a - b) * (a - b);
-            reference += b * b;
-        }
-        relative.push_back(std::sqrt(difference) / std::sqrt(reference));
-    }
-    return percentile_linear(relative, 95.0);
-}
+// Both of these moved to tests/qwen3_tts_percentile.h on Plan 4 Task 2, with
+// their arithmetic byte-identical, so that a `unit`-labelled test can reach
+// them: this file is integration-tier and synthesize-check-unit does not build
+// it, which is exactly why the two implementations of this statistic (here and
+// in scripts/validate-qwen3-tts-codec_encoder.py) had no registered
+// cross-check. tests/qwen3_tts_percentile_test.cpp and
+// tests/python/test_percentile_agreement.py now hold both to one committed
+// fixture.
+using synth::qwen3_tts::testing::percentile_linear;
+using synth::qwen3_tts::testing::reconstruction_p95_relative;
 
 // Whether `needle` occurs verbatim in `bytes`. GGUF stores metadata keys and
 // tensor names as length-prefixed UTF-8 with no compression, so a key's or a

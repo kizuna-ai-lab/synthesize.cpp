@@ -980,11 +980,15 @@ def build_conventions(observed: dict) -> dict:
                 ),
                 "sliding_window": observed["sliding_window"],
                 "sliding_window_note": (
-                    "encoder_config.sliding_window is 250 frames. Every clip in the "
-                    "current manifest is well under that (101 frames at most), so the "
-                    "window has not been exercised by any artifact this script has "
-                    "produced -- a port must not conclude from these dumps that it can "
-                    "skip the window."
+                    "encoder_config.sliding_window is 250 frames. THIS IS NO LONGER "
+                    "UNEXERCISED: base-ref-max is 375 reference code frames, past the "
+                    "window, and base-icl-en-second-speaker is 176. The manifest's "
+                    "longest clip was 101 frames when this note was written and the "
+                    "figure was corrected on 2026-08-17 (Plan 4 Task 16) -- an "
+                    "already-generated conventions.json keeps the stale line until its "
+                    "case is re-dumped, which is a statement about that artifact rather "
+                    "than a reason to hand-edit a generated file. A port still must not "
+                    "conclude it can skip the window."
                 ),
             },
             "quantizer_widths": {

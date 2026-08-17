@@ -3137,6 +3137,66 @@ from it rather than from the CPU gate.
 peak memory for a supported backend; those are Task 14's and are not asserted
 here. This section records agreement and placement only.
 
+### Base latency, RTF and peak memory, measured on Release 2026-08-17
+
+Stage 2 Plan 4 Task 14, separate from Task 13 because it is a separate build
+tree and that separation is the point: a `dev-*` preset proves correctness and
+never wall-clock time.
+
+**Every figure below comes from `build/rel-dgx-spark`** -- the committed
+`rel-dgx-spark` preset, `CMAKE_BUILD_TYPE=Release`, sm_121a, CUDA Toolkit 13.3,
+on a DGX Spark/GB10. Workload: "This is a test of Qwen three T T S base voice
+cloning." synthesized through an ICL reference-audio Voice Profile prepared from
+`base-icl-en`'s waveform, seed 7, `max_output_frames` 983040, 10 threads.
+
+| profile | backend | frames | audio | synthesis | **RTF** | load | peak RSS |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| BF16 | CPU | 88,320 | 3.680 s | 11.60 s | **3.15** | 1.50 s | 3.29 GiB |
+| BF16 | CUDA | 88,320 | 3.680 s | 10.85 s | **2.95** | 1.64 s | 3.29 GiB |
+| Q8_MIXED | CPU | 78,720 | 3.280 s | 2.84 s | **0.863** | 1.13 s | 2.23 GiB |
+
+Medians of three (BF16) and six (Q8_MIXED) runs. RTF is each row's own
+synthesis time over its own audio length, never across rows -- the two profiles
+stop at different frame counts, which is a property of their weights and not an
+error.
+
+**Q8_MIXED crosses real time and is the profile that pays.** RTF 3.15 → 0.863 is
+a **3.65×** improvement, alongside a package 33.7 % smaller and 1.06 GiB less
+peak RSS. That is the speed half Task 8 handed forward, and it turns Task 8's
+"it pays on size" into "it pays on both". For orientation only, Stage 1 recorded
+RTF 0.85 for CustomVoice's Q8_MIXED on its own workload -- a different variant
+and a different case, but the closeness is a consistency signal rather than a
+coincidence, since both quantize the same autoregressive half.
+
+**CUDA buys about 8 % and that is the expected amount.** 11.60 s → 10.85 s on
+the same tree, RTF 3.15 → 2.95. Only the Stage 1 codec-decoder twin moves; the
+autoregressive half is held on the CPU by the discrete-outputs rule and
+dominates, and the two new graphs stay on the CPU by Task 12's measured
+decision. `docs/backends.md` requires performance measurement for support but no
+minimum speedup, so this is recorded as measured and CUDA is **not** described
+as accelerated for this variant beyond what the number says.
+
+**Gate 6, repeated runs and cleanup.** Every repetition at a fixed seed produced
+byte-identical frame counts -- 88,320 for BF16 and 78,720 for Q8_MIXED across
+all runs -- and peak RSS varied by under 0.03 % between repetitions of the same
+configuration, so nothing accumulates across runs.
+
+**Two contaminants, named rather than discovered.** The second BPE frontend costs
+about +45 MB of peak RSS and is inside every figure above. And the first
+measurement pass produced BF16 and Q8_MIXED synthesis times spread 2.8–9.7 s
+while a CUDA build was finishing on the same machine; re-measured on a quiet
+machine, Q8_MIXED lands in 2.765–2.893 s across six runs. **The contended
+figures are discarded, not averaged in.** One BF16 repetition still read 20.9 s
+against its neighbours' 11.56 and 11.64; it is treated as an outlier and the
+median of the stable runs is reported, which is why the run counts are stated
+above.
+
+**What is not claimed.** These are one machine, one workload and one utterance
+length. `docs/testing.md` records that generated length is build-dependent, so
+an RTF computed from a frame count taken on another tree would be wrong; every
+figure here is same-tree. No listening judgement is implied -- Task 15 owns
+that, and a tolerance table is not audible evidence.
+
 ### Does quantizing the speaker encoder pay? Measured 2026-08-17
 
 Stage 2 Plan 4 Task 9. §7 says the speaker encoder "is small enough that

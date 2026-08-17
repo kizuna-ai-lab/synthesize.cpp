@@ -992,6 +992,73 @@
               "note": "BYTE-IDENTICAL TO THE BF16 CELL, MEASURED RATHER THAN ASSUMED: 20 of 20 sha256 comparisons match over latents.f32, rvq_reconstruction.f32, codes.i32 and downsample.f32 across all five cases, with the port driven from the F16 package.\n\nIt is identical by construction. src/arch/qwen3-tts/catalog.cpp splits halves on the `codec.` prefix, so every codec tensor is F32 under EVERY profile; Plan 4 Task 6's census confirmed all 161 codec.encoder.* tensors are F32 in both packages. The graph reads the same weights and computes the same numbers.\n\nTHIS CELL IS THEREFORE NOT INDEPENDENT EVIDENCE, and it says so rather than presenting five cases twice. It exists because tests/python/test_tolerance_coverage.py requires every profile to carry the reference profile's full stage set; the thresholds are the BF16 ones because the computation is the BF16 one. See `cross_profile_identity` in the BF16 codec_encoder cell for the evidence."
             }
           }
+        },
+        "Q8_MIXED": {
+          "stages": {
+            "public": {
+              "backend": "CPU",
+              "description": "The public C seam driven end to end against the Q8_MIXED Base package, through a reference-audio Voice Profile.",
+              "checks": 7,
+              "all_passed": true,
+              "skipped": 3,
+              "voice_kind": "reference_audio",
+              "measured": "2026-08-17",
+              "build": "build-integration, CMAKE_BUILD_TYPE=Release",
+              "max_output_frames": 983040,
+              "note": "ALL THREE PROFILES PRODUCE DISTINCT AUDIO, which is what says the talker half is genuinely quantized. Seed 7 through reference A: BF16 9eef2beaf63cb60e, F16 96a143de53c1c29a, Q8_MIXED 22852e21195a3ddd. Every relation the checks assert holds WITHIN this profile -- a seed reproduces, a different seed does not, a different Voice does not -- which is what a behavioural stage can claim.\n\nThe same three structural skips as the other two cells: a Voice Profile has no id, and a dialect speaker is a Preset Voice this package does not catalogue."
+            },
+            "replay": {
+              "backend": "CPU",
+              "cases": 4,
+              "case_ids": [
+                "base-xvector-en",
+                "base-xvector-zh",
+                "base-ref-min",
+                "base-ref-max"
+              ],
+              "measured": "2026-08-17",
+              "probes": {
+                "speaker.x_vector": {
+                  "min_cosine": 0.9999767764206815,
+                  "observed_min_cosine": 0.99999501,
+                  "observed_max_abs": 0.0215769,
+                  "identical_to": "F16",
+                  "note": "BYTE-IDENTICAL TO THE F16 CELL, AND THAT WAS PREDICTED BEFORE IT WAS MEASURED. Plan 4 Task 6's ConvKernel ruling holds the speaker encoder's 38 convolution weights at the profile's halved fallback -- F16 -- under BOTH F16 and Q8_MIXED, and their 38 biases are F32 under both. So the speaker encoder's weights are bit-identical between the two packages and the graph computes the same x-vector. Confirmed: 4 of 4 sha256 comparisons match.\n\nThat is an independent check on the ruling rather than a restatement of it: the prediction follows from the classification and would have failed if the classification were wrong.\n\nThe residual against the oracle is unchanged from F16 for the same reason the F16 cell records -- it is the ORACLE's bf16 storage, not the port's weights, that bounds this comparison."
+                }
+              },
+              "probes_not_measured": {
+                "prompt.icl_embed": "not re-measured for this profile; the coverage rule requires the same stage set, not the same probe set, and a copied figure would be a measurement that did not happen."
+              }
+            },
+            "codec_encoder": {
+              "backend": "CPU",
+              "measured": "2026-08-17",
+              "cases": 5,
+              "case_ids": [
+                "base-icl-en",
+                "base-ref-min",
+                "base-text-short",
+                "base-ref-max",
+                "base-icl-en-second-speaker"
+              ],
+              "identical_to": "BF16",
+              "probes": {
+                "codec.chain": {
+                  "rel_absmax": 0.001
+                },
+                "codec.rvq_reconstruction.semantic": {
+                  "p95_relative_l2": 0.02
+                },
+                "codec.rvq_reconstruction.acoustic": {
+                  "p95_relative_l2": 0.5
+                },
+                "codec.semantic_flip_rate": {
+                  "max_fraction": 0.2
+                }
+              },
+              "note": "BYTE-IDENTICAL TO BF16, measured: 25 of 25 sha256 comparisons match over latents.f32, rvq_reconstruction.f32, codes.i32, downsample.f32 and rvq_distance_margin.f32 across all five cases. Together with the F16 cell's own 20 of 20, the codec encoder is now shown identical across ALL THREE profiles.\n\nTHE CODES DO NOT MOVE, AND THAT IS THE ANSWER TO THE QUESTION THIS TASK WAS TOLD TO ASK. Plan 4 Task 8 Step 2 says to expect the codes to move and to measure by how much, because OmniVoice's codec-half profiles were BLOCKED when quantization flipped RVQ tokens on the clone path. That failure mode cannot arise here: this family holds its whole codec half at the reference dtype under every profile, so the RVQ argmin sees the same F32 weights and the same latents and returns the same codes. Zero flips, on every case, at every profile. Handed to Task 10, whose subject is exactly whether the other family's conv-exempt precedent transfers."
+            }
+          }
         }
       }
     }

@@ -3018,6 +3018,73 @@ upstream's, and nothing here may be read as though it did. The 100.000% row
 above is the strongest available substitute and it is a comparison against
 upstream's own float32 run, not against the shipped bf16 oracle.
 
+### CUDA placement for the speaker and codec encoders: measured, and declined
+
+Stage 2 Plan 4 Task 12. §7 says the CUDA Execution Backend "reuses Stage 1's
+wiring", and Stage 1's twin pass covers `codec.decoder.*` only -- the encoder is
+deliberately outside it, by a decision recorded at `model.cpp:523-540` with its
+byte cost. Reading §7 as commissioning a twin for the two new graphs is a
+reading, not the text. So this task measured what a twin could possibly buy
+before writing one, and the answer is that it cannot pay.
+
+**The two graphs' CPU cost, measured on a `Release`-typed tree.** Each driver
+loads the 2.4 GiB package before it runs its graph, so one timing is load plus
+graph. Timing the same driver on a 1-second clip and a 30-second one separates
+them, because the load is identical and the graph is not. Median of three, in
+`build` at `CMAKE_BUILD_TYPE=Release`:
+
+| driver | 1 s of audio | 30 s of audio | difference | per second of audio |
+| --- | ---: | ---: | ---: | ---: |
+| codec encoder | 1.943 s | 7.125 s | 5.182 s | **0.179 s** |
+| speaker encoder | 1.800 s | 2.777 s | 0.977 s | **0.034 s** |
+
+Both extrapolate to the same fixed cost -- 1.764 s and 1.766 s of model load --
+which is the cross-check that the separation is real rather than a fit.
+
+**A third point tests the extrapolation rather than assuming it.** The model
+predicts 1.764 + 0.179 × 8.08 = **3.21 s** for the codec encoder on the
+8.08-second reference; measured, median of three, it is **3.183 s** — within
+0.9 %, and taken while a CUDA build was competing for cores, so if anything the
+measurement is the pessimistic one. The graph's own share there is
+3.183 − 1.764 = **1.42 s**.
+
+So on that reference the two graphs together cost about **1.69 s**: 1.42 s in
+the codec encoder and 0.27 s in the speaker encoder.
+
+**What a twin would cost, against Stage 1's own measurement.** Mirroring the
+codec encoder is 224,674,944 bytes (`model.cpp:523-540`); the speaker encoder
+adds about 17 MiB. Stage 1 measured roughly **7 s of extra load for 457 MB**, so
+about **3.7 s** for these 241 MB.
+
+**So the transfer costs 2.2× the entire compute it would accelerate, before any
+speedup is applied.** Even at Stage 1's 35× -- the figure its codec-decoder twin
+actually achieved -- the saving is 1.69 × (1 − 1/35) ≈ 1.64 s against a 3.7 s
+cost. There is no speedup at which this twin pays, because the ceiling is the
+graphs' whole CPU time and the floor is a larger one-time transfer.
+
+**And the amortization runs the wrong way.** Stage 1's codec-decoder split is a
+deployment choice -- a net loss for a one-shot utterance and a clear win for a
+load-once process -- because the decoder runs on every synthesis. These two run
+**once per Voice Profile**, not once per synthesis: the Profile carries the
+x-vector and the reference codes, and every later synthesis reuses them. A
+load-once process therefore pays the mirror once and saves almost nothing,
+which is the opposite of what made Stage 1's twin worth having.
+
+**Outcome: the second. The twin is not worth writing, and it was not written.**
+`model.cpp:523-540`'s comment said a later plan might measure this; it has been
+measured and the comment is updated to say so. The discrete-outputs rule is not
+even reached -- it would have held the RVQ argmin on the host regardless, so
+only part of the codec encoder was ever eligible.
+
+**What that leaves for the CUDA sub-grid, stated rather than skipped.** Under
+this outcome the two new graphs stay on the CPU, so a `codec_encoder` CUDA cell
+would describe a placement nothing runs on. But the Stage 1 codec-decoder twin
+*does* move on a Base package, so `public` and `replay` CUDA figures are real
+and are measured anyway -- `docs/backends.md` gate 5 applies to the placement
+that demonstrably exists. Task 13 decides where they are recorded, and the
+coverage rule's all-or-nothing sub-grid means they cannot become a `backends`
+key without a third stage that would be a fabrication.
+
 ### Does quantizing the speaker encoder pay? Measured 2026-08-17
 
 Stage 2 Plan 4 Task 9. §7 says the speaker encoder "is small enough that

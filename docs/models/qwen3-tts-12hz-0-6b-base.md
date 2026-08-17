@@ -1,8 +1,10 @@
 # Qwen3-TTS 12 Hz 0.6B Base
 
-Status: Confirmed 2026-08-17. **Nothing here is published.** This variant's
-packages exist locally and the ship artifacts are staged; publication is a
-separate act requiring jiangzhuo's confirmation at the time.
+Status: Confirmed 2026-08-17. **Published 2026-08-17** to
+[`jiangzhuo9357/qwen3-tts-12hz-0-6b-base-gguf`](https://huggingface.co/jiangzhuo9357/qwen3-tts-12hz-0-6b-base-gguf)
+carrying BF16, F16 and Q8_MIXED, on jiangzhuo's per-act confirmation naming that
+exact target. Every later change to the packages or the card is its own act and
+needs its own confirmation.
 
 This is the family's **first** `docs/models/` page, added by Stage 2 Plan 4 Task
 16. `qwen3-tts-12hz-0-6b-customvoice` is published and has none; that gap is

@@ -1,14 +1,16 @@
 # Hugging Face card specification for the Qwen3-TTS 12Hz 0.6B Base packages.
 #
-# PREPARED 2026-08-17 BY STAGE 2 PLAN 4 TASK 16. NOT PUBLISHED, AND NOTHING HAS
-# BEEN UPLOADED. `target_repo` below names where these WOULD go; publication is a
-# separate act requiring jiangzhuo's confirmation at the time, and neither this
-# plan nor this file asks for it.
+# PUBLISHED 2026-08-17 to jiangzhuo9357/qwen3-tts-12hz-0-6b-base-gguf, on
+# jiangzhuo's per-act confirmation naming that exact target, carrying BF16, F16
+# and Q8_MIXED -- 6.70 GB across three GGUFs and this card, commit d4df99e8.
+# Every later edit to this file changes a live artifact and needs its own
+# confirmation to re-upload.
 #
-# The CustomVoice card's own header records what happens when a status line goes
-# stale on a live artifact -- it read "Prepared, not published" for two weeks
-# after the upload and was read as fact during Stage 2 design. So: if these
-# packages are ever published, this header is the first thing to correct.
+# This header read "PREPARED ... NOT PUBLISHED" until the upload and was
+# corrected in the same session, deliberately: the CustomVoice card's own header
+# records that its equivalent line stayed stale for two weeks after ITS upload
+# and was read as fact during Stage 2 design. A stale status line on a live
+# artifact is worse than none.
 
 model_slug: qwen3-tts-12hz-0-6b-base
 display_name: Qwen3-TTS 12Hz 0.6B Base
@@ -72,6 +74,11 @@ validation:
   level: port_validated
   cases_per_stage: 13
   stages: 3
+  date: 2026-08-17
+  reference: the pinned upstream PyTorch implementation at bfloat16 on CUDA
+  platforms:
+    - DGX Spark CPU
+    - NVIDIA GB10 CUDA 13.3
   # PARTIAL, and declared rather than defaulted. The Stage 1 codec-decoder twin
   # does move on this package, and a CUDA public-seam run passes all seven
   # checks. The two graphs this variant ADDS -- the ECAPA speaker encoder and
@@ -156,11 +163,12 @@ validation:
       listener -- evidence, not a level.
 
 publication_note: |
-  NOT PUBLISHED. No Base package has been uploaded anywhere.
+  Published 2026-08-17. Both the pinned source at `022e286b` and the checkpoint
+  at `5d839924` carry an explicit Apache-2.0 grant, so no redistribution
+  assumption is required for this variant.
 
-  If that changes, note what this variant is: a package that clones a voice from
-  a recording the caller supplies. The CustomVoice package cannot do that, which
-  is why its card carries no such note.
+  What it is, stated because the sibling package is not this: it clones a voice
+  from a recording the caller supplies. The CustomVoice package cannot do that.
 
 usage:
   profile: Q8_MIXED

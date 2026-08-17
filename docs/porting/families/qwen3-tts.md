@@ -29,8 +29,11 @@ five blind pairs and two labelled resemblance checks, meeting `spec:532`'s audit
 gate; both clones were judged the same speaker as their source, and the two
 quantization profiles were audible but not degraded.
 See "Stage 2 Plan 4: what it measured, and what it refused to claim" below.
-Stage 3 (Description Text) is not started, and the Base variant is **not
-published**. See the three Stage 2 paragraphs below.
+**The Base variant was published on 2026-08-17** to
+`jiangzhuo9357/qwen3-tts-12hz-0-6b-base-gguf` (BF16, F16 and Q8_MIXED, 6.70 GB,
+commit `d4df99e8`), on jiangzhuo's per-act confirmation naming that target --
+which closes Stage 2 on the same terms Stage 1 closed on. Stage 3 (Description
+Text) is not started. See the three Stage 2 paragraphs below.
 
 **Until 2026-08-12 this line read "Q8_MIXED, the public backend control and
 stage 8 are not done. Port validation is not started."** All four clauses were

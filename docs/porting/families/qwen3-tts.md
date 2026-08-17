@@ -17,7 +17,7 @@ accepted on 2026-07-26; the intake packet is
 `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`. **Stage 2
 (`qwen3-tts-12hz-0.6b-base`) has Plans 1, 2 and 3 done** -- the package, the
 x-vector clone path, and the transcript-assisted (ICL) clone path, all on CPU;
-**Plan 4 executed 2026-08-17 and is complete except for its listening audit.**
+**Plan 4 executed 2026-08-17 and is complete, all sixteen tasks.**
 It measured both Quantization Profiles (F16 clears every gate and does NOT pay
 -- it is 184,448 bytes *larger* than its source; Q8_MIXED pays on both, 33.7 %
 smaller at RTF 0.863 against BF16's 3.15, faster than real time), settled the

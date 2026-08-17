@@ -9,6 +9,14 @@
  * relations and their meaning live in scripts/validate-qwen3-tts-public.py.
  */
 
+/* This driver reaches outside ISO C for two things -- `clock_gettime` for the
+ * real-time factor and `strdup` for the `ref:` spec -- and CMake asks for C11.
+ * They are declared today only because CMake leaves C_EXTENSIONS on and the
+ * build lands on gnu11, so the macro states the dependency instead of relying
+ * on that default. Note tests/omnivoice_public_real.c has the same
+ * `clock_gettime` dependency and no macro; the tree declares none anywhere. */
+#define _POSIX_C_SOURCE 200809L
+
 #include "synthesize.h"
 
 #include <stdio.h>

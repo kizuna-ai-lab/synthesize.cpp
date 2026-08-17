@@ -69,7 +69,10 @@ def parse_args() -> argparse.Namespace:
     # PCM frames, which is what the public field counts. This used to be 24 and
     # meant 24 codec frames; the field was being compared in the wrong units, and
     # 24 PCM frames is one millisecond. 24 codec frames of 1920 samples is this.
-    parser.add_argument("--max-frames", type=int, default=46080)
+    # Left unset so it can be resolved AFTER --reference is known; see
+    # resolve_max_frames. 46080 was calibrated on the CustomVoice package, whose
+    # Preset Voices take a short preset path, and it is too small for a clone.
+    parser.add_argument("--max-frames", type=int, default=None)
     # The Quantization Profile and Execution Backend this run covers. They are
     # recorded rather than inferred because the tolerance grid is keyed on them:
     # a run that does not say which cell it filled cannot fill one.
@@ -84,6 +87,28 @@ def parse_args() -> argparse.Namespace:
                              "is a path to a WAV or to raw float32 mono samples; a WAV is converted "
                              "once with soundfile because the runner reads raw float32.")
     return parser.parse_args()
+
+
+# One millisecond of headroom is not the point; the two paths stop at different
+# lengths for a structural reason. A Preset Voice on the CustomVoice package
+# takes a short preset path and 46080 PCM frames -- 24 codec frames of 1920
+# samples -- has always been enough. A Voice Profile prepared from a reference
+# recording clones, and how long the clone runs depends on the sampled seed, so
+# the random-seed check draws a length this script does not control.
+#
+# MEASURED, NOT ANTICIPATED: on 2026-08-17 that exact call returned
+# SYNTH_ERR_OUTPUT_LIMIT (15) on the Base package and was rerun by hand at
+# 983040. A gate that fails depending on a draw is not a gate, so the cap is
+# selected by path rather than left to the caller to remember.
+PRESET_VOICE_MAX_FRAMES = 46080
+REFERENCE_VOICE_MAX_FRAMES = 983040
+
+
+def resolve_max_frames(arguments: argparse.Namespace) -> int:
+    """An explicit --max-frames always wins; otherwise the path chooses."""
+    if arguments.max_frames is not None:
+        return arguments.max_frames
+    return REFERENCE_VOICE_MAX_FRAMES if arguments.reference else PRESET_VOICE_MAX_FRAMES
 
 
 def materialize_reference(path: pathlib.Path, work: pathlib.Path, index: int) -> pathlib.Path:
@@ -130,6 +155,7 @@ def synthesize(arguments: argparse.Namespace, name: str, voice: str, language: s
 
 def main() -> int:
     arguments = parse_args()
+    arguments.max_frames = resolve_max_frames(arguments)
     checks: list[dict] = []
 
     def record(name: str, passed: bool, detail: str) -> None:

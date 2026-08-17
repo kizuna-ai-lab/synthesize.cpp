@@ -1,6 +1,22 @@
 #!/usr/bin/env python3
 """Validate the Qwen3-TTS codec encoder and its split RVQ, stage by stage.
 
+THE UNDERSCORE IN THIS FILENAME IS REQUIRED, NOT DRIFT, and it is written here
+because Plan 4 Task 11 was told to decide it rather than leave it for a third
+plan. Every sibling validator is spelled with hyphens throughout, so
+``codec_encoder`` looks like a slip -- and a hyphenated version of this file
+once left tests/python/test_tolerance_coverage.py red for six tasks.
+
+The reason is that the stem is not prose. That test derives the validator's
+identity as ``path.stem[len("validate-{family}-"):]`` and compares it against
+the measured STAGE NAME, which is ``codec_encoder``. The hyphen convention
+applies to the ``validate-<family>-`` prefix; what follows is a key. Renaming
+this file would therefore require renaming the stage key everywhere it is
+spelled -- tests/tolerances/qwen3-tts.json throughout, the ``string(JSON ...
+stages codec_encoder ...)`` lookups in tests/CMakeLists.txt, this script's own
+``--stage`` default, and the report schema -- to buy nothing but a consistent
+look. Deliberately not done.
+
 THE CODES ARE NOT THE GATE, and this file exists because of that. The design's
 fourth erratum (2026-08-13) dropped the plain-equality gate on
 ``codes/reference.i32``: the oracle's RVQ codebook is bfloat16 and the
@@ -434,7 +450,32 @@ def check_case(port: pathlib.Path, upstream: pathlib.Path, oracle: pathlib.Path,
     return ok
 
 
-def load_gates(path: pathlib.Path, variant: str, profile: str, stage_name: str):
+def resolve_stage_cell(document: dict, variant: str, profile: str, backend: str, stage_name: str):
+    """The one cell a run gates against, or None.
+
+    The same resolution shape as scripts/validate-qwen3-tts-replay.py's
+    `resolve_tolerance_stage`, and deliberately so: CPU is the profile's own
+    entry and anything else hangs off `backends`, which is the shape
+    tests/python/test_tolerance_coverage.py walks. Added by Plan 4 Task 11,
+    which needed this validator to have a backend coordinate at all -- it
+    indexed straight through `profiles[profile]["stages"][stage]` and had no
+    way to name a CUDA cell.
+
+    Uppercased before the lookup because the grid keys CPU/CUDA while the CLI
+    spells them lowercase, the same meeting point the public validator already
+    has at its report boundary.
+    """
+    if "variants" in document:
+        profiles = document["variants"].get(variant, {}).get("profiles", {})
+    else:
+        profiles = document.get("profiles", {})
+    cell = profiles.get(profile, {})
+    if backend.upper() != "CPU":
+        cell = cell.get("backends", {}).get(backend.upper(), {})
+    return cell.get("stages", {}).get(stage_name) or None
+
+
+def load_gates(path: pathlib.Path, variant: str, profile: str, stage_name: str, backend: str = "cpu"):
     """Resolve the enforced gates from the committed tolerance grid.
 
     The grid is the source; this module's constants are a fallback. Both are
@@ -444,10 +485,17 @@ def load_gates(path: pathlib.Path, variant: str, profile: str, stage_name: str):
     which is how the grid came to exist in the first place.
     """
     document = json.loads(path.read_text(encoding="utf-8"))
-    try:
-        probes = document["variants"][variant]["profiles"][profile]["stages"][stage_name]["probes"]
-    except KeyError as missing:
-        raise SystemExit(f"{path}: no {variant}/{profile}/{stage_name} cell ({missing})") from None
+    stage_cell = resolve_stage_cell(document, variant, profile, backend, stage_name)
+    if stage_cell is None or "probes" not in stage_cell:
+        # A REFUSAL, NOT A FALLBACK TO CPU. Silently gating a CUDA run against
+        # the CPU cell is exactly how a backend comes to be "measured" without
+        # anything having measured it, and this file's own grid spent two plans
+        # removing figures of that kind.
+        raise SystemExit(
+            f"{path}: no {variant}/{profile}/{backend.upper()}/{stage_name} cell. This validator "
+            "refuses rather than falling back to another backend's numbers."
+        )
+    probes = stage_cell["probes"]
 
     chain = float(probes["codec.chain"]["rel_absmax"])
     reconstruction = {
@@ -500,13 +548,19 @@ def main() -> int:
     parser.add_argument("--variant", default="qwen3-tts-12hz-0-6b-base")
     parser.add_argument("--profile", default="BF16")
     parser.add_argument("--stage", default="codec_encoder")
+    # Default CPU, so every invocation that existed before Plan 4 Task 11 is
+    # unchanged. Lowercase like the public validator's, uppercased at the grid
+    # lookup; a backend with no sub-grid is a refusal rather than a fall back to
+    # CPU's numbers.
+    parser.add_argument("--backend", default="cpu", choices=("cpu", "cuda"))
     args = parser.parse_args()
 
     global STAGE_REL_ABSMAX, RECONSTRUCTION_P95_RELATIVE, SEMANTIC_FLIP_RATE
     if not args.no_tolerances:
         STAGE_REL_ABSMAX, RECONSTRUCTION_P95_RELATIVE, SEMANTIC_FLIP_RATE = load_gates(
-            args.tolerances, args.variant, args.profile, args.stage
+            args.tolerances, args.variant, args.profile, args.stage, args.backend
         )
+        print(f"gates: {args.variant} / {args.profile} / {args.backend.upper()} / {args.stage}")
 
     ok = True
     for case in args.case:

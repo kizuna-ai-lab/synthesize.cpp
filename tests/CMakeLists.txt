@@ -1299,8 +1299,24 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     # The upstream-float32 dump root, shared with the codec-encoder golden gate
     # further down. Set here rather than there because this registration comes
     # first and both need it.
-    set(_synth_qwen3_tts_codec_upstream_root
-        "${CMAKE_SOURCE_DIR}/build/qwen3-tts-codec-encoder-f32")
+    #
+    # A CACHE VARIABLE SINCE PLAN 4 TASK 11, with the historical path as its
+    # default so every existing configuration is byte-identical. It was a plain
+    # `set` until then, which meant a SECOND build tree could not point either
+    # gate at its own dumps -- and this plan needs exactly that, because
+    # performance figures must come from a `Release`-typed tree
+    # (docs/testing.md) while the dumps live under the source tree's `build/`.
+    #
+    # The override does NOT weaken the registration guard. Both gates stay
+    # guarded on the artifacts EXISTING under whatever root is given, so
+    # pointing this at an empty directory leaves the tests unregistered rather
+    # than registered against nothing -- "a missing dump is a missing test, not
+    # a passing one".
+    set(SYNTH_QWEN3_TTS_CODEC_UPSTREAM_F32_ROOT
+        "${CMAKE_SOURCE_DIR}/build/qwen3-tts-codec-encoder-f32"
+        CACHE PATH
+        "Root of the upstream-float32 codec-encoder dumps that the qwen3-tts codec gates compare against")
+    set(_synth_qwen3_tts_codec_upstream_root "${SYNTH_QWEN3_TTS_CODEC_UPSTREAM_F32_ROOT}")
     set(_synth_qwen3_tts_icl_real_upstream_codes
         "${_synth_qwen3_tts_codec_upstream_root}/base-icl-en/codec_encoder/codes.i32")
     set(_synth_qwen3_tts_icl_real_ok FALSE)

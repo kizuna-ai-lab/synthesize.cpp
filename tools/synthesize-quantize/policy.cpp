@@ -649,6 +649,21 @@ const Profile * find_profile(const char * name) {
     return nullptr;
 }
 
+bool profile_applies_to_architecture(const std::string & architecture,
+                                     const Profile &     profile,
+                                     std::string &       reason_out) {
+    reason_out.clear();
+    if (architecture == "qwen3-tts" && iequals(profile.name, "BF16")) {
+        reason_out =
+            "BF16 is Qwen3-TTS's source profile, written by the converter and not reproducible by this tool: "
+            "src/arch/qwen3-tts/catalog.cpp holds every talker-half tensor at BF16 regardless of role, while this "
+            "profile's sensitive and conv-kernel columns are F32. A cut would succeed and the package would fail to "
+            "load. Convert from the checkpoint to obtain BF16; cut F16, Q8_MIXED or Q5_K_MIXED from it.";
+        return false;
+    }
+    return true;
+}
+
 bool resolve_qwen3_tts_target_spec(const Profile & profile, const std::string & name, TargetSpec & spec_out) {
     switch (classify_qwen3_tts_tensor(name)) {
         case CatalogRole::MatrixWeight:

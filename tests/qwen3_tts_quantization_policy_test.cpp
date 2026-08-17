@@ -27,6 +27,7 @@
 
 using synth::quantize::find_profile;
 using synth::quantize::Profile;
+using synth::quantize::profile_applies_to_architecture;
 using synth::quantize::resolve_qwen3_tts_target_spec;
 using synth::quantize::TargetSpec;
 using synth::quantize::TensorLayout;
@@ -479,6 +480,35 @@ int main() {
         SYNTH_TEST_CHECK(kernel % ggml_blck_size(GGML_TYPE_Q8_0) != 0);
         SYNTH_TEST_CHECK(kernel % ggml_blck_size(GGML_TYPE_Q5_K) != 0);
     }
+
+    // BF16 IS NOT A CUT TARGET FOR THIS FAMILY, and the tool has to say so
+    // before it reads a tensor. Every column disagrees with the runtime here,
+    // not just the ConvKernel one: the profile row's sensitive column is F32
+    // while src/arch/qwen3-tts/catalog.cpp holds the whole talker half at BF16
+    // regardless of role. Measured 2026-08-17 -- a `--quant BF16` cut of the
+    // shipped CustomVoice package succeeded, wrote 2.2 GB, and was rejected at
+    // load on `talker.text_projection.linear_fc1.bias`, a Sensitive tensor on a
+    // package that holds no ConvKernel tensors at all.
+    const Profile * bf16 = find_profile("BF16");
+    SYNTH_TEST_CHECK(bf16 != nullptr);
+    SYNTH_TEST_CHECK(bf16->sensitive_type == GGML_TYPE_F32);
+    SYNTH_TEST_CHECK(bf16->transpose_weight_type == GGML_TYPE_F32);
+    std::string reason;
+    SYNTH_TEST_CHECK(!profile_applies_to_architecture("qwen3-tts", *bf16, reason));
+    SYNTH_TEST_CHECK(!reason.empty());
+
+    // The three profiles this family DOES cut are unaffected, so the guard
+    // cannot be passing by refusing everything.
+    for (const Profile * profile : { f16, q8, q5 }) {
+        SYNTH_TEST_CHECK(profile_applies_to_architecture("qwen3-tts", *profile, reason));
+        SYNTH_TEST_CHECK(reason.empty());
+    }
+
+    // And BF16 stays available where it means something: it is one of
+    // OmniVoice's four generator-half profiles. A guard keyed on the profile
+    // alone rather than on the pair would have taken that away.
+    SYNTH_TEST_CHECK(profile_applies_to_architecture("omnivoice", *bf16, reason));
+    SYNTH_TEST_CHECK(reason.empty());
 
     return 0;
 }

@@ -13,10 +13,12 @@ against BF16's 3.15 -- **faster than real time** -- and 1.06 GiB less peak RSS,
 with no measured accuracy cost on any gated quantity. `F16` clears every gate and
 does **not** pay: it is 184,448 bytes *larger* than the package it was cut from.
 
-**The Listening Audit has not returned a verdict.** The material is built and
-offered (see "Listening Audit," below); until a listener reports, `spec:532`'s
-"audit recorded" gate is **not met** and this page does not claim it is. Quality
-Evaluation stays deferred per ADR 0017. Neither claim would move the Validation
+**The first ICL Listening Audit ran on 2026-08-17 and recorded
+`no_obvious_regression`** -- five blind pairs and two labelled resemblance
+checks, one listener. Both quantization profiles were audible but **not
+degraded**, CPU and CUDA were indistinguishable, and both clones were judged the
+**same speaker** as their source. See "Listening Audit," below. Quality
+Evaluation stays deferred per ADR 0017, and neither claim moves the Validation
 Level.
 
 ## What this variant is for
@@ -94,20 +96,35 @@ beyond what that number says.
 
 ## Listening Audit
 
-**Offered 2026-08-17; no verdict yet.** `build/listening-icl/audit.html` carries
-five blind pairs -- BF16 against F16, BF16 against Q8_MIXED, CPU against CUDA,
-and ICL against x-vector on each of two reference recordings -- plus two labelled
-source-against-clone resemblance checks. A/B positions are shuffled with a
-recorded seed and the key is in `build/listening-icl/manifest.json`, not on the
-page.
+**Ran 2026-08-17. Result: `no_obvious_regression`.** The family's **first ICL
+audit** -- the 2026-08-13 one covered x-vector mode only, and said so, because
+ICL did not exist when it ran.
 
-This is the family's **first ICL audit**. The 2026-08-13 audit covered x-vector
-mode only and recorded `no_obvious_regression`; it explicitly did not cover ICL,
-which did not exist when it ran.
+| # | comparison | verdict |
+| --- | --- | --- |
+| 1 | BF16 against F16 | different, **neither degraded** |
+| 2 | BF16 against Q8_MIXED | different, **neither degraded** |
+| 3 | CUDA against CPU | indistinguishable |
+| 4 | ICL against x-vector, reference A | indistinguishable |
+| 5 | ICL against x-vector, reference B | indistinguishable |
+| L1 | reference A source against its clone | **same speaker** |
+| L2 | reference B source against its clone | **same speaker** |
 
-Until a listener reports, no claim is made about how any of this sounds. A
-recorded result is `no_obvious_regression` or a named regression -- never an
-inference from a passing tolerance table.
+Five blind pairs with A/B shuffled on a recorded seed, then two labelled
+resemblance checks. **Every pair was confirmed to differ in bytes before the
+verdict was recorded**, so each "indistinguishable" is a listening judgement
+rather than a trivial truth.
+
+The row that matters for shipping is pair 2: `Q8_MIXED` being 33.7 % smaller at
+RTF 0.863 is only worth having if it still sounds right, and no tolerance table
+can say whether it does.
+
+Pairs 4 and 5 are **scoped, not a verdict on ICL**. Two clips, one sentence, one
+listener; ICL's machinery may matter on material these references do not
+represent. What they say is that on these clips the extra path costs nothing
+audible and buys nothing audible either.
+
+One listener and two recordings. This is evidence, not a level.
 
 ## Coverage this variant does not have
 

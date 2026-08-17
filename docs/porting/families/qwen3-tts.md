@@ -23,10 +23,11 @@ It measured both Quantization Profiles (F16 clears every gate and does NOT pay
 smaller at RTF 0.863 against BF16's 3.15, faster than real time), settled the
 quantizer's blocker on the Base package's 237 new tensors, removed the semantic
 gate's cliff, and **declined** a CUDA twin for the two new graphs on a
-measurement -- the transfer costs 2.2× the compute it would accelerate. **The
-ICL Listening Audit is built and offered but has returned no verdict, so
-`spec:532`'s "audit recorded" gate is NOT met**, and the Hugging Face card is
-not written because its default profile is a ship decision that gate governs.
+measurement -- the transfer costs 2.2× the compute it would accelerate. **The first ICL
+Listening Audit ran on 2026-08-17 and recorded `no_obvious_regression`** across
+five blind pairs and two labelled resemblance checks, meeting `spec:532`'s audit
+gate; both clones were judged the same speaker as their source, and the two
+quantization profiles were audible but not degraded.
 See "Stage 2 Plan 4: what it measured, and what it refused to claim" below.
 Stage 3 (Description Text) is not started, and the Base variant is **not
 published**. See the three Stage 2 paragraphs below.
@@ -3145,6 +3146,66 @@ from it rather than from the CPU gate.
 peak memory for a supported backend; those are Task 14's and are not asserted
 here. This section records agreement and placement only.
 
+### The first ICL Listening Audit, 2026-08-17: `no_obvious_regression`
+
+Stage 2 Plan 4 Task 15. **No ICL listening audit had ever run for this family.**
+The 2026-08-13 audit covered x-vector mode only and said so; ICL did not exist
+when it ran.
+
+One listener (jiangzhuo), five blind pairs and two labelled resemblance checks,
+all on the same sentence at seed 7, generated from `build/rel-dgx-spark`
+(`CMAKE_BUILD_TYPE=Release`). A/B positions were shuffled with a recorded seed
+and the key was not on the page.
+
+| # | comparison | verdict |
+| --- | --- | --- |
+| 1 | BF16 against **F16**, ICL, reference A | different, **neither degraded** |
+| 2 | BF16 against **Q8_MIXED**, ICL, reference A | different, **neither degraded** |
+| 3 | **CUDA** against **CPU**, BF16, ICL, reference A | indistinguishable |
+| 4 | ICL against x-vector, BF16, reference A | indistinguishable |
+| 5 | ICL against x-vector, BF16, reference B (second speaker) | indistinguishable |
+| L1 | reference A source against its ICL clone | **same speaker** |
+| L2 | reference B source against its ICL clone | **same speaker** |
+
+**Result: `no_obvious_regression`.** No pair produced a named regression.
+
+**Every pair differed in bytes**, checked before the verdict was recorded, so
+each "indistinguishable" is a listening judgement rather than a trivial truth —
+the two sides of pairs 3, 4 and 5 are genuinely different audio.
+
+**What each row buys.**
+
+- **Both quantization profiles are audible but not degraded.** That is exactly
+  what a profile should produce, and for `Q8_MIXED` it is the audible evidence
+  the measurements could not supply: 33.7 % smaller and RTF 0.863 is only worth
+  having if it still sounds right, and a tolerance table cannot say whether it
+  does.
+- **CPU and CUDA are indistinguishable** despite differing bytes. That is the
+  codec decoder's TF32 arithmetic being inaudible, and it is the same kind of
+  evidence that removed this project's strict-FP32 gate on 2026-07-26 — two
+  renderings differing only in that gate, compared sample-aligned, inaudible.
+- **ICL and x-vector are indistinguishable on both references.** This is the
+  first audible comparison of the two clone modes and it is **scoped, not a
+  verdict on ICL**: two clips, one sentence, one listener. ICL's machinery may
+  well matter on material these two references do not represent — prosody
+  carried by the transcript, longer or harder utterances — and nothing here
+  tests that. What it does say is that on these clips the extra path costs
+  nothing audible and buys nothing audible either.
+- **Both clones were judged the same speaker as their source, including the
+  second speaker.** The 2026-08-13 audit produced that judgement on one source
+  clip; this is the second, on a different speaker and a different recording
+  chain.
+
+**What it does not establish.** Two recordings, one sentence, one listener. The
+Validation Level does not move and `quality_evaluation` stays deferred per ADR
+0017 — this is evidence, not a level. `spec:532`'s "audit recorded" gate is now
+**met**, which is a statement about this plan's deliverable and not about
+publication.
+
+The material is preserved at `build/listening-icl/` — `artifact.html` with the
+audio embedded, the per-clip WAVs, and `manifest.json` carrying the shuffle seed
+and the blind key.
+
 ### Stage 2 Plan 4: what it measured, and what it refused to claim
 
 Executed 2026-08-17. Plan 4 was written as a **measurement** plan whose stated
@@ -3205,16 +3266,13 @@ until both sides are moved together. And a 25× tightening of the acoustic bound
 passed every case in the validator and **failed the C++ arm on its first run**,
 because the two consumers feed the port different inputs; it was withdrawn.
 
+**The Listening Audit returned `no_obvious_regression` on 2026-08-17**, which is
+recorded in its own section above and which met `spec:532`'s audit gate.
+
 **What Plan 4 did NOT deliver, stated plainly.**
 
 - **Publication.** Nothing was uploaded and nothing asked to be. The Base variant
   is not published.
-- **A Listening Audit verdict.** The material is built and offered --
-  `build/listening-icl/audit.html`, five blind pairs and two labelled resemblance
-  checks -- and **no listener has reported**. `spec:532`'s "audit recorded" gate
-  is **not met**, and neither this record nor `docs/models/` claims it is.
-- **A Hugging Face card specification.** It names a default profile, which is a
-  ship decision the audit gates, so it is not written.
 - **Any movement of the Validation Level.** `quality_evaluation` stays deferred
   per ADR 0017.
 - **A CUDA sub-grid**, by the measured decision above; the coverage rule permits

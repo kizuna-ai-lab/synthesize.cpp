@@ -1,6 +1,6 @@
 # Quantization Policy
 
-Status: Confirmed 2026-08-10.
+Status: Confirmed 2026-08-17.
 VITS F16 and Q8_MIXED version 1 functionally validated on 2026-07-23;
 both profiles re-cut on 2026-07-27 with transpose-convolution weights held at F32.
 Kokoro F16 and Q8_MIXED version 1 functionally validated on 2026-07-26.
@@ -364,6 +364,122 @@ Consequently this family deliberately does not use the packed-convolution branch
 this project built for it. That code stays, shared with three other families and
 covered by tests that build packed kernels directly; its presence is not
 evidence that OmniVoice packs convolutions.
+
+## Qwen3-TTS Profiles
+
+Added 2026-08-17 by Stage 2 Plan 4. This family shipped `F16`, `Q8_MIXED` and a
+buildable-but-unpublished `Q5_K_MIXED` from Stage 1 onward with **no section in
+this document at all** — every profile fact lived only in
+`docs/porting/families/qwen3-tts.md`. What follows covers both Reference Model
+Variants and says which claims are measured on which.
+
+### The half that quantizes, and the half that never does
+
+The package has two halves that behave completely differently, and the split is
+by name in both the runtime and the quantizer — `src/arch/qwen3-tts/catalog.cpp`
+tests a `codec.` prefix and `tools/synthesize-quantize/policy.cpp` classifies the
+same way, deliberately, so the two cannot drift.
+
+- **The autoregressive half** — talker and code predictor, 316 + 86 tensors,
+  1727.6 MiB of 2164 — is entirely two-dimensional matrices with rows of 1024,
+  2048 and 3072. It block-quantizes without argument, and it is where both the
+  parameters and the win are.
+- **The codec half never halves, under any profile**, and that is a measurement
+  rather than caution: halving it made the codec **1.75× slower on CPU**, 4.2 s
+  to 7.3 s on a 37-frame case, because its convolutions run through im2col into a
+  matrix multiply where ggml's F16 path is slower than its F32 one.
+
+`Q8_MIXED` here means what `docs/quantization.md`'s general rule says at the top:
+a profile records storage type and required precision **by tensor group**, and a
+nominal name never implies every tensor uses that type. Concretely the codebooks,
+both kernel-1 projections, per-head norms, per-branch layer scales and SnakeBeta
+curves stay exact, and six transposed convolutions stay F32 because CUDA's F16
+matrix multiply accumulates in half precision.
+
+### The Base variant's two extra regions
+
+`qwen3-tts-12hz-0-6b-base` carries 894 tensors against CustomVoice's 657. The
+237-tensor difference is 76 `speaker_encoder.*` and 161 `codec.encoder.*`, and
+until Plan 4 Task 6 **the quantizer could not cut a Base package at all** — both
+regions classified `Unknown` and the tool stopped on the first one it met.
+
+- **`codec.encoder.*` (161)** are F32 under every profile, which is what the
+  `codec.` prefix already said. The tool and the runtime were never in
+  disagreement here; what was missing was recognition.
+- **`speaker_encoder.*` convolution weights (38)** take a `ConvKernel` role: the
+  profile's halved fallback (**F16** under `F16`, `Q8_MIXED` and `Q5_K_MIXED`) at
+  native three-axis shape, never block-quantized and never packed. Their 38
+  biases are `Sensitive`.
+
+That last one is arithmetic, not caution. A block runs along `ne[0]`, which for a
+convolution kernel is the **kernel extent** — 1, 3 and 5 across all 38 — against
+Q8_0's block of 32. The packed `[kernel × in, out]` layout would clear the block
+size, but it emits rank 2, and this family's runtime implements neither half of
+consuming that: `Resolver::find` has no packed branch (Kokoro's does) and
+`same_conv1d` reads `ne[0..2]` as `{kernel, in, out}`.
+
+The role is shaped like OmniVoice's `ConvKernel` and reaches the same column for
+a **different, family-local reason**. Neither is imported by the other.
+
+### Does quantizing the speaker encoder pay? No, and there is nothing to gain
+
+Measured 2026-08-17. The 38 weights are 8,843,264 elements, 0.703 % of the
+package:
+
+| profile | storage | bytes | saved |
+| --- | --- | ---: | ---: |
+| BF16 (source) | BF16 | 16.87 MiB | — |
+| F16 | F16 | 16.87 MiB | **zero** — both are two-byte types |
+| Q8_MIXED | F16 | 16.87 MiB | **zero** — held at the halved fallback |
+| *Q8_0 packed (hypothetical)* | *Q8_0* | *8.96 MiB* | *7.91 MiB, and unreachable* |
+
+Accuracy costs nothing: worst x-vector cosine against the oracle is 0.99999467 at
+BF16 and **0.99999501** at both F16 and Q8_MIXED, which are byte-identical to each
+other. So the design's "unlikely to pay" is confirmed, for a stronger reason than
+it gave — the speaker encoder does not shrink under any profile this family has.
+
+### What each profile is for
+
+| profile | package | size | RTF (CPU) | peak RSS | verdict |
+| --- | --- | ---: | ---: | ---: | --- |
+| BF16 | Base | 2,516,522,464 B | 3.15 | 3.29 GiB | the source |
+| F16 | Base | 2,516,706,912 B | not measured | — | **clears every gate and does not pay** |
+| Q8_MIXED | Base | 1,667,606,112 B | **0.863** | 2.23 GiB | **pays on both size and speed** |
+| Q5_K_MIXED | CustomVoice | 1035 MiB | 0.82 | — | buildable, deliberately unpublished |
+
+**F16 is 184,448 bytes LARGER than the package it was cut from.** Both BF16 and
+F16 are two-byte types, so the matrix weights do not shrink while the sensitive
+tensors widen BF16 → F32. Stage 1 measured the same shape on CustomVoice
+(2274.3 MB against a 2274.1 MB source), which is why F16 is a **speed** profile
+for this family rather than a size one.
+
+**`Q8_MIXED` crosses real time on the Base variant**: RTF 3.15 → 0.863 on
+`rel-dgx-spark` at `CMAKE_BUILD_TYPE=Release`, a 3.65× improvement, with 33.7 %
+less package and 1.06 GiB less peak RSS.
+
+`Q5_K_MIXED` is the in-tree precedent for a profile that is buildable and
+deliberately unpublished — 1035 MiB and RTF 0.82 on CustomVoice, but talker
+logits cosine 0.9648.
+
+### The codec encoder is byte-identical across all three profiles
+
+Measured, not assumed: the port's codec-encoder output was compared byte for byte
+across BF16, F16 and Q8_MIXED over five cases — 20 of 20 and 25 of 25 sha256
+comparisons match, covering latents, the RVQ reconstruction, the codes, the
+downsample tap and the tie margin. **Zero code flips at any profile.**
+
+This is why OmniVoice's blocking reason does not transfer. Its codec-half
+profiles are blocked because quantization flipped clone-path RVQ tokens, and this
+family's codec encoder ends in the same nearest-neighbour argmin — but it never
+quantizes that half, so the argmin sees the same F32 weights and returns the same
+codes. **That is a measured answer, not an inheritance of the existing rule.** It
+does not say a quantized codec encoder would be safe here; nothing measured one,
+because none exists.
+
+### Publication
+
+CustomVoice's `BF16`, `F16` and `Q8_MIXED` are published. **No Base package is
+published**, and publication is a separate act requiring confirmation at the time.
 
 ## Validation
 

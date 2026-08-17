@@ -1,0 +1,216 @@
+# Hugging Face card specification for the Qwen3-TTS 12Hz 0.6B Base packages.
+#
+# PREPARED 2026-08-17 BY STAGE 2 PLAN 4 TASK 16. NOT PUBLISHED, AND NOTHING HAS
+# BEEN UPLOADED. `target_repo` below names where these WOULD go; publication is a
+# separate act requiring jiangzhuo's confirmation at the time, and neither this
+# plan nor this file asks for it.
+#
+# The CustomVoice card's own header records what happens when a status line goes
+# stale on a live artifact -- it read "Prepared, not published" for two weeks
+# after the upload and was read as fact during Stage 2 design. So: if these
+# packages are ever published, this header is the first thing to correct.
+
+model_slug: qwen3-tts-12hz-0-6b-base
+display_name: Qwen3-TTS 12Hz 0.6B Base
+model_family: qwen3-tts
+target_repo: jiangzhuo9357/qwen3-tts-12hz-0-6b-base-gguf
+
+source:
+  repository_label: QwenLM/Qwen3-TTS
+  repository: https://github.com/QwenLM/Qwen3-TTS
+  revision: 022e286b98fbec7e1e916cb940cdf532cd9f488e
+  card_url: https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/blob/5d83992436eae1d760afd27aff78a71d676296fc/README.md
+  card_path: models/qwen3-tts-12hz-0-6b-base/README.md
+  checkpoint_name: Qwen3-TTS-12Hz-0.6B-Base
+  checkpoint_url: https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/tree/5d83992436eae1d760afd27aff78a71d676296fc
+
+architecture_label: Qwen3-TTS
+
+license_note: |
+  Both the pinned source at `022e286b` and the checkpoint at `5d839924` carry an
+  explicit Apache-2.0 grant, verified from the upstream model card rather than
+  from any port's README.
+
+license: apache-2.0
+license_name: apache-2.0
+license_link: https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base
+library_name: synthesize.cpp
+pipeline_tag: text-to-speech
+languages:
+  - en
+  - zh
+  - ja
+tags:
+  - text-to-speech
+  - tts
+  - gguf
+  - voice-cloning
+  - qwen3-tts
+
+summary: |
+  Voice cloning from a reference recording. Hand it a few seconds of speech and
+  it synthesizes new text in that voice, either from the audio alone or -- when
+  you also supply the recording's transcript -- through the transcript-assisted
+  path upstream calls ICL.
+
+  This package catalogues NO preset voices. A caller must prepare a Voice
+  Profile; there is no voice id to name. That is the structural difference from
+  the CustomVoice package, which catalogues nine and cannot clone.
+
+capabilities:
+  sample_rate_hz: 24000
+  voice_count: 0
+  voice_mode: seed_default_with_profiles
+  voice_profile_sources:
+    - reference_audio
+  input_kinds:
+    - text_utf8
+    - token_ids
+  frontend_provider: synthesize.qwen_bpe
+
+validation:
+  level: port_validated
+  cases_per_stage: 13
+  stages: 3
+  # PARTIAL, and declared rather than defaulted. The Stage 1 codec-decoder twin
+  # does move on this package, and a CUDA public-seam run passes all seven
+  # checks. The two graphs this variant ADDS -- the ECAPA speaker encoder and
+  # the codec encoder -- stay on the CPU, on a measurement: a device twin would
+  # mirror 241 MB for about 3.7 s of extra load against those graphs' entire CPU
+  # cost of about 1.69 s, so the transfer is 2.2x the compute it would
+  # accelerate and no speedup makes it pay. They also run once per Voice Profile
+  # rather than once per synthesis, so the amortization that justified the
+  # decoder's twin runs the other way here. CUDA buys about 8% end to end.
+  cuda_placement: partial
+  cuda_placement_note: |
+    The codec decoder runs on the device; everything else runs on the CPU.
+
+    The autoregressive half is held there by the discrete-outputs rule — a
+    sampled token index cannot absorb a tolerance — and it dominates the wall
+    clock, so CUDA buys about 8% end to end (RTF 3.15 to 2.95) rather than the
+    35x the decoder stage itself sees.
+
+    The two graphs this variant adds are on the CPU by measurement, not by
+    omission. A device twin would mirror 241 MB for roughly 3.7 s of extra load
+    against those graphs' entire CPU cost of about 1.69 s on an 8-second
+    reference, so the transfer is 2.2x the compute it would accelerate and no
+    speedup makes it pay. They also run once per Voice Profile rather than once
+    per synthesis, so a load-once process pays the mirror once and saves almost
+    nothing — the opposite of what makes the decoder's twin worthwhile.
+  columns:
+    - key: public_seam_checks
+      title: Public-seam checks
+    - key: speaker_x_vector_min_cosine
+      title: Speaker x-vector cosine
+    - key: cpu_rtf
+      title: CPU real-time factor
+  metric_note: |
+    THREE COLUMNS BECAUSE THIS VARIANT'S EVIDENCE IS NOT THE SAME KIND AS
+    CustomVoice's. That package publishes waveform cosines from replayed codes.
+    This one clones, so what matters is whether the Voice survives and whether
+    the package is usable at all.
+
+    `Public-seam checks` counts the behavioural relations the C interface
+    promises: a named seed reproduces byte for byte, a different seed does not,
+    a random seed comes back concrete and replays, a different Voice changes the
+    audio, and the resolved language is reported. Three further checks in the
+    family-wide set are structurally inapplicable here and are counted as
+    skipped rather than passed -- a Voice Profile has no id for the seam to
+    echo, and two of them need a preset "dialect" Voice this package does not
+    catalogue.
+
+    `Speaker x-vector cosine` is the worst case of four, comparing the port's
+    ECAPA-TDNN embedding against the pinned PyTorch oracle's. Note where the
+    residual lives: at the x-vector's largest element the deviation is 0.68 of
+    one bfloat16 ulp, and recomputing the ORACLE's own final layer in float64
+    disagrees with the oracle by more than this port does. The comparison is
+    bounded by the reference, not by the port, which is why the halved profiles
+    score very slightly better than the source profile rather than worse.
+
+    `CPU real-time factor` is synthesis time over the audio produced, each row
+    measured on its OWN output length, on a Release-typed build. Below 1.0 is
+    faster than real time. Rows are never compared by dividing one RTF by
+    another's wall clock -- the profiles stop at different frame counts, which
+    is a property of their weights.
+  # Two different things, deliberately separate. `quality_evaluation` is the
+  # automated grid ADR 0017 defers -- no WER, no speaker similarity, no corpus --
+  # and it has not run. `listening_audit` is one maintainer checking a small set
+  # for obvious regressions, which has. Neither moves the Validation Level.
+  quality_evaluation: not_run
+  listening_audit: no_obvious_regression
+  listening_audit_detail:
+    profiles: [BF16, F16, Q8_MIXED]
+    listeners: 1
+    method: blind A/B on natively-sampled clips, five pairs across profiles and
+      backends plus two labelled source-against-clone resemblance checks, with
+      A/B shuffled on a recorded seed
+    dates: [2026-08-17]
+    note: >-
+      The family's FIRST ICL audit; the 2026-08-13 one covered x-vector mode
+      only, because ICL did not exist when it ran. Both quantization profiles
+      were audible but NOT degraded, CPU and CUDA were indistinguishable, ICL and
+      x-vector were indistinguishable on both references, and both clones were
+      judged the same speaker as their source. Every pair was confirmed to differ
+      in bytes before the verdict was recorded, so each "indistinguishable" is a
+      judgement rather than a trivial truth. Two recordings, one sentence, one
+      listener -- evidence, not a level.
+
+publication_note: |
+  NOT PUBLISHED. No Base package has been uploaded anywhere.
+
+  If that changes, note what this variant is: a package that clones a voice from
+  a recording the caller supplies. The CustomVoice package cannot do that, which
+  is why its card carries no such note.
+
+usage:
+  profile: Q8_MIXED
+  text: "Qwen3-TTS is awesome!"
+
+quants:
+  - name: BF16
+    filename: qwen3-tts-12hz-0-6b-base-BF16.gguf
+    size: 2399.9 MB
+    size_bytes: 2516522464
+    sha256: 993f4cd164df2b2f83e72ec51d79586f5721732d52ee24c5b5462858c610999f
+    tensor_types: 478 BF16 + 416 F32
+    validation:
+      public_seam_checks: 7 passed, 3 skipped as inapplicable
+      speaker_x_vector_min_cosine: 0.99999467
+      cpu_rtf: 3.15
+  - name: F16
+    filename: qwen3-tts-12hz-0-6b-base-F16.gguf
+    size: 2400.1 MB
+    size_bytes: 2516706912
+    sha256: e74841947b62f9ac63f09bd7443959cee325e66ae46cedfb346a48553ff0a046
+    tensor_types: 304 F16 + 590 F32
+    note: >-
+      LARGER than the BF16 source by 184,448 bytes, and that is not a defect.
+      Both are two-byte types, so the matrix weights do not shrink while the
+      sensitive tensors widen BF16 to F32. F16 is a speed profile for this
+      family, not a size one. It clears every gate and does not pay; it is
+      carried for completeness rather than recommended.
+    validation:
+      public_seam_checks: 7 passed, 3 skipped as inapplicable
+      speaker_x_vector_min_cosine: 0.99999501
+      cpu_rtf: not_measured
+  - name: Q8_MIXED
+    filename: qwen3-tts-12hz-0-6b-base-Q8_MIXED.gguf
+    size: 1590.4 MB
+    size_bytes: 1667606112
+    sha256: 808667ae6b14e77a4379f2be3b43af3a961fb7864dd1b44eb94c061e62a789a9
+    tensor_types: 266 Q8_0 + 38 F16 + 590 F32
+    note: >-
+      THE DEFAULT RECOMMENDATION, and the only profile that pays. 33.7% smaller
+      than the source, RTF 0.863 against BF16's 3.15 -- faster than real time --
+      and 1.06 GiB less peak RSS, with no measured cost on any gated quantity and
+      no audible degradation in the 2026-08-17 audit.
+
+      The 38 F16 tensors are the speaker encoder's convolution weights. They are
+      never block-quantized: a block runs along the kernel extent, which is 1, 3
+      or 5 here, against Q8_0's block of 32. The codec half stays F32 under every
+      profile, so the reference codes this package produces are byte-identical
+      across all three.
+    validation:
+      public_seam_checks: 7 passed, 3 skipped as inapplicable
+      speaker_x_vector_min_cosine: 0.99999501
+      cpu_rtf: 0.863

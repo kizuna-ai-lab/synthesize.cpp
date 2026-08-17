@@ -17,11 +17,19 @@ accepted on 2026-07-26; the intake packet is
 `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`. **Stage 2
 (`qwen3-tts-12hz-0.6b-base`) has Plans 1, 2 and 3 done** -- the package, the
 x-vector clone path, and the transcript-assisted (ICL) clone path, all on CPU;
-Plan 4 (quantization, CUDA and the listening pass) is **in progress since
-2026-08-17** — its landed pieces are recorded in their own sections below, the
-first being "The second reference recording"; nothing in it is finished until
-this line says so. Stage 3 (Description Text) is not started, and the Base
-variant is **not published**. See the three Stage 2 paragraphs below.
+**Plan 4 executed 2026-08-17 and is complete except for its listening audit.**
+It measured both Quantization Profiles (F16 clears every gate and does NOT pay
+-- it is 184,448 bytes *larger* than its source; Q8_MIXED pays on both, 33.7 %
+smaller at RTF 0.863 against BF16's 3.15, faster than real time), settled the
+quantizer's blocker on the Base package's 237 new tensors, removed the semantic
+gate's cliff, and **declined** a CUDA twin for the two new graphs on a
+measurement -- the transfer costs 2.2× the compute it would accelerate. **The
+ICL Listening Audit is built and offered but has returned no verdict, so
+`spec:532`'s "audit recorded" gate is NOT met**, and the Hugging Face card is
+not written because its default profile is a ship decision that gate governs.
+See "Stage 2 Plan 4: what it measured, and what it refused to claim" below.
+Stage 3 (Description Text) is not started, and the Base variant is **not
+published**. See the three Stage 2 paragraphs below.
 
 **Until 2026-08-12 this line read "Q8_MIXED, the public backend control and
 stage 8 are not done. Port validation is not started."** All four clauses were
@@ -3136,6 +3144,90 @@ from it rather than from the CPU gate.
 **What this does not claim.** `docs/backends.md` gate 5 wants latency, RTF and
 peak memory for a supported backend; those are Task 14's and are not asserted
 here. This section records agreement and placement only.
+
+### Stage 2 Plan 4: what it measured, and what it refused to claim
+
+Executed 2026-08-17. Plan 4 was written as a **measurement** plan whose stated
+correct answers include "this profile does not pay" and "this twin is not worth
+writing", and both of those are among its results. The sections below this one
+carry each measurement with the artifact that produced it; this is the summary
+and the ledger of what remains.
+
+**The blocker, first.** `synthesize-quantize` could not cut a Base package at
+all: 76 `speaker_encoder.*` and 161 `codec.encoder.*` classified `Unknown` and
+the tool stopped on the first one. Worse, the runtime disagreed with it -- the
+`codec.` prefix put the encoder in the right half, but the speaker encoder's 38
+convolution weights were `Role::Matrix`, so the runtime expected Q8_0 for a
+package the tool refused to emit.
+
+**The ruling settled it per region, and neither uniform answer was available.**
+Holding those 38 at the profile's block type is not merely undesirable, it is
+impossible: a block runs along `ne[0]`, which for a convolution kernel is the
+kernel extent -- 1, 3 and 5 across all 38 -- against Q8_0's block of 32. The
+packed alternative clears the block size but emits rank 2, and this family's
+runtime implements neither half of consuming that. So they take a `ConvKernel`
+role at the halved fallback, native three-axis. All three published CustomVoice
+packages were re-cut and their digests proved unchanged.
+
+**What each measurement answered**
+
+| question | answer | where |
+| --- | --- | --- |
+| Does F16 pay? | **No.** 184,448 bytes *larger* than its source | "Stage 2 Plan 4" cells in `tests/tolerances/qwen3-tts.json` |
+| Does Q8_MIXED pay? | **Yes, on both.** 33.7 % smaller, RTF 3.15 → 0.863 | "Base latency, RTF and peak memory" |
+| Does quantizing the speaker encoder pay? | **No, and there is nothing to gain** | "Does quantizing the speaker encoder pay?" |
+| Does the conv-exempt precedent transfer? | **No.** Drift is exactly zero | "Does the conv-exempt precedent transfer?" |
+| Is a CUDA twin for the two new graphs worth writing? | **No.** Transfer is 2.2× the compute | "CUDA placement for the speaker and codec encoders" |
+| Can the semantic gate's cliff be removed? | **Yes**, by changing which frames the percentile covers | `gate_scope_warning_retired` in the tolerance file |
+
+**Five results contradicted what the plan expected, and each is recorded with
+the contradiction rather than smoothed over.**
+
+1. The flip rate is **not monotone in reference length**, so the length-scoping
+   branch `gate_scope_warning` offered is refuted -- by the second speaker Task 1
+   added precisely to test it.
+2. The masked statistic the plan prescribed -- condition on non-flipped frames --
+   has **~1× discrimination** and is undefined on several cases, because a mask
+   that mentions the port selects away a fault in the port. The committed mask
+   comes from `upstream-f32` against the oracle instead, and reaches 390–644×.
+3. Both quantization routes the plan offered for the 38 convolutions are
+   unavailable, for the block-arithmetic reason above.
+4. The public validator's **entire model of a Voice** was inapplicable to a
+   package with no Preset Voice catalogue, not merely a few of its checks.
+5. Only **one** of three stages measures anything different on CUDA, not the two
+   the plan assumed -- the x-vector driver has no backend argument at all.
+
+**Two corrections to this plan's own reasoning, kept because they are the useful
+part.** An inversion was written expecting a *cut* to fail on a row-size check;
+the cut succeeded and it is the runtime that refuses, and in the normal
+configuration the type check fires first so the rank disagreement is *masked*
+until both sides are moved together. And a 25× tightening of the acoustic bound
+passed every case in the validator and **failed the C++ arm on its first run**,
+because the two consumers feed the port different inputs; it was withdrawn.
+
+**What Plan 4 did NOT deliver, stated plainly.**
+
+- **Publication.** Nothing was uploaded and nothing asked to be. The Base variant
+  is not published.
+- **A Listening Audit verdict.** The material is built and offered --
+  `build/listening-icl/audit.html`, five blind pairs and two labelled resemblance
+  checks -- and **no listener has reported**. `spec:532`'s "audit recorded" gate
+  is **not met**, and neither this record nor `docs/models/` claims it is.
+- **A Hugging Face card specification.** It names a default profile, which is a
+  ship decision the audit gates, so it is not written.
+- **Any movement of the Validation Level.** `quality_evaluation` stays deferred
+  per ADR 0017.
+- **A CUDA sub-grid**, by the measured decision above; the coverage rule permits
+  the absent `backends` key and the one real CUDA measurement is recorded in
+  prose instead of a fabricated cell.
+- **Stage 3, the 1.7B variant, multi-clip enrollment, Native Streaming Synthesis,
+  Voice Conversion, and the CLI** -- all §10 non-goals, untouched.
+
+**Carried forward.** `prompt.icl_embed` is measured for BF16 only. The
+autoregressive replay probes CustomVoice carries are still unmeasured here. The
+`278` figure in the design's fifth erratum remains unverified -- its *companion*
+was re-measured over five cases and reproduces, which narrows but does not close
+what that erratum warns about.
 
 ### Base latency, RTF and peak memory, measured on Release 2026-08-17
 

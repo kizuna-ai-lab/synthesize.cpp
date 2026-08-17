@@ -3085,6 +3085,58 @@ that demonstrably exists. Task 13 decides where they are recorded, and the
 coverage rule's all-or-nothing sub-grid means they cannot become a `backends`
 key without a third stage that would be a fabrication.
 
+### The Base variant carries no CUDA sub-grid, and one real CUDA measurement
+
+Stage 2 Plan 4 Task 13, conditional on Task 12's second outcome. The coverage
+rule makes a `backends` sub-grid all-or-nothing -- every one must carry the
+reference profile's full stage set, which for this variant is
+{`public`, `replay`, `codec_encoder`} -- and an absent `backends` key is legal,
+which is the permitted hole CustomVoice's `Q8_MIXED` already occupies.
+
+**Only ONE of the three stages exercises CUDA on this variant, not the two Plan
+4 expected.** Task 12's second outcome anticipated that `public` and `replay`
+would both stay measurable. `replay` does not, and the reason is structural
+rather than a matter of effort:
+
+| stage | does a CUDA run measure anything different? | why |
+| --- | --- | --- |
+| `public` | **yes** | the Stage 1 codec-decoder twin does move on a Base package, so `synth_model_load` with `SYNTH_BACKEND_CUDA` puts a real graph on the device |
+| `replay` | **no** | its two probes are `speaker.x_vector` and `prompt.icl_embed`. `tests/qwen3_tts_xvector_driver.cpp` calls `Model::load_cpu` and has no backend argument at all, and the ICL prompt comparison is host-side assembly. A "CUDA" run would return the identical numbers. |
+| `codec_encoder` | **no** | Task 12 measured the twin and declined it, so this graph runs on the CPU under a CUDA request |
+
+So two of the three cells a sub-grid needs could only be filled by recording CPU
+figures under a CUDA key. **That is not done**, and the sub-grid is therefore not
+committed. `tests/tolerances/qwen3-tts.json` gains no `backends` key for
+`qwen3-tts-12hz-0-6b-base`.
+
+**The measurement that IS real, recorded here because the cell cannot hold it.**
+`scripts/validate-qwen3-tts-public.py` against the BF16 Base package with
+`--backend cuda`, runner built from the `rel-dgx-spark` preset
+(`CMAKE_BUILD_TYPE=Release`, sm_121a, CUDA 13.3), through a reference-audio
+Voice Profile:
+
+- **7 checks pass, 3 skipped**, the same seven and the same three structural
+  skips as every CPU cell -- the Voice kind is a property of the package's
+  catalogue, not of the backend.
+- The audio differs from CPU, which is what says the request reached the
+  device: seed 7 through reference A gives `ed32bb3b13800fe1` on CUDA against
+  `9eef2beaf63cb60e` on CPU. That is the codec decoder's TF32 arithmetic, the
+  same shape Stage 1 recorded when only `audio.pcm` moved between backends.
+- Seed reporting, same-seed byte-identical repeatability, different-seed
+  divergence and Voice divergence all hold **within** the CUDA backend.
+
+**No threshold was derived, because nothing here needed one.** Plan 4's Task 13
+Step 1 exists to stop the CPU `codec.chain` gate of 1.0e-3 being reused for a
+backend whose own CUDA-versus-CPU disagreement is 5.20e-03 -- 5.2× that gate and
+about 1.33 bf16 units. That derivation is only owed for a `codec_encoder` CUDA
+cell, and there is none: the graph did not move. The 5.20e-03 figure stands
+unused and unretracted, and a later rung that does place this graph must derive
+from it rather than from the CPU gate.
+
+**What this does not claim.** `docs/backends.md` gate 5 wants latency, RTF and
+peak memory for a supported backend; those are Task 14's and are not asserted
+here. This section records agreement and placement only.
+
 ### Does quantizing the speaker encoder pay? Measured 2026-08-17
 
 Stage 2 Plan 4 Task 9. §7 says the speaker encoder "is small enough that

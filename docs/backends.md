@@ -1,6 +1,6 @@
 # Execution Backend Policy
 
-Status: Confirmed, last updated on 2026-08-12.
+Status: Confirmed, last updated on 2026-08-17.
 
 ## Shared Inference Graph
 
@@ -502,3 +502,33 @@ quality and perceptual evaluation are governed separately by the deferred Qualit
 Evaluation Suite and are not prerequisites for `port_validated` support.
 
 The support matrix must identify the exact backend, hardware class, precision or quantization, model variants, and execution mode covered by each result.
+
+### qwen3-tts-12hz-0-6b-base carries no CUDA sub-grid, on a measurement
+
+Recorded 2026-08-17 by Stage 2 Plan 4. The Base variant's two new graphs -- the
+ECAPA speaker encoder and the codec encoder -- **stay on the CPU**, and that is
+a measured decision rather than an omission: a device twin would mirror 241 MB
+for about 3.7 s of extra load, against the two graphs' entire CPU cost of about
+1.69 s on an 8.08-second reference. The transfer is 2.2x the compute it would
+accelerate, so no speedup makes it pay. They also run once per Voice Profile
+rather than once per synthesis, so the amortization that justified Stage 1's
+codec-decoder twin runs the other way here.
+
+Consequently only ONE of this variant's three tolerance stages measures anything
+different on CUDA. `public` does, through the Stage 1 codec-decoder twin, which
+does move on a Base package. `replay` does not -- its probes are the x-vector,
+whose driver calls `Model::load_cpu` and takes no backend argument, and the
+host-side ICL prompt assembly. `codec_encoder` does not, by the decision above.
+
+Since gate 2 above is per-stage and `tests/python/test_tolerance_coverage.py`
+requires a `backends` sub-grid to carry the variant's full stage set, filling one
+would mean recording CPU figures under a CUDA key for two of three stages. **The
+sub-grid is therefore not committed**, which the coverage rule permits, and the
+one real measurement is recorded in
+`docs/porting/families/qwen3-tts.md` ("The Base variant carries no CUDA sub-grid,
+and one real CUDA measurement") instead: 7 public-seam checks pass and 3 are
+structurally skipped, on `rel-dgx-spark`, with the CUDA audio differing from the
+CPU audio as the codec decoder's TF32 arithmetic predicts.
+
+This is a placement-and-agreement result only. Gate 5's latency, real-time factor
+and peak memory are not claimed for it.

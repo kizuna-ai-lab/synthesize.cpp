@@ -3018,6 +3018,113 @@ upstream's, and nothing here may be read as though it did. The 100.000% row
 above is the strongest available substitute and it is a comparison against
 upstream's own float32 run, not against the shipped bf16 oracle.
 
+### Does quantizing the speaker encoder pay? Measured 2026-08-17
+
+Stage 2 Plan 4 Task 9. §7 says the speaker encoder "is small enough that
+quantizing it is unlikely to pay" and then forbids assuming it. This is the
+posterior.
+
+**The artifact, as §7 requires.** Packages
+`build/qwen3-tts-12hz-0-6b-base-{F16,Q8_MIXED}.gguf`, cut by
+`build/bin/synthesize-quantize` from
+`models/qwen3-tts-12hz-0-6b-base/qwen3-tts-12hz-0-6b-base-BF16.gguf`
+(sha256 `993f4cd1…`); tensor census read with `gguf.GGUFReader`; x-vectors driven
+by `synthesize-qwen3-tts-xvector-driver` through
+`scripts/validate-qwen3-tts-replay.py --compare-x-vector`; trees `build` and
+`build-integration`, both `CMAKE_BUILD_TYPE=Release`.
+
+**Size — the subject is 38 convolution weights, 8,843,264 elements.**
+
+| profile | storage | bytes | note |
+| --- | --- | ---: | --- |
+| BF16 (source) | BF16 | 16.87 MiB | 0.703 % of the package |
+| F16 | F16 | **16.87 MiB** | **exactly zero saved** — both are two-byte types |
+| Q8_MIXED | F16 | **16.87 MiB** | **exactly zero saved** — Task 6's ConvKernel ruling holds them at the halved fallback here too |
+| *Q8_0, packed (hypothetical)* | *Q8_0* | *8.96 MiB* | *would save 7.91 MiB, 0.329 % of the package* |
+
+The 38 biases are F32 under every non-source profile and are not the question.
+
+**Accuracy — no measurable cost.** Worst x-vector cosine against the oracle,
+over the four cases Task 4 made drivable: BF16 **0.99999467**, F16 and Q8_MIXED
+both **0.99999501**. The two halved profiles are byte-identical to each other
+and very slightly *better* than the source profile, which is run-to-run scale
+rather than an improvement. The reason is recorded in the BF16 cell: the
+residual is the **oracle's** bf16 storage, not the port's weights — recomputing
+the oracle's own final ASP/FC layer in float64 disagrees with the oracle by more
+than the port does — so an F16 port weight is still finer than what it is being
+compared against.
+
+**Wall time is not claimed.** No latency, RTF or peak-memory figure was taken;
+`docs/backends.md` gate 5 wants all three and Task 14 owns them.
+
+**The outcome is the second — it does not pay — and the remedy that outcome
+prescribes would make things worse.** Plan 4's Task 9 says that on this outcome
+"the 38 weights become `Sensitive`". For this family `Sensitive` means F32, four
+bytes, so that change would make the package **16.87 MiB larger** than it is
+now. Of the three classifications actually available, the committed one is the
+best:
+
+| classification | storage | bytes | reachable? |
+| --- | --- | ---: | --- |
+| `ConvKernel` (committed) | F16 | 16.87 MiB | yes |
+| `Sensitive` | F32 | 33.75 MiB | yes, and strictly worse |
+| `MatrixWeight` packed | Q8_0 | 8.96 MiB | **no** — needs a packed branch in `Resolver::find` and a packed path in `same_conv1d`, neither of which this family has (Task 6) |
+
+So "it does not pay" here means **there is nothing available to gain**, not that
+the current classification is wrong. §7's prior is confirmed, and for a stronger
+reason than §7 gave: the speaker encoder does not shrink under any profile this
+family has, because the only profile type narrower than its source is one the
+runtime cannot consume.
+
+### Does the conv-exempt precedent transfer? Measured 2026-08-17
+
+Stage 2 Plan 4 Task 10. §7 says the codec encoder "is convolution-heavy, which
+is the shape that produced the conv-exempt policy in another family" and then
+says neither precedent is imported by analogy. This is the measurement that
+replaces the analogy.
+
+**The drift is zero.** The port's codec encoder was driven from all three
+packages over all five cases and its output compared byte for byte:
+
+| comparison | artifacts × cases | identical |
+| --- | ---: | ---: |
+| F16 against BF16 | 4 × 5 | **20 of 20** |
+| Q8_MIXED against BF16 | 5 × 5 | **25 of 25** |
+
+covering `latents.f32`, `rvq_reconstruction.f32`, `codes.i32`, `downsample.f32`
+and `rvq_distance_margin.f32`. Not a small drift: **no drift**. Zero code flips,
+on every case, at every profile.
+
+**The first outcome is unreachable, and Plan 4 says so in advance.** It would
+require some `codec.encoder.*` tensor to be in a quantized role at all.
+`src/arch/qwen3-tts/catalog.cpp` splits halves on the `codec.` prefix, so the
+whole encoder is F32 under every profile; Task 6's census confirmed all 161 of
+its tensors are F32 in every package it cut. There is no role to add and nothing
+for a `ConvKernel`-style exemption to protect.
+
+**So the outcome is the second: the exemption does not transfer, because this
+family's existing rule already covers the case.** Recorded with the drift
+numbers that establish it rather than as an inheritance of that rule — which
+would be the same analogy running the other way, and is the error Plan 4 names
+explicitly.
+
+**What the other family's evidence actually was, so the comparison is against
+the real thing.** OmniVoice's `ConvKernel` role took clone-path RVQ drift from
+1,023 of 2,808 positions to 98, and both its codec-half profiles remain
+**blocked** because `ref.tokens` is 0/2 exact (`docs/quantization.md`). The
+failure mode is real and this family's codec encoder has the same shape — a
+nearest-neighbour RVQ argmin over a reference clip. It cannot arise here for a
+reason that has nothing to do with convolutions: qwen3-tts never quantizes that
+half at all, on an independent and separately measured ground recorded at
+`classify_qwen3_codec` — halving it made the codec **1.75× slower on CPU**,
+because its convolutions run through im2col into a matrix multiply where ggml's
+F16 path is slower than its F32 one.
+
+**What this does not say.** It does not say a quantized codec encoder would be
+safe here; nothing measured one, because none exists. If a future profile ever
+quantizes this half, the other family's evidence becomes live again and this
+section is not a licence to skip it.
+
 ### The second reference recording
 
 Added 2026-08-17 by Stage 2 Plan 4 Task 1, as `base-icl-en-second-speaker`.

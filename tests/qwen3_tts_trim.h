@@ -29,6 +29,21 @@
 //     else:                      repeats = ceil(target / len(wav))
 //                                wav = np.tile(wav, repeats)[:target]
 //
+// TWO PLACES THIS DEPARTS FROM THAT, BOTH DELIBERATE:
+//
+//  1. `round` is Python's, which breaks ties to EVEN. `std::llround` breaks
+//     them away from zero, so the two disagree by one sample whenever
+//     `trim_seconds * sample_rate` lands exactly on .5. The manifest's 1.0 and
+//     30.0 at 24000 Hz are both integral, so nothing today reaches it -- which
+//     is precisely why it would go unnoticed. `std::nearbyint` under the
+//     default rounding mode IS ties-to-even, so the transcription is exact
+//     rather than exact-for-the-values-we-happen-to-use.
+//
+//  2. An empty `samples` is rejected here and the oracle has no such branch.
+//     It cannot be transcribed: the loop arm divides by `have`, so an empty
+//     input is a division by zero rather than a different answer. The oracle
+//     never sees one because it reads a file that parsed.
+//
 // One shared copy rather than one per driver. The four WAV readers in this
 // directory are duplicated by a recorded decision, but that decision is about
 // a reader whose behaviour is pinned by a format; this is a transcription of
@@ -51,7 +66,9 @@ struct TrimOutcome {
 
 // Returns false when `trim_seconds` is non-positive, which the oracle treats as
 // an error rather than as "no trim". A caller that wants no trim does not call
-// this at all.
+// this at all. Also returns false on an empty `samples` and on a zero
+// `sample_rate`, neither of which the oracle has a branch for -- see the two
+// deliberate departures in the header comment.
 inline bool trim_reference(std::vector<float> & samples,
                            double               trim_seconds,
                            uint32_t             sample_rate,
@@ -59,7 +76,8 @@ inline bool trim_reference(std::vector<float> & samples,
     if (!(trim_seconds > 0.0) || sample_rate == 0 || samples.empty()) {
         return false;
     }
-    const int64_t target = int64_t(std::llround(trim_seconds * double(sample_rate)));
+    // nearbyint, not llround: ties to even, which is what Python's round does.
+    const int64_t target = int64_t(std::nearbyint(trim_seconds * double(sample_rate)));
     if (target <= 0) {
         return false;
     }

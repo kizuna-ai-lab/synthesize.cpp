@@ -650,9 +650,99 @@ if(_synth_qwen3_tts_recon_actual GREATER 0)
     endforeach()
 endif()
 
+# The mask block. Its port/oracle pair is the reconstruction block's, deliberately
+# not re-stated in the JSON: the masked answers only mean something read against
+# that block's unmasked one, and a second copy could drift from it. The reader
+# therefore keeps the first reconstruction entry's buffers and asserts the
+# declared frames/projected match.
+#
+# A null `expected_p95_relative_masked` means the mask keeps nothing and the
+# function must REFUSE. JSON has no NaN, so the projection carries a presence
+# flag ahead of the value rather than a sentinel number that could be mistaken
+# for an answer.
+string(JSON _synth_qwen3_tts_mask_declared GET "${_synth_qwen3_tts_percentile_doc}" mask entry_count)
+string(JSON _synth_qwen3_tts_mask_actual LENGTH "${_synth_qwen3_tts_percentile_doc}" mask entries)
+string(JSON _synth_qwen3_tts_mask_frames GET "${_synth_qwen3_tts_percentile_doc}" mask frames)
+string(JSON _synth_qwen3_tts_mask_projected GET "${_synth_qwen3_tts_percentile_doc}" mask projected)
+string(APPEND _synth_qwen3_tts_percentile_flat
+    "${_synth_qwen3_tts_mask_declared}\n${_synth_qwen3_tts_mask_actual}\n${_synth_qwen3_tts_mask_frames}\n${_synth_qwen3_tts_mask_projected}\n")
+if(_synth_qwen3_tts_mask_actual GREATER 0)
+    math(EXPR _synth_qwen3_tts_mask_last "${_synth_qwen3_tts_mask_actual} - 1")
+    foreach(_synth_qwen3_tts_mask_i RANGE 0 ${_synth_qwen3_tts_mask_last})
+        string(JSON _synth_qwen3_tts_mask_type ERROR_VARIABLE _synth_qwen3_tts_mask_err
+            TYPE "${_synth_qwen3_tts_percentile_doc}" mask entries
+                ${_synth_qwen3_tts_mask_i} expected_p95_relative_masked)
+        if(_synth_qwen3_tts_mask_type STREQUAL "NULL")
+            string(APPEND _synth_qwen3_tts_percentile_flat "0\n0\n")
+        else()
+            string(JSON _synth_qwen3_tts_mask_expected
+                GET "${_synth_qwen3_tts_percentile_doc}" mask entries
+                    ${_synth_qwen3_tts_mask_i} expected_p95_relative_masked)
+            string(APPEND _synth_qwen3_tts_percentile_flat "1\n${_synth_qwen3_tts_mask_expected}\n")
+        endif()
+        math(EXPR _synth_qwen3_tts_mask_klast "${_synth_qwen3_tts_mask_frames} - 1")
+        foreach(_synth_qwen3_tts_mask_j RANGE 0 ${_synth_qwen3_tts_mask_klast})
+            string(JSON _synth_qwen3_tts_mask_k
+                GET "${_synth_qwen3_tts_percentile_doc}" mask entries
+                    ${_synth_qwen3_tts_mask_i} keep ${_synth_qwen3_tts_mask_j})
+            string(APPEND _synth_qwen3_tts_percentile_flat "${_synth_qwen3_tts_mask_k}\n")
+        endforeach()
+    endforeach()
+endif()
+
+# The codebook block. One shared pair of code grids, then one entry per branch,
+# because the two branches read disjoint column sets of the SAME grids -- that is
+# the property being tested and two separate grids would lose it.
+string(JSON _synth_qwen3_tts_cb_declared GET "${_synth_qwen3_tts_percentile_doc}" codebook entry_count)
+string(JSON _synth_qwen3_tts_cb_actual LENGTH "${_synth_qwen3_tts_percentile_doc}" codebook entries)
+string(JSON _synth_qwen3_tts_cb_frames GET "${_synth_qwen3_tts_percentile_doc}" codebook frames)
+string(JSON _synth_qwen3_tts_cb_groups GET "${_synth_qwen3_tts_percentile_doc}" codebook groups)
+string(APPEND _synth_qwen3_tts_percentile_flat
+    "${_synth_qwen3_tts_cb_declared}\n${_synth_qwen3_tts_cb_actual}\n${_synth_qwen3_tts_cb_frames}\n${_synth_qwen3_tts_cb_groups}\n")
+math(EXPR _synth_qwen3_tts_cb_codes "${_synth_qwen3_tts_cb_frames} * ${_synth_qwen3_tts_cb_groups} - 1")
+foreach(_synth_qwen3_tts_cb_side upstream oracle)
+    foreach(_synth_qwen3_tts_cb_j RANGE 0 ${_synth_qwen3_tts_cb_codes})
+        string(JSON _synth_qwen3_tts_cb_v
+            GET "${_synth_qwen3_tts_percentile_doc}" codebook ${_synth_qwen3_tts_cb_side}
+                ${_synth_qwen3_tts_cb_j})
+        string(APPEND _synth_qwen3_tts_percentile_flat "${_synth_qwen3_tts_cb_v}\n")
+    endforeach()
+endforeach()
+if(_synth_qwen3_tts_cb_actual GREATER 0)
+    math(EXPR _synth_qwen3_tts_cb_last "${_synth_qwen3_tts_cb_actual} - 1")
+    math(EXPR _synth_qwen3_tts_cb_klast "${_synth_qwen3_tts_cb_frames} - 1")
+    foreach(_synth_qwen3_tts_cb_i RANGE 0 ${_synth_qwen3_tts_cb_last})
+        string(JSON _synth_qwen3_tts_cb_semantic
+            GET "${_synth_qwen3_tts_percentile_doc}" codebook entries
+                ${_synth_qwen3_tts_cb_i} semantic)
+        # CMake reports JSON booleans as ON/OFF; the reader wants 1/0.
+        if(_synth_qwen3_tts_cb_semantic)
+            string(APPEND _synth_qwen3_tts_percentile_flat "1\n")
+        else()
+            string(APPEND _synth_qwen3_tts_percentile_flat "0\n")
+        endif()
+        foreach(_synth_qwen3_tts_cb_j RANGE 0 ${_synth_qwen3_tts_cb_klast})
+            string(JSON _synth_qwen3_tts_cb_k
+                GET "${_synth_qwen3_tts_percentile_doc}" codebook entries
+                    ${_synth_qwen3_tts_cb_i} expected_keep ${_synth_qwen3_tts_cb_j})
+            string(APPEND _synth_qwen3_tts_percentile_flat "${_synth_qwen3_tts_cb_k}\n")
+        endforeach()
+    endforeach()
+endif()
+
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-percentile)
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-percentile/cross-check.txt"
     "${_synth_qwen3_tts_percentile_flat}")
+
+# The reference-clip trim. Same gap as the percentile pair: qwen3_tts_trim.h was
+# reachable only from tests/qwen3_tts_icl_real.cpp, which is integration-tier.
+# No fixture -- the oracle is five lines of Python, restated by hand in the test.
+add_executable(synthesize-qwen3-tts-trim-test qwen3_tts_trim_test.cpp)
+target_include_directories(synthesize-qwen3-tts-trim-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME synthesize-qwen3-tts-trim-test COMMAND synthesize-qwen3-tts-trim-test)
+set_tests_properties(synthesize-qwen3-tts-trim-test PROPERTIES LABELS "unit;qwen3-tts")
+synth_register_unit_target(synthesize-qwen3-tts-trim-test)
 
 add_executable(synthesize-qwen3-tts-percentile-test qwen3_tts_percentile_test.cpp)
 target_include_directories(synthesize-qwen3-tts-percentile-test PRIVATE

@@ -165,6 +165,105 @@ class PercentileAgreement(unittest.TestCase):
             consumed += 1
         self.assertEqual(consumed, block["entry_count"])
 
+    def test_masked_entries_agree(self) -> None:
+        """The masked statistic, over the reconstruction block's own pair.
+
+        Plan 4 Task 3 made this the gated quantity and it reached no `unit`
+        target until the mask block existed: `reconstruction_p95_relative_masked`
+        was called only from tests/qwen3_tts_icl_real.cpp, which is
+        integration-tier. A null expectation is a REFUSAL rather than a zero --
+        the C++ half returns NaN, which compares false against every bound.
+        """
+        block = self.fixture["mask"]
+        base = self.fixture["reconstruction"]["entries"][0]
+        frames = block["frames"]
+        projected = block["projected"]
+        self.assertEqual(frames, base["frames"])
+        self.assertEqual(projected, base["projected"])
+        port = np.asarray(base["port"], dtype=np.float64).reshape(frames, projected)
+        oracle = np.asarray(base["oracle"], dtype=np.float64).reshape(frames, projected)
+
+        def p95_masked(keep: list[int]) -> float | None:
+            selected = np.asarray(keep, dtype=bool)
+            if not selected.any():
+                return None
+            a = port[selected]
+            b = oracle[selected]
+            per_frame = np.linalg.norm(a - b, axis=-1)
+            norms = np.linalg.norm(b, axis=-1)
+            return float(np.percentile(per_frame / norms, 95))
+
+        consumed = 0
+        refusals = 0
+        for entry in block["entries"]:
+            with self.subTest(entry=entry["id"]):
+                keep = entry["keep"]
+                self.assertEqual(len(keep), frames)
+                measured = p95_masked(keep)
+                expected = entry["expected_p95_relative_masked"]
+                if expected is None:
+                    self.assertEqual(sum(keep), 0, "a null expectation must mean an empty mask")
+                    self.assertIsNone(measured)
+                    refusals += 1
+                else:
+                    self.assertGreater(sum(keep), 0)
+                    self.assertIsNotNone(measured)
+                    self.assertAlmostEqual(
+                        measured, expected, delta=TOLERANCE * max(1.0, abs(expected))
+                    )
+                    if all(keep):
+                        # An all-ones mask is the unmasked statistic, and the
+                        # fixture records that value in the other block.
+                        self.assertAlmostEqual(
+                            measured,
+                            base["expected_p95_relative"],
+                            delta=TOLERANCE * max(1.0, abs(measured)),
+                        )
+            consumed += 1
+        self.assertEqual(consumed, block["entry_count"])
+        self.assertGreaterEqual(refusals, 1, "the fixture carries no empty-mask case")
+
+    def test_codebook_masks_agree(self) -> None:
+        """Which COLUMNS each branch reads, which is the whole of this mask.
+
+        Column 0 is semantic; 1..groups-1 are acoustic. The fixture places the
+        faults so each branch keeps a frame the other drops, so a mask that
+        ignored the branch flag matches neither.
+        """
+        block = self.fixture["codebook"]
+        frames = block["frames"]
+        groups = block["groups"]
+        upstream = np.asarray(block["upstream"], dtype=np.int32).reshape(frames, groups)
+        oracle = np.asarray(block["oracle"], dtype=np.int32).reshape(frames, groups)
+
+        def keep_mask(semantic: bool) -> list[int]:
+            if semantic:
+                differ = upstream[:, 0] != oracle[:, 0]
+            else:
+                differ = (upstream[:, 1:] != oracle[:, 1:]).any(axis=1)
+            return [0 if flipped else 1 for flipped in differ]
+
+        by_branch: dict[bool, list[int]] = {}
+        consumed = 0
+        for entry in block["entries"]:
+            with self.subTest(entry=entry["id"]):
+                measured = keep_mask(entry["semantic"])
+                self.assertEqual(measured, entry["expected_keep"])
+                by_branch[bool(entry["semantic"])] = measured
+            consumed += 1
+        self.assertEqual(consumed, block["entry_count"])
+
+        self.assertEqual(set(by_branch), {True, False}, "both branches must be present")
+        semantic, acoustic = by_branch[True], by_branch[False]
+        self.assertTrue(
+            any(s and not a for s, a in zip(semantic, acoustic)),
+            "no frame is kept by the semantic branch alone",
+        )
+        self.assertTrue(
+            any(a and not s for s, a in zip(semantic, acoustic)),
+            "no frame is kept by the acoustic branch alone",
+        )
+
     def test_the_validator_still_computes_this_statistic(self) -> None:
         """The non-circular half: pin the validator's own expressions.
 
@@ -180,6 +279,10 @@ class PercentileAgreement(unittest.TestCase):
             "norms = np.linalg.norm(b, axis=-1)",
             "relative = per_frame / norms",
             "np.percentile(relative, 95)",
+            # And the mask, which is what Plan 4 Task 3 made the gated quantity.
+            # Column 0 is the semantic branch, 1.. the acoustic one; a redesign
+            # that moved that split without touching the fixture fails here.
+            "differ[:, 0] if branch == 0 else differ[:, 1:].any(axis=1)",
         ):
             self.assertIn(
                 expression,

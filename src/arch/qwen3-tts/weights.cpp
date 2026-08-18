@@ -844,11 +844,22 @@ void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & i
     if (hparams.voice_mode != VoiceMode::ProfileSources) {
         return;
     }
-    // Reference Audio and Serialized Profile publish together, never
-    // separately: docs/c-interface.md requires the second bit of any Model
-    // that can create a v1 Profile, because every successfully prepared v1
-    // Profile can be serialized.
-    info.source_flags         = SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE;
+    // The bits follow what the package DECLARED and read_profile_sources
+    // already checked against what it carries. Serialized Profile accompanies
+    // either source, because every v1 Profile this family can create can be
+    // serialized (docs/c-interface.md).
+    info.source_flags = hparams.profile_sources | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE;
+
+    if ((hparams.profile_sources & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) == 0) {
+        // No recording is taken on this path, so the six reference limits and
+        // the transcript requirements describe nothing. Left at their zeroed
+        // defaults: a zero here means "not applicable", and copying Base's
+        // numbers would state a contract this package cannot honour.
+        info.schema         = hparams.profile.schema;
+        info.schema_version = hparams.profile.schema_version;
+        decode_profile_compatibility_id(hparams.profile.compatibility_id_hex, info.compatibility_id);
+        return;
+    }
     // OPTIONAL, both of them, since Plan 3 landed the transcript-assisted
     // (ICL) mode next to the x-vector one. BOTH MODES NOW EXIST, and D4 fixes
     // the clone mode at preparation, so the transcript's PRESENCE is what

@@ -68,6 +68,7 @@ synth::qwen3tts::HParams customvoice_hparams() {
 synth::qwen3tts::HParams base_hparams() {
     synth::qwen3tts::HParams h;
     h.voice_mode                    = synth::qwen3tts::VoiceMode::ProfileSources;
+    h.profile_sources               = SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO;
     h.has_speaker_encoder           = true;
     h.profile.schema                = "qwen3-tts-voice-clone";
     h.profile.schema_version        = 1;
@@ -243,6 +244,53 @@ int test_a_declared_reference_count_is_published_unnarrowed() {
     return 0;
 }
 
+// A VoiceDesign package advertises Description Text and NOT Reference Audio.
+// The bits follow the tensors, not the variant's name: with no speaker encoder
+// and no codec encoder there is nothing to clone with, and advertising a source
+// with no implementation behind it invites a caller to pass a recording and
+// receive an error they were told would not happen.
+int test_capability_follows_the_declared_sources() {
+    {
+        synth::qwen3tts::HParams h;
+        h.voice_mode      = synth::qwen3tts::VoiceMode::ProfileSources;
+        h.profile_sources = SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT;
+        synth::VoiceProfileInfo info{};
+        synth::qwen3tts::fill_voice_profile_capability(h, info);
+        SYNTH_TEST_CHECK((info.source_flags & SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT) != 0);
+        SYNTH_TEST_CHECK((info.source_flags & SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE) != 0);
+        SYNTH_TEST_CHECK((info.source_flags & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) == 0);
+        // The reference limits describe a capability this package does not
+        // have, so they stay zero rather than carrying Base's numbers.
+        SYNTH_TEST_CHECK(info.max_reference_count == 0);
+        SYNTH_TEST_CHECK(info.reference_target_sample_rate == 0);
+    }
+    // Base is unchanged.
+    {
+        synth::qwen3tts::HParams h;
+        h.voice_mode                    = synth::qwen3tts::VoiceMode::ProfileSources;
+        h.profile_sources               = SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO;
+        h.has_speaker_encoder           = true;
+        h.profile.reference_sample_rate = 24000;
+        h.profile.max_reference_count   = 1;
+        synth::VoiceProfileInfo info{};
+        synth::qwen3tts::fill_voice_profile_capability(h, info);
+        SYNTH_TEST_CHECK((info.source_flags & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) != 0);
+        SYNTH_TEST_CHECK((info.source_flags & SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT) == 0);
+        SYNTH_TEST_CHECK(info.reference_target_sample_rate == 24000);
+    }
+    // A preset-catalog package advertises nothing, whatever it declares --
+    // the adversarial case this file already makes for the catalog half.
+    {
+        synth::qwen3tts::HParams h;
+        h.voice_mode      = synth::qwen3tts::VoiceMode::PresetCatalog;
+        h.profile_sources = SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT;
+        synth::VoiceProfileInfo info{};
+        synth::qwen3tts::fill_voice_profile_capability(h, info);
+        SYNTH_TEST_CHECK(info.source_flags == 0);
+    }
+    return 0;
+}
+
 // The public-seam counterpart of the rule above: a `synth_model` whose family
 // is Qwen3Tts but whose capability snapshot is the CustomVoice all-zero shape
 // must take the SAME generic "unsupported" fallback every non-participating
@@ -288,6 +336,7 @@ int main() {
     SYNTH_TEST_CHECK(test_base_package_carries_no_preset_voice_catalog() == 0);
     SYNTH_TEST_CHECK(test_base_capability_publishes_both_sources_together() == 0);
     SYNTH_TEST_CHECK(test_a_declared_reference_count_is_published_unnarrowed() == 0);
+    SYNTH_TEST_CHECK(test_capability_follows_the_declared_sources() == 0);
     SYNTH_TEST_CHECK(test_customvoice_model_refuses_public_profile_calls() == 0);
     return 0;
 }

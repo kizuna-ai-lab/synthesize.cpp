@@ -244,11 +244,23 @@ int test_a_declared_reference_count_is_published_unnarrowed() {
     return 0;
 }
 
-// A VoiceDesign package advertises Description Text and NOT Reference Audio.
-// The bits follow the tensors, not the variant's name: with no speaker encoder
-// and no codec encoder there is nothing to clone with, and advertising a source
-// with no implementation behind it invites a caller to pass a recording and
-// receive an error they were told would not happen.
+// A VoiceDesign package DECLARES Description Text (its package-level
+// profile_sources) but the RUNTIME publishes nothing for it: withheld by
+// jiangzhuo's 2026-08-18 ruling, because src/voice-profile.cpp's
+// create_from_description dispatch still routes every family but OmniVoice
+// -- this one included -- to the generic unsupported fallback regardless of
+// source_flags, and advertising a source with no implementation behind it
+// invites a caller to pass a description and receive an error they were told
+// would not happen. This is the same restriction the transcript-assisted
+// (ICL) mode carried for the whole of Plan 2, applied here in turn. Not just
+// the DESCRIPTION_TEXT bit either: SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE
+// would be dishonest alone too, since this package has no speaker encoder and
+// load_qwen3_tts_profile_from_memory can therefore never accept a Profile
+// against it (src/arch/qwen3-tts/weights.cpp's fill_voice_profile_capability,
+// the comment on its early-return branch) -- so the published shape is the
+// SAME all-zero shape check_reports_no_voice_profile_support pins for
+// CustomVoice, reused here to prove the two shapes really are identical field
+// for field.
 int test_capability_follows_the_declared_sources() {
     {
         synth::qwen3tts::HParams h;
@@ -256,13 +268,14 @@ int test_capability_follows_the_declared_sources() {
         h.profile_sources = SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT;
         synth::VoiceProfileInfo info{};
         synth::qwen3tts::fill_voice_profile_capability(h, info);
-        SYNTH_TEST_CHECK((info.source_flags & SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT) != 0);
-        SYNTH_TEST_CHECK((info.source_flags & SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE) != 0);
-        SYNTH_TEST_CHECK((info.source_flags & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) == 0);
-        // The reference limits describe a capability this package does not
-        // have, so they stay zero rather than carrying Base's numbers.
-        SYNTH_TEST_CHECK(info.max_reference_count == 0);
-        SYNTH_TEST_CHECK(info.reference_target_sample_rate == 0);
+        // The package's own declared sources still name description-text --
+        // Task 3's loader is untouched by this rule -- while the RUNTIME's
+        // published snapshot is the all-zero "no support" shape. Re-publishing
+        // SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT (or SERIALIZED_PROFILE alone)
+        // here is exactly the regression this assertion exists to catch.
+        SYNTH_TEST_CHECK(h.profile_sources == SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT);
+        const int check_status = check_reports_no_voice_profile_support(info);
+        SYNTH_TEST_CHECK(check_status == 0);
     }
     // Base is unchanged.
     {

@@ -708,6 +708,24 @@ placed immediately before the existing
 `info.reference_transcript = SYNTH_REQUIREMENT_OPTIONAL;` line, leaving
 everything below it untouched.
 
+**Erratum, 2026-08-18 — this task's own "Produces" line above and the code
+snippet just above this note were superseded before Plan 1 closed.** The
+final whole-branch review found that this task's rule ("bits follow what the
+package declared") published `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT` for a
+VoiceDesign package while `create_from_description` (`src/voice-profile.cpp`)
+had no Qwen3-TTS arm — the seam advertised a capability it then refused, per
+jiangzhuo's ruling recorded in full at Task 6's and the Completion Gate's own
+2026-08-18 errata below. `fill_voice_profile_capability` now masks
+`SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT` out of the published `source_flags`
+regardless of the package's declaration, so a VoiceDesign package (whose only
+declared source is description-text) publishes `source_flags == 0`, not
+`DESCRIPTION_TEXT | SERIALIZED_PROFILE`. The `Base` row of this task's rule is
+unaffected. `tests/qwen3_tts_voice_required_test.cpp`'s
+`test_capability_follows_the_declared_sources` (the test Step 1 adds above)
+carries the corresponding update; its VoiceDesign case now asserts the same
+all-zero shape `check_reports_no_voice_profile_support` already pins for
+CustomVoice, rather than the three assertions shown in Step 1's snippet.
+
 - [ ] **Step 4: Run and watch it pass**
 
 ```bash
@@ -942,6 +960,26 @@ Expected: it loads; the capability snapshot reports **zero Preset Voices** and
 Profile sources **Description Text + Serialized Profile**, with Reference Audio
 **absent**. If `--info` is not the flag, find it with `--help`.
 
+**Erratum, 2026-08-18 — jiangzhuo's ruling after the final whole-branch review
+contradicts the capability snapshot stated above.** `fill_voice_profile_capability`
+(`src/arch/qwen3-tts/weights.cpp`) advertised `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT`
+through the runtime's public capability query while
+`synth_voice_profile_create_from_description` (`src/voice-profile.cpp`) still
+routed every family but OmniVoice — Qwen3-TTS, VoiceDesign included — to the
+generic unsupported fallback: the seam promised a capability it then refused,
+exactly the mistake this family's own transcript-assisted (ICL) mode was
+withheld from advertisement for the whole of Plan 2 to avoid. Ruling: withhold
+`SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT` from the RUNTIME's published capability
+until a later plan wires the handler. `SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`
+does not survive alone either, because this package has no speaker encoder and
+`load_qwen3_tts_profile_from_memory` can therefore never accept a Profile
+against it. The corrected expectation: `--info` reports **zero Preset Voices**
+and **zero Profile source flags** — the same all-zero "no runtime Voice Profile
+support" shape a CustomVoice package reports, for a different reason. This is a
+statement about the RUNTIME only: the package's own declared
+`synthesize.voice.profile_sources` still names `description-text`, and Task 3's
+loader and its cross-checks are untouched.
+
 - [ ] **Step 6: Record the intake in the family record**
 
 Add to `docs/porting/families/qwen3-tts.md`: the Stage 3 opening, the pinned
@@ -1069,6 +1107,22 @@ Plan 1 is done when all three hold:
    can fail is recorded beside it.
 3. The capability snapshot reports zero Preset Voices and
    `DESCRIPTION_TEXT | SERIALIZED_PROFILE` with `REFERENCE_AUDIO` absent.
+
+**Erratum, 2026-08-18 — jiangzhuo's ruling after the final whole-branch review
+contradicts item 3 above.** `fill_voice_profile_capability` published
+`DESCRIPTION_TEXT | SERIALIZED_PROFILE` while `create_from_description`
+(`src/voice-profile.cpp`) still routed every family but OmniVoice to the
+generic unsupported fallback — the seam advertised a capability it then
+refused, which is the fault this family's own ICL precedent (Plan 2 →
+Plan 3) was already built to avoid repeating. Ruling: the RUNTIME withholds
+`SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT` until a later plan wires the handler,
+and `SERIALIZED_PROFILE` does not survive alone either, since this package has
+no speaker encoder for `load_qwen3_tts_profile_from_memory` to ever accept a
+Profile against. Corrected item 3: **the capability snapshot reports zero
+Preset Voices and zero Profile source flags** — the same shape a CustomVoice
+package reports. The PACKAGE's own declared `profile_sources` is unaffected
+and still names `description-text`; only the RUNTIME's published capability
+changed, and Task 3's loader is untouched.
 
 Explicitly **not** delivered here, and not a gap: `create_from_description`, the
 `DesignInstruct` payload, the instruct prompt block, the public-seam validator,

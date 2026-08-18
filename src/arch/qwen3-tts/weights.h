@@ -318,16 +318,41 @@ inline bool has_preset_voice_catalog(const HParams & hparams) {
 // Base package's ProfileContract and speaker-encoder metadata are still read
 // and validated in full at load time regardless (read_hparams): the package
 // declaring a contract and the runtime advertising a capability are different
-// statements. A VoiceDesign package (ProfileSources too, but with no speaker
-// encoder) advertises Description Text instead of Reference Audio -- Task 4
-// made source_flags follow hparams.profile_sources itself rather than a
-// hardcoded pair, so the bit is published for the one variant that declares
-// it and withheld from Base and CustomVoice, which never do. Advertised is
-// not yet callable: src/voice-profile.cpp's create_from_description dispatch
-// still routes every family but OmniVoice, this one included, to the generic
-// unsupported fallback regardless of source_flags -- wiring an actual handler
-// is a later plan's job. Random Seed stays unadvertised at every stage of
-// this family's ladder; nothing here implements it.
+// statements.
+//
+// **Erratum, 2026-08-18 -- jiangzhuo's ruling after the final whole-branch
+// review, contradicting the paragraph this replaces.** Task 4 made
+// source_flags follow hparams.profile_sources itself rather than a hardcoded
+// pair, and the paragraph originally here said that was the whole story: a
+// VoiceDesign package (ProfileSources too, but with no speaker encoder)
+// advertises Description Text instead of Reference Audio, "not yet callable"
+// but published anyway, because create_from_description routes every family
+// but OmniVoice to the generic unsupported fallback regardless of
+// source_flags. That is exactly the shape this family's own ICL precedent
+// says not to ship: SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT stayed unadvertised
+// for the whole of Plan 2 precisely because advertising a mode with no
+// implementation behind it invites a caller to ask for it and receive
+// SYNTH_ERR_UNSUPPORTED_VOICE instead of the Profile the advertisement
+// promised -- and create_from_description was in exactly that state for
+// VoiceDesign when the paragraph above was written. The ruling: withhold
+// SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT from the RUNTIME's published
+// capability too, until a later plan wires the handler. And
+// SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE does not survive alone either --
+// docs/c-interface.md permits that only for a Model that can consume
+// prebuilt profiles even though it cannot prepare them, and this one cannot
+// consume one: load_profile_from_memory requires an x-vector tensor sized to
+// `hparams.speaker_encoder.enc_dim`, zero for a package with no speaker
+// encoder, and its own `tensor_bytes == 0` check refuses every nonempty
+// envelope before that size is ever compared. So a VoiceDesign package
+// publishes source_flags == 0 today, the same all-zero shape CustomVoice
+// reports, for a different reason: CustomVoice carries no ProfileContract at
+// all, VoiceDesign carries one (read and validated in full at load time,
+// same as Base's) with nothing yet wired to act on it. This is still a
+// statement about the RUNTIME and not about the PACKAGE -- the package's own
+// declared `profile_sources` keeps naming description-text, Task 3's loader
+// and its cross-checks are untouched, and the split is the same one the ICL
+// precedent used. Random Seed stays unadvertised at every stage of this
+// family's ladder; nothing here implements it.
 void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & info);
 
 }  // namespace synth::qwen3tts

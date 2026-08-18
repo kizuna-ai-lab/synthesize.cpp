@@ -859,22 +859,65 @@ void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & i
     if (hparams.voice_mode != VoiceMode::ProfileSources) {
         return;
     }
-    // The bits follow what the package DECLARED and read_profile_sources
-    // already checked against what it carries. Serialized Profile accompanies
-    // either source, because every v1 Profile this family can create can be
-    // serialized (docs/c-interface.md).
-    info.source_flags = hparams.profile_sources | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE;
 
-    if ((hparams.profile_sources & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) == 0) {
-        // No recording is taken on this path, so the six reference limits and
-        // the transcript requirements describe nothing. Left at their zeroed
-        // defaults: a zero here means "not applicable", and copying Base's
-        // numbers would state a contract this package cannot honour.
-        info.schema         = hparams.profile.schema;
-        info.schema_version = hparams.profile.schema_version;
-        decode_profile_compatibility_id(hparams.profile.compatibility_id_hex, info.compatibility_id);
+    // jiangzhuo's ruling, 2026-08-18, after the final whole-branch review of
+    // Stage 3 Plan 1: SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT is withheld from
+    // the RUNTIME's published capability until a later plan wires
+    // synth_voice_profile_create_from_description for this family.
+    // src/voice-profile.cpp's create_from_description dispatch still routes
+    // every family but OmniVoice -- Qwen3-TTS included, VoiceDesign included
+    // -- to the generic "unsupported" fallback regardless of source_flags, so
+    // publishing the bit here would repeat exactly the mistake this family's
+    // own transcript-assisted (ICL) mode was built around avoiding: a mode
+    // advertised with no implementation behind it invites a caller to ask for
+    // it and receive SYNTH_ERR_UNSUPPORTED_VOICE instead of the Profile the
+    // advertisement promised. ICL carried exactly this restriction for the
+    // whole of Plan 2, lifted only once Plan 3 wired the handler -- see the
+    // comment on `info.reference_transcript` below for that precedent.
+    //
+    // This is a statement about the RUNTIME, not about the PACKAGE:
+    // `hparams.profile_sources` -- what read_profile_sources read and
+    // read_profile_and_speaker_encoder already cross-checked against what the
+    // package actually carries -- keeps naming description-text for a
+    // VoiceDesign package regardless of what this function publishes. Task
+    // 3's loader and its refusals are untouched by this rule.
+    const uint32_t publishable_sources = hparams.profile_sources & ~SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT;
+
+    if ((publishable_sources & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) == 0) {
+        // A VoiceDesign package's only declared source is description-text,
+        // so once that bit is withheld above, this runtime has nothing left
+        // to advertise for it: `create_from_reference` needs the (absent)
+        // speaker encoder, `create_from_description` is not wired yet (the
+        // reason the bit is withheld in the first place), and Random Seed is
+        // unimplemented by every variant of this family.
+        //
+        // SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE alone is not the honest
+        // fallback either. docs/c-interface.md permits it only for "a Model
+        // [that] can consume prebuilt profiles but cannot prepare them from
+        // another public source" -- and this one cannot consume one either:
+        // load_profile_from_memory (profile.cpp) unconditionally requires an
+        // x-vector tensor sized to `hparams.speaker_encoder.enc_dim`, the
+        // zero-initialized default for a package with no speaker encoder
+        // (`has_speaker_encoder` is false here), and that same function's own
+        // `tensor_bytes == 0` check refuses every nonempty envelope before
+        // the declared element count is ever compared against it -- so no
+        // serialized Profile, forged or genuine, can ever load against this
+        // Model. `info` is left at its all-zero default: the same "no
+        // runtime Voice Profile support" shape docs/c-interface.md requires
+        // and CustomVoice already reports, though for a different reason --
+        // CustomVoice carries no ProfileContract at all, while VoiceDesign
+        // carries one (schema "qwen3-tts-voice-design", version 1) with
+        // nothing yet wired to act on it.
         return;
     }
+
+    // The bits follow what the package DECLARED, minus Description Text
+    // above, and read_profile_sources already checked the declaration
+    // against what the package carries. Serialized Profile accompanies
+    // Reference Audio, because every v1 Profile this family can create from
+    // it can be serialized (docs/c-interface.md).
+    info.source_flags = publishable_sources | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE;
+
     // OPTIONAL, both of them, since Plan 3 landed the transcript-assisted
     // (ICL) mode next to the x-vector one. BOTH MODES NOW EXIST, and D4 fixes
     // the clone mode at preparation, so the transcript's PRESENCE is what
@@ -893,8 +936,7 @@ void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & i
     // Nothing else here moves. This is a statement about the RUNTIME, not
     // about the package: `source_flags`, the six reference limits, the schema
     // identity and the compatibility id are all read from the same declared
-    // ProfileContract they were before, and Description Text and Random Seed
-    // stay unadvertised.
+    // ProfileContract they were before, and Random Seed stays unadvertised.
     info.reference_transcript = SYNTH_REQUIREMENT_OPTIONAL;
     info.reference_language   = SYNTH_REQUIREMENT_OPTIONAL;
 

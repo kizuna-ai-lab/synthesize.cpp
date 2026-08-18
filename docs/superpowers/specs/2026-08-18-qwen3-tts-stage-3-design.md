@@ -128,6 +128,34 @@ SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` and **not**
 `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO`: with no speaker encoder and no codec
 encoder there is nothing to clone with. See section 3.
 
+**Erratum, 2026-08-18 — jiangzhuo's ruling after the final whole-branch review
+narrows D4, without changing its principle.** D4's own rule — a bit is
+published only when the tensors that implement it are present — is UNCHANGED
+and is exactly why the PACKAGE's declared `profile_sources` correctly keeps
+naming `description-text` for a VoiceDesign checkpoint (Task 3's loader is
+untouched). What changed is a second, narrower rule sitting on top of it: the
+RUNTIME additionally withholds any bit whose seam is not wired to a real
+handler, regardless of what tensors the package carries. At the time D4 was
+written, `synth_voice_profile_create_from_description`
+(`src/voice-profile.cpp`) routed every family but OmniVoice — Qwen3-TTS,
+VoiceDesign included — to the generic unsupported fallback, so this design's
+own prescribed snapshot advertised a capability the seam then refused. This is
+the same precedent this family's own transcript-assisted (ICL) mode already
+set: `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT`'s x-vector counterpart,
+`reference_transcript`/`reference_language`, stayed `SYNTH_REQUIREMENT_UNSUPPORTED`
+for the whole of Stage 2 Plan 2 for exactly this reason, lifted only once Plan 3
+wired the handler (see `docs/superpowers/specs/2026-08-11-qwen3-tts-stage-2-design.md`).
+Ruling: this package publishes `source_flags == 0` at Plan 1 — not
+`DESCRIPTION_TEXT | SERIALIZED_PROFILE` — until a later plan wires
+`create_from_description`. `SERIALIZED_PROFILE` does not survive alone either:
+`docs/c-interface.md` permits that bit alone only for a Model that can consume
+prebuilt profiles even though it cannot prepare them, and this package cannot
+consume one, because `load_qwen3_tts_profile_from_memory` unconditionally
+requires an x-vector tensor sized to the (zero, absent-encoder) speaker
+embedding dimension. The published shape is therefore the same all-zero "no
+runtime Voice Profile support" shape CustomVoice already reports, for a
+different reason.
+
 **D5. Language is a per-synthesis field and does not enter the Profile.**
 Upstream takes `text`, `instruct` and `language` as three separate arguments to
 `generate_voice_design`; the request already carries language.
@@ -182,6 +210,24 @@ cannot implement is refused at load, not tolerated.
 1024/3072 in every column, VoiceDesign included; a reader of this table alone
 could not tell the two apart, and Task 6 found that a catalog which could not
 either refused to load the package.
+
+**Erratum, 2026-08-18 — the table's VoiceDesign "Source flags" cell above is
+the PACKAGE's declaration, not the RUNTIME's published capability, and the
+row-header itself now overstates which one it means.** See D4's own 2026-08-18
+erratum for the ruling and its reasoning in full; this note exists only to
+correct this section's own restatement of D4 rather than to repeat it. The
+rule this section states just above — "a source bit is published only when the
+tensors that implement it are present" — is still correct as far as it goes,
+but it described only the PACKAGE half of a two-part test that Plan 1's own
+execution showed was incomplete: a bit also has to be published only when a
+handler for it actually exists at the public seam, which
+`SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT` did not at the time this section was
+written. The `Base` column is unaffected (`create_from_reference` already had
+its Qwen3-TTS arm by Stage 2 Plan 2), so its `REF | SER` cell stands; the
+`VoiceDesign` column's `DESC | SER` is what the RUNTIME actually publishes
+once `create_from_description` is wired for this family — a later plan — and
+until then the cell the RUNTIME's own capability query reports is `(none)`,
+matching `CustomVoice`'s, for a different reason.
 
 ## 4. Package and Conversion
 
@@ -453,6 +499,14 @@ decoder wiring Plan 2 builds, and gating Plan 1 on work Plan 1 does not do
 would be circular. What is not defensible is that the design text above
 still reads as though the stronger claim was delivered; this erratum is the
 correction, not a silent edit to the row.
+
+**A second correction to the same row, 2026-08-18, same review.** "capability
+snapshot reports zero Preset Voices and `DESCRIPTION_TEXT` without
+`REFERENCE_AUDIO`" is also not what Plan 1 delivers, for the reason D4's and
+section 3's own 2026-08-18 erratum give in full: `create_from_description` has
+no Qwen3-TTS arm yet, so the RUNTIME withholds `DESCRIPTION_TEXT` too. The
+actual Plan 1 gate is zero Preset Voices and zero Profile source flags,
+matching CustomVoice's shape. Not repeated here beyond this sentence — see D4.
 
 ## 9. Error Mapping
 

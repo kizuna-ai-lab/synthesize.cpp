@@ -35,18 +35,37 @@ commit `d4df99e8`), on jiangzhuo's per-act confirmation naming that target --
 which closes Stage 2 on the same terms Stage 1 closed on. **Stage 3
 (`qwen3-tts-12hz-1.7b-voicedesign`) Plan 1 is done as of 2026-08-18**: Task 6
 converts the checkpoint (659 tensors, 4.30 GB BF16) and, since a same-day fix
-to the tensor catalog described below, loads it through `synth_model_load`
-with the exact capability snapshot the design predicted -- zero Preset
-Voices, `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT |
+to the tensor catalog described below, loads it through `synth_model_load` --
+and Task 7 closes the plan's completion gate: a prefill built at empty
+instruct matches the oracle within tolerance (p95_relative 0.00269 against a
+committed 0.01, 3.72x headroom), with a 365.7x fault-injection figure proving
+the comparison can fail. See "Stage 3: VoiceDesign Package, Task 6" and
+"...Task 7" below for the license check, the digests, a genuine architecture
+gap Task 6 found and closed rather than merely converting around, and Task
+7's oracle dumper, driver and fault injection. See the three Stage 2
+paragraphs below for Stage 2.
+
+**The capability snapshot Task 6 measured is corrected below, on jiangzhuo's
+ruling after the final whole-branch review (2026-08-18), and no longer matches
+the design's original prediction.** Task 6 measured exactly what the design
+predicted -- zero Preset Voices, `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT |
 SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`, Reference Audio absent, all six
-reference limits at zero -- and Task 7 closes the plan's completion gate: a
-prefill built at empty instruct matches the oracle within tolerance
-(p95_relative 0.00269 against a committed 0.01, 3.72x headroom), with a
-365.7x fault-injection figure proving the comparison can fail. See "Stage 3:
-VoiceDesign Package, Task 6" and "...Task 7" below for the license check, the
-digests, a genuine architecture gap Task 6 found and closed rather than
-merely converting around, and Task 7's oracle dumper, driver and fault
-injection. See the three Stage 2 paragraphs below for Stage 2.
+reference limits at zero -- but `synth_voice_profile_create_from_description`
+(`src/voice-profile.cpp`) still routed every family but OmniVoice to the
+generic unsupported fallback at that point, so the RUNTIME's own capability
+query was advertising a source it would then refuse: the same trap this
+family's own transcript-assisted (ICL) mode was withheld from advertisement
+for the whole of Stage 2 Plan 2 to avoid. Ruling: the RUNTIME withholds
+`SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT`, and `SERIALIZED_PROFILE` does not
+survive alone either (this package has no speaker encoder for
+`load_qwen3_tts_profile_from_memory` to ever accept a Profile against), so the
+capability snapshot as of this correction reports **zero Preset Voices and
+zero Profile source flags** -- the same all-zero shape a CustomVoice package
+reports, for a different reason. Only the RUNTIME half moved: the PACKAGE's
+own declared `synthesize.voice.profile_sources` still names
+`description-text`, and Task 3's loader and its cross-checks are untouched.
+See "Stage 3: VoiceDesign Package, Task 6", "Load result" below for the
+corrected measurement table.
 
 **Packages converted before `synthesize.voice.profile_sources` existed do not
 load under this runtime any more.** Stage 3's loader change
@@ -320,9 +339,9 @@ Variant-defined, as `docs/voice-conditioning.md` already requires.
 Stage 1 is a completion gate for Stage 2, and Stage 2 for Stage 3. Random Seed
 stays unadvertised across all three stages.
 
-**What each stage advertises, stated once (corrected 2026-08-12).** An earlier
-revision of this section said Serialized Profile stays unadvertised at every
-stage, while the Stage 2 Plan 1 record below claimed the Base package
+**What each stage advertises, stated once (corrected 2026-08-12, 2026-08-18).**
+An earlier revision of this section said Serialized Profile stays unadvertised
+at every stage, while the Stage 2 Plan 1 record below claimed the Base package
 "honestly advertises Reference Audio and Serialized Profile support". Both
 cannot be right, and neither described what shipped. The end position:
 
@@ -344,11 +363,22 @@ cannot be right, and neither described what shipped. The end position:
   decision: `docs/c-interface.md` requires that any Model which can create a
   v1 Profile also sets the Serialized Profile bit, because every successfully
   prepared v1 Profile can be serialized.
-- **Stage 3 adds `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT`** on the same terms.
+- **Stage 3 adds `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT`** on the same terms
+  as Plan 2 added Reference Audio -- on the day it can actually prepare a
+  Profile from a description, not merely the day a package that could supply
+  one loads. **Stage 3 Plan 1 is not that day.** Task 6 shipped this bullet's
+  own rule violated -- the RUNTIME briefly advertised the bit while
+  `create_from_description` still had no Qwen3-TTS arm -- and jiangzhuo's
+  2026-08-18 ruling corrected it before Plan 1 closed: the VoiceDesign package
+  reports zero source flags, same as CustomVoice, until the plan that wires
+  the handler. See "Stage 3: VoiceDesign Package, Task 6" below for the
+  corrected measurement.
 
 So Serialized Profile is not a source this family pursues on its own; it
 arrives as a consequence of being able to prepare one, and it is unadvertised
-until then.
+until then. The same is true of every OTHER source bit, Description Text
+included, which the paragraph above already stated for Reference Audio and
+Stage 3 Plan 1 is what made literally true of Description Text too.
 
 ## Port Validation Fit
 
@@ -4133,12 +4163,15 @@ easy to miss: calling `generate_custom_voice` on the published
 returns `SYNTH_OK` and audio, exactly as if the instruction had been honoured,
 because nothing downstream reports that it was silently cleared first. The
 call *looks* like Description Text working on a 0.6B package. It is not
-running at all. Description Text is VoiceDesign's alone
-(`SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT`, published on no other variant), and
-this line is upstream's, not a defect in this port -- but a caller who tests
-"does an instruction change the voice" against CustomVoice and observes no
-audible change would reasonably conclude the feature is broken rather than
-absent.
+running at all. Description Text is VoiceDesign's alone -- upstream's
+`generate_voice_design` is the only entry point that reaches it, and
+`SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT` is reserved for the one variant that
+carries the tensors for it, once the RUNTIME half of that capability is wired
+(2026-08-18 correction below: the bit itself is not yet published by any
+variant, this package included) -- and this line is upstream's, not a defect
+in this port -- but a caller who tests "does an instruction change the voice"
+against CustomVoice and observes no audible change would reasonably conclude
+the feature is broken rather than absent.
 
 ### The Golden Manifest schema did not anticipate a suite built across tasks
 
@@ -4204,7 +4237,7 @@ uncommitted probe driving the public C API directly
 `tests/qwen3_tts_base_load_real.cpp` already exercises against the real Base
 package:
 
-| Field | VoiceDesign | Design's prediction |
+| Field | VoiceDesign (as measured at Task 6) | Design's prediction |
 | --- | --- | --- |
 | `preset_voice_count` | 0 | zero Preset Voices |
 | `profile_source_flags` | `0xa` = `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT \| SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` | Description Text + Serialized Profile |
@@ -4212,7 +4245,41 @@ package:
 | six `reference_*` limits | all 0 | left at zero |
 | `profile_schema` | `qwen3-tts-voice-design`, version 1 | -- |
 
-Every field matches the Interfaces section's prediction exactly.
+Every field matched the Interfaces section's prediction exactly.
+
+**Erratum, 2026-08-18 -- jiangzhuo's ruling after the final whole-branch review
+found the prediction this table matched was itself wrong.** The `profile_source_flags`
+and `profile_schema` rows above are what Task 6 measured, and what the design
+predicted, but not what the RUNTIME should have reported:
+`synth_voice_profile_create_from_description` (`src/voice-profile.cpp`) had no
+Qwen3-TTS arm at that point, so the capability query was advertising a source
+the seam then refused -- the same trap this family's own transcript-assisted
+(ICL) mode was withheld from advertisement for the whole of Stage 2 Plan 2 to
+avoid, and `SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` cannot survive alone
+either, since this package has no speaker encoder for
+`load_qwen3_tts_profile_from_memory` to ever accept a Profile against. The
+corrected measurement, taken against the same probe after
+`fill_voice_profile_capability` was fixed:
+
+| Field | VoiceDesign (corrected) |
+| --- | --- |
+| `preset_voice_count` | 0 |
+| `profile_source_flags` | `0x0` (none) |
+| `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO` | absent |
+| six `reference_*` limits | all 0 |
+| `profile_schema` | null, size 0, version 0 |
+
+This is the same all-zero "no runtime Voice Profile support" shape a
+CustomVoice package reports, per `docs/c-interface.md`'s rule that Serialized
+Profile's schema fields are null/zero exactly when that bit is clear, for a
+different reason than CustomVoice's: CustomVoice carries no ProfileContract at
+all, while this package's `synthesize.profile.*` metadata is read and
+validated in full at load time and the schema string above (`qwen3-tts-voice-design`,
+version 1) is still there in `HParams` -- simply not surfaced through the
+public capability query until a later plan wires `create_from_description`.
+The PACKAGE's own declared `synthesize.voice.profile_sources` is unaffected by
+this correction and still names `description-text`; Task 3's loader and its
+cross-checks are untouched.
 
 ## Stage 3: VoiceDesign Package, Task 7
 
@@ -4324,11 +4391,15 @@ All three of Plan 1's stated criteria hold as of this task: the BF16 package
 loads (Task 6); a prefill built at empty instruct matches the oracle within
 the recorded `replay` tolerance, with the fault-injection figure above proving
 the comparison can fail (Task 7); and the capability snapshot reports zero
-Preset Voices and `DESCRIPTION_TEXT | SERIALIZED_PROFILE` with
-`REFERENCE_AUDIO` absent (Task 6, "Load result" above). Not delivered here,
-and not a gap against Plan 1's own scope: `create_from_description`, the
-`DesignInstruct` payload, the instruct prompt block, the public-seam
-validator, quantization, backends, and the listening audit -- Plans 2 and 3.
+Preset Voices and, **on jiangzhuo's 2026-08-18 ruling after the final
+whole-branch review, correcting what Task 6 originally measured and this
+sentence originally claimed**, zero Profile source flags rather than
+`DESCRIPTION_TEXT | SERIALIZED_PROFILE` -- `REFERENCE_AUDIO` was, and remains,
+absent either way (Task 6, "Load result" above, which carries the correction
+in full). Not delivered here, and not a gap against Plan 1's own scope:
+`create_from_description`, the `DesignInstruct` payload, the instruct prompt
+block, the public-seam validator, quantization, backends, and the listening
+audit -- Plans 2 and 3.
 
 ## Open Questions for Intake
 

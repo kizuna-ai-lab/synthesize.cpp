@@ -273,8 +273,17 @@ def check_empty_instruct_within_tolerance(arguments: argparse.Namespace) -> tupl
     function reads that COMMITTED figure and checks the contract it makes is
     the one still on disk, rather than re-deriving a number this script has no
     oracle to derive on its own. Returns (None, reason) when the figure is not
-    recorded for this profile -- "unmeasured" is a different claim from
-    "measured and failing" and is reported as a skip, not a failure.
+    recorded for this profile at all -- "unmeasured" is a different claim from
+    "measured and failing" and is reported as a skip, not a failure. It returns
+    (False, reason) instead, a hard failure rather than a skip, when the
+    `voicedesign-empty-instruct-en` case EXISTS but no longer carries an empty
+    instruct: a case id that promises "empty instruct" is itself part of the
+    contract this check verifies, and a silently repurposed case (edited to a
+    non-empty instruct without this check noticing) is exactly the kind of
+    silent failure design section 6's own opening paragraph is built around --
+    reporting that as "unmeasured" would be the weaker of the two wrong
+    behaviours, since a caller reading a skip has no reason to suspect the
+    citation's premise moved out from under it.
     """
     try:
         tolerances = json.loads(arguments.tolerances.read_text(encoding="utf-8"))
@@ -295,7 +304,9 @@ def check_empty_instruct_within_tolerance(arguments: argparse.Namespace) -> tupl
     if case is None:
         return None, "replay.prefill probe has no voicedesign-empty-instruct-en case recorded"
     if case.get("instruct") != "":
-        return None, f"voicedesign-empty-instruct-en case does not carry an empty instruct: {case.get('instruct')!r}"
+        return False, (f"voicedesign-empty-instruct-en case no longer carries an empty instruct "
+                       f"(observed {case.get('instruct')!r}) -- the case id's own contract broke, "
+                       f"not merely an unmeasured configuration")
     bound = prefill.get("max_relative")
     observed = case.get("p95_relative")
     if bound is None or observed is None:

@@ -1666,6 +1666,16 @@ Byte-identical rather than close, because the sampler is the only stochastic par
 and it is seeded. Reporting a seed that does not reproduce would be worse than
 reporting none, so the random-seed path is replayed rather than merely observed.
 
+**This table is stale and pre-dates this document's own later corrections.**
+The eight checks and their results above are a historical snapshot; the
+CustomVoice BF16/CPU `public` cell in `tests/tolerances/qwen3-tts.json`
+already records 10 checks (2026-08-17, a second kind of Voice) and then 11
+(2026-08-19, Stage 3 Plan 2 Task 6's `create_from_description` refusal check).
+Not rewritten here — the authoritative, dated count lives in that file, with a
+note explaining each move; this table is left as the record of what phase 3
+looked like when this section was first written, per this document's own
+practice of superseding rather than silently editing history.
+
 ### Not done in this stage
 
 Phases 4 and 5 of the contract -- the quantization profiles and the Execution
@@ -3224,7 +3234,18 @@ Voice Profile:
 
 - **7 checks pass, 3 skipped**, the same seven and the same three structural
   skips as every CPU cell -- the Voice kind is a property of the package's
-  catalogue, not of the backend.
+  catalogue, not of the backend. **Stale as of 2026-08-19, not re-measured
+  here:** Stage 3 Plan 2 Task 6 added a `create_from_description` refusal
+  check that runs for every non-`description_text` package, CPU or CUDA alike
+  -- it probes `synth_voice_profile_create_from_description` directly and
+  never reaches a backend-specific graph, so nothing about the reasoning above
+  changes between backends. The CPU sibling of this exact cell moved 7 -> 8 in
+  `tests/tolerances/qwen3-tts.json` the same day. This CUDA figure almost
+  certainly moves the same way but was not re-run under CUDA to confirm it --
+  this environment had no CUDA-preset build tree at the time -- so 7 is left
+  standing here as what was actually measured rather than silently bumped to
+  an unverified 8. Whoever next runs this cell under CUDA should expect 8, not
+  be surprised by it.
 - The audio differs from CPU, which is what says the request reached the
   device: seed 7 through reference A gives `ed32bb3b13800fe1` on CUDA against
   `9eef2beaf63cb60e` on CPU. That is the codec decoder's TF32 arithmetic, the

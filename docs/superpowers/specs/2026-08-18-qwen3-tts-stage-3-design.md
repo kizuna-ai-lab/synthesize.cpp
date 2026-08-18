@@ -432,8 +432,29 @@ runner has no GGUF-writing path to forge one with. So the bullet stays open,
 now on record against two tasks rather than one, and closing it — if it is
 ever closed — will need either the weaker `model_variant`-string cross-check
 this file already named and declined, built in `weights.cpp`, or a synthetic
-GGUF fixture built specifically to carry the mismatch, neither of which this
-task builds.
+GGUF fixture built specifically to carry the mismatch.
+
+That fixture does not need to be built from scratch, though, and whoever
+closes this bullet should start from what already exists rather than assuming
+none does: `tests/qwen3_tts_metadata_test.cpp`'s `voice_design_metadata()`
+already builds, in memory, exactly a "profile-sources package declaring
+`description-text`" — the shape this bullet is about. It differs from the
+adversarial case only in `synthesize.model_variant`, which it sets to
+`"qwen3-tts-12hz-1-7b-voicedesign"` (matching a real VoiceDesign package).
+Changing that one `gguf_set_val_str` call to a different variant string —
+`"qwen3-tts-12hz-0-6b-customvoice"`, say — while leaving
+`synthesize.voice.profile_sources` at `{"description-text"}` produces the
+mismatch directly: a package whose declared variant disagrees with its
+declared source. Confirmed by reading (not yet by a committed test) that
+`read_hparams` would accept it unchanged: `read_identity`
+(`src/arch/qwen3-tts/weights.cpp:29`) reads `model_variant` into
+`hparams.model_variant` and only checks it non-empty (line 40); nothing
+downstream ever compares that string against `hparams.profile_sources`, which
+is exactly what this erratum's own first paragraph already says in words. A
+test built from this mutation would be a same-shape sibling of this file's
+own `expect_rejected` adversarial cases (`tests/qwen3_tts_metadata_test.cpp`)
+— except it would need to assert `read_hparams` currently **succeeds**, to
+pin the gap rather than a rejection that doesn't happen.
 
 ### 6.5 Fault injection
 

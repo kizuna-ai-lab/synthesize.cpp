@@ -246,8 +246,30 @@ class VariantDiscriminationTests(unittest.TestCase):
             convert.variant_profile({"tts_model_type": "base", "tts_model_size": "0b6"})
 
     def test_an_unknown_model_type_is_refused(self) -> None:
+        # `voice_design` was this test's example until Stage 3 Plan 1 made it a
+        # supported variant. The guard is what matters, not the example, so it
+        # moved to a type upstream does not ship.
         with self.assertRaises(convert.ConverterError):
-            convert.variant_profile({"tts_model_type": "voice_design", "tts_model_size": "1b7"})
+            convert.variant_profile({"tts_model_type": "dialogue", "tts_model_size": "1b7"})
+
+    def test_voice_design_config_carries_neither_encoder(self) -> None:
+        profile = convert.variant_profile({"tts_model_type": "voice_design", "tts_model_size": "1b7"})
+        self.assertEqual(profile.model_type, "voice_design")
+        self.assertFalse(profile.carries_speaker_encoder)
+        self.assertFalse(profile.carries_codec_encoder)
+        self.assertEqual(profile.size_label, "1.7B")
+
+    def test_voice_design_config_with_a_speaker_encoder_is_refused(self) -> None:
+        # The check runs in the direction CustomVoice's does: a voice_design
+        # checkpoint that carried an encoder would be a different model than
+        # the one this arm was written against.
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.variant_profile({
+                "tts_model_type": "voice_design",
+                "tts_model_size": "1b7",
+                "speaker_encoder_config": {"enc_dim": 1024, "sample_rate": 24000},
+            })
+        self.assertIn("speaker_encoder_config", str(caught.exception))
 
 
 class EncoderCodebookMeasurementTests(unittest.TestCase):

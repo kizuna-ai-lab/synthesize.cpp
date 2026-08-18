@@ -213,12 +213,13 @@ def load_json(path: Path) -> dict[str, Any]:
 def variant_profile(config: dict[str, Any]) -> VariantProfile:
     """Decide what this checkpoint carries from what it declares.
 
-    The two supported variants differ by a whole subsystem: Base ships a
+    The three supported variants differ by a whole subsystem: Base ships a
     76-tensor ECAPA-TDNN speaker encoder and needs the tokenizer's encoder half
-    to turn reference audio into codes; CustomVoice ships neither and resolves
-    speakers as codec-vocabulary token ids. Keying that on the declared type and
-    then checking the declaration against the config is what keeps a future
-    variant from silently converting as whichever branch it fell into.
+    to turn reference audio into codes; CustomVoice and VoiceDesign ship neither
+    and resolve speakers as codec-vocabulary token ids. Keying that on the
+    declared type and then checking the declaration against the config is what
+    keeps a future variant from silently converting as whichever branch it fell
+    into.
     """
     model_type = str(config.get("tts_model_type", ""))
     has_encoder_config = "speaker_encoder_config" in config
@@ -235,6 +236,16 @@ def variant_profile(config: dict[str, Any]) -> VariantProfile:
                 "config declares tts_model_type=custom_voice but carries a speaker_encoder_config"
             )
         return VariantProfile("custom_voice", False, False, "Qwen3-TTS 12Hz 0.6B CustomVoice", "0.6B")
+    if model_type == "voice_design":
+        # No encoder of either kind: this checkpoint has no speaker_encoder_config
+        # and there is no reference audio on its path, so the tensor set is
+        # CustomVoice's shape rather than Base's. See the Stage 3 design, section 4.
+        if has_encoder_config:
+            raise ConverterError(
+                "config declares tts_model_type=voice_design but carries a speaker_encoder_config"
+            )
+        return VariantProfile("voice_design", False, False,
+                              "Qwen3-TTS 12Hz 1.7B VoiceDesign", "1.7B")
     raise ConverterError(f"unsupported tts_model_type {model_type!r}")
 
 

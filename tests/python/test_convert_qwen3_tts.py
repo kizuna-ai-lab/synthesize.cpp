@@ -599,6 +599,7 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
             "code_predictor_config": {
                 "num_hidden_layers": 1, "hidden_size": 4, "num_attention_heads": 1,
                 "num_key_value_heads": 1, "head_dim": 4, "vocab_size": 10, "num_code_groups": 1,
+                "intermediate_size": 4,
             },
             "spk_id": {} if carries_speaker_encoder else {"voice1": 0},
             "spk_is_dialect": {} if carries_speaker_encoder else {"voice1": ""},

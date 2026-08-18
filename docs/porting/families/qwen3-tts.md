@@ -32,8 +32,16 @@ See "Stage 2 Plan 4: what it measured, and what it refused to claim" below.
 **The Base variant was published on 2026-08-17** to
 `jiangzhuo9357/qwen3-tts-12hz-0-6b-base-gguf` (BF16, F16 and Q8_MIXED, 6.70 GB,
 commit `d4df99e8`), on jiangzhuo's per-act confirmation naming that target --
-which closes Stage 2 on the same terms Stage 1 closed on. Stage 3 (Description
-Text) is not started. See the three Stage 2 paragraphs below.
+which closes Stage 2 on the same terms Stage 1 closed on. **Stage 3
+(`qwen3-tts-12hz-1.7b-voicedesign`) Plan 1's Task 6 is done as of 2026-08-18**:
+the checkpoint converts (659 tensors, 4.30 GB BF16) and, since a same-day fix to
+the tensor catalog described below, loads through `synth_model_load` with the
+exact capability snapshot the design predicted -- zero Preset Voices,
+`SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`,
+Reference Audio absent, all six reference limits at zero. See "Stage 3:
+VoiceDesign Package, Task 6" below for the license check, the digests, and a
+genuine architecture gap this task found and closed rather than merely
+converting around. See the three Stage 2 paragraphs below for Stage 2.
 
 **Packages converted before `synthesize.voice.profile_sources` existed do not
 load under this runtime any more.** Stage 3's loader change
@@ -51,8 +59,16 @@ pre-release with no users, so no compatibility shim was written to infer the
 declaration from a package's other contents -- that is exactly the inference
 this loader change exists to remove. Re-cut a local Base package with the
 current `scripts/convert-qwen3-tts.py` before turning on
-`-DSYNTH_BUILD_INTEGRATION_TESTS=ON` against it; whether the already-published
-Hugging Face artifacts get re-uploaded is a separate act this paragraph makes
+`-DSYNTH_BUILD_INTEGRATION_TESTS=ON` against it. **Done 2026-08-18**, as part of
+Stage 3 Task 6: the local BF16 package at
+`models/qwen3-tts-12hz-0-6b-base/qwen3-tts-12hz-0-6b-base-BF16.gguf` was
+re-converted from the same source weights and manifest already on disk (no
+re-download), producing a different sha256 (`76275beb...` against the
+`993f4cd1...` the pre-`profile_sources` file carried) and a package that loads
+with the capability snapshot Plan 2 recorded --
+`SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`,
+six populated reference limits, schema `qwen3-tts-voice-clone`. Whether the
+already-published Hugging Face artifacts get re-uploaded is a separate act this paragraph makes
 no claim about.
 
 **Until 2026-08-12 this line read "Q8_MIXED, the public backend control and
@@ -3951,6 +3967,216 @@ quantization costs. Full method, the two invalidated attempts that preceded the
 second pass, and the duration observation the listener cleared are in
 `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/_porting-log.md`
 under its 2026-07-29 entries.
+
+## Stage 3: VoiceDesign Package, Task 6
+
+Executed 2026-08-18. Intake, conversion, and a package that loads -- the first
+rung of Stage 3, and the first time this family's converter or loader ran
+against a checkpoint whose talker and code predictor disagree in width. The
+Reference Model Variant Ladder said VoiceDesign "necessarily moves to the 1.7B
+width" (see above); this task is where that stopped being a sentence about
+parameter count and started being a sentence about tensor shapes.
+
+### License, verified from the upstream model card
+
+```
+$ curl -sL "https://huggingface.co/api/models/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign" \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['id'], (d.get('cardData') or {}).get('license'), d['sha'])"
+Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign apache-2.0 5ecdb67327fd37bb2e042aab12ff7391903235d3
+```
+
+Matches the pinned revision exactly. The card's own prose (fetched at that
+revision) carries no additional restriction beyond the `license: apache-2.0`
+frontmatter -- confirming the "Why Qwen3-TTS" section's four-repository claim
+for the fourth repository specifically, rather than inheriting it from the
+other three.
+
+### Pinned digests
+
+| Artifact | sha256 |
+| --- | --- |
+| `config.json` | `aecd2cc4c1fe9edef1cb7ca7c401685a43879ad43f3f9e883f1c6760b61731e0` |
+| `model.safetensors` | `391e8db219f292c515297cdceeb43e4eae67cdde35fa57e79a6a8a532fca0522` |
+
+`speech_tokenizer/model.safetensors`, `vocab.json` and `merges.txt` are
+byte-identical to the digests the Base and CustomVoice manifests already
+record -- measured, not assumed, by hashing this checkpoint's own copies --
+which is expected: `Qwen3-TTS-Tokenizer-12Hz` and the BPE vocabulary are shared
+across the family's variants rather than re-shipped per rung. The Golden
+Manifest, `tests/golden/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign.manifest.json`,
+carries all five digests, none of `qwen3-tts-12hz-0-6b-base`'s two
+`reference-audio` artifacts (this variant takes no recording), and zero cases
+-- this task's own step removes every case the copied Base manifest carried;
+Task 7 adds one and Plan 2 the rest.
+
+### Measured package size against the design's estimate
+
+**4,295,891,904 bytes (4.30 GB decimal, 4.00 GiB) against the design's ≈4.3 GB
+estimate** -- 659 tensors, 404 BF16 + 255 F32, converted in one pass with no
+manual intervention once the catalog gap below was closed. 659 is exactly
+CustomVoice's tensor-shape count (657, this family's other no-speaker-encoder
+variant) plus the two tensors the width mismatch below requires.
+
+### A genuine architecture gap, found and closed, not converted around
+
+The first conversion attempt succeeded -- the Python converter carries every
+tensor under a known prefix with no name-based filtering of its own, so
+`small_to_mtp_projection.weight`/`.bias` rode along without any converter
+change being needed. **Loading the result refused**, and the refusal was not a
+missing catalog entry for an unfamiliar name; it was a refusal
+`src/arch/qwen3-tts/catalog.cpp` had carried on purpose since before any
+package needed it:
+
+```
+qwen3-tts: the code predictor is 1024 wide against the talker's 2048, which
+needs an input projection this package does not carry
+```
+
+`CodePredictorWeights` (`code-predictor.h`) already declared
+`input_projection`/`input_projection_bias` pointers, and
+`code-predictor.cpp`'s `build_code_predictor` already applied them whenever
+non-null -- both written and comment-anticipated during Stage 1, before a
+1.7B rung existed to exercise them. The graph side of this family's autoregressive
+runtime needed **zero new code**. What was missing was entirely in the
+metadata/catalog layer, and it was three assumptions deep, each invisible for
+exactly the same reason: every package converted before this one (Base and
+CustomVoice, both 0.6B) happened to declare the same value for the talker and
+the code predictor on every axis that could have diverged, so a catalog that
+silently reused the talker's number for the predictor's own geometry was
+indistinguishable from a correct one.
+
+1. **`intermediate_size`.** `CodePredictorParams` had no field of its own; the
+   catalog sized the predictor's MLP from `hparams.talker.intermediate_size`
+   (3072 == 3072 at 0.6B, 3072 != 6144 at 1.7B). Fixed by giving
+   `CodePredictorParams` its own `intermediate_size`, read from a new
+   `synthesize.qwen3-tts.code_predictor.intermediate_size` metadata key that
+   `scripts/convert-qwen3-tts.py` now writes from the checkpoint's own
+   `code_predictor_config.intermediate_size` rather than inheriting
+   `talker_config`'s. **Optional at read time** (`GgufMetadata::has`), falling
+   back to the talker's value when the key is absent, so every package
+   converted before this key existed -- the published CustomVoice and Base
+   artifacts included -- still loads unchanged.
+2. **The width bridge.** `p.hidden_size != hparams.talker.hidden_size` used to
+   be an unconditional refusal. Now it resolves
+   `talker.code_predictor.small_to_mtp_projection.{weight,bias}` into the
+   pointers `build_code_predictor` already knew how to use --
+   `torch.nn.Linear(talker_config.hidden_size, config.hidden_size, bias=True)`
+   in the reference (`Identity()` when the widths agree, which is why no
+   0.6B package carries the tensor), confirmed by reading
+   `Qwen3TTSTalkerCodePredictorModelForConditionalGeneration.__init__` and
+   `.forward` in the pinned `qwen_tts` checkout rather than guessed from the
+   tensor's name.
+3. **`codec_embedding`'s width, which is not `lm_head`'s.** The two read like a
+   matched embedding/head pair and are not: `lm_head` is
+   `Linear(config.hidden_size, vocab_size)`, sized by the predictor's own
+   width, but `codec_embedding` is built by
+   `Qwen3TTSTalkerCodePredictorModel.__init__(self, config, embedding_dim)`
+   with `embedding_dim=talker_config.hidden_size` passed in from the
+   *outside* -- a second, separate constructor argument the predictor's own
+   `config.hidden_size` never enters. `model.cpp`'s per-step wiring confirms
+   why: a `codec_embedding` lookup is concatenated or summed with the
+   talker's own hidden state (`t_hidden`, talker-width) *before* that
+   combined value reaches `build_code_predictor`'s input-projection step, so
+   it has to already be at the talker's width to be summable. The catalog
+   sized it at `p.hidden_size` (predictor's own) and was wrong at 1.7B in the
+   same invisible way as the first two.
+
+Each of the three was measured against the pinned reference implementation,
+not inferred from the shape error's message, and each has synthetic coverage
+in `tests/qwen3_tts_catalog_test.cpp`
+(`check_narrower_code_predictor_resolves_with_projection`, plus
+`check_real_voicedesign_package_count` pinning the real package's 659 against
+`expected_tensor_count`) alongside the negative case that already existed
+(`check_rejections`' "no package carries one", which continues to refuse a
+narrower predictor whose package omits the projection tensor). The three
+0.6B packages this project has published or locally converted -- CustomVoice,
+and Base including its 2026-08-18 re-cut below -- were re-verified loading
+after every change in this section; none of the three moved.
+
+### `generate_custom_voice` silently discards `instruct` for any 0.6B model
+
+Worth its own paragraph, because it will mislead someone who reads only the
+published CustomVoice package's card. `qwen_tts/inference/qwen3_tts_model.py:799-800`:
+
+```python
+if self.model.tts_model_size in "0b6": # for 0b6 model, instruct is not supported
+    instruct = None
+```
+
+`tts_model_size` is `"0b6"` for every 0.6B checkpoint and `"1b7"` for
+VoiceDesign (confirmed from both configs' own `tts_model_size` field), so this
+line is a **membership test that happens to work for the one string it was
+written against** rather than a documented size gate: `"0b6" in "0b6"` is
+`True`, `"1b7" in "0b6"` is `False`. The consequence is asymmetric and
+easy to miss: calling `generate_custom_voice` on the published
+`qwen3-tts-12hz-0-6b-customvoice` package with a non-empty `instruct` argument
+returns `SYNTH_OK` and audio, exactly as if the instruction had been honoured,
+because nothing downstream reports that it was silently cleared first. The
+call *looks* like Description Text working on a 0.6B package. It is not
+running at all. Description Text is VoiceDesign's alone
+(`SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT`, published on no other variant), and
+this line is upstream's, not a defect in this port -- but a caller who tests
+"does an instruction change the voice" against CustomVoice and observes no
+audible change would reasonably conclude the feature is broken rather than
+absent.
+
+### The Golden Manifest schema did not anticipate a suite built across tasks
+
+A second gap, in test infrastructure rather than the runtime: this plan's
+manifest is deliberately committed with 0 cases now, 1 after Task 7, and the
+rest only in Plan 2 -- but `docs/schemas/synthesize-golden-manifest-v1.schema.json`
+required `cases.minItems: 12` (every previously-committed manifest's own
+floor), and two family-independent checks in
+`tests/python/test_golden_manifests.py` assumed every manifest already had a
+first case (`test_upstream_examples_are_present`) or a matching entry in its
+shared tolerance file's `variants` map
+(`test_tolerance_case_count_matches_manifest`). All three would have failed
+`synthesize-golden-manifest-contract` for this manifest alone, without
+touching any other family's data.
+
+Resolved with the narrowest fix that left every existing manifest and every
+existing tolerance grid untouched: `cases.minItems` widened to 0 (documented
+in the schema's own new `description` field), and both Python checks now
+`continue` specifically for a manifest whose `cases` array is empty --
+narrowly enough that the moment this manifest gains its first case (Task 7),
+both checks re-engage on it exactly as they do on every other manifest. No
+change was made to `tests/tolerances/qwen3-tts.json` or to
+`tests/python/test_tolerance_coverage.py`: the new manifest's
+`reference.runner` points at the already-committed, family-generic
+`scripts/dump_reference_qwen3_tts_pytorch.py` (the same runner CustomVoice's
+manifest already names) rather than at a VoiceDesign-specific script, so
+nothing new needed to exist on disk for `test_runner_is_committed` to pass.
+Verified against the actual test suite, not merely reasoned about: both
+`tests.python.test_golden_manifests` (24/24) and
+`tests.python.test_tolerance_coverage` plus its inversion suite (8/8) pass
+with this manifest committed, and the two pre-existing gitignored-VITS-artifact
+failures (`synthesize-python-api-wheel-test`, `synthesize-vits-python-unit`)
+are unchanged.
+
+### Load result
+
+```
+$ ./build/bin/synthesize-cli --model .../qwen3-tts-12hz-1-7b-voicedesign-BF16.gguf --help
+```
+
+carries no `--info` flag -- capability-snapshot printing is the CLI's own
+cross-family slice, out of this plan's scope by the design's own File
+Structure, not merely undiscovered here. Verified instead through a small,
+uncommitted probe driving the public C API directly
+(`synth_model_load` / `synth_model_get_preset_voice_count` /
+`synth_model_get_voice_profile_capabilities`), matching the pattern
+`tests/qwen3_tts_base_load_real.cpp` already exercises against the real Base
+package:
+
+| Field | VoiceDesign | Design's prediction |
+| --- | --- | --- |
+| `preset_voice_count` | 0 | zero Preset Voices |
+| `profile_source_flags` | `0xa` = `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT \| SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` | Description Text + Serialized Profile |
+| `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO` | absent | absent |
+| six `reference_*` limits | all 0 | left at zero |
+| `profile_schema` | `qwen3-tts-voice-design`, version 1 | -- |
+
+Every field matches the Interfaces section's prediction exactly.
 
 ## Open Questions for Intake
 

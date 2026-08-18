@@ -176,12 +176,26 @@ bool read_code_predictor(const GgufMetadata & meta, HParams & hparams) {
         !meta.u32("synthesize.qwen3-tts.code_predictor.code_group_count", cp.code_group_count)) {
         return false;
     }
+    // Optional, unlike every field above: a package converted before this key
+    // existed never declared it, and every such package's predictor and talker
+    // happened to share one intermediate_size (3072/3072 at the 0.6B rung), so
+    // the talker's own value is exactly what it always implicitly meant. A
+    // package that DOES carry the key -- every one converted after it, VITALLY
+    // including a rung whose predictor and talker disagree -- gets the value it
+    // declares rather than a borrowed one.
+    if (meta.has("synthesize.qwen3-tts.code_predictor.intermediate_size")) {
+        if (!meta.u32("synthesize.qwen3-tts.code_predictor.intermediate_size", cp.intermediate_size)) {
+            return false;
+        }
+    } else {
+        cp.intermediate_size = hparams.talker.intermediate_size;
+    }
     // Both head counts, not only the shapes: the divisibility test below divides
     // by key_value_head_count, and a package declaring zero would raise SIGFPE
     // during load rather than be refused. The talker guards both operands and
     // this half did not.
-    if (cp.layer_count == 0 || cp.hidden_size == 0 || cp.vocab_size == 0 || cp.code_group_count == 0 ||
-        cp.attention_head_count == 0 || cp.key_value_head_count == 0) {
+    if (cp.layer_count == 0 || cp.hidden_size == 0 || cp.intermediate_size == 0 || cp.vocab_size == 0 ||
+        cp.code_group_count == 0 || cp.attention_head_count == 0 || cp.key_value_head_count == 0) {
         std::fprintf(stderr, "qwen3-tts: code predictor geometry contains a zero dimension\n");
         return false;
     }

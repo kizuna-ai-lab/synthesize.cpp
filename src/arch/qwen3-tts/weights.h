@@ -83,6 +83,16 @@ struct CodePredictorParams {
     uint32_t head_dim             = 0;
     uint32_t vocab_size           = 0;
     uint32_t code_group_count     = 0;
+    // Independent of the talker's own intermediate_size. Every package
+    // converted before this field existed happened to declare the same value
+    // for both (3072/3072 at the 0.6B rung), which let the catalog get away
+    // with reading the talker's; the 1.7B rung's talker widens to 6144 while
+    // the predictor's MLP stays at 3072, and reusing the talker's value there
+    // resolves the predictor's own layers against the wrong shape. Optional at
+    // read time -- see read_code_predictor -- so a package converted before
+    // this field existed still loads, falling back to the talker's value,
+    // which is exactly what it always implicitly assumed.
+    uint32_t intermediate_size    = 0;
 };
 
 // The codec decoder's geometry. The speech tokenizer's encoder half is

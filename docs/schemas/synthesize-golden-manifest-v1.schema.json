@@ -50,8 +50,9 @@
       "$ref": "#/$defs/relativePath"
     },
     "cases": {
+      "description": "A committed manifest may start at 0 and grow across several tasks -- qwen3-tts-12hz-1-7b-voicedesign is the first Reference Model Variant built this way, its cases arriving over three separate commits rather than all at once. minItems was 12 (the smallest complete suite's own count) until that variant needed to be committed before its suite existed; every previously-committed manifest already has 12 or more, so this widening changes nothing for them.",
       "type": "array",
-      "minItems": 12,
+      "minItems": 0,
       "maxItems": 32,
       "items": {
         "$ref": "#/$defs/case"

@@ -665,6 +665,14 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
         ("head_dim", predictor["head_dim"]),
         ("vocab_size", predictor["vocab_size"]),
         ("code_group_count", predictor["num_code_groups"]),
+        # The predictor's OWN feed-forward width, not the talker's. Every
+        # rung up to and including CustomVoice/Base declared the same value
+        # for both (3072), which is how a catalog that quietly reused the
+        # talker's got away with it; VoiceDesign's 1.7B talker widens to 6144
+        # while the predictor's config keeps 3072, so the two can no longer be
+        # assumed equal and this is read from the checkpoint's own
+        # code_predictor_config rather than inherited from talker_config.
+        ("intermediate_size", predictor["intermediate_size"]),
     ):
         writer.add_uint32(f"synthesize.qwen3-tts.code_predictor.{key}", int(value))
 

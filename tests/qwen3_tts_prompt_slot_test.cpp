@@ -612,6 +612,61 @@ int test_the_substitution_respects_a_nonzero_codec_offset() {
     return 0;
 }
 
+// The third speaker case. CustomVoice fills the slot from the codec vocabulary
+// and Base substitutes an embedding into it, but both KEEP the position;
+// VoiceDesign has no slot at all, so its codec run is one shorter and the text
+// stream shifts with it. modeling_qwen3_tts.py:2166-2172 -- with speaker_embed
+// null the prefill is cat(prefill_0, prefill_1) and nothing else.
+int test_prompt_without_a_speaker_slot() {
+    synth::qwen3tts::HParams hparams = base_hparams();
+
+    synth::qwen3tts::TalkerPromptRequest with_speaker;
+    with_speaker.role_tokens    = { 1, 2, 3 };
+    with_speaker.text_tokens    = { 10, 11, 12 };
+    with_speaker.has_language   = true;
+    with_speaker.language_token = 7;
+    with_speaker.has_speaker    = true;
+    with_speaker.speaker_token  = 42;
+
+    synth::qwen3tts::TalkerPromptRequest without_speaker = with_speaker;
+    without_speaker.has_speaker                          = false;
+    without_speaker.speaker_token                        = 0;
+
+    synth::qwen3tts::TalkerPrompt kept;
+    synth::qwen3tts::TalkerPrompt dropped;
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_prompt(hparams, with_speaker, kept) == SYNTH_OK);
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_prompt(hparams, without_speaker, dropped) == SYNTH_OK);
+
+    // Exactly one position fewer, and it is a CODEC position that went.
+    SYNTH_TEST_CHECK(dropped.positions.size() + 1 == kept.positions.size());
+    size_t kept_codec    = 0;
+    size_t dropped_codec = 0;
+    for (const synth::qwen3tts::TalkerInputPosition & p : kept.positions) {
+        kept_codec += p.has_codec ? 1 : 0;
+    }
+    for (const synth::qwen3tts::TalkerInputPosition & p : dropped.positions) {
+        dropped_codec += p.has_codec ? 1 : 0;
+    }
+    SYNTH_TEST_CHECK(dropped_codec + 1 == kept_codec);
+
+    // The speaker token appears in one and not the other -- an implementation
+    // that merely zeroed it would pass the count checks above.
+    bool found = false;
+    for (const synth::qwen3tts::TalkerInputPosition & p : dropped.positions) {
+        found = found || (p.has_codec && p.codec_token == 42);
+    }
+    SYNTH_TEST_CHECK(!found);
+
+    // No external substitution is pending: -1 means "the graph reads every
+    // codec row", which is what talker.cpp's null-speaker branch expects.
+    SYNTH_TEST_CHECK(dropped.external_speaker_index == -1);
+
+    // The trailing schedule is unaffected: dropping the slot shortens the
+    // prefill, not the text that follows it.
+    SYNTH_TEST_CHECK(dropped.trailing.size() == kept.trailing.size());
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -621,5 +676,6 @@ int main() {
     SYNTH_TEST_CHECK(test_the_graph_refuses_an_out_of_range_substitution() == 0);
     SYNTH_TEST_CHECK(test_the_graph_places_the_embedding_at_its_slot_and_nowhere_else() == 0);
     SYNTH_TEST_CHECK(test_the_substitution_respects_a_nonzero_codec_offset() == 0);
+    SYNTH_TEST_CHECK(test_prompt_without_a_speaker_slot() == 0);
     return 0;
 }

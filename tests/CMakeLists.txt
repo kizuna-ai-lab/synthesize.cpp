@@ -1411,6 +1411,28 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         endif()
     endif()
 
+    # Task 4 fix round 1's own regression test: create_from_description then
+    # synth_synthesize_to_buffer, entirely through the public C seam, on the
+    # real 1.7B VoiceDesign package -- the first driver anywhere to run
+    # Model::run_synthesis's decode loop for this variant rather than only
+    # its prefill. Needs only the model, not an oracle dump: this is a
+    # crash/no-crash and non-silent-audio gate, not a numerical comparison.
+    # See the file's own header comment for the GGML_ASSERT abort it exists
+    # to catch (t_hidden allocated at the code predictor's width instead of
+    # the talker's, invisible until this package's talker and code predictor
+    # widths first disagreed).
+    if(EXISTS "${SYNTH_QWEN3_TTS_VOICEDESIGN_TEST_MODEL}")
+        add_executable(synthesize-qwen3-tts-voicedesign-synthesis-real qwen3_tts_voicedesign_synthesis_real.cpp)
+        target_link_libraries(synthesize-qwen3-tts-voicedesign-synthesis-real PRIVATE synthesize)
+        synth_register_integration_target(synthesize-qwen3-tts-voicedesign-synthesis-real)
+        add_test(NAME synthesize-qwen3-tts-voicedesign-synthesis-real
+            COMMAND synthesize-qwen3-tts-voicedesign-synthesis-real
+                ${SYNTH_QWEN3_TTS_VOICEDESIGN_TEST_MODEL})
+        set_tests_properties(synthesize-qwen3-tts-voicedesign-synthesis-real PROPERTIES
+            LABELS "integration;qwen3-tts"
+            TIMEOUT 600)
+    endif()
+
     # Stage 2 Plan 2's completion gate: reference audio in, cloned audio out,
     # entirely through the public seam, against the real Base package and its
     # pinned reference clip. Guarded on the wav too -- a locally-materialized

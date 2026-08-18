@@ -228,6 +228,15 @@ synth_add_unit_test(synthesize-qwen3-tts-mel-test qwen3_tts_mel_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-speaker-encoder-test qwen3_tts_speaker_encoder_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-speaker-encoder-host-test qwen3_tts_speaker_encoder_host_test.cpp)
 synth_add_unit_test(synthesize-qwen3-tts-profile-test qwen3_tts_profile_test.cpp)
+
+add_executable(synthesize-qwen3-tts-design-profile-test qwen3_tts_design_profile_test.cpp)
+target_include_directories(synthesize-qwen3-tts-design-profile-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(synthesize-qwen3-tts-design-profile-test PRIVATE synthesize ggml)
+add_test(NAME synthesize-qwen3-tts-design-profile-test COMMAND synthesize-qwen3-tts-design-profile-test)
+set_tests_properties(synthesize-qwen3-tts-design-profile-test PROPERTIES LABELS "unit;qwen3-tts")
+synth_register_unit_target(synthesize-qwen3-tts-design-profile-test)
+
 synth_add_unit_test(synthesize-omnivoice-metadata-test omnivoice_metadata_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-catalog-test omnivoice_catalog_test.cpp)
 synth_add_unit_test(synthesize-omnivoice-frontend-test omnivoice_frontend_test.cpp)

@@ -147,6 +147,34 @@ synth_status_t create_x_vector_profile(const HParams &                         h
                                        const char *&                           out_diagnostic_code,
                                        const char *&                           out_diagnostic_message);
 
+// The maximum instruct this family will accept, in bytes.
+//
+// A bound rather than a vocabulary. Upstream applies neither, so this is the
+// project's own limit and exists only so a caller cannot hand the tokenizer an
+// unbounded string; it is generous against the descriptions upstream's own
+// examples use. NOT a semantic judgement about what makes a good description --
+// design D2 rules that out.
+constexpr size_t kMaxDesignInstructBytes = 4096;
+
+// The prepared Description Text payload. One member, deliberately: upstream
+// tokenizes the instruct at synthesis, so there is nothing to precompute, and
+// storing token ids instead would bind the Profile to a package's frontend for
+// no gain (design D1, D6).
+struct DesignInstruct {
+    std::string instruct;
+};
+
+// Validates a description and prepares its payload.
+//
+// Encoding and length, and NOTHING else. See design D2: OmniVoice's arm can
+// reject on a closed attribute vocabulary because upstream defines one, and
+// this family's upstream defines none, so any rule invented here would refuse
+// input upstream accepts. An empty instruct is VALID (D3) -- it selects the
+// unconditioned path, which is the same path Plan 1's completion gate measured.
+//
+// `output` is left untouched on any non-OK return.
+synth_status_t create_design_profile(const HParams & hparams, const std::string & instruct, DesignInstruct & output);
+
 // The prepared clone payload a transcript-assisted (ICL) Reference Audio
 // Voice Profile carries. D5 (the design's own ruling) tabulates
 // exactly three rows for this mode, and this struct is those three rows: the

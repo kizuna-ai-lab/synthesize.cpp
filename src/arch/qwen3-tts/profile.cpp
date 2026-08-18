@@ -95,6 +95,69 @@ synth_status_t create_x_vector_profile(const HParams &                         h
     return SYNTH_OK;
 }
 
+namespace {
+
+// Strict UTF-8, structurally. Rejects over-long encodings, surrogates and
+// out-of-range code points as well as truncated sequences, because a validator
+// that only checked continuation-byte counts would pass bytes the tokenizer
+// then has to guess about.
+bool is_well_formed_utf8(const std::string & text) {
+    size_t index = 0;
+    while (index < text.size()) {
+        const unsigned char lead  = static_cast<unsigned char>(text[index]);
+        size_t              extra = 0;
+        uint32_t            code  = 0;
+        if (lead < 0x80) {
+            index += 1;
+            continue;
+        } else if ((lead & 0xE0) == 0xC0) {
+            extra = 1;
+            code  = lead & 0x1Fu;
+        } else if ((lead & 0xF0) == 0xE0) {
+            extra = 2;
+            code  = lead & 0x0Fu;
+        } else if ((lead & 0xF8) == 0xF0) {
+            extra = 3;
+            code  = lead & 0x07u;
+        } else {
+            return false;
+        }
+        if (index + extra >= text.size()) {
+            return false;
+        }
+        for (size_t step = 1; step <= extra; ++step) {
+            const unsigned char continuation = static_cast<unsigned char>(text[index + step]);
+            if ((continuation & 0xC0) != 0x80) {
+                return false;
+            }
+            code = (code << 6) | (continuation & 0x3Fu);
+        }
+        const bool overlong =
+            (extra == 1 && code < 0x80) || (extra == 2 && code < 0x800) || (extra == 3 && code < 0x10000);
+        if (overlong || code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF)) {
+            return false;
+        }
+        index += extra + 1;
+    }
+    return true;
+}
+
+}  // namespace
+
+synth_status_t create_design_profile(const HParams & hparams, const std::string & instruct, DesignInstruct & output) {
+    (void) hparams;  // The payload does not depend on the package; the CALLER
+                     // checks the variant, in voice-profile.cpp's dispatch,
+                     // which is the one site holding the Model.
+    if (instruct.size() > kMaxDesignInstructBytes) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if (!is_well_formed_utf8(instruct)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    output.instruct = instruct;
+    return SYNTH_OK;
+}
+
 synth_status_t create_icl_profile(const HParams &                     hparams,
                                   const SpeakerEncoderWeights &       speaker_encoder,
                                   const CodecEncoderWeights &         codec_encoder,

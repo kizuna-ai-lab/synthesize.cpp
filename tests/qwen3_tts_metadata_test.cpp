@@ -627,6 +627,25 @@ int run_rejections() {
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_bool(g, "synthesize.voice.has_package_default", true); },
                         "this family names no package default voice") == 0);
+
+    // A preset-catalog package (valid_metadata()'s own shape) has no Voice
+    // Profile contract, so a `synthesize.voice.profile_sources` declaration on
+    // one is a surplus claim nothing downstream ever reads: read_hparams only
+    // calls read_profile_sources when the mode is ProfileSources, so this key
+    // would otherwise be silently ignored regardless of what it names -- a
+    // package could claim `description-text` with no speaker encoder, no
+    // codec encoder, and no ProfileContract to check the claim against, and
+    // still load clean. Adding the key at all is refused, independent of its
+    // contents: `description-text` and `reference-audio` both exercised, so
+    // this is not merely catching an unknown-source-name typo.
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { set_string_array(g, "synthesize.voice.profile_sources", { "description-text" }); },
+            "a preset-catalog package may not declare profile_sources at all") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { set_string_array(g, "synthesize.voice.profile_sources", { "reference-audio" }); },
+            "not even a source this package could plausibly carry structural evidence for") == 0);
     return 0;
 }
 

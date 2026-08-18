@@ -395,6 +395,23 @@ bool read_voices(const GgufMetadata & meta, HParams & hparams) {
     }
     if (mode == "preset-catalog") {
         hparams.voice_mode = VoiceMode::PresetCatalog;
+        // A preset-catalog package has no Voice Profile contract, so it has no
+        // sources to declare. read_hparams below only reaches
+        // read_profile_and_speaker_encoder -- and therefore
+        // read_profile_sources, the function that actually reads and
+        // cross-checks this key -- when the mode is ProfileSources; a
+        // preset-catalog package carrying the key regardless would have it
+        // silently ignored rather than honoured or refused, which is exactly
+        // the surplus declaration an external review caught (a package
+        // claiming e.g. `description-text` with nothing to check that claim
+        // against). Refused here, at the one place that knows the mode is
+        // wrong for it, rather than left inert.
+        if (meta.has("synthesize.voice.profile_sources")) {
+            std::fprintf(stderr,
+                         "qwen3-tts: preset-catalog mode declares synthesize.voice.profile_sources, which this "
+                         "voice mode has no Voice Profile contract to validate it against\n");
+            return false;
+        }
         if (preset_count == 0) {
             std::fprintf(stderr, "qwen3-tts: preset-catalog mode with no presets\n");
             return false;

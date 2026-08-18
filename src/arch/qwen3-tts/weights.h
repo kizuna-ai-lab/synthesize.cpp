@@ -307,8 +307,16 @@ inline bool has_preset_voice_catalog(const HParams & hparams) {
 // Base package's ProfileContract and speaker-encoder metadata are still read
 // and validated in full at load time regardless (read_hparams): the package
 // declaring a contract and the runtime advertising a capability are different
-// statements. Description Text and Random Seed stay unadvertised at every
-// stage of this family's ladder; neither has an implementation here.
+// statements. A VoiceDesign package (ProfileSources too, but with no speaker
+// encoder) advertises Description Text instead of Reference Audio -- Task 4
+// made source_flags follow hparams.profile_sources itself rather than a
+// hardcoded pair, so the bit is published for the one variant that declares
+// it and withheld from Base and CustomVoice, which never do. Advertised is
+// not yet callable: src/voice-profile.cpp's create_from_description dispatch
+// still routes every family but OmniVoice, this one included, to the generic
+// unsupported fallback regardless of source_flags -- wiring an actual handler
+// is a later plan's job. Random Seed stays unadvertised at every stage of
+// this family's ladder; nothing here implements it.
 void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & info);
 
 }  // namespace synth::qwen3tts

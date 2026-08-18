@@ -41,11 +41,13 @@
       {
         "role": "reference-audio",
         "locator": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+        "terms": "Fetched by whoever runs the integration tier, from the third party's own site, at test time. This repository redistributes no audio -- it commits this locator and this digest, which is what its commit-golden-contracts-not-golden-payloads rule requires -- and it asserts no rights in the clip. The publisher declares no terms for it, so none are claimed here either.",
         "sha256": "480f55f41c71c3d79c2a9acc48f0bfb3c5a46222e6e9ebf3e2888e93501a6b5c"
       },
       {
         "role": "reference-audio",
         "locator": "https://zhu-han.github.io/omnivoice/audios/seedtts/prompt/seedtts_ref_en_1.wav",
+        "terms": "Fetched by whoever runs the integration tier, from the third party's own site, at test time. This repository redistributes no audio -- it commits this locator and this digest, which is what its commit-golden-contracts-not-golden-payloads rule requires -- and it asserts no rights in the clip. The publisher declares no terms for it, so none are claimed here either.",
         "sha256": "57f25abc75c2e7cc4d3c9a6e45f54160034bc714b2ba952407dae7f91d6d31f3"
       }
     ]

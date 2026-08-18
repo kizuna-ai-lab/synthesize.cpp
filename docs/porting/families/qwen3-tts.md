@@ -67,9 +67,14 @@ re-download), producing a different sha256 (`76275beb...` against the
 `993f4cd1...` the pre-`profile_sources` file carried) and a package that loads
 with the capability snapshot Plan 2 recorded --
 `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`,
-six populated reference limits, schema `qwen3-tts-voice-clone`. Whether the
-already-published Hugging Face artifacts get re-uploaded is a separate act this paragraph makes
-no claim about.
+six populated reference limits, schema `qwen3-tts-voice-clone`. The already-published Hugging Face
+artifacts were NOT re-cut or re-uploaded -- their three digests are unchanged --
+but the CARD beside them was, on 2026-08-18 (HF commit `9802704d`), on
+jiangzhuo's per-act confirmation scoping it to the README alone. It now says
+first thing in its publication note that those three files no longer load and
+why, so the live artifact stops claiming a loadability it does not have. That
+correction also carried a second one: the CUDA end-to-end figure read "about
+8 %" against numbers that divide out to 6.5 %.
 
 **Until 2026-08-12 this line read "Q8_MIXED, the public backend control and
 stage 8 are not done. Port validation is not started."** All four clauses were

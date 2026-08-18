@@ -398,7 +398,11 @@ int main(int argc, char ** argv) {
         SYNTH_TEST_CHECK(flag == 0);
     }
     // And zero groups is refused rather than dividing the frame into nothing.
+    // The size is pinned for the same reason the too-long case above pins its
+    // own: an implementation that returned an EMPTY vector here would make the
+    // loop body run zero times and this check assert nothing at all.
     const std::vector<char> no_groups = codebook_keep_mask(upstream, oracle_codes, size_t(cb_frames), 0, true);
+    SYNTH_TEST_CHECK(no_groups.size() == size_t(cb_frames));
     for (const char flag : no_groups) {
         SYNTH_TEST_CHECK(flag == 0);
     }

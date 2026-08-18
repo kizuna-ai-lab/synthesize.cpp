@@ -177,8 +177,20 @@ synth_status_t build_talker_prompt(const HParams & hparams, const TalkerPromptRe
     // streaming layout, which feeds the text one token per frame, is a different
     // entry point this variant does not use. The two produce different prefill
     // lengths and different audio, and neither errors.
-    out.positions.reserve(request.role_tokens.size() + codec.size() + request.text_tokens.size() +
-                          size_t(request.reference_frames) + 2);
+    out.positions.reserve(request.instruct_tokens.size() + request.role_tokens.size() + codec.size() +
+                          request.text_tokens.size() + size_t(request.reference_frames) + 2);
+    // Description Text conditioning goes first, ahead of even the role prefix
+    // -- modeling_qwen3_tts.py:2076-2080 prepends the instruct block's
+    // projected embeddings onto talker_input_embeds before the tts text
+    // prompt (role prefix included) is ever appended to it. Text-only: there
+    // is no codec stream to pair an instruct token with, the same reason the
+    // role prefix below carries none either. Empty for every request that is
+    // not a Description Text one, and for D3's empty-instruct case within it,
+    // so this loop changes nothing about any prompt built before this field
+    // existed.
+    for (uint32_t token : request.instruct_tokens) {
+        out.positions.push_back(text_only(TalkerInputPosition::Text::Token, token));
+    }
     for (uint32_t token : request.role_tokens) {
         out.positions.push_back(text_only(TalkerInputPosition::Text::Token, token));
     }

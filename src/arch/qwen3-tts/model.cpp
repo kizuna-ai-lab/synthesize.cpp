@@ -437,6 +437,19 @@ synth_status_t Model::tokenize_reference_transcript(const std::string & text, st
                                          implementation_->hparams.max_input_tokens, token_ids);
 }
 
+synth_status_t Model::tokenize_instruct(const std::string & instruct, std::vector<int32_t> & token_ids) const {
+    token_ids.clear();
+    if (implementation_->reference_frontend == nullptr) {
+        return SYNTH_ERR_TEXT_FRONTEND;
+    }
+    // Reused rather than a fourth frontend built for this: reference_frontend
+    // wraps nothing of its own (see its construction site's own comment), so
+    // it is exactly what applying a DIFFERENT turn -- the instruct turn here,
+    // the reference turn above -- needs.
+    return qwen_instruct_ids(*implementation_->reference_frontend, instruct, implementation_->hparams.max_input_tokens,
+                             token_ids);
+}
+
 synth_status_t Model::resolve_voice(const std::string & voice_id,
                                     const std::string & language,
                                     uint32_t &          speaker_token,
@@ -936,6 +949,18 @@ synth_status_t validate_speaker_sources(const HParams & hparams, const Synthesis
     if (has_codes && !external) {
         return SYNTH_ERR_INVALID_ARG;
     }
+    // Description Text conditioning is mutually exclusive with every other
+    // speaker source: VoiceDesign's own checkpoint has no speaker encoder, so
+    // there is nothing to combine a clone source with, and a request naming
+    // `instruct` alongside a preset Voice, an x-vector or an ICL reference is
+    // a caller error rather than a request this family can honour by
+    // silently picking one source over the other. `has_codes` alone stands in
+    // for the whole ICL set here: the all-or-nothing check above already
+    // refused any HALF-present ICL state, so by this point `has_codes` true
+    // means the request is a complete one.
+    if (request.instruct != nullptr && (external || !request.voice_id.empty() || has_codes)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
     return SYNTH_OK;
 }
 
@@ -961,6 +986,13 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     const bool external = request.x_vector != nullptr;
     // Checked as a set above, so one field decides for all four.
     const bool icl      = request.reference_codes != nullptr;
+    // Description Text (VoiceDesign): the Voice arrives as conditioning
+    // through `instruct`, the same way it does through `x_vector` for the
+    // clone modes -- and validate_speaker_sources above has already refused
+    // any request combining this with a preset Voice, an x-vector or an ICL
+    // reference, so `design` here can never be true alongside `external` or
+    // `icl`.
+    const bool design   = request.instruct != nullptr;
 
     uint32_t       speaker_token  = 0;
     bool           has_language   = false;
@@ -970,23 +1002,47 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     // is correct when no Profile was supplied and wrong when one was: the
     // Voice arrived as conditioning rather than as a name. Language
     // resolution still has to happen, so this splits the two rather than
-    // skipping the call.
+    // skipping the call. A design request is the same case as an external
+    // one here -- VoiceDesign's own Preset Voice Catalog is empty too, and
+    // there is no preset Voice name to resolve either way.
     synth_status_t status =
-        external ? resolve_language_only(request.language, has_language, language_token) :
-                   resolve_voice(request.voice_id, request.language, speaker_token, has_language, language_token);
+        (external || design) ?
+            resolve_language_only(request.language, has_language, language_token) :
+            resolve_voice(request.voice_id, request.language, speaker_token, has_language, language_token);
     if (status != SYNTH_OK) {
         return status;
     }
 
     TalkerPromptRequest prompt_request;
+    if (design) {
+        // Wrap-and-tokenize happens here, at synthesis, per design D1 -- the
+        // Profile stores only the string.
+        std::vector<int32_t> instruct_ids;
+        status = tokenize_instruct(*request.instruct, instruct_ids);
+        if (status != SYNTH_OK) {
+            return status;
+        }
+        // The narrowing is safe for the same reason the ICL reference ids'
+        // own narrowing below is: this family's BPE frontend only ever
+        // produces ids in `[0, talker.text_vocab_size)`.
+        prompt_request.instruct_tokens.reserve(instruct_ids.size());
+        for (int32_t id : instruct_ids) {
+            prompt_request.instruct_tokens.push_back(uint32_t(id));
+        }
+    }
     prompt_request.role_tokens.assign(request.token_ids.begin(),
                                       request.token_ids.begin() + kAssistantRolePrefixTokens);
     prompt_request.text_tokens.assign(request.token_ids.begin() + kAssistantRolePrefixTokens,
                                       request.token_ids.end() - kAssistantSuffixTokens);
-    // The slot exists either way -- upstream substitutes the embedding, it
-    // does not remove the position -- so has_speaker stays true regardless of
-    // which source fills it.
-    prompt_request.has_speaker         = true;
+    // The slot exists for a preset Voice and for both clone modes -- upstream
+    // substitutes the embedding, it does not remove the position -- but
+    // Description Text carries no speaker at all: modeling_qwen3_tts.py:
+    // 2088-2089 leaves `speaker_embed` as `None` and the codec prefill at
+    // 2166-2172 omits the slot entirely rather than substituting into it
+    // (design section 5.3). `speaker_token`/`speaker_is_external` are left at
+    // their resolved values regardless -- build_talker_prompt reads neither
+    // when `has_speaker` is false.
+    prompt_request.has_speaker         = !design;
     prompt_request.speaker_token       = speaker_token;
     prompt_request.speaker_is_external = external;
     prompt_request.has_language        = has_language;

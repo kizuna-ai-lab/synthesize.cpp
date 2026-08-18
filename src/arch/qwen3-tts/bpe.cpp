@@ -67,4 +67,32 @@ synth_status_t qwen_reference_transcript_ids(const TextFrontend &   frontend,
     return SYNTH_OK;
 }
 
+std::string qwen_instruct_turn(const std::string & instruct) {
+    return "<|im_start|>user\n" + instruct + "<|im_end|>\n";
+}
+
+synth_status_t qwen_instruct_ids(const TextFrontend &   frontend,
+                                 const std::string &    instruct,
+                                 uint64_t               max_tokens,
+                                 std::vector<int32_t> & token_ids) {
+    token_ids.clear();
+    // Design D3: `if ins is None or ins == "": instruct_ids.append(None)`
+    // (qwen3_tts_model.py:712-713) -- no instruct block at all. This has to
+    // run BEFORE wrapping: tokenizing the wrapped empty string would still
+    // yield the turn's own (non-empty) role-marker tokens, which is a real
+    // instruct block and not what upstream does for this case.
+    if (instruct.empty()) {
+        return SYNTH_OK;
+    }
+
+    const std::string turn = qwen_instruct_turn(instruct);
+    // UNLIKE qwen_reference_transcript_ids, no slice: upstream tokenizes the
+    // whole wrapped turn and hands it to the talker as-is
+    // (`_tokenize_texts([self._build_instruct_text(ins)])[0]`,
+    // qwen3_tts_model.py:715; embedded whole at modeling_qwen3_tts.py:
+    // 2076-2080, with no slice there either), so this function's own output
+    // IS the frontend's tokenization of `turn`, unmodified.
+    return frontend.prepare(SYNTH_INPUT_TEXT_UTF8, turn.data(), turn.size(), max_tokens, token_ids);
+}
+
 }  // namespace synth::qwen3tts

@@ -1328,6 +1328,12 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     # than moved, since the location was the plan's own instruction.
     set(_synth_qwen3_tts_voicedesign_prefill_oracle
         "${CMAKE_SOURCE_DIR}/reports/porting/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign/oracle/prefill.f32")
+    # Task 4's own non-empty-instruct case, a SEPARATE dump directory (see
+    # .gitignore's own comment on it) so re-dumping it can never overwrite the
+    # empty-instruct oracle above -- the CONTROL that shows the non-empty
+    # case's number moved because of the instruct block specifically.
+    set(_synth_qwen3_tts_voicedesign_prefill_instruct_oracle
+        "${CMAKE_SOURCE_DIR}/reports/porting/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign/oracle-instruct/prefill.f32")
     if(EXISTS "${SYNTH_QWEN3_TTS_VOICEDESIGN_TEST_MODEL}"
             AND EXISTS "${_synth_qwen3_tts_voicedesign_prefill_oracle}")
         set(_synth_qwen3_tts_voicedesign_prefill_fixtures
@@ -1358,16 +1364,20 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         target_include_directories(synthesize-qwen3-tts-voicedesign-prefill-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
         target_link_libraries(synthesize-qwen3-tts-voicedesign-prefill-real PRIVATE synthesize ggml)
         synth_register_integration_target(synthesize-qwen3-tts-voicedesign-prefill-real)
-        # Text and language are literals, not read from a manifest case: this
-        # variant's Golden Manifest still carries `cases: []` (Task 6,
-        # `suite_status: "incremental"`), so there is no case to read them
-        # from yet -- the same reason the oracle dump was driven by explicit
-        # arguments rather than --manifest in Step 2. Matches the oracle dump
-        # exactly, which is what makes the comparison meaningful.
+        # Text, instruct and language are literals, not read from a manifest
+        # case: this variant's Golden Manifest still carries `cases: []`
+        # (Task 6, `suite_status: "incremental"`), so there is no case to
+        # read them from yet -- the same reason the oracle dump was driven by
+        # explicit arguments rather than --manifest in Step 2. Matches the
+        # oracle dump exactly, which is what makes the comparison meaningful.
+        # Task 4 added the empty string as this driver's own third argument
+        # (its own module comment explains why "" reproduces this exact case
+        # byte for byte); the test itself is otherwise unchanged from Plan 1.
         add_test(NAME synthesize-qwen3-tts-voicedesign-prefill-real
             COMMAND synthesize-qwen3-tts-voicedesign-prefill-real
                 ${SYNTH_QWEN3_TTS_VOICEDESIGN_TEST_MODEL}
                 "Qwen3-TTS is awesome!"
+                ""
                 English
                 "${_synth_qwen3_tts_voicedesign_prefill_fixtures}/prefill.f32"
                 ${_synth_qwen3_tts_voicedesign_prefill_oracle}
@@ -1375,6 +1385,30 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         set_tests_properties(synthesize-qwen3-tts-voicedesign-prefill-real PROPERTIES
             LABELS "integration;qwen3-tts;golden"
             TIMEOUT 600)
+
+        # Task 4's own case: the SAME probe (tests/tolerances/qwen3-tts.json's
+        # "prefill" cell, same max_relative), a non-empty instruct. Registered
+        # only when its own oracle dump is present, so a checkout carrying
+        # only Plan 1's empty-instruct dump still gets the test above rather
+        # than failing configure over a file only this task's own dumper run
+        # produces. Reuses the executable built above -- one binary, two
+        # `add_test` registrations, the same shape the empty/non-empty split
+        # takes nowhere else in this family only because no other probe here
+        # has an "absence is itself a legal, meaningful case" input.
+        if(EXISTS "${_synth_qwen3_tts_voicedesign_prefill_instruct_oracle}")
+            add_test(NAME synthesize-qwen3-tts-voicedesign-prefill-instruct-real
+                COMMAND synthesize-qwen3-tts-voicedesign-prefill-real
+                    ${SYNTH_QWEN3_TTS_VOICEDESIGN_TEST_MODEL}
+                    "Qwen3-TTS is awesome!"
+                    "A cheerful, bright female voice speaking with fast pacing and high energy."
+                    English
+                    "${_synth_qwen3_tts_voicedesign_prefill_fixtures}/prefill-instruct.f32"
+                    ${_synth_qwen3_tts_voicedesign_prefill_instruct_oracle}
+                    ${_synth_qwen3_tts_voicedesign_prefill_gate})
+            set_tests_properties(synthesize-qwen3-tts-voicedesign-prefill-instruct-real PROPERTIES
+                LABELS "integration;qwen3-tts;golden"
+                TIMEOUT 600)
+        endif()
     endif()
 
     # Stage 2 Plan 2's completion gate: reference audio in, cloned audio out,

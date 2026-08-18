@@ -45,6 +45,17 @@ CMakeUserPresets.json
 # block above.
 /reports/porting/**/oracle
 
+# Stage 3 Plan 2 Task 4: a SECOND dump directory from the same script, one
+# level below the same variant, for the non-empty-instruct case
+# tests/qwen3_tts_voicedesign_prefill_real.cpp compares beside the
+# empty-instruct control above. A second `--out` was required rather than
+# reusing `oracle/`: the dumper always writes the same four fixed filenames,
+# so a second run into the SAME directory would silently overwrite the
+# control's own prefill.f32 -- the file the fault-injection measurement in
+# tests/tolerances/qwen3-tts.json depends on staying what Plan 1 captured.
+# Same reasoning as the block above, one name over.
+/reports/porting/**/oracle-instruct
+
 # Agent scratch. Nothing here is a project artifact: it is whatever a session
 # wrote while investigating. Added 2026-08-10 after `git add -A` swept 56 files
 # and 9.0 MB of rate-sweep probes, WAVs and f32 dumps into a commit -- the

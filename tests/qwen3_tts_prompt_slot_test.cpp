@@ -706,6 +706,113 @@ int test_prompt_without_a_speaker_slot() {
     return 0;
 }
 
+// Stage 3 Plan 2 Task 4: the instruct block precedes EVERYTHING, including
+// role_tokens -- design section 5.2, mirroring modeling_qwen3_tts.py:2076-2080's
+// own prepend onto talker_input_embeds before the tts text prompt is built at
+// all. Every instruct position is TEXT-ONLY: there is no codec stream to pair
+// it with, the same reason role_tokens itself carries none.
+//
+// Pins VALUES, not only counts: Plan 1's own review found a count-only version
+// of a neighbouring test (test_prompt_without_a_speaker_slot's own predecessor)
+// surviving a hardcoded-offset break, so a count check alone is not trusted
+// here either.
+int test_instruct_block_precedes_role_tokens() {
+    const synth::qwen3tts::HParams h = base_hparams();
+
+    synth::qwen3tts::TalkerPromptRequest with_instruct = request_with_language();
+    with_instruct.instruct_tokens                      = { 900, 901, 902 };
+
+    synth::qwen3tts::TalkerPromptRequest without_instruct = request_with_language();
+    SYNTH_TEST_CHECK(without_instruct.instruct_tokens.empty());
+
+    synth::qwen3tts::TalkerPrompt with_prompt;
+    synth::qwen3tts::TalkerPrompt without_prompt;
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_prompt(h, with_instruct, with_prompt) == SYNTH_OK);
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_talker_prompt(h, without_instruct, without_prompt) == SYNTH_OK);
+
+    // Exactly three more positions -- the instruct block's own length -- and
+    // nothing else about the request changed between the two builds.
+    SYNTH_TEST_CHECK(with_prompt.positions.size() == without_prompt.positions.size() + 3);
+
+    // The leading three positions are EXACTLY the instruct tokens, as plain
+    // text with no codec paired -- not merely "three positions exist".
+    const std::vector<uint32_t> expected_instruct = { 900, 901, 902 };
+    for (size_t index = 0; index < expected_instruct.size(); ++index) {
+        const synth::qwen3tts::TalkerInputPosition & position = with_prompt.positions[index];
+        SYNTH_TEST_CHECK(position.text == synth::qwen3tts::TalkerInputPosition::Text::Token);
+        SYNTH_TEST_CHECK(position.text_token == expected_instruct[index]);
+        SYNTH_TEST_CHECK(!position.has_codec);
+    }
+
+    // role_tokens follow immediately -- request_with_language()'s own
+    // { 10, 11, 12 } -- at exactly the positions the instruct block's length
+    // shifted them to.
+    const std::vector<uint32_t> expected_role = { 10, 11, 12 };
+    for (size_t index = 0; index < expected_role.size(); ++index) {
+        const synth::qwen3tts::TalkerInputPosition & position = with_prompt.positions[expected_instruct.size() + index];
+        SYNTH_TEST_CHECK(position.text == synth::qwen3tts::TalkerInputPosition::Text::Token);
+        SYNTH_TEST_CHECK(position.text_token == expected_role[index]);
+        SYNTH_TEST_CHECK(!position.has_codec);
+    }
+
+    // Everything from the instruct block's own length onward is BYTE FOR BYTE
+    // what the request would have built without an instruct at all -- the
+    // block changes nothing about the rest of the layout, only where it
+    // starts. A hardcoded shift that got the count right but the content
+    // wrong (e.g. skipping the instruct block's own length instead of
+    // reproducing it) would still pass every check above and fail here.
+    SYNTH_TEST_CHECK(with_prompt.positions.size() - expected_instruct.size() == without_prompt.positions.size());
+    for (size_t index = 0; index < without_prompt.positions.size(); ++index) {
+        const synth::qwen3tts::TalkerInputPosition & shifted = with_prompt.positions[expected_instruct.size() + index];
+        const synth::qwen3tts::TalkerInputPosition & plain   = without_prompt.positions[index];
+        SYNTH_TEST_CHECK(shifted.text == plain.text);
+        SYNTH_TEST_CHECK(shifted.text_token == plain.text_token);
+        SYNTH_TEST_CHECK(shifted.has_codec == plain.has_codec);
+        SYNTH_TEST_CHECK(shifted.codec_token == plain.codec_token);
+        SYNTH_TEST_CHECK(shifted.acoustic_codes == plain.acoustic_codes);
+    }
+
+    // codec_offset shifts by exactly the instruct block's length, and the
+    // graph's own invariant -- codec_offset + codec_tokens->ne[0] ==
+    // text->ne[1] -- continues to hold on the shifted prompt.
+    std::vector<int32_t> text_without;
+    std::vector<int32_t> codec_without;
+    std::vector<int32_t> acoustic_without;
+    int64_t              offset_without          = -1;
+    int64_t              acoustic_offset_without = -1;
+    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, without_prompt, text_without, codec_without,
+                                                            offset_without, acoustic_without,
+                                                            acoustic_offset_without) == SYNTH_OK);
+
+    std::vector<int32_t> text_with;
+    std::vector<int32_t> codec_with;
+    std::vector<int32_t> acoustic_with;
+    int64_t              offset_with          = -1;
+    int64_t              acoustic_offset_with = -1;
+    SYNTH_TEST_CHECK(synth::qwen3tts::flatten_talker_prompt(h, with_prompt, text_with, codec_with, offset_with,
+                                                            acoustic_with, acoustic_offset_with) == SYNTH_OK);
+
+    SYNTH_TEST_CHECK(offset_with == offset_without + int64_t(expected_instruct.size()));
+    // The codec run itself is byte-for-byte unchanged, only shifted.
+    SYNTH_TEST_CHECK(codec_with == codec_without);
+    // The graph invariant flatten_talker_prompt exists to prove holds.
+    SYNTH_TEST_CHECK(offset_with + int64_t(codec_with.size()) == int64_t(text_with.size()));
+
+    // And the flattened text stream's own leading values are exactly the
+    // instruct tokens -- pinning the VALUE the graph will actually embed, not
+    // only the TalkerInputPosition layer's own copy of it.
+    SYNTH_TEST_CHECK(text_with.size() >= expected_instruct.size());
+    for (size_t index = 0; index < expected_instruct.size(); ++index) {
+        SYNTH_TEST_CHECK(text_with[index] == int32_t(expected_instruct[index]));
+    }
+    // ...and its tail, past the instruct block, is exactly the no-instruct
+    // request's own flattened text stream.
+    SYNTH_TEST_CHECK(std::vector<int32_t>(text_with.begin() + std::ptrdiff_t(expected_instruct.size()),
+                                          text_with.end()) == text_without);
+
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -716,5 +823,6 @@ int main() {
     SYNTH_TEST_CHECK(test_the_graph_places_the_embedding_at_its_slot_and_nowhere_else() == 0);
     SYNTH_TEST_CHECK(test_the_substitution_respects_a_nonzero_codec_offset() == 0);
     SYNTH_TEST_CHECK(test_prompt_without_a_speaker_slot() == 0);
+    SYNTH_TEST_CHECK(test_instruct_block_precedes_role_tokens() == 0);
     return 0;
 }

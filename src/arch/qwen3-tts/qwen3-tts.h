@@ -212,6 +212,24 @@ struct SynthesisRequest {
     const std::vector<int32_t> * reference_codes    = nullptr;
     const std::vector<int32_t> * reference_text_ids = nullptr;
     uint64_t                     reference_frames   = 0;
+
+    // Description Text (VoiceDesign) conditioning: non-null selects the
+    // design path, the same way `x_vector` selects the x-vector one -- and
+    // mutually exclusive with EVERY other speaker source below, checked as a
+    // set by validate_speaker_sources, because VoiceDesign's own checkpoint
+    // has no speaker encoder and there is nothing to combine a clone source
+    // with. A pointer rather than a value for the same reason `x_vector` is
+    // one: it borrows the Voice Profile's own already-canonical string for
+    // the lifetime of this synchronous call (src/synthesize.cpp's dispatch),
+    // mirroring omnivoice::SynthesisRequest::instruct's own shape.
+    //
+    // Non-null with an EMPTY string is design decision D3's legal,
+    // meaningful "unconditioned voice" request -- the pointer being non-null
+    // is what says "a design Profile is present"; the string it points at
+    // says what, if anything, it asks for. Tokenized into
+    // TalkerPromptRequest::instruct_tokens at synthesis (Model::run_synthesis),
+    // not stored as ids anywhere upstream of this call, per design D1.
+    const std::string * instruct = nullptr;
 };
 
 // The request's speaker-source fields, checked as a SET rather than one at a
@@ -234,7 +252,11 @@ struct SynthesisRequest {
 //   * the ICL fields are all-present or all-absent, and `reference_text_ids`
 //     present-but-empty counts as absent-but-claimed, i.e. half;
 //   * ICL requires an `x_vector`, because upstream inserts the speaker
-//     embedding in both modes (D5).
+//     embedding in both modes (D5);
+//   * `instruct` (Description Text) is mutually exclusive with every other
+//     speaker source above -- a preset Voice, an `x_vector`, or an ICL
+//     reference -- because VoiceDesign's own checkpoint has no speaker
+//     encoder and there is nothing to combine a clone source with.
 //
 // NOT re-checked here: `reference_codes->size() == reference_frames *
 // code_group_count`, and the per-code table bounds. Those belong to
@@ -293,6 +315,22 @@ class Model {
     // the limit and package-defect paths in qwen_reference_transcript_ids have
     // their own statuses too.
     synth_status_t tokenize_reference_transcript(const std::string & text, std::vector<int32_t> & token_ids) const;
+
+    // Tokenizes a Description Text instruct for the VoiceDesign path. Also NOT
+    // tokenize_request over different text: the instruct wraps in a THIRD turn
+    // (bpe.h's qwen_instruct_turn, a USER turn rather than an assistant one)
+    // and, unlike tokenize_reference_transcript, applies NO slice -- the
+    // wrapper's own role-marker tokens are themselves part of the result,
+    // because upstream embeds `instruct_id` whole
+    // (modeling_qwen3_tts.py:2076-2080).
+    //
+    // An empty `instruct` returns SYNTH_OK and an EMPTY `token_ids` -- design
+    // decision D3's "no instruct block at all", not an error the way an empty
+    // reference transcript is. This is what run_synthesis calls when
+    // `SynthesisRequest::instruct` is non-null, and what a caller building a
+    // design prompt without going through it (this family's own integration
+    // drivers) calls too.
+    synth_status_t tokenize_instruct(const std::string & instruct, std::vector<int32_t> & token_ids) const;
 
     // Resolves a preset Voice and the codec language token for a request. A
     // speaker carrying a dialect override wins over the requested language.

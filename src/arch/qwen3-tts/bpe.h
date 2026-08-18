@@ -99,4 +99,41 @@ synth_status_t qwen_reference_transcript_ids(const TextFrontend &   frontend,
                                              uint64_t               max_tokens,
                                              std::vector<int32_t> & token_ids);
 
+// The turn a Description Text instruct is wrapped in before tokenizing, a
+// third and different turn from the two above -- a USER turn, not an
+// assistant one:
+//
+//     <|im_start|>user\n{instruct}<|im_end|>\n
+//
+// `_build_instruct_text`, qwen3_tts_model.py:275-276.
+std::string qwen_instruct_turn(const std::string & instruct);
+
+// An instruct string to the token ids upstream calls `instruct_ids`: wrap it in
+// the instruct turn and tokenize the WHOLE wrapped string.
+//
+// UNLIKE qwen_reference_transcript_ids, upstream applies NO slice here --
+// `instruct_ids.append(self._tokenize_texts([self._build_instruct_text(ins)])[0])`
+// (qwen3_tts_model.py:715) keeps the wrapper's own role-marker tokens in the
+// result, because they are meant to reach the talker: modeling_qwen3_tts.py:
+// 2076-2080 embeds `instruct_id` whole, with no slice of its own either.
+//
+// An empty `instruct` produces an EMPTY `token_ids` and SYNTH_OK -- design
+// decision D3's `if ins is None or ins == "": instruct_ids.append(None)`
+// (qwen3_tts_model.py:712-713): no instruct block at all, not a
+// wrapped-empty-string block. Tokenizing "" through the turn would still
+// yield the role markers' own (non-empty) tokens, which is a real instruct
+// block and not what upstream does for this case -- so the empty check runs
+// BEFORE wrapping, the same ordering qwen_reference_transcript_ids' own blank
+// check uses for a different reason (there, blank is refused; here, blank is
+// accepted and turned into absence).
+//
+// `frontend` must apply no turn of its own, the same requirement
+// qwen_reference_transcript_ids states and for the same reason: this applies
+// the instruct turn itself, and a frontend already carrying a turn would wrap
+// the result a second time.
+synth_status_t qwen_instruct_ids(const TextFrontend &   frontend,
+                                 const std::string &    instruct,
+                                 uint64_t               max_tokens,
+                                 std::vector<int32_t> & token_ids);
+
 }  // namespace synth::qwen3tts

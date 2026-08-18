@@ -202,5 +202,57 @@ int main() {
         SYNTH_TEST_CHECK(synth::qwen3tts::validate_speaker_sources(hparams, external) == SYNTH_ERR_INVALID_ARG);
     }
 
+    // --- Stage 3 Plan 2 Task 4: Description Text conditioning, carried
+    // through `instruct` rather than through any of the three sources above.
+    // A design request on its own is accepted -- the third shape that carries
+    // no clone-side speaker source at all, beside the preset-Voice and
+    // x-vector shapes already covered above.
+    {
+        const std::string                 instruct = "a warm, low voice";
+        synth::qwen3tts::SynthesisRequest design;
+        design.instruct = &instruct;
+        SYNTH_TEST_CHECK(synth::qwen3tts::validate_speaker_sources(hparams, design) == SYNTH_OK);
+    }
+    // Design decision D3: an EMPTY instruct is a legal, meaningful request
+    // (the unconditioned path), not the same as no Profile at all -- the
+    // pointer being non-null is what carries "a design Profile is present",
+    // independent of the string it points at.
+    {
+        const std::string                 empty_instruct;
+        synth::qwen3tts::SynthesisRequest design;
+        design.instruct = &empty_instruct;
+        SYNTH_TEST_CHECK(synth::qwen3tts::validate_speaker_sources(hparams, design) == SYNTH_OK);
+    }
+
+    // --- A design Profile is not just another way of asking for a preset
+    // Voice or an x-vector -- VoiceDesign's own checkpoint has no speaker
+    // encoder, so a request naming `instruct` alongside another speaker
+    // source is a caller error, not a request this family can honour by
+    // silently picking one source over the other.
+    {
+        const std::string                 instruct = "a warm, low voice";
+        const std::vector<float>          x_vector = x_vector_of(kHiddenSize);
+        synth::qwen3tts::SynthesisRequest both;
+        both.instruct = &instruct;
+        both.x_vector = &x_vector;
+        SYNTH_TEST_CHECK(synth::qwen3tts::validate_speaker_sources(hparams, both) == SYNTH_ERR_INVALID_ARG);
+    }
+    {
+        const std::string                 instruct = "a warm, low voice";
+        synth::qwen3tts::SynthesisRequest both;
+        both.instruct = &instruct;
+        both.voice_id = "aiden";
+        SYNTH_TEST_CHECK(synth::qwen3tts::validate_speaker_sources(hparams, both) == SYNTH_ERR_INVALID_ARG);
+    }
+    // ...and alongside a complete ICL request, which itself already implies
+    // an x_vector -- covered separately because IclFixture builds its own
+    // complete baseline rather than one field at a time.
+    {
+        const std::string instruct = "a warm, low voice";
+        IclFixture        fixture;
+        fixture.request.instruct = &instruct;
+        SYNTH_TEST_CHECK(synth::qwen3tts::validate_speaker_sources(hparams, fixture.request) == SYNTH_ERR_INVALID_ARG);
+    }
+
     return 0;
 }

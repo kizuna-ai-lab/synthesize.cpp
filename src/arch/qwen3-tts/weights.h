@@ -239,10 +239,11 @@ bool resolve_language_token(const HParams &     hparams,
                             std::string &       resolved_name);
 
 // Whether this package carries a Preset Voice Catalog at all. False for a
-// profile-sources package (this family's Base variant): read_voices refuses
-// such a package unless its preset_count is zero and clears `preset_voices`,
-// so there is no catalog to resolve a Voice id against and
-// Model::resolve_voice's lookup refuses every request, named or not.
+// profile-sources package (this family's Base and VoiceDesign variants):
+// read_voices refuses such a package unless its preset_count is zero and
+// clears `preset_voices`, so there is no catalog to resolve a Voice id
+// against and Model::resolve_voice's lookup refuses every request, named or
+// not.
 //
 // Deliberately answered from `voice_mode` rather than from
 // `preset_voices.empty()`: the mode is what the package DECLARES, and a
@@ -285,8 +286,8 @@ inline bool has_preset_voice_catalog(const HParams & hparams) {
 // §1.4) records the correction made before this function was written this
 // way.
 //
-// A ProfileSources package (Base) publishes
-// SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO with
+// A ProfileSources package whose declared sources include REFERENCE_AUDIO
+// (Base) publishes SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO with
 // SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE alongside it -- docs/c-interface.md
 // requires the second bit on any Model that can create a v1 Profile, because
 // every successfully prepared v1 Profile can be serialized -- published from

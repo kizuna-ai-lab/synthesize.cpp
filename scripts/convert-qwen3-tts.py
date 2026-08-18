@@ -215,11 +215,15 @@ def variant_profile(config: dict[str, Any]) -> VariantProfile:
 
     The three supported variants differ by a whole subsystem: Base ships a
     76-tensor ECAPA-TDNN speaker encoder and needs the tokenizer's encoder half
-    to turn reference audio into codes; CustomVoice and VoiceDesign ship neither
-    and resolve speakers as codec-vocabulary token ids. Keying that on the
-    declared type and then checking the declaration against the config is what
-    keeps a future variant from silently converting as whichever branch it fell
-    into.
+    to turn reference audio into codes; CustomVoice and VoiceDesign both ship
+    neither, but not for the same reason after that. CustomVoice resolves
+    speakers as codec-vocabulary token ids from its Preset Voice Catalog;
+    VoiceDesign has no speaker slot at all -- an empty spk_id table and,
+    unlike CustomVoice, no catalog either (profile-sources mode, the same
+    voice_mode Base uses, with zero presets rather than CustomVoice's nine).
+    Keying that on the declared type and then checking the declaration against
+    the config is what keeps a future variant from silently converting as
+    whichever branch it fell into.
     """
     model_type = str(config.get("tts_model_type", ""))
     has_encoder_config = "speaker_encoder_config" in config
@@ -317,7 +321,7 @@ def source_artifact(manifest: dict[str, Any], role: str, needle: str) -> dict[st
 def talker_checkpoint_locator(manifest: dict[str, Any]) -> str:
     """The manifest's talker checkpoint artifact, matched unambiguously.
 
-    Both variants' manifests carry two "checkpoint"-role artifacts -- the
+    All three variants' manifests carry two "checkpoint"-role artifacts -- the
     talker's `model.safetensors` and the codec's
     `speech_tokenizer/model.safetensors` -- and both locators contain the
     substring "model.safetensors", so a plain substring search (as

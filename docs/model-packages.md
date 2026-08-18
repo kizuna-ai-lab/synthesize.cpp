@@ -1,6 +1,6 @@
 # Model Package Format
 
-Status: Confirmed, last updated on 2026-08-07.
+Status: Confirmed, last updated on 2026-08-18.
 
 ## Package Boundary
 
@@ -46,7 +46,9 @@ A Model Package that accepts Serialized Profiles declares its Profile Schema, Pr
 
 The converter computes the identifier as SHA-256 over the Model Family's canonical compatibility manifest, including upstream checkpoint provenance and fingerprints of Voice-conditioning configuration and source weights. If compatibility cannot be demonstrated, the converter emits a distinct identifier. Model loading never infers profile compatibility from filenames, architecture labels, tensor dimensions, `general.uuid`, or approximate metadata.
 
-A package that supports Reference Audio also declares the Voice encoder's target sample rate and channel count, minimum and maximum Reference Frame Equivalents per clip, maximum total Reference Frame Equivalents, and maximum reference count. These are mandatory nonzero safety and capability values rather than advisory UI metadata. The runtime derives each equivalent from input duration with checked arithmetic before conversion; it does not treat the value as the exact number of frames that the private resampler must emit. Validation is identical for every Execution Backend.
+A Model Package that can prepare a Voice Profile at all declares which sources it implements positively, in `synthesize.voice.profile_sources`. This is a declared list, not an inference: a Model Family that offers more than one incompatible source under the same Voice Mode -- Reference Audio for one Model Variant, Description Text for another, both reported as `profile-sources` -- cannot be told apart by Voice Mode alone, so loading reads and validates this key rather than guessing the source from the mode or from which other metadata happens to be present.
+
+A package that declares Reference Audio also declares the Voice encoder's target sample rate and channel count, minimum and maximum Reference Frame Equivalents per clip, maximum total Reference Frame Equivalents, and maximum reference count. These are mandatory nonzero safety and capability values rather than advisory UI metadata. The runtime derives each equivalent from input duration with checked arithmetic before conversion; it does not treat the value as the exact number of frames that the private resampler must emit. Validation is identical for every Execution Backend.
 
 ## Sidecar Rules
 

@@ -43,7 +43,7 @@
   "reference": {
     "implementation": "QwenLM/Qwen3-TTS@022e286b98fbec7e1e916cb940cdf532cd9f488e",
     "framework": "pytorch-2.13.0+cu130",
-    "runner": "scripts/dump_reference_qwen3_tts_pytorch.py",
+    "runner": "scripts/dump_reference_qwen3_tts_voicedesign.py",
     "environment_lock": "scripts/envs/qwen3-tts/uv.lock",
     "dtype": "bfloat16",
     "device": "cuda"

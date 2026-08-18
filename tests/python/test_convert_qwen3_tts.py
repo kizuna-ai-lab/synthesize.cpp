@@ -225,7 +225,7 @@ class ReportShapeTests(unittest.TestCase):
 
 
 class VariantDiscriminationTests(unittest.TestCase):
-    """The two variants differ by a whole subsystem, not by a label."""
+    """The three variants differ by a whole subsystem, not by a label."""
 
     def test_base_config_declares_the_speaker_encoder(self) -> None:
         profile = convert.variant_profile({
@@ -599,7 +599,13 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
             "code_predictor_config": {
                 "num_hidden_layers": 1, "hidden_size": 4, "num_attention_heads": 1,
                 "num_key_value_heads": 1, "head_dim": 4, "vocab_size": 10, "num_code_groups": 1,
-                "intermediate_size": 4,
+                # Deliberately DIFFERENT from talker_config["intermediate_size"]
+                # (4) above: this is the value the Task 6 architecture-gap fix
+                # is about (docs/porting/families/qwen3-tts.md, "A genuine
+                # architecture gap, found and closed, not converted around"),
+                # and equal fixture values would let a regression that quietly
+                # re-inherited the talker's own number pass unnoticed.
+                "intermediate_size": 8,
             },
             "spk_id": {} if carries_speaker_encoder else {"voice1": 0},
             "spk_is_dialect": {} if carries_speaker_encoder else {"voice1": ""},
@@ -767,6 +773,23 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
         # contract at all -- not an empty one, which is a different claim.
         self.assertNotIn("synthesize.voice.profile_sources", metadata)
         self.assertNotIn("synthesize.profile.schema", metadata)
+
+    # The Task 6 architecture-gap fix (docs/porting/families/qwen3-tts.md, "A
+    # genuine architecture gap, found and closed, not converted around") rests
+    # on `synthesize.qwen3-tts.code_predictor.intermediate_size` reaching the
+    # package -- without it, weights.cpp falls back to the talker's own
+    # intermediate_size, which is silently wrong at 1.7B (2048-wide talker,
+    # 1024-wide code predictor). Nothing before this test asserted the KV
+    # reaches a real written-and-re-read GGUF at all: deleting the emitting
+    # tuple entry in `add_metadata` (scripts/convert-qwen3-tts.py) left all 55
+    # converter tests and all 342 Python tests green.
+    def test_code_predictor_intermediate_size_is_emitted_from_its_own_config(self) -> None:
+        metadata = self._written_metadata(carries_speaker_encoder=True)
+        self.assertIn("synthesize.qwen3-tts.code_predictor.intermediate_size", metadata)
+        # 8, not the talker's 4 (see the fixture comment above): proves the
+        # value is read from code_predictor_config, not inherited from
+        # talker_config the way the pre-Task-6 catalog did.
+        self.assertEqual(metadata["synthesize.qwen3-tts.code_predictor.intermediate_size"], 8)
 
 
 class ProfileSourceDeclarationTests(unittest.TestCase):

@@ -1089,10 +1089,13 @@ synth_status_t synth_voice_profile_create_from_reference(const synth_model_t *  
     if (model == nullptr) {
         return SYNTH_ERR_INVALID_ARG;
     }
-    // Qwen3-TTS carries two variants under one `ModelFamily::Qwen3Tts` tag,
-    // and only one of them -- Base, ProfileSources -- can prepare anything;
+    // Qwen3-TTS carries three variants under one `ModelFamily::Qwen3Tts` tag,
+    // and only one of them -- Base, ProfileSources with REFERENCE_AUDIO -- can
+    // prepare anything HERE (this function is create_from_REFERENCE);
     // CustomVoice has no speaker encoder and its capability snapshot is the
-    // all-zero shape fill_voice_profile_capability produces for it. So the
+    // all-zero shape fill_voice_profile_capability produces for it, and
+    // VoiceDesign is ProfileSources too but declares DESCRIPTION_TEXT rather
+    // than REFERENCE_AUDIO, so this path still doesn't reach it either. So the
     // family check alone is not enough here the way it is for OmniVoice
     // (which has no such split): a CustomVoice Loaded Model must take the
     // SAME generic "unsupported" fallback every non-participating family

@@ -33,15 +33,20 @@ See "Stage 2 Plan 4: what it measured, and what it refused to claim" below.
 `jiangzhuo9357/qwen3-tts-12hz-0-6b-base-gguf` (BF16, F16 and Q8_MIXED, 6.70 GB,
 commit `d4df99e8`), on jiangzhuo's per-act confirmation naming that target --
 which closes Stage 2 on the same terms Stage 1 closed on. **Stage 3
-(`qwen3-tts-12hz-1.7b-voicedesign`) Plan 1's Task 6 is done as of 2026-08-18**:
-the checkpoint converts (659 tensors, 4.30 GB BF16) and, since a same-day fix to
-the tensor catalog described below, loads through `synth_model_load` with the
-exact capability snapshot the design predicted -- zero Preset Voices,
-`SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`,
-Reference Audio absent, all six reference limits at zero. See "Stage 3:
-VoiceDesign Package, Task 6" below for the license check, the digests, and a
-genuine architecture gap this task found and closed rather than merely
-converting around. See the three Stage 2 paragraphs below for Stage 2.
+(`qwen3-tts-12hz-1.7b-voicedesign`) Plan 1 is done as of 2026-08-18**: Task 6
+converts the checkpoint (659 tensors, 4.30 GB BF16) and, since a same-day fix
+to the tensor catalog described below, loads it through `synth_model_load`
+with the exact capability snapshot the design predicted -- zero Preset
+Voices, `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT |
+SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`, Reference Audio absent, all six
+reference limits at zero -- and Task 7 closes the plan's completion gate: a
+prefill built at empty instruct matches the oracle within tolerance
+(p95_relative 0.00269 against a committed 0.01, 3.72x headroom), with a
+365.7x fault-injection figure proving the comparison can fail. See "Stage 3:
+VoiceDesign Package, Task 6" and "...Task 7" below for the license check, the
+digests, a genuine architecture gap Task 6 found and closed rather than
+merely converting around, and Task 7's oracle dumper, driver and fault
+injection. See the three Stage 2 paragraphs below for Stage 2.
 
 **Packages converted before `synthesize.voice.profile_sources` existed do not
 load under this runtime any more.** Stage 3's loader change
@@ -4013,8 +4018,11 @@ across the family's variants rather than re-shipped per rung. The Golden
 Manifest, `tests/golden/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign.manifest.json`,
 carries all five digests, none of `qwen3-tts-12hz-0-6b-base`'s two
 `reference-audio` artifacts (this variant takes no recording), and zero cases
--- this task's own step removes every case the copied Base manifest carried;
-Task 7 adds one and Plan 2 the rest.
+-- this task's own step removes every case the copied Base manifest carried.
+The manifest stays at zero cases through Task 7 too: that task gates the
+empty-instruct rung with an integration driver and a tolerance cell outside
+the manifest rather than adding a case to it. The manifest's own cases arrive
+in Plan 2.
 
 ### Measured package size against the design's estimate
 
@@ -4135,35 +4143,51 @@ absent.
 ### The Golden Manifest schema did not anticipate a suite built across tasks
 
 A second gap, in test infrastructure rather than the runtime: this plan's
-manifest is deliberately committed with 0 cases now, 1 after Task 7, and the
-rest only in Plan 2 -- but `docs/schemas/synthesize-golden-manifest-v1.schema.json`
-required `cases.minItems: 12` (every previously-committed manifest's own
-floor), and two family-independent checks in
-`tests/python/test_golden_manifests.py` assumed every manifest already had a
-first case (`test_upstream_examples_are_present`) or a matching entry in its
-shared tolerance file's `variants` map
+manifest is deliberately committed with 0 cases now and stays there through
+Task 7 -- Plan 2 is what gives it its first case and the rest -- but
+`docs/schemas/synthesize-golden-manifest-v1.schema.json` required
+`cases.minItems: 12` (every previously-committed manifest's own floor), and two
+family-independent checks in `tests/python/test_golden_manifests.py` assumed
+every manifest already had a first case (`test_upstream_examples_are_present`)
+or a matching entry in its shared tolerance file's `variants` map
 (`test_tolerance_case_count_matches_manifest`). All three would have failed
 `synthesize-golden-manifest-contract` for this manifest alone, without
 touching any other family's data.
 
-Resolved with the narrowest fix that left every existing manifest and every
-existing tolerance grid untouched: `cases.minItems` widened to 0 (documented
-in the schema's own new `description` field), and both Python checks now
-`continue` specifically for a manifest whose `cases` array is empty --
-narrowly enough that the moment this manifest gains its first case (Task 7),
-both checks re-engage on it exactly as they do on every other manifest. No
-change was made to `tests/tolerances/qwen3-tts.json` or to
-`tests/python/test_tolerance_coverage.py`: the new manifest's
-`reference.runner` points at the already-committed, family-generic
-`scripts/dump_reference_qwen3_tts_pytorch.py` (the same runner CustomVoice's
-manifest already names) rather than at a VoiceDesign-specific script, so
-nothing new needed to exist on disk for `test_runner_is_committed` to pass.
+**The first fix was too wide, and a Task 6 review round found it.**
+`cases.minItems` was widened to 0 for every manifest the schema governs, not
+only the one that needed it -- documented at the time in the schema's own new
+`description` field, but a real regression rather than a wording nit:
+`cases.minItems: 12` is `docs/port-validation.md`'s own Confirmed contract, and
+the repo-wide zero let a truncated manifest through, demonstrated by
+validating a 3-case copy of `vits-ljspeech`'s own committed manifest against
+the widened schema, which the unwidened schema had rejected. Replaced with a
+narrow opt-in instead: a top-level `if`/`then`/`else` keyed on a new optional
+`suite_status` field relaxes `cases.minItems` to 0 only when a manifest
+declares `suite_status: "incremental"` -- which only
+`qwen3-tts-12hz-1-7b-voicedesign` does. Every other manifest omits the field
+and stays at the 12-case floor, re-validated against the same truncated VITS
+copy, which is rejected again. Both Python checks still `continue`
+specifically for a manifest whose `cases` array is empty -- narrowly enough
+that the moment this manifest gains its first case (Plan 2), both checks
+re-engage on it exactly as they do on every other manifest.
+
+Task 6's own commit made no change to `tests/tolerances/qwen3-tts.json` or to
+`tests/python/test_tolerance_coverage.py`; Task 7 is what later added this
+variant's own tolerance entry. At Task 6's commit, though, the manifest's
+`reference.runner` named the already-committed, family-generic
+`scripts/dump_reference_qwen3_tts_pytorch.py` rather than a
+VoiceDesign-specific script -- which let `test_runner_is_committed` pass
+because *some* file existed at the named path, not because the named path was
+right. It was not: this variant's real oracle runner is
+`scripts/dump_reference_qwen3_tts_voicedesign.py`, written in Task 7 and
+already what the tolerance grid names. The manifest is corrected to match.
 Verified against the actual test suite, not merely reasoned about: both
 `tests.python.test_golden_manifests` (24/24) and
 `tests.python.test_tolerance_coverage` plus its inversion suite (8/8) pass
-with this manifest committed, and the two pre-existing gitignored-VITS-artifact
-failures (`synthesize-python-api-wheel-test`, `synthesize-vits-python-unit`)
-are unchanged.
+with the corrected manifest committed, and the two pre-existing
+gitignored-VITS-artifact failures (`synthesize-python-api-wheel-test`,
+`synthesize-vits-python-unit`) are unchanged.
 
 ### Load result
 
@@ -4189,6 +4213,122 @@ package:
 | `profile_schema` | `qwen3-tts-voice-design`, version 1 | -- |
 
 Every field matches the Interfaces section's prediction exactly.
+
+## Stage 3: VoiceDesign Package, Task 7
+
+Executed 2026-08-18. Plan 1's completion gate -- a prefill built at empty
+instruct compared against the oracle, with the fault-injection figure proving
+that comparison can fail -- closing Plan 1 alongside Task 6's load result
+above. No new graph code: the empty-instruct path needs no instruct block
+(design decision D3), so this task's whole job is building the comparison
+Task 6 deferred, not extending the runtime.
+
+### The oracle dumper
+
+`scripts/dump_reference_qwen3_tts_voicedesign.py`, modeled on
+`scripts/dump_reference_qwen3_tts_base.py`, drives `generate_voice_design`
+against the pinned checkpoint with `text="Qwen3-TTS is awesome!"`,
+`instruct=""`, `language="English"`, pinned seed and greedy decoding matching
+the Base dumper's own determinism settings. It dumps three raw float32
+artifacts to `reports/porting/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign/oracle/`
+-- **not** under `build/goldens/qwen3-tts/...`, the location every other
+oracle dump in this family and VITS's uses (`docs/testing.md` states that
+convention); this variant's own usage example and the task's brief put it
+here instead, and `.gitignore` gained a dedicated `/reports/porting/**/oracle`
+rule for it (Task 7 Fix Round 1) rather than relying on the already-ignored
+`build/` tree:
+
+- `prefill.f32` -- the assembled talker input embeddings, `[18, 2048]`
+- `codes.i32` -- the talker's emitted codes
+- `waveform.f32` -- the decoded audio
+
+Only `prefill.f32` is compared against in this task. `codes.i32` and
+`waveform.f32` are dumped for the record and read by nothing here -- a
+synthesis-level comparison needs the instruct prompt block and the codec
+decoder wiring Plan 2 builds. `tests/tolerances/qwen3-tts.json`'s
+`qwen3-tts-12hz-1-7b-voicedesign` entry states this directly:
+`"status": "partial-measurement-prefill-only"`.
+
+### The driver, and the completion gate it did not enforce at first
+
+`tests/qwen3_tts_voicedesign_prefill_real.cpp` loads the real package, builds
+a prompt with `has_speaker = false` and no instruct tokens (Task 5's layout,
+the branch section 5.3 calls "a branch that has never run"), flattens it, and
+writes the prefill embeddings out for comparison against the oracle dump.
+
+**Task 7 Fix Round 2 corrected a gap a review found in the completed task,
+not in this record after the fact.** The driver's plan text said it "asserts
+nothing," which was approved and, taken literally, meant the completion gate
+enforced nothing: a fault-injected build printing a 365x tolerance breach and
+a shape mismatch still exited 0. Put to jiangzhuo because a finding that
+contradicts approved plan text is not a reviewer's or an implementer's to
+overrule alone; ruling was that the finding governs, and the plan doc's Task
+7 Step 3 carries the erratum rather than a silently rewritten sentence. The
+driver now takes the committed `max_relative` bound from
+`tests/tolerances/qwen3-tts.json` as an optional argument -- read at CMake
+configure time and passed to `add_test`, the same shape
+`synthesize-qwen3-tts-icl-prompt-real` already has -- and exits non-zero when
+the measured p95 exceeds it or the shapes disagree. Registered as
+`synthesize-qwen3-tts-voicedesign-prefill-real`, gated behind
+`-DSYNTH_BUILD_INTEGRATION_TESTS=ON` and a real package at
+`SYNTH_QWEN3_TTS_VOICEDESIGN_TEST_MODEL` plus the oracle dump above; it never
+enters `synthesize-check-unit`.
+
+### Measured, and the fault that proves the gate
+
+Compared with `reconstruction_p95_relative` (`tests/qwen3_tts_percentile.h`),
+this family's existing p95-over-positions statistic:
+
+| | value |
+| --- | --- |
+| positions | 18 |
+| hidden_size | 2048 |
+| codec_offset | 3 |
+| external_speaker_index | -1 |
+| observed `p95_relative` | 0.00269 -- under half of one bf16 ulp |
+| committed `max_relative` | 0.01 |
+| headroom | 3.72x |
+
+`0.01` is deliberately tighter than this family's own stated widening rule for
+a probe of this shape (`prompt.icl_embed`'s "5x the measured deviation" would
+give 0.01345): this is the probe's first and only measured case, with no
+ICL-style two-track summing to accumulate a second bf16 rounding on top of the
+weight tables' own quantization, and `0.01` sits close to 2.5 bfloat16
+unit-roundoffs -- a consistent story from a second direction, not a competing
+one.
+
+**Fault injection, per Task 7 Step 4 and this task's own plan brief**:
+`src/arch/qwen3-tts/talker-host.cpp:159`, `if (request.has_speaker)` changed
+to `if (true)` -- Task 5's exact branch, inverted, retaining a
+codec-vocabulary speaker slot even though `request.has_speaker` is false.
+
+| | value |
+| --- | --- |
+| faulted `p95_relative` | 0.983659 |
+| ratio | 365.7x |
+| faulted position count | 19 (against the oracle's and the clean port's 18) |
+
+The fault does not only perturb values at a fixed shape -- it changes the
+position count. The extra codec-vocabulary slot pushes the codec-prefix loop
+from 5 iterations to 6, shifting every position from index 7 onward relative
+to the clean, correct layout; the driver reports `compared_positions: 18`
+beside `shapes_match: false`, so the shape mismatch is at least as strong a
+failure signal as the number itself. Reverted and verified by
+`git status --porcelain` (clean) and `grep -n "if (request.has_speaker)"
+src/arch/qwen3-tts/talker-host.cpp` (line 159, unchanged) after the
+measurement.
+
+### Plan 1's completion gate, met
+
+All three of Plan 1's stated criteria hold as of this task: the BF16 package
+loads (Task 6); a prefill built at empty instruct matches the oracle within
+the recorded `replay` tolerance, with the fault-injection figure above proving
+the comparison can fail (Task 7); and the capability snapshot reports zero
+Preset Voices and `DESCRIPTION_TEXT | SERIALIZED_PROFILE` with
+`REFERENCE_AUDIO` absent (Task 6, "Load result" above). Not delivered here,
+and not a gap against Plan 1's own scope: `create_from_description`, the
+`DesignInstruct` payload, the instruct prompt block, the public-seam
+validator, quantization, backends, and the listening audit -- Plans 2 and 3.
 
 ## Open Questions for Intake
 

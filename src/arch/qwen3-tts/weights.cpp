@@ -400,10 +400,11 @@ bool read_voices(const GgufMetadata & meta, HParams & hparams) {
             return false;
         }
     } else if (mode == "profile-sources") {
-        // Base variants carry no selectable Voice at all: upstream ships an
-        // empty spk_id table. The package says so positively rather than
-        // arriving as a catalog that happens to be empty, so a truncated
-        // catalog cannot be mistaken for this.
+        // A profile-sources package carries no selectable Voice at all --
+        // both this family's variants that use this mode, Base and
+        // VoiceDesign, ship an empty spk_id table. The package says so
+        // positively rather than arriving as a catalog that happens to be
+        // empty, so a truncated catalog cannot be mistaken for this.
         //
         // `profile-sources` is the value omnivoice already established
         // (src/arch/omnivoice/weights.cpp) and the manifest schema's own enum.

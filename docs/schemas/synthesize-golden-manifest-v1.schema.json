@@ -50,7 +50,7 @@
       "$ref": "#/$defs/relativePath"
     },
     "suite_status": {
-      "description": "Additive, optional. The only thing that reads this field is the top-level if/then below: set to \"incremental\" it relaxes cases.minItems from 12 to 0, and every previously-committed manifest omits it and stays at the 12-case floor docs/port-validation.md's `cases` row describes. Exists because qwen3-tts-12hz-1-7b-voicedesign is the first Reference Model Variant committed before its case suite exists -- its cases arrive over three separate tasks rather than all at once -- and the floor is a Confirmed contract that a manifest must opt INTO relaxing, not one a manifest-wide default can quietly drop.",
+      "description": "Additive, optional. The only thing that reads this field is the top-level if/then below: set to \"incremental\" it relaxes cases.minItems from 12 to 0, and every previously-committed manifest omits it and stays at the 12-case floor docs/port-validation.md's `cases` row describes. Exists because qwen3-tts-12hz-1-7b-voicedesign is the first Reference Model Variant committed before its case suite exists -- its cases arrive in Plan 2, in one commit, not staged case-by-case across the tasks that came before -- and the floor is a Confirmed contract that a manifest must opt INTO relaxing, not one a manifest-wide default can quietly drop.",
       "const": "incremental"
     },
     "cases": {

@@ -904,6 +904,15 @@ Copy `tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json` and change:
 rest. Remove the `reference-audio` artifact entries: this variant takes no
 recording. Fill `sha256` for each artifact from:
 
+**Erratum, 2026-08-18 — a final whole-branch review found that "this plan adds
+one case in Task 7" did not happen.** Task 7 gates the empty-instruct rung
+with an integration driver and a `replay`-stage tolerance cell instead — a
+comparison outside the manifest, not a Golden Manifest case — and the
+manifest committed by Task 6 still carries `cases: []` after Task 7 lands.
+This sentence is left as written above, as this file's own convention for a
+plan text that later stopped matching what happened; the correction is: the
+manifest's first case, and the rest, both arrive in Plan 2.
+
 ```bash
 sha256sum models/qwen3-tts-12hz-1-7b-voicedesign-src/config.json \
           models/qwen3-tts-12hz-1-7b-voicedesign-src/model.safetensors

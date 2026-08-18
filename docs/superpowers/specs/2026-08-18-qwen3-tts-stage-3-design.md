@@ -329,6 +329,23 @@ judgement rather than a trivial truth.
 * Retaining the speaker slot — section 5.3's new branch written the wrong way —
   is caught by the prefill probe.
 
+**Erratum, 2026-08-18 — the third bullet above is not implemented.** A final
+whole-branch review of Plan 1 found that `read_profile_sources`
+(`src/arch/qwen3-tts/weights.cpp`) has exactly one cross-check between a
+declared source and what the package carries: `wants_reference !=
+carries_encoder`, refusing a `REFERENCE_AUDIO` claim unmatched by a speaker
+encoder tensor or vice versa. Nothing compares `synthesize.model_variant`
+against the declared `profile_sources`, so a CustomVoice-shaped package (no
+speaker encoder, no codec encoder) whose metadata claimed
+`SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT` loads clean — the refusal this bullet
+promises does not exist. This is arguably unavoidable rather than an
+oversight: Description Text has no distinguishing tensor of its own the way
+Reference Audio has the speaker encoder, which is the same reason section 3's
+capability-bit rule had to become a declared metadata flag in the first place
+rather than something inferred from tensor shapes. A `model_variant`-string
+cross-check would catch this one case but is a weaker contract than the
+tensor-shape checks the other two bullets rest on, and is not built here.
+
 ### 6.5 Fault injection
 
 Each gate is shown to fail, per Plan 4's practice. Three faults, chosen because
@@ -414,6 +431,28 @@ jiangzhuo's confirmation at the time, naming the target repository.
 Each plan is a completion gate for the next. Plan 1 answers "does the 1.7B load
 and compute correctly" before any instruct work is written, which is why the
 empty-instruct path — needing no new prompt code — is its gate.
+
+**Erratum, 2026-08-18 — Plan 1's gate row above says "a synthesis at empty
+instruct matches the oracle." What Task 7 delivers is a prefill comparison,
+not a synthesis.** A final whole-branch review found that the row's wording
+had been narrowed in the implementing plan by restatement rather than by an
+erratum, which is not how a change to approved design text is supposed to
+happen here. The actual gate:
+`tests/qwen3_tts_voicedesign_prefill_real.cpp` builds the talker's assembled
+prefill and compares it against the oracle's captured `inputs_embeds` within
+the `replay` stage's tolerance (`prefill`, 0.00269 observed against 0.01
+committed, 3.72x headroom); the oracle dumper also produces `codes.i32` and
+`waveform.f32`, and nothing in this plan reads either. Carrying the ledger's
+own scope note forward: the prefill exercises two real matmuls at the new
+2048 width, but no talker transformer layer runs and the code predictor is
+never touched. `tests/tolerances/qwen3-tts.json`'s
+`qwen3-tts-12hz-1-7b-voicedesign` entry records this plainly —
+`"status": "partial-measurement-prefill-only"`. The narrowing itself is
+defensible: a full synthesis needs the instruct prompt block and the codec
+decoder wiring Plan 2 builds, and gating Plan 1 on work Plan 1 does not do
+would be circular. What is not defensible is that the design text above
+still reads as though the stronger claim was delivered; this erratum is the
+correction, not a silent edit to the row.
 
 ## 9. Error Mapping
 

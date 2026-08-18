@@ -369,13 +369,11 @@ synth_status_t Model::get_info(ModelInfo & output) const {
     }
     output.frontend_present  = hparams.frontend_present;
     output.frontend_provider = hparams.frontend_provider;
-    // A profile-sources package (this family's Base variant) reports no
-    // preset Voice at all -- `preset_voice_ids` above is already empty,
-    // because `hparams.preset_voices` is -- and, as of Plan 1, no Voice
-    // Profile source either: nothing in the runtime can prepare or consume
-    // one for this family yet, and docs/c-interface.md says a Model without
-    // runtime Voice Profile support reports zero flags. See
-    // fill_voice_profile_capability itself for why the package's own
+    // A profile-sources package (this family's Base and VoiceDesign variants)
+    // reports no preset Voice at all -- `preset_voice_ids` above is already
+    // empty, because `hparams.preset_voices` is. See
+    // fill_voice_profile_capability itself for the declared Voice Profile
+    // source flags each variant reports and for why the package's own
     // ProfileContract is still read and validated regardless.
     fill_voice_profile_capability(hparams, output.voice_profile);
     return SYNTH_OK;

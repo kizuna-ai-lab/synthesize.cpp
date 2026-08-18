@@ -281,6 +281,47 @@ int expect_base_rejected(const std::function<void(gguf_context *)> & mutate, con
     return 0;
 }
 
+// code_predictor.intermediate_size is the one code_predictor.* key
+// valid_metadata() deliberately does not set (see its own block above,
+// lines 96-102) -- every package converted before this key existed never
+// declared it either, and read_code_predictor falls back to the talker's
+// value for exactly that package. This asserts the fallback rather than
+// merely relying on read_hparams returning SYNTH_OK, which the fallback
+// value itself never gates: a wrong fallback (the talker's value plus one,
+// say) still loads a structurally sound synthetic package clean, and only a
+// real, gitignored package whose predictor and talker genuinely disagree
+// would notice -- which is exactly why this needs its own assertion rather
+// than trusting run_valid_package()'s existing SYNTH_OK check.
+int test_code_predictor_intermediate_size_falls_back_to_the_talkers_when_absent() {
+    GgufContext c = valid_metadata();
+    // gguf_find_key returns -1 for "not found", not a falsy 0/false -- a
+    // plain `!gguf_find_key(...)` would be true only when the key sits at
+    // index 0, which is nearly the opposite check.
+    SYNTH_TEST_CHECK(gguf_find_key(c.get(), "synthesize.qwen3-tts.code_predictor.intermediate_size") == -1);
+    synth::qwen3tts::HParams hparams;
+    SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) == SYNTH_OK);
+    SYNTH_TEST_CHECK(hparams.code_predictor.intermediate_size == hparams.talker.intermediate_size);
+    SYNTH_TEST_CHECK(hparams.code_predictor.intermediate_size == 3072);
+    return 0;
+}
+
+// The other half: a package that DOES declare the key is honoured even when
+// it disagrees with the talker's -- the case a rung with genuinely disjoint
+// talker/predictor widths (VoiceDesign's 1.7B) needs, and the one the
+// fallback above must NOT silently override.
+int test_code_predictor_intermediate_size_declared_is_honoured() {
+    GgufContext c = valid_metadata();
+    // valid_metadata()'s talker.intermediate_size is 3072; declare something
+    // different so "read the declared value" and "fell back to the talker's"
+    // are distinguishable outcomes rather than coincidentally equal.
+    gguf_set_val_u32(c.get(), "synthesize.qwen3-tts.code_predictor.intermediate_size", 6144);
+    synth::qwen3tts::HParams hparams;
+    SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) == SYNTH_OK);
+    SYNTH_TEST_CHECK(hparams.code_predictor.intermediate_size == 6144);
+    SYNTH_TEST_CHECK(hparams.code_predictor.intermediate_size != hparams.talker.intermediate_size);
+    return 0;
+}
+
 int test_base_package_loads_without_any_preset_voice() {
     GgufContext              c = base_metadata();
     synth::qwen3tts::HParams hparams;
@@ -798,6 +839,8 @@ int main() {
     synth::qwen3tts::HParams hparams;
     SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(nullptr, hparams) == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(run_valid_package() == 0);
+    SYNTH_TEST_CHECK(test_code_predictor_intermediate_size_falls_back_to_the_talkers_when_absent() == 0);
+    SYNTH_TEST_CHECK(test_code_predictor_intermediate_size_declared_is_honoured() == 0);
     SYNTH_TEST_CHECK(run_voice_and_language_routing() == 0);
     SYNTH_TEST_CHECK(run_rejections() == 0);
     SYNTH_TEST_CHECK(run_base_package_rejections() == 0);

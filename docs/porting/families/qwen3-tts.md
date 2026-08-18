@@ -1,6 +1,6 @@
 # Qwen3-TTS Family Selection and Port Plan
 
-Status: Confirmed 2026-08-17. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
+Status: Confirmed 2026-08-18. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
 complete and published. Intake, the oracle and conversion are done; stages 4
 through 7 have their measured work done: oracle replay and the public seam
 pass, and the codec runs on CUDA while the autoregressive half stays on the CPU
@@ -4088,10 +4088,15 @@ in `tests/qwen3_tts_catalog_test.cpp`
 `check_real_voicedesign_package_count` pinning the real package's 659 against
 `expected_tensor_count`) alongside the negative case that already existed
 (`check_rejections`' "no package carries one", which continues to refuse a
-narrower predictor whose package omits the projection tensor). The three
-0.6B packages this project has published or locally converted -- CustomVoice,
-and Base including its 2026-08-18 re-cut below -- were re-verified loading
-after every change in this section; none of the three moved.
+narrower predictor whose package omits the projection tensor). Verified
+against three real local packages, not only against synthetic fixtures: the
+two 0.6B packages this project has published or locally converted --
+CustomVoice and Base (including its 2026-08-18 re-cut below) -- reload
+unchanged after every change in this section, confirming no regression on the
+coincident-width path both of them take; VoiceDesign itself loads for the
+first time, confirming the fix. All three checked through the public C API
+(`synth_model_load` and `synth_model_get_voice_profile_capabilities`), not
+merely inferred from the catalog test passing.
 
 ### `generate_custom_voice` silently discards `instruct` for any 0.6B model
 

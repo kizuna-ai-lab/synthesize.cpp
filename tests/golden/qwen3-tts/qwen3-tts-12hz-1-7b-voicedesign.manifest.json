@@ -89,6 +89,7 @@
   },
   "tolerance_file": "tests/tolerances/qwen3-tts.json",
   "case_artifact_root": "build/goldens/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign",
+  "suite_status": "incremental",
   "cases": [],
   "relations": []
 }

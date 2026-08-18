@@ -20,6 +20,16 @@ CMakeUserPresets.json
 /reports/validate
 /reports/bench
 
+# reports/porting/ itself holds committed intake records (see above) and is
+# NOT ignored wholesale, but scripts/convert-qwen3-tts.py's --report writes a
+# large, mechanically-regenerable per-tensor conversion log into that same
+# tree by convention (reports/porting/<family>/<variant>/convert.json). No
+# convert.json has ever been committed in this project's history -- verified
+# 2026-08-18 against every prior conversion, including CustomVoice's and
+# Base's own -- which makes an untracked one sitting there an accident waiting
+# for the next `git add -A` rather than a deliberate omission each time.
+/reports/porting/**/convert.json
+
 # Agent scratch. Nothing here is a project artifact: it is whatever a session
 # wrote while investigating. Added 2026-08-10 after `git add -A` swept 56 files
 # and 9.0 MB of rate-sweep probes, WAVs and f32 dumps into a commit -- the

@@ -38,6 +38,30 @@ field by field: 128 keys are identical and six differ.
 | `speaker_encoder_config.enc_dim` | 1024 | **absent** |
 | `speaker_encoder_config.sample_rate` | 24000 | **absent** |
 
+**Erratum, 2026-08-18 — the two rows above name `talker_config.hidden_size`
+and `talker_config.intermediate_size` correctly, but the table gives no reason
+to expect the code predictor's OWN widths to move with them, and Task 6 found
+that the assumption they do was already load-bearing.** `talker_config`
+nests a `code_predictor_config`, and that nested config's `hidden_size` and
+`intermediate_size` do **not** appear in the 128-identical/6-differ count
+above because they genuinely do not differ: they stay 1024/3072 at both
+rungs, while the talker widens to 2048/6144 at VoiceDesign alone. Stage 1's
+tensor catalog (`src/arch/qwen3-tts/catalog.cpp`) was written against the
+0.6B rung, where talker and code-predictor widths happen to coincide on every
+axis, and it read the code predictor's feed-forward width off the talker's
+own field rather than a field of its own — invisible until a rung existed
+whose two configs disagreed. VoiceDesign's checkpoint carries the bridge the
+reference applies between them, `small_to_mtp_projection.{weight,bias}`
+(`Qwen3TTSTalkerCodePredictorModelForConditionalGeneration.__init__`,
+`torch.nn.Linear(talker_config.hidden_size, config.hidden_size, bias=True)`,
+`Identity()` when the two agree) — and `code-predictor.h`/`.cpp` had already
+declared and wired the pointers for it during Stage 1, before any package
+needed them, so closing this gap needed zero new graph code, only a
+metadata/catalog fix. Full account: `docs/porting/families/qwen3-tts.md`,
+"Stage 3: VoiceDesign Package, Task 6". **"Stage 3 needs no new graph," a few
+lines below, held up exactly as written** — the design was right about the
+graph and wrong only by omission about what the catalog still assumed.
+
 Everything a port reads is otherwise unchanged: 28 layers, 16 attention heads,
 8 key/value heads, `head_dim` 128, codec vocabulary 3072, `text_hidden_size`
 2048, `text_vocab_size` 151936, all ten language ids, every `codec_*` id, and
@@ -152,6 +176,12 @@ cannot implement is refused at load, not tolerated.
 | Source flags | (none) | REF \| SER | **DESC \| SER** |
 | `hidden_size` / `intermediate_size` | 1024 / 3072 | 1024 / 3072 | **2048 / 6144** |
 | Preset Voices | 9 | 0 | 0 |
+
+**This row is the talker's `hidden_size`/`intermediate_size` only** — see the
+2026-08-18 erratum in section 1. The code predictor's own widths stay
+1024/3072 in every column, VoiceDesign included; a reader of this table alone
+could not tell the two apart, and Task 6 found that a catalog which could not
+either refused to load the package.
 
 ## 4. Package and Conversion
 

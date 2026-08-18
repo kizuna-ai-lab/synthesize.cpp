@@ -541,6 +541,43 @@ synth_status_t serialize_icl_profile(const HParams &    hparams,
                                      const uint8_t (&compatibility_id)[32],
                                      std::vector<uint8_t> & out_bytes);
 
+// Serializes `profile` into a fresh v1 envelope of its OWN schema,
+// "qwen3-tts-voice-design" -- a DIFFERENT string from serialize_x_vector_profile
+// / serialize_icl_profile's "qwen3-tts-voice-clone" above, not a third `kind`
+// value under that schema. The two names are not invented for this function:
+// they are the SAME pair weights.cpp's own read_profile_contract already
+// requires of a Loaded Model's package metadata (`expected_schema`, chosen
+// from `profile_sources & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO`) -- reused
+// here for the Serialized Voice Profile envelope rather than a third name,
+// because a design payload shares almost nothing with a clone one (no
+// x-vector, no `kind`, nothing audio-derived) and `schema` is already this
+// family's own way of naming that split at the package level.
+//
+// The envelope this writer emits carries ZERO tensors -- design D6 stores the
+// instruct TEXT verbatim and load_profile_from_memory re-tokenizes it at
+// synthesis, so there is nothing to precompute and nothing to check for a
+// wrong shape against a package width the way `enc_dim` is checked on the
+// clone path. write_envelope already handles an empty tensor list: `n_tensors
+// == 0` is a legal GGUF header and neither the alignment padding nor the
+// digest step below it assumes a nonzero tensor count.
+//
+// Returns SYNTH_ERR_INVALID_ARG if `profile.instruct` exceeds
+// kMaxDesignInstructBytes or is not well-formed UTF-8 -- both re-asserted
+// here independently of whatever create_design_profile already checked, the
+// same reason serialize_x_vector_profile re-checks `language_tag` against
+// kMaxLanguageTagLength: this writer has no way to know whether `profile`
+// reached it through create_design_profile or was built by hand, and it must
+// never be able to emit an envelope its own reader refuses.
+//
+// `hparams` is unused (mirrors create_design_profile's own signature, and for
+// the same reason its own header comment gives): the payload does not depend
+// on the package, and nothing here range-checks against a package width.
+// Taken anyway so this writer's signature matches its clone siblings' shape.
+synth_status_t serialize_design_profile(const HParams &        hparams,
+                                        const DesignInstruct & profile,
+                                        const uint8_t (&compatibility_id)[32],
+                                        std::vector<uint8_t> & out_bytes);
+
 // Parses a v1 envelope of EITHER kind out of untrusted `data`/`data_size`,
 // against the caller's own `compatibility_id` and the package's own declared
 // widths in `hparams`. On success `out_payload` holds an `XVectorProfile` for
@@ -548,6 +585,23 @@ synth_status_t serialize_icl_profile(const HParams &    hparams,
 // `ProfileFamilyTag::Qwen3TtsClone` that covers both -- the payload's own
 // `CloneMode` is what discriminates (voice-profile-handle.h), and IclProfile's
 // first-member layout is what makes reading it back well-defined.
+//
+// TASK 3 ADDS A THIRD PATH, for serialize_design_profile's own envelope
+// (`ProfileFamilyTag::Qwen3TtsDesign`, payload a `DesignInstruct`). It is
+// resolved FIRST, in profile.cpp, by a self-contained prescan
+// (prescan_design_buffer) against that envelope's own closed, eight-key,
+// zero-tensor shape -- BEFORE prescan_buffer or any of the clone path's own
+// checks ever run. A buffer that does not match the design shape falls
+// through to the clone path exactly as it did before this task, unmodified;
+// one that does match returns from an entirely separate block that never
+// reaches the x-vector tensor lookup, the `tensor_bytes == 0` refusal, or the
+// `element_count == enc_dim` comparison below. THAT is what keeps a design
+// envelope loadable without touching -- or being able to weaken -- the
+// check that protects a clone envelope: the two paths do not share a single
+// line of size arithmetic. See profile.cpp's own comment at the top of that
+// block for why routing on the raw, untrusted bytes' own declared tensor
+// count is safe (each path fully and independently validates the bytes
+// regardless of which one this routing picked).
 //
 // WHY `HParams` AND NOT A BARE `enc_dim`, WHICH IS WHAT THIS TOOK THROUGH
 // PLAN 2. That parameter's own justification said, in as many words, that the

@@ -1069,23 +1069,38 @@ synth_status_t serialize_qwen3_tts_profile(const synth_voice_profile *          
     }
 
     const uint8_t (&compatibility_id)[32] = profile->model->info.voice_profile.compatibility_id;
-    // ONE ProfileFamilyTag covers both of this family's clone modes, and the
-    // payload's own CloneMode discriminates (voice-profile-handle.h). Reading
-    // it back through an `XVectorProfile *` is well-defined for an ICL
-    // payload too -- IclProfile is standard-layout with an XVectorProfile as
-    // its first member, and profile.h holds that property with static_asserts
-    // -- which is what lets this one read decide which writer to call. Both
-    // writers refuse a payload whose mode names the other kind, so a wrong
-    // branch here is an error rather than a silent downgrade.
-    const auto & speaker = *static_cast<const synth::qwen3tts::XVectorProfile *>(profile->payload.get());
 
     std::vector<uint8_t> bytes;
-    const synth_status_t status =
-        speaker.mode == synth::qwen3tts::CloneMode::Icl ?
-            synth::qwen3tts::serialize_icl_profile(
-                profile->model->qwen3_tts->hparams(),
-                *static_cast<const synth::qwen3tts::IclProfile *>(profile->payload.get()), compatibility_id, bytes) :
-            synth::qwen3tts::serialize_x_vector_profile(speaker, compatibility_id, bytes);
+    synth_status_t       status;
+    if (profile->family_tag == synth::ProfileFamilyTag::Qwen3TtsDesign) {
+        // Task 3's own payload shape: a DesignInstruct, not an XVectorProfile
+        // -- the switch below on `family_tag` (rather than unconditionally
+        // reading `.mode` through an XVectorProfile pointer the way the else
+        // branch does) is what keeps this cast from reading a DesignInstruct
+        // through the wrong type; the two payloads share no layout at all,
+        // unlike XVectorProfile/IclProfile's own deliberate first-member
+        // relationship.
+        const auto & design = *static_cast<const synth::qwen3tts::DesignInstruct *>(profile->payload.get());
+        status              = synth::qwen3tts::serialize_design_profile(profile->model->qwen3_tts->hparams(), design,
+                                                                        compatibility_id, bytes);
+    } else {
+        // ONE ProfileFamilyTag (Qwen3TtsClone) covers both of this family's
+        // clone modes, and the payload's own CloneMode discriminates
+        // (voice-profile-handle.h). Reading it back through an
+        // `XVectorProfile *` is well-defined for an ICL payload too --
+        // IclProfile is standard-layout with an XVectorProfile as its first
+        // member, and profile.h holds that property with static_asserts --
+        // which is what lets this one read decide which writer to call. Both
+        // writers refuse a payload whose mode names the other kind, so a
+        // wrong branch here is an error rather than a silent downgrade.
+        const auto & speaker = *static_cast<const synth::qwen3tts::XVectorProfile *>(profile->payload.get());
+        status               = speaker.mode == synth::qwen3tts::CloneMode::Icl ?
+                                   synth::qwen3tts::serialize_icl_profile(
+                                       profile->model->qwen3_tts->hparams(),
+                                       *static_cast<const synth::qwen3tts::IclProfile *>(profile->payload.get()), compatibility_id,
+                                       bytes) :
+                                   synth::qwen3tts::serialize_x_vector_profile(speaker, compatibility_id, bytes);
+    }
     if (status != SYNTH_OK) {
         return status;
     }
@@ -1424,12 +1439,17 @@ synth_status_t synth_voice_profile_serialize(const synth_voice_profile_t *      
         }
     }
     // Branches on the PROFILE's own family_tag, not the model's family --
-    // the same reason the two conditions above do. A profile carrying this
-    // tag can only have been produced by create_qwen3_tts_profile_from_reference
-    // or load_qwen3_tts_profile_from_memory, both of which already required a
-    // Loaded Model that supports this family's Reference Audio / Serialized
-    // Profile sources, so no further per-model gate belongs here.
-    if (profile->family_tag == synth::ProfileFamilyTag::Qwen3TtsClone) {
+    // the same reason the two conditions above do. A profile carrying either
+    // tag can only have been produced by create_qwen3_tts_profile_from_reference,
+    // create_qwen3_tts_profile_from_description, or
+    // load_qwen3_tts_profile_from_memory, all of which already required a
+    // Loaded Model that supports this family's Reference Audio / Description
+    // Text / Serialized Profile sources, so no further per-model gate
+    // belongs here. Qwen3TtsDesign joins Qwen3TtsClone here (Task 3):
+    // serialize_qwen3_tts_profile's own dispatch on `family_tag`, just above,
+    // is what picks the right writer for each.
+    if (profile->family_tag == synth::ProfileFamilyTag::Qwen3TtsClone ||
+        profile->family_tag == synth::ProfileFamilyTag::Qwen3TtsDesign) {
         try {
             return serialize_qwen3_tts_profile(profile, params, out_data);
         } catch (const std::bad_alloc &) {

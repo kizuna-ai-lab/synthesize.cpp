@@ -15,12 +15,19 @@
 #include "voice-profile-handle.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
 
+using synth::qwen3tts::CloneMode;
 using synth::qwen3tts::create_design_profile;
 using synth::qwen3tts::DesignInstruct;
 using synth::qwen3tts::HParams;
 using synth::qwen3tts::kMaxDesignInstructBytes;
+using synth::qwen3tts::load_profile_from_memory;
+using synth::qwen3tts::serialize_design_profile;
+using synth::qwen3tts::serialize_x_vector_profile;
+using synth::qwen3tts::XVectorProfile;
 using synth::qwen3tts::testing::make_model_for_testing;
 
 namespace {
@@ -111,8 +118,17 @@ int test_an_empty_instruct_is_accepted() {
 int test_invalid_utf8_is_refused() {
     const HParams  hparams = voice_design_hparams();
     DesignInstruct payload;
-    // A lone continuation byte, and a truncated three-byte sequence.
-    for (const std::string bad : { std::string("\x80"), std::string("\xE2\x82") }) {
+    // A lone continuation byte, a truncated three-byte sequence, an overlong
+    // encoding of NUL, a UTF-16 surrogate, and a code point beyond U+10FFFF --
+    // the four rejection classes is_well_formed_utf8's own header comment
+    // claims ("over-long encodings, surrogates and out-of-range code points
+    // as well as truncated sequences"). A reviewer found the first version of
+    // this test covered only two of the four: disabling only the overlong
+    // check left the suite 100% green. The implementation itself is correct
+    // -- a standalone probe confirmed it rejects all four -- this closes the
+    // coverage gap.
+    for (const std::string bad : { std::string("\x80"), std::string("\xE2\x82"), std::string("\xC0\x80"),
+                                   std::string("\xED\xA0\x80"), std::string("\xF4\x90\x80\x80") }) {
         payload.instruct = "untouched";
         SYNTH_TEST_CHECK(create_design_profile(hparams, bad, payload) == SYNTH_ERR_INVALID_ARG);
         // On refusal the output is left alone rather than half-written.
@@ -283,6 +299,178 @@ int test_create_from_description_refuses_a_random_seed() {
     return 0;
 }
 
+// =============================================================================
+// Task 3: Serialization, without loosening the x-vector check
+// (src/arch/qwen3-tts/profile.cpp). These exercise the FAMILY-LEVEL envelope
+// functions directly -- serialize_design_profile and load_profile_from_memory
+// -- the same level tests/qwen3_tts_profile_test.cpp exercises for the clone
+// envelope, rather than the public C seam: synth_voice_profile_serialize and
+// synth_voice_profile_load_from_memory do not yet route a design Profile at
+// all (Task 5 republishes the SERIALIZED_PROFILE capability bit those
+// dispatchers gate on for a VoiceDesign Model).
+// =============================================================================
+
+namespace {
+
+void fill_compatibility_id(uint8_t (&id)[32]) {
+    // Arbitrary but non-zero, so a mismatch is never mistaken for an
+    // unset/all-zero placeholder on either side of a comparison.
+    for (size_t index = 0; index < sizeof(id); ++index) {
+        id[index] = uint8_t(index + 7);
+    }
+}
+
+// The clone (x-vector) side's own package width -- enough for
+// load_profile_from_memory's x-vector-only path, which never reads past
+// hparams.speaker_encoder.enc_dim before it returns.
+HParams clone_envelope_hparams(uint32_t enc_dim) {
+    HParams hparams;
+    hparams.speaker_encoder.enc_dim = enc_dim;
+    return hparams;
+}
+
+std::shared_ptr<XVectorProfile> make_x_vector_profile(uint32_t enc_dim) {
+    auto profile  = std::make_shared<XVectorProfile>();
+    profile->mode = CloneMode::XVector;
+    profile->x_vector.resize(enc_dim);
+    for (uint32_t index = 0; index < enc_dim; ++index) {
+        // Finite and never identically zero -- load_profile_from_memory's own
+        // payload-value parity check refuses an all-zero x-vector.
+        profile->x_vector[index] = 1.0f + float(index);
+    }
+    profile->ref_rms      = 0.5f;
+    profile->language_tag = "en-US";
+    return profile;
+}
+
+}  // namespace
+
+// Round-trip: serialize a design Profile, load the bytes back, and get the same
+// string with the same tag. Per design D6 the envelope stores the TEXT and the
+// loader re-tokenizes -- there are no ids in it to drift.
+int test_design_profile_round_trips() {
+    uint8_t compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    DesignInstruct payload;
+    payload.instruct = "A warm, low voice, unhurried, with a slight rasp.";
+
+    std::vector<uint8_t> bytes;
+    SYNTH_TEST_CHECK(serialize_design_profile(voice_design_hparams(), payload, compatibility_id, bytes) == SYNTH_OK);
+    SYNTH_TEST_CHECK(!bytes.empty());
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> loaded;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    const synth_status_t        status  = load_profile_from_memory(voice_design_hparams(), bytes.data(), bytes.size(),
+                                                                   compatibility_id, family_tag, loaded, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_OK);
+    SYNTH_TEST_CHECK(family_tag == synth::ProfileFamilyTag::Qwen3TtsDesign);
+    SYNTH_TEST_CHECK(loaded != nullptr);
+    SYNTH_TEST_CHECK(code == nullptr);
+    SYNTH_TEST_CHECK(message == nullptr);
+
+    const auto * reloaded = static_cast<const DesignInstruct *>(loaded.get());
+    SYNTH_TEST_CHECK(reloaded->instruct == payload.instruct);
+    return 0;
+}
+
+// A clone envelope must not load as a design Profile and a design envelope must
+// not load as a clone. The tag is what a consumer switches on, so a
+// misidentified payload is a type confusion, not a wrong answer.
+int test_the_two_envelope_kinds_are_not_confusable() {
+    uint8_t compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+
+    // A real design envelope loads as Design, never as Clone.
+    DesignInstruct design_payload;
+    design_payload.instruct = "a description, unremarkable on purpose";
+    std::vector<uint8_t> design_bytes;
+    SYNTH_TEST_CHECK(serialize_design_profile(voice_design_hparams(), design_payload, compatibility_id, design_bytes) ==
+                     SYNTH_OK);
+
+    synth::ProfileFamilyTag     design_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> design_loaded;
+    const char *                design_code    = nullptr;
+    const char *                design_message = nullptr;
+    SYNTH_TEST_CHECK(load_profile_from_memory(voice_design_hparams(), design_bytes.data(), design_bytes.size(),
+                                              compatibility_id, design_tag, design_loaded, design_code,
+                                              design_message) == SYNTH_OK);
+    SYNTH_TEST_CHECK(design_tag == synth::ProfileFamilyTag::Qwen3TtsDesign);
+
+    // A real clone (x-vector) envelope loads as Clone, never as Design.
+    constexpr uint32_t                    kEncDim       = 11;
+    const std::shared_ptr<XVectorProfile> clone_payload = make_x_vector_profile(kEncDim);
+    std::vector<uint8_t>                  clone_bytes;
+    SYNTH_TEST_CHECK(serialize_x_vector_profile(*clone_payload, compatibility_id, clone_bytes) == SYNTH_OK);
+
+    synth::ProfileFamilyTag     clone_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> clone_loaded;
+    const char *                clone_code    = nullptr;
+    const char *                clone_message = nullptr;
+    SYNTH_TEST_CHECK(load_profile_from_memory(clone_envelope_hparams(kEncDim), clone_bytes.data(), clone_bytes.size(),
+                                              compatibility_id, clone_tag, clone_loaded, clone_code,
+                                              clone_message) == SYNTH_OK);
+    SYNTH_TEST_CHECK(clone_tag == synth::ProfileFamilyTag::Qwen3TtsClone);
+    return 0;
+}
+
+// The x-vector size check is UNCHANGED: a clone envelope whose element count
+// disagrees with enc_dim is still refused. Pin it here because this task edits
+// the function that performs it.
+int test_a_clone_envelope_with_the_wrong_size_is_still_refused() {
+    uint8_t compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    constexpr uint32_t kDeclaredEncDim = 11;
+
+    // Both directions: an envelope with FEWER elements than the package
+    // declares, and one with MORE. The second is the direction that matters
+    // for THIS task specifically -- weakening `element_count == enc_dim` to
+    // `element_count >= enc_dim` (Step 4's own fault injection) would let a
+    // too-LARGE envelope straight through while still refusing a too-small
+    // one, so a test that only tried the "too small" direction could not see
+    // that exact mutation. Pinning both is what makes the injection below
+    // meaningful rather than accidental.
+    for (uint32_t envelope_enc_dim : { kDeclaredEncDim - 1, kDeclaredEncDim + 1 }) {
+        const std::shared_ptr<XVectorProfile> profile = make_x_vector_profile(envelope_enc_dim);
+        std::vector<uint8_t>                  bytes;
+        SYNTH_TEST_CHECK(serialize_x_vector_profile(*profile, compatibility_id, bytes) == SYNTH_OK);
+
+        synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+        std::shared_ptr<const void> loaded;
+        const char *                code    = nullptr;
+        const char *                message = nullptr;
+        const synth_status_t        status =
+            load_profile_from_memory(clone_envelope_hparams(kDeclaredEncDim), bytes.data(), bytes.size(),
+                                     compatibility_id, family_tag, loaded, code, message);
+        SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(loaded == nullptr);
+    }
+    return 0;
+}
+
+// An empty instruct round-trips as an empty instruct, not as an absent field.
+int test_an_empty_instruct_round_trips() {
+    uint8_t compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    DesignInstruct payload;
+    SYNTH_TEST_CHECK(payload.instruct.empty());
+
+    std::vector<uint8_t> bytes;
+    SYNTH_TEST_CHECK(serialize_design_profile(voice_design_hparams(), payload, compatibility_id, bytes) == SYNTH_OK);
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> loaded;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    SYNTH_TEST_CHECK(load_profile_from_memory(voice_design_hparams(), bytes.data(), bytes.size(), compatibility_id,
+                                              family_tag, loaded, code, message) == SYNTH_OK);
+    SYNTH_TEST_CHECK(family_tag == synth::ProfileFamilyTag::Qwen3TtsDesign);
+    const auto * reloaded = static_cast<const DesignInstruct *>(loaded.get());
+    SYNTH_TEST_CHECK(reloaded->instruct.empty());
+    return 0;
+}
+
 int main() {
     SYNTH_TEST_CHECK(test_design_profile_holds_the_string_verbatim() == 0);
     SYNTH_TEST_CHECK(test_an_empty_instruct_is_accepted() == 0);
@@ -293,5 +481,9 @@ int main() {
     SYNTH_TEST_CHECK(test_create_from_description_refuses_a_malformed_description() == 0);
     SYNTH_TEST_CHECK(test_create_from_description_accepts_both_empty_description_spellings() == 0);
     SYNTH_TEST_CHECK(test_create_from_description_refuses_a_random_seed() == 0);
+    SYNTH_TEST_CHECK(test_design_profile_round_trips() == 0);
+    SYNTH_TEST_CHECK(test_the_two_envelope_kinds_are_not_confusable() == 0);
+    SYNTH_TEST_CHECK(test_a_clone_envelope_with_the_wrong_size_is_still_refused() == 0);
+    SYNTH_TEST_CHECK(test_an_empty_instruct_round_trips() == 0);
     return 0;
 }

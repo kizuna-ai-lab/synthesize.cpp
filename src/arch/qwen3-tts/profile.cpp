@@ -342,8 +342,14 @@ constexpr const char * kEnvelopeSchema         = "qwen3-tts-voice-clone";
 // Serialized Voice Profile envelope rather than invented a third time. A
 // design envelope carries no `kind` key at all: this string is the ONE
 // metadata field a design envelope and a clone envelope both carry under the
-// same name, and it alone is what discriminates them (see
-// load_profile_from_memory's own routing comment, profile.h).
+// same name. It does NOT decide which load path a buffer takes -- routing is
+// the whitelisted key SET/COUNT plus the zero-tensor shape
+// (prescan_design_buffer never inspects this value at all), and reachable
+// before gguf_init_from_buffer has run, let alone before this field's
+// content is decoded. This string is compared only AFTER routing has
+// already picked the design branch, to CONFIRM the envelope rather than to
+// decide which branch runs (see load_profile_from_memory's own routing
+// comment, profile.h).
 constexpr const char * kEnvelopeSchemaDesign   = "qwen3-tts-voice-design";
 constexpr uint32_t     kEnvelopeSchemaVersion  = 1;
 constexpr const char * kKindXVector            = "x-vector";
@@ -1214,38 +1220,21 @@ bool prescan_buffer(const uint8_t * data, size_t size) {
 // file list. A design envelope shares only the seven truly generic header
 // keys with a clone one (architecture/format_version/model_family/schema/
 // schema_version/compatibility_id/content_sha256) and carries NEITHER `kind`
-// nor any clone-only field: `schema` alone discriminates it
-// (kEnvelopeSchemaDesign vs kEnvelopeSchema), which is the whole reason this
-// envelope has its own schema string rather than a third `kind` value. This
+// nor any clone-only field. Its whitelisted key SET/COUNT/zero-tensor shape
+// -- not the `schema` VALUE -- is what routes a buffer here in the first
+// place (see load_profile_from_memory's own routing comment below); `schema`
+// is read and compared only AFTER routing already picked this branch,
+// confirming rather than deciding. `DesignPrescanKeySpec`/
+// `kPrescanDesignKnownKeys`/`kPrescanDesignKnownKeyCount`/`kPrescanKvCountDesign`
+// live in profile.h beside their clone counterparts, for the same reason
+// those do: tests/qwen3_tts_profile_test.cpp's own writer-agreement tests
+// drive the REAL serialize_design_profile and check its real output's key
+// set against this SAME table, not a second hand-transcription of it. This
 // walk reuses every low-level, already-fuzzed-hardened primitive prescan_buffer
 // itself uses (prescan_read/prescan_read_bytes/prescan_has_remaining/
 // prescan_skip_value/kPrescanMaxKeyLength/kPrescanMaxStringLength) -- only the
 // per-kind shape it validates against differs.
 // ---------------------------------------------------------------------------
-
-struct DesignPrescanKeySpec {
-    const char * key;
-    gguf_type    type;
-    bool         is_array;
-    uint64_t     count;
-};
-
-// The exact, closed set of metadata keys serialize_design_profile ever emits:
-// eight, all required, none optional -- there is only one design shape, so
-// there is no per-"kind" split the way the clone table needs one.
-constexpr DesignPrescanKeySpec kPrescanDesignKnownKeys[] = {
-    { "general.architecture",                      GGUF_TYPE_STRING, false, 0  },
-    { "synthesize.voice_profile.format_version",   GGUF_TYPE_UINT32, false, 0  },
-    { "synthesize.voice_profile.model_family",     GGUF_TYPE_STRING, false, 0  },
-    { "synthesize.voice_profile.schema",           GGUF_TYPE_STRING, false, 0  },
-    { "synthesize.voice_profile.schema_version",   GGUF_TYPE_UINT32, false, 0  },
-    { "synthesize.voice_profile.compatibility_id", GGUF_TYPE_UINT8,  true,  32 },
-    { "synthesize.voice_profile.content_sha256",   GGUF_TYPE_UINT8,  true,  32 },
-    { kKeyInstruct,                                GGUF_TYPE_STRING, false, 0  },
-};
-constexpr size_t  kPrescanDesignKnownKeyCount = sizeof(kPrescanDesignKnownKeys) / sizeof(kPrescanDesignKnownKeys[0]);
-// Exactly eight, never a ceiling -- this writer never produces anything else.
-constexpr int64_t kPrescanKvCountDesign       = int64_t(kPrescanDesignKnownKeyCount);
 
 // Positive validation for a design envelope's raw bytes, the identical
 // defensive reason prescan_buffer exists for a clone one (see that function's
@@ -1526,14 +1515,18 @@ synth_status_t serialize_design_profile(const HParams &        hparams,
     static constexpr uint8_t kZeroDigest[32] = {};
     gguf_set_arr_data(ctx.get(), kKeyContentSha256, GGUF_TYPE_UINT8, kZeroDigest, 32);
     // Known gap, the same one set_common_metadata's own comment records for
-    // `language_tag`: gguf_set_val_str takes a null-terminated `const char *`
-    // with no length-aware counterpart in ggml/include/gguf.h, so an EMBEDDED
-    // NUL in `instruct` silently truncates here. NUL (U+0000) is a
+    // `language_tag`, and symmetric at BOTH ends: gguf's KV API has no
+    // length-aware string setter OR getter (ggml/include/gguf.h), only a
+    // null-terminated `const char *` pair, so an EMBEDDED NUL in `instruct`
+    // silently truncates on the way OUT here (gguf_set_val_str) and again on
+    // the way IN at load (GgufMetadata::string, which resolves to the same
+    // API) -- a 16-byte instruct with a NUL at index 4 round-trips as a
+    // 4-byte one on both ends, not just this one. NUL (U+0000) is a
     // structurally valid code point, so is_well_formed_utf8 above does not
     // catch it; fixing this for real would mean bypassing gguf's own KV
-    // setter API for this one field, which set_common_metadata's own comment
-    // explains the cost of. Left as a known, named gap rather than silently
-    // reproduced.
+    // setter/getter API for this one field, which set_common_metadata's own
+    // comment explains the cost of. Left as a known, named gap rather than
+    // silently reproduced.
     gguf_set_val_str(ctx.get(), kKeyInstruct, profile.instruct.c_str());
 
     // No tensor: see this function's own header comment (profile.h) for why

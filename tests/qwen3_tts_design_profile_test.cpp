@@ -9,13 +9,18 @@
 
 #include "arch/qwen3-tts/profile.h"
 #include "arch/qwen3-tts/weights.h"
+#include "gguf.h"
 #include "model-handle.h"
+#include "sha256.h"
 #include "synthesize.h"
 #include "test-assert.h"
 #include "voice-profile-handle.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -24,6 +29,9 @@ using synth::qwen3tts::create_design_profile;
 using synth::qwen3tts::DesignInstruct;
 using synth::qwen3tts::HParams;
 using synth::qwen3tts::kMaxDesignInstructBytes;
+using synth::qwen3tts::kPrescanDesignKnownKeyCount;
+using synth::qwen3tts::kPrescanDesignKnownKeys;
+using synth::qwen3tts::kPrescanKvCountDesign;
 using synth::qwen3tts::load_profile_from_memory;
 using synth::qwen3tts::serialize_design_profile;
 using synth::qwen3tts::serialize_x_vector_profile;
@@ -343,6 +351,266 @@ std::shared_ptr<XVectorProfile> make_x_vector_profile(uint32_t enc_dim) {
     return profile;
 }
 
+// ---------------------------------------------------------------------------
+// Reviewer follow-up (fix round 1): low-level raw-byte helpers for the
+// shared-header tamper matrix and the two design-only load-side refusals
+// below. Written out here rather than shared with
+// tests/qwen3_tts_profile_test.cpp's own file-local copies of the same
+// shapes (`find_string_value`, `find_u32_value`, `find_u8_32_value`,
+// `reseal`, `emitted_keys_of`, `put`/`put_bytes`/`put_gguf_string`) -- this
+// project's own house convention for test-file-local utilities, the same
+// reason profile.cpp's own envelope framing is duplicated rather than
+// shared across families (see this file's earlier comment on
+// prescan_design_buffer).
+// ---------------------------------------------------------------------------
+
+void put_bytes(std::vector<uint8_t> & out, const void * data, size_t size) {
+    const auto * bytes = static_cast<const uint8_t *>(data);
+    out.insert(out.end(), bytes, bytes + size);
+}
+
+template <typename T> void put(std::vector<uint8_t> & out, T value) {
+    put_bytes(out, &value, sizeof(value));
+}
+
+void put_gguf_string(std::vector<uint8_t> & out, const std::string & value) {
+    put<uint64_t>(out, uint64_t(value.size()));
+    put_bytes(out, value.data(), value.size());
+}
+
+// Locates the byte OFFSET of a STRING KV's own VALUE bytes (after its own
+// length prefix), by searching for that entry's on-disk encoding prefix.
+bool find_string_value(const std::vector<uint8_t> & bytes,
+                       const std::string &          key,
+                       size_t &                     out_offset,
+                       size_t &                     out_length) {
+    std::vector<uint8_t> needle;
+    put<uint64_t>(needle, uint64_t(key.size()));
+    put_bytes(needle, key.data(), key.size());
+    put<int32_t>(needle, int32_t(GGUF_TYPE_STRING));
+    const auto found = std::search(bytes.begin(), bytes.end(), needle.begin(), needle.end());
+    if (found == bytes.end()) {
+        return false;
+    }
+    size_t offset = size_t(found - bytes.begin()) + needle.size();
+    if (offset + sizeof(uint64_t) > bytes.size()) {
+        return false;
+    }
+    uint64_t length = 0;
+    std::memcpy(&length, bytes.data() + offset, sizeof(length));
+    offset += sizeof(length);
+    if (offset + length > bytes.size()) {
+        return false;
+    }
+    out_offset = offset;
+    out_length = size_t(length);
+    return true;
+}
+
+// Locates the byte OFFSET of a UINT32 KV's own VALUE bytes.
+bool find_u32_value(const std::vector<uint8_t> & bytes, const std::string & key, size_t & out_offset) {
+    std::vector<uint8_t> needle;
+    put<uint64_t>(needle, uint64_t(key.size()));
+    put_bytes(needle, key.data(), key.size());
+    put<int32_t>(needle, int32_t(GGUF_TYPE_UINT32));
+    const auto found = std::search(bytes.begin(), bytes.end(), needle.begin(), needle.end());
+    if (found == bytes.end()) {
+        return false;
+    }
+    const size_t offset = size_t(found - bytes.begin()) + needle.size();
+    if (offset + sizeof(uint32_t) > bytes.size()) {
+        return false;
+    }
+    out_offset = offset;
+    return true;
+}
+
+// Locates the byte OFFSET of a 32-element uint8 array KV's own VALUE bytes.
+bool find_u8_32_value(const std::vector<uint8_t> & bytes, const std::string & key, size_t & out_offset) {
+    std::vector<uint8_t> needle;
+    put<uint64_t>(needle, uint64_t(key.size()));
+    put_bytes(needle, key.data(), key.size());
+    put<int32_t>(needle, int32_t(GGUF_TYPE_ARRAY));
+    put<int32_t>(needle, int32_t(GGUF_TYPE_UINT8));
+    put<uint64_t>(needle, uint64_t(32));
+    const auto found = std::search(bytes.begin(), bytes.end(), needle.begin(), needle.end());
+    if (found == bytes.end()) {
+        return false;
+    }
+    const size_t offset = size_t(found - bytes.begin()) + needle.size();
+    if (offset + 32 > bytes.size()) {
+        return false;
+    }
+    out_offset = offset;
+    return true;
+}
+
+// Re-computes `content_sha256` over a buffer whose bytes were edited after
+// sealing (hand-built or writer-produced) -- the same two-step
+// docs/c-interface.md prescribes (hash with that field zeroed, then write
+// the digest back), so a value-level tamper reaches the check aimed at it
+// instead of stopping at the digest comparison in front of it.
+bool reseal(std::vector<uint8_t> & bytes) {
+    size_t offset = 0;
+    if (!find_u8_32_value(bytes, "synthesize.voice_profile.content_sha256", offset)) {
+        return false;
+    }
+    std::memset(bytes.data() + offset, 0, 32);
+    uint8_t digest[32];
+    synth::sha256(bytes.data(), bytes.size(), digest);
+    std::memcpy(bytes.data() + offset, digest, sizeof(digest));
+    return true;
+}
+
+// Reads back the metadata key set of an envelope this file's real writers
+// produced, through ggml's own parser rather than through profile.cpp's
+// hand-rolled prescan walk -- so writer and whitelist are compared across
+// two independent decoders. Mirrors
+// tests/qwen3_tts_profile_test.cpp's own helper of the same name.
+std::set<std::string> emitted_keys_of(const std::vector<uint8_t> & bytes) {
+    gguf_init_params init_params{};
+    init_params.no_alloc = true;
+    init_params.ctx      = nullptr;
+    gguf_context * ctx   = gguf_init_from_buffer(bytes.data(), bytes.size(), init_params);
+    if (ctx == nullptr) {
+        return {};
+    }
+    std::set<std::string> keys;
+    const int64_t         n_kv = gguf_get_n_kv(ctx);
+    for (int64_t index = 0; index < n_kv; ++index) {
+        keys.insert(gguf_get_key(ctx, index));
+    }
+    gguf_free(ctx);
+    return keys;
+}
+
+void put_kv_string(std::vector<uint8_t> & out, const std::string & key, const std::string & value) {
+    put_gguf_string(out, key);
+    put<int32_t>(out, int32_t(GGUF_TYPE_STRING));
+    put_gguf_string(out, value);
+}
+
+void put_kv_u32(std::vector<uint8_t> & out, const std::string & key, uint32_t value) {
+    put_gguf_string(out, key);
+    put<int32_t>(out, int32_t(GGUF_TYPE_UINT32));
+    put<uint32_t>(out, value);
+}
+
+void put_kv_u8_array32(std::vector<uint8_t> & out, const std::string & key, const uint8_t (&value)[32]) {
+    put_gguf_string(out, key);
+    put<int32_t>(out, int32_t(GGUF_TYPE_ARRAY));
+    put<int32_t>(out, int32_t(GGUF_TYPE_UINT8));
+    put<uint64_t>(out, uint64_t(32));
+    put_bytes(out, value, 32);
+}
+
+// Hand-builds a complete, UNSEALED design envelope carrying an ARBITRARY
+// `instruct` value -- bytes serialize_design_profile itself would refuse to
+// produce (over kMaxDesignInstructBytes, or not well-formed UTF-8), needed
+// to exercise load_profile_from_memory's OWN independent re-check of both
+// invariants rather than only the writer's. Mirrors
+// tests/qwen3_tts_profile_test.cpp's own assemble_hand_built /
+// common_kv_bytes technique, at this envelope's own eight-key, zero-tensor
+// shape (kPrescanDesignKnownKeys, profile.h). `content_sha256` is written as
+// 32 zero bytes -- callers must `reseal()` before loading, the same
+// two-step every caller of tests/qwen3_tts_profile_test.cpp's own
+// hand-built buffers performs explicitly rather than having it happen
+// silently inside the builder.
+std::vector<uint8_t> hand_build_design_bytes(const uint8_t (&compatibility_id)[32], const std::string & instruct) {
+    std::vector<uint8_t> kv;
+    put_kv_string(kv, "general.architecture", "synthprofile");
+    put_kv_u32(kv, "synthesize.voice_profile.format_version", 1);
+    put_kv_string(kv, "synthesize.voice_profile.model_family", "qwen3-tts");
+    put_kv_string(kv, "synthesize.voice_profile.schema", "qwen3-tts-voice-design");
+    put_kv_u32(kv, "synthesize.voice_profile.schema_version", 1);
+    put_kv_u8_array32(kv, "synthesize.voice_profile.compatibility_id", compatibility_id);
+    const uint8_t zero_digest[32] = {};
+    put_kv_u8_array32(kv, "synthesize.voice_profile.content_sha256", zero_digest);
+    put_kv_string(kv, "synthesize.voice_profile.instruct", instruct);
+
+    std::vector<uint8_t> bytes;
+    put_bytes(bytes, GGUF_MAGIC, 4);
+    put<uint32_t>(bytes, uint32_t(GGUF_VERSION));
+    put<int64_t>(bytes, int64_t(0));  // n_tensors -- a design envelope carries none
+    put<int64_t>(bytes, kPrescanKvCountDesign);
+    put_bytes(bytes, kv.data(), kv.size());
+    while (bytes.size() % GGUF_DEFAULT_ALIGNMENT != 0) {
+        bytes.push_back(0);
+    }
+    return bytes;
+}
+
+// ---------------------------------------------------------------------------
+// The shared-header tamper matrix (reviewer's own table, fix round 1): the
+// seven metadata keys set_common_metadata (clone side) and
+// hand_build_design_bytes's own header emit alike, each tampered one at a
+// time and checked against the SAME expected status on BOTH envelope kinds.
+// This is the guard for the ~40 lines of header-validation logic duplicated
+// between load_profile_from_memory's design branch and its clone branch: a
+// divergence between the two copies becomes a failing assertion here instead
+// of a comment nobody re-checks.
+// ---------------------------------------------------------------------------
+
+enum class TamperKind { kString, kU32, kU8Array32 };
+
+struct HeaderTamperCase {
+    const char *   key;
+    TamperKind     kind;
+    synth_status_t expected_status;
+};
+
+constexpr HeaderTamperCase kSharedHeaderTamperCases[] = {
+    { "general.architecture",                      TamperKind::kString,    SYNTH_ERR_INVALID_ARG       },
+    { "synthesize.voice_profile.model_family",     TamperKind::kString,    SYNTH_ERR_UNSUPPORTED_VOICE },
+    { "synthesize.voice_profile.schema",           TamperKind::kString,    SYNTH_ERR_UNSUPPORTED_VOICE },
+    { "synthesize.voice_profile.format_version",   TamperKind::kU32,       SYNTH_ERR_INVALID_ARG       },
+    { "synthesize.voice_profile.schema_version",   TamperKind::kU32,       SYNTH_ERR_UNSUPPORTED_VOICE },
+    { "synthesize.voice_profile.compatibility_id", TamperKind::kU8Array32, SYNTH_ERR_UNSUPPORTED_VOICE },
+    { "synthesize.voice_profile.content_sha256",   TamperKind::kU8Array32, SYNTH_ERR_INVALID_ARG       },
+};
+
+// Corrupts `bytes` in place at the named key's own value bytes -- one byte
+// flipped for a STRING or a U8[32] array (never touching the length prefix,
+// so the buffer's own structure and every OTHER offset stay intact), a
+// fixed wrong sentinel for a UINT32 (both this schema's real values are 1,
+// so any value other than 1 disagrees). No digest reseal: every one of
+// these seven fields is read and compared BEFORE the digest check in both
+// load_profile_from_memory branches except content_sha256 itself, which the
+// digest check is aimed at directly.
+bool apply_header_tamper(std::vector<uint8_t> & bytes, const HeaderTamperCase & tamper_case) {
+    switch (tamper_case.kind) {
+        case TamperKind::kString:
+            {
+                size_t offset = 0, length = 0;
+                if (!find_string_value(bytes, tamper_case.key, offset, length) || length == 0) {
+                    return false;
+                }
+                bytes[offset] ^= 0xFF;
+                return true;
+            }
+        case TamperKind::kU32:
+            {
+                size_t offset = 0;
+                if (!find_u32_value(bytes, tamper_case.key, offset)) {
+                    return false;
+                }
+                const uint32_t wrong_value = 0xFFFFFFFFu;
+                std::memcpy(bytes.data() + offset, &wrong_value, sizeof(wrong_value));
+                return true;
+            }
+        case TamperKind::kU8Array32:
+            {
+                size_t offset = 0;
+                if (!find_u8_32_value(bytes, tamper_case.key, offset)) {
+                    return false;
+                }
+                bytes[offset] ^= 0xFF;
+                return true;
+            }
+    }
+    return false;
+}
+
 }  // namespace
 
 // Round-trip: serialize a design Profile, load the bytes back, and get the same
@@ -471,6 +739,149 @@ int test_an_empty_instruct_round_trips() {
     return 0;
 }
 
+// =============================================================================
+// Fix round 1 (reviewer follow-up on Task 3's review): the design branch's
+// own copy of the shared header validation had zero committed coverage.
+// This is the parameterised guard the reviewer designed for it -- one table,
+// run against a REAL design envelope and a REAL clone envelope alike, each
+// field's status checked identically on both. It closes two of the
+// reviewer's four named refusals (content_sha256 / digest mismatch,
+// compatibility_id mismatch) as shared cases; the other two
+// (kMaxDesignInstructBytes at load, invalid UTF-8 at load) have no clone-side
+// counterpart to parameterise against -- an XVectorProfile carries no
+// `instruct` -- and get their own dedicated tests below instead.
+//
+// This is also the guard that converts "the ~40 duplicated lines are a
+// deliberate trade-off" from a comment into something that fails when the
+// trade-off stops holding: see the report's own fault-injection evidence for
+// this specific test catching a status divergence between the two branches.
+// =============================================================================
+
+int test_shared_header_tampers_produce_identical_statuses_for_both_envelope_kinds() {
+    uint8_t compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+
+    DesignInstruct design_payload;
+    design_payload.instruct = "a description, unremarkable on purpose";
+    std::vector<uint8_t> design_base;
+    SYNTH_TEST_CHECK(serialize_design_profile(voice_design_hparams(), design_payload, compatibility_id, design_base) ==
+                     SYNTH_OK);
+    SYNTH_TEST_CHECK(!design_base.empty());
+
+    constexpr uint32_t                    kEncDim       = 11;
+    const std::shared_ptr<XVectorProfile> clone_payload = make_x_vector_profile(kEncDim);
+    std::vector<uint8_t>                  clone_base;
+    SYNTH_TEST_CHECK(serialize_x_vector_profile(*clone_payload, compatibility_id, clone_base) == SYNTH_OK);
+    SYNTH_TEST_CHECK(!clone_base.empty());
+
+    for (const HeaderTamperCase & tamper_case : kSharedHeaderTamperCases) {
+        std::vector<uint8_t> design_bytes = design_base;
+        std::vector<uint8_t> clone_bytes  = clone_base;
+        SYNTH_TEST_CHECK(apply_header_tamper(design_bytes, tamper_case));
+        SYNTH_TEST_CHECK(apply_header_tamper(clone_bytes, tamper_case));
+
+        synth::ProfileFamilyTag     design_tag = synth::ProfileFamilyTag::None;
+        std::shared_ptr<const void> design_loaded;
+        const char *                design_code    = nullptr;
+        const char *                design_message = nullptr;
+        const synth_status_t        design_status =
+            load_profile_from_memory(voice_design_hparams(), design_bytes.data(), design_bytes.size(), compatibility_id,
+                                     design_tag, design_loaded, design_code, design_message);
+
+        synth::ProfileFamilyTag     clone_tag = synth::ProfileFamilyTag::None;
+        std::shared_ptr<const void> clone_loaded;
+        const char *                clone_code    = nullptr;
+        const char *                clone_message = nullptr;
+        const synth_status_t        clone_status =
+            load_profile_from_memory(clone_envelope_hparams(kEncDim), clone_bytes.data(), clone_bytes.size(),
+                                     compatibility_id, clone_tag, clone_loaded, clone_code, clone_message);
+
+        SYNTH_TEST_CHECK(design_status == tamper_case.expected_status);
+        SYNTH_TEST_CHECK(clone_status == tamper_case.expected_status);
+        SYNTH_TEST_CHECK(design_loaded == nullptr);
+        SYNTH_TEST_CHECK(clone_loaded == nullptr);
+    }
+    return 0;
+}
+
+// The remaining two of the reviewer's four named refusals: neither has a
+// clone-side counterpart (an XVectorProfile carries no `instruct`), so each
+// gets its own dedicated test against a HAND-BUILT, re-sealed envelope --
+// bytes serialize_design_profile itself would refuse to produce, needed to
+// reach load_profile_from_memory's OWN independent re-check rather than only
+// the writer's (the same "our own writer must never emit what our own reader
+// refuses" reasoning kMaxLanguageTagLength's own header comment records for
+// the clone path, mirrored here on the read side instead).
+
+int test_design_instruct_over_length_is_refused_at_load() {
+    uint8_t compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    const std::string    oversized(size_t(kMaxDesignInstructBytes) + 1, 'a');
+    std::vector<uint8_t> bytes = hand_build_design_bytes(compatibility_id, oversized);
+    SYNTH_TEST_CHECK(reseal(bytes));
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> loaded;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    const synth_status_t        status  = load_profile_from_memory(voice_design_hparams(), bytes.data(), bytes.size(),
+                                                                   compatibility_id, family_tag, loaded, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(loaded == nullptr);
+    return 0;
+}
+
+int test_design_instruct_invalid_utf8_is_refused_at_load() {
+    uint8_t compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    // A lone continuation byte -- structurally a valid (short) GGUF string,
+    // and well within kMaxDesignInstructBytes, so this arm and the length
+    // arm above are independent: neither can pass by accident of the other.
+    std::vector<uint8_t> bytes = hand_build_design_bytes(compatibility_id, "\x80");
+    SYNTH_TEST_CHECK(reseal(bytes));
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> loaded;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    const synth_status_t        status  = load_profile_from_memory(voice_design_hparams(), bytes.data(), bytes.size(),
+                                                                   compatibility_id, family_tag, loaded, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(loaded == nullptr);
+    return 0;
+}
+
+// =============================================================================
+// Unblocked writer-agreement test (reviewer follow-up): kPrescanDesignKnownKeys
+// moved from profile.cpp's anonymous namespace to profile.h so this test can
+// reach it -- modelled on
+// tests/qwen3_tts_profile_test.cpp's own test_writer_emits_exactly_the_whitelisted_keys
+// / test_the_icl_writer_emits_exactly_the_whitelisted_keys. A key REMOVED
+// from serialize_design_profile while left in kPrescanDesignKnownKeys would
+// be a silently too-permissive whitelist that nothing else in this file
+// would notice.
+// =============================================================================
+
+int test_the_design_writer_emits_exactly_the_whitelisted_keys() {
+    uint8_t compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    DesignInstruct payload;
+    payload.instruct = "a description, unremarkable on purpose";
+    std::vector<uint8_t> bytes;
+    SYNTH_TEST_CHECK(serialize_design_profile(voice_design_hparams(), payload, compatibility_id, bytes) == SYNTH_OK);
+    SYNTH_TEST_CHECK(!bytes.empty());
+    const std::set<std::string> emitted_keys = emitted_keys_of(bytes);
+
+    std::set<std::string> expected_keys;
+    for (size_t index = 0; index < kPrescanDesignKnownKeyCount; ++index) {
+        expected_keys.insert(kPrescanDesignKnownKeys[index].key);
+    }
+
+    SYNTH_TEST_CHECK(emitted_keys == expected_keys);
+    SYNTH_TEST_CHECK(int64_t(emitted_keys.size()) == kPrescanKvCountDesign);
+    return 0;
+}
+
 int main() {
     SYNTH_TEST_CHECK(test_design_profile_holds_the_string_verbatim() == 0);
     SYNTH_TEST_CHECK(test_an_empty_instruct_is_accepted() == 0);
@@ -485,5 +896,9 @@ int main() {
     SYNTH_TEST_CHECK(test_the_two_envelope_kinds_are_not_confusable() == 0);
     SYNTH_TEST_CHECK(test_a_clone_envelope_with_the_wrong_size_is_still_refused() == 0);
     SYNTH_TEST_CHECK(test_an_empty_instruct_round_trips() == 0);
+    SYNTH_TEST_CHECK(test_shared_header_tampers_produce_identical_statuses_for_both_envelope_kinds() == 0);
+    SYNTH_TEST_CHECK(test_design_instruct_over_length_is_refused_at_load() == 0);
+    SYNTH_TEST_CHECK(test_design_instruct_invalid_utf8_is_refused_at_load() == 0);
+    SYNTH_TEST_CHECK(test_the_design_writer_emits_exactly_the_whitelisted_keys() == 0);
     return 0;
 }

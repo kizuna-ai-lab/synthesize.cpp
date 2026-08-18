@@ -461,6 +461,49 @@ inline constexpr size_t kPrescanKnownKeyCount = sizeof(kPrescanKnownKeys) / size
 inline constexpr int64_t kPrescanKvCountXVector = 10;
 inline constexpr int64_t kPrescanKvCountIcl     = 12;
 
+// Task 3's design envelope has its own, wholly separate whitelist table
+// rather than a third PrescanKeyScope grafted onto kPrescanKnownKeys above:
+// moving `kind`/`ref_rms`/`language_tag` out of kCommon to make room for a
+// design-only scope would silently shrink what
+// tests/qwen3_tts_profile_test.cpp's own writer-agreement tests compute by
+// filtering that table on `scope == kCommon` / `kCommon || kIclOnly`, and
+// break them. There is no per-"kind" split the way PrescanKeySpec needs one
+// -- there is only one design shape -- so DesignPrescanKeySpec carries no
+// `scope` field at all.
+//
+// Declared here, `inline constexpr` at namespace scope like
+// kPrescanKnownKeys above, for the identical reason: a writer-agreement test
+// (tests/qwen3_tts_profile_test.cpp) drives the REAL serialize_design_profile
+// and checks its real output's key set against this SAME table, rather than
+// a second hand-transcription of it.
+struct DesignPrescanKeySpec {
+    const char * key;
+    gguf_type    type;
+    bool         is_array;
+    uint64_t     count;
+};
+
+// The exact, closed set of metadata keys serialize_design_profile ever
+// emits: eight, all required, none optional. Spelled as raw literals here
+// rather than through profile.cpp's own kKeyInstruct constant, matching how
+// kPrescanKnownKeys above spells its own ten clone keys -- this table has to
+// be usable by a test without depending on anything file-local to
+// profile.cpp.
+inline constexpr DesignPrescanKeySpec kPrescanDesignKnownKeys[] = {
+    { "general.architecture",                      GGUF_TYPE_STRING, false, 0  },
+    { "synthesize.voice_profile.format_version",   GGUF_TYPE_UINT32, false, 0  },
+    { "synthesize.voice_profile.model_family",     GGUF_TYPE_STRING, false, 0  },
+    { "synthesize.voice_profile.schema",           GGUF_TYPE_STRING, false, 0  },
+    { "synthesize.voice_profile.schema_version",   GGUF_TYPE_UINT32, false, 0  },
+    { "synthesize.voice_profile.compatibility_id", GGUF_TYPE_UINT8,  true,  32 },
+    { "synthesize.voice_profile.content_sha256",   GGUF_TYPE_UINT8,  true,  32 },
+    { "synthesize.voice_profile.instruct",         GGUF_TYPE_STRING, false, 0  },
+};
+inline constexpr size_t kPrescanDesignKnownKeyCount =
+    sizeof(kPrescanDesignKnownKeys) / sizeof(kPrescanDesignKnownKeys[0]);
+// Exactly eight, never a ceiling -- this writer never produces anything else.
+inline constexpr int64_t kPrescanKvCountDesign = int64_t(kPrescanDesignKnownKeyCount);
+
 // Serializes `profile` into a fresh v1 envelope. `compatibility_id` is the
 // Loaded Model's own 32-byte Profile Compatibility ID (already decoded from
 // the package's hex metadata by model-handle.h's

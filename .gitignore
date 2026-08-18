@@ -30,6 +30,21 @@ CMakeUserPresets.json
 # for the next `git add -A` rather than a deliberate omission each time.
 /reports/porting/**/convert.json
 
+# The same hole, a second shape. scripts/dump_reference_qwen3_tts_voicedesign.py
+# (Stage 3 Plan 1 Task 7) writes its captured oracle tensors under
+# reports/porting/<family>/<variant>/oracle/ -- prefill.f32, codes.i32,
+# waveform.f32, result.json -- rather than under build/goldens/..., which is
+# where this family's other dumpers default and which /build/ above already
+# ignores. That path was the plan's own instruction, not an accident, but the
+# payload itself is exactly the golden-payload class docs/testing.md's
+# "commit golden contracts, not golden payloads" rule refuses: several hundred
+# KB of float32/int32 per case, mechanically regenerable from the checkpoint.
+# Matches only an "oracle" entry directly inside a variant directory, so
+# intake.json/tensor-inventory.json/_porting-log.md and friends one level up
+# stay committable. No trailing slash, for the same symlink reason as the
+# block above.
+/reports/porting/**/oracle
+
 # Agent scratch. Nothing here is a project artifact: it is whatever a session
 # wrote while investigating. Added 2026-08-10 after `git add -A` swept 56 files
 # and 9.0 MB of rate-sweep probes, WAVs and f32 dumps into a commit -- the

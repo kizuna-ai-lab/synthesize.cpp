@@ -283,6 +283,22 @@ int main(int argc, char ** argv) {
     const size_t hidden_size = size_t(hparams.talker.hidden_size);
     const size_t positions   = prompt.positions.size();
 
+    // The port's own shape, checked with the same rigor the oracle's is
+    // checked below. This gate's whole subject is "a shape mismatch is what
+    // this comparison catches" (see the fault-injection record in
+    // tests/tolerances/qwen3-tts.json), so the driver should not trust its
+    // own tensor came out the size build_talker_prompt/flatten_talker_prompt
+    // promised without checking. Guaranteed today -- ggml_backend_graph_compute
+    // already succeeded on a tensor build_talker_prefill_input sized itself --
+    // and checked anyway, the same discipline
+    // tests/qwen3_tts_codec_encoder_driver.cpp applies to its own two-run
+    // bit-equality check on a guarantee it could also have trusted silently.
+    if (hidden_size == 0 || got_prefill.size() != positions * hidden_size) {
+        std::fprintf(stderr, "this port's own prefill holds %zu floats, expected %zu positions x %zu hidden = %zu\n",
+                     got_prefill.size(), positions, hidden_size, positions * hidden_size);
+        return 1;
+    }
+
     std::printf(
         "{\"variant\": \"%s\", \"positions\": %zu, \"hidden_size\": %zu, \"codec_offset\": %lld, "
         "\"external_speaker_index\": %lld, \"has_speaker\": %s, \"has_reference\": %s",

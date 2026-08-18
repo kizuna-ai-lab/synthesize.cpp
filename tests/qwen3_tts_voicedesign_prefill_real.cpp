@@ -2,14 +2,25 @@
 // instruct, against the real 1.7B VoiceDesign package, with the speaker slot
 // correctly ABSENT.
 //
-// Adapter, not a test -- the same role qwen3_tts_replay_real.cpp and
-// qwen3_tts_codec_encoder_driver.cpp already play in this directory (see
-// their own header comments): it asserts nothing and prints what it
-// observed, including the p95-relative distance against a supplied oracle
-// prefill when one is given. Registered with synth_register_integration_target
-// only, no CTest add_test -- the tolerance cell this driver's output feeds
-// lives in tests/tolerances/qwen3-tts.json, recorded by hand from this
-// binary's own printed "p95_relative", not enforced inside it.
+// Prints what it observed, always -- an oracle-relative comparison (when an
+// oracle path is given) and, since Task 7's fix round 2, the enforcement
+// decision (when a max-relative bound is also given). Without a bound this
+// binary behaves exactly like qwen3_tts_replay_real.cpp and
+// qwen3_tts_codec_encoder_driver.cpp: an adapter that asserts nothing, useful
+// for manual runs. WITH a bound -- which is how tests/CMakeLists.txt's
+// registration below always invokes it -- it exits non-zero when the shapes
+// disagree or the measured p95-relative distance exceeds the bound, so it is
+// no longer merely an adapter in that mode: it is the thing that makes
+// tests/tolerances/qwen3-tts.json's committed cell actually enforced, the
+// same shape tests/qwen3_tts_icl_prompt_real.cpp already has for
+// prompt.icl_embed. The earlier revision of this file printed the number and
+// let a human copy it into the JSON by hand; a review found that left the
+// completion gate enforcing nothing -- the faulted binary exited 0 -- and
+// docs/superpowers/plans/2026-08-18-qwen3-tts-stage-3-plan-1-voicedesign-package.md's
+// Task 7 Step 3 carries the erratum recording the plan text this corrects.
+// Still registered with synth_register_integration_target only and still an
+// integration target behind -DSYNTH_BUILD_INTEGRATION_TESTS=ON -- only the
+// exit code changed, not the tier.
 //
 // WHY THIS TAKES TEXT AND LANGUAGE RATHER THAN THE ORACLE'S OWN TOKEN IDS.
 // tests/qwen3_tts_replay_real.cpp and tests/qwen3_tts_icl_prompt_real.cpp both
@@ -55,6 +66,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <memory>
@@ -139,11 +151,16 @@ bool fetch(ggml_tensor * tensor, std::vector<float> & out) {
 }  // namespace
 
 int main(int argc, char ** argv) {
-    if (argc != 5 && argc != 6) {
+    if (argc < 5 || argc > 7) {
         std::fprintf(stderr,
-                     "usage: %s <model.gguf> <text> <language> <out-prefill.f32> [oracle-prefill.f32]\n"
-                     "  the fifth argument is optional -- when given, this driver also prints the\n"
-                     "  p95-relative distance between its own prefill and the oracle's\n",
+                     "usage: %s <model.gguf> <text> <language> <out-prefill.f32> [oracle-prefill.f32] "
+                     "[max-relative]\n"
+                     "  oracle-prefill.f32 is optional -- when given, this driver also prints the\n"
+                     "  p95-relative distance between its own prefill and the oracle's.\n"
+                     "  max-relative is optional and requires oracle-prefill.f32 -- when given, this\n"
+                     "  driver exits non-zero if the shapes disagree or the measured p95-relative\n"
+                     "  distance exceeds it, which is what makes this the completion gate rather than\n"
+                     "  an observation of it.\n",
                      argv[0]);
         return 2;
     }
@@ -151,8 +168,24 @@ int main(int argc, char ** argv) {
     const std::string text(argv[2]);
     const std::string language(argv[3]);
     const std::string out_path(argv[4]);
-    const bool        have_oracle = argc == 6;
-    const std::string oracle_path = have_oracle ? argv[5] : std::string();
+    const bool        have_oracle  = argc >= 6;
+    const std::string oracle_path  = have_oracle ? argv[5] : std::string();
+    // Requires argc == 7, which is only reachable once argc >= 6 already
+    // held, so a bound is never accepted without an oracle to score it
+    // against.
+    const bool        have_bound   = argc == 7;
+    double            max_relative = 0.0;
+    if (have_bound) {
+        max_relative = std::strtod(argv[6], nullptr);
+        // A missing or malformed bound must not silently become 0 (every
+        // comparison fails) or a huge number (every comparison passes) --
+        // the same guard tests/qwen3_tts_icl_prompt_real.cpp applies to the
+        // bound it reads.
+        if (!(max_relative > 0.0 && max_relative < 1.0)) {
+            std::fprintf(stderr, "max-relative must be in (0, 1), got '%s'\n", argv[6]);
+            return 2;
+        }
+    }
 
     std::unique_ptr<synth::qwen3tts::Model> model;
     synth_status_t                          status = synth::qwen3tts::Model::load_cpu(model_path, model);
@@ -306,6 +339,12 @@ int main(int argc, char ** argv) {
         (long long) prompt.external_speaker_index, request.has_speaker ? "true" : "false",
         request.has_reference ? "true" : "false");
 
+    // Set only inside the have_oracle branch below; used after the closing
+    // brace is printed to decide the exit code, which is why it is declared
+    // out here rather than staying a temporary inside that block.
+    bool   shapes_match = true;
+    double p95_relative = 0.0;
+
     if (have_oracle) {
         std::vector<float> oracle_prefill;
         if (!read_f32(oracle_path, oracle_prefill)) {
@@ -318,6 +357,7 @@ int main(int argc, char ** argv) {
             return 1;
         }
         const size_t oracle_positions   = oracle_prefill.size() / hidden_size;
+        shapes_match                    = oracle_positions == positions;
         // A shift-shaped fault -- retaining an extra codec slot, or dropping
         // one -- changes the POSITION COUNT, not just the values at a fixed
         // shape: build_talker_prompt's prefix run is a single vector that
@@ -332,22 +372,52 @@ int main(int argc, char ** argv) {
         // before wherever the two sequences first diverge) compare like
         // normal, and a fault that shifts the tail shows up as elevated
         // deviation over the compared positions, not as a missing figure.
-        // The shape mismatch itself is printed alongside the number, so a
-        // reader is never left thinking the two prefills were the same length
-        // when they were not.
+        // The shape mismatch itself is printed alongside the number (and, with
+        // a bound, is a failure on its own -- see below), so a reader is never
+        // left thinking the two prefills were the same length when they were
+        // not, and a shape-changing fault cannot hide by producing a small
+        // number over whatever positions happened to overlap.
         const size_t compared_positions = oracle_positions < positions ? oracle_positions : positions;
         // The same statistic, same operand order (oracle is the right operand
         // and the denominator) tests/qwen3_tts_icl_real.cpp and
         // scripts/validate-qwen3-tts-codec_encoder.py already use -- see
         // tests/qwen3_tts_percentile.h's own header comment.
-        const double p95                = synth::qwen3_tts::testing::reconstruction_p95_relative(
-            got_prefill.data(), oracle_prefill.data(), compared_positions, hidden_size);
+        p95_relative = synth::qwen3_tts::testing::reconstruction_p95_relative(got_prefill.data(), oracle_prefill.data(),
+                                                                              compared_positions, hidden_size);
         std::printf(
             ", \"oracle_path\": \"%s\", \"oracle_positions\": %zu, \"shapes_match\": %s, "
             "\"compared_positions\": %zu, \"p95_relative\": %.6f",
-            oracle_path.c_str(), oracle_positions, oracle_positions == positions ? "true" : "false", compared_positions,
-            p95);
+            oracle_path.c_str(), oracle_positions, shapes_match ? "true" : "false", compared_positions, p95_relative);
+        if (have_bound) {
+            // exceeds, not "is not less than": AT the bound passes, matching
+            // "exits non-zero when the measured p95 exceeds it" -- the exact
+            // phrasing this gate was specified against.
+            const bool within_bound = p95_relative <= max_relative;
+            std::printf(", \"max_relative\": %.6f, \"gate_passed\": %s", max_relative,
+                        shapes_match && within_bound ? "true" : "false");
+        }
     }
     std::printf("}\n");
+
+    if (have_bound) {
+        // BOTH signals fail the gate, independently -- a shape mismatch is
+        // exactly what Task 7's own fault injection produced first (19 port
+        // positions against the oracle's 18), and a port that happened to
+        // keep the p95 comparison's own bookkeeping quiet on a truncated
+        // overlap must not be read as passing. This is the enforcement Task 7
+        // Fix Round 2 wires up: without it, a build carrying the fault this
+        // file exists to catch prints "shapes_match: false" and a 365x p95
+        // breach and still exits 0.
+        if (!shapes_match) {
+            std::fprintf(stderr,
+                         "FAILED: the port's prefill has a different position count than the oracle's -- a "
+                         "shape mismatch is refused outright, no tolerance applies\n");
+            return 1;
+        }
+        if (p95_relative > max_relative) {
+            std::fprintf(stderr, "FAILED: p95_relative %.6f exceeds max_relative %.6f\n", p95_relative, max_relative);
+            return 1;
+        }
+    }
     return 0;
 }

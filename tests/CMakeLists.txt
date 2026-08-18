@@ -523,16 +523,13 @@ target_include_directories(synthesize-qwen3-tts-replay-real PRIVATE ${CMAKE_SOUR
 target_link_libraries(synthesize-qwen3-tts-replay-real PRIVATE synthesize ggml)
 synth_register_integration_target(synthesize-qwen3-tts-replay-real)
 
-# Stage 3 Plan 1's completion gate: the talker's assembled prefill at an empty
-# instruct, with the speaker slot correctly absent, against the real 1.7B
-# VoiceDesign package. A pure adapter -- same role as the driver above -- so it
-# takes no add_test: the p95-relative distance it prints is recorded by hand
-# into tests/tolerances/qwen3-tts.json rather than enforced here. See the
-# file's own header comment.
-add_executable(synthesize-qwen3-tts-voicedesign-prefill-real qwen3_tts_voicedesign_prefill_real.cpp)
-target_include_directories(synthesize-qwen3-tts-voicedesign-prefill-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(synthesize-qwen3-tts-voicedesign-prefill-real PRIVATE synthesize ggml)
-synth_register_integration_target(synthesize-qwen3-tts-voicedesign-prefill-real)
+# synthesize-qwen3-tts-voicedesign-prefill-real (Stage 3 Plan 1's completion
+# gate) is registered further down, inside the
+# if(SYNTH_BUILD_INTEGRATION_TESTS) block beside synthesize-qwen3-tts-icl-prompt-real
+# -- unlike every other target in this unconditionally-built section, it now
+# carries an add_test that reads tests/tolerances/qwen3-tts.json's committed
+# bound at configure time (Task 7 Fix Round 2), the same shape icl-prompt-real
+# already has, and needs the real 4.3 GB VoiceDesign package to run.
 
 # A tiny driver, not a test: runs compute_log_mel over a real WAV file so
 # scripts/validate-qwen3-tts-replay.py --compare-mel can diff it against Task
@@ -1297,6 +1294,76 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                 ${_synth_qwen3_tts_icl_embed_gate}
                 ${_synth_qwen3_tts_icl_args})
         set_tests_properties(synthesize-qwen3-tts-icl-prompt-real PROPERTIES
+            LABELS "integration;qwen3-tts;golden"
+            TIMEOUT 600)
+    endif()
+
+    # Stage 3 Plan 1's completion gate: the talker's assembled prefill at an
+    # empty instruct, with the speaker slot correctly absent, against the
+    # real 1.7B VoiceDesign package -- same shape as prompt.icl_embed above,
+    # added in Task 7 Fix Round 2. The driver used to print its p95-relative
+    # distance for a human to copy into tests/tolerances/qwen3-tts.json by
+    # hand, which a review found meant the completion gate enforced nothing:
+    # the fault-injected binary printed a 365x breach and exited 0, and
+    # nothing anywhere read the committed max_relative. This block is what
+    # closes that -- the bound comes from the committed grid, not a literal,
+    # exactly the reasoning the icl_embed block above states for itself.
+    #
+    # The oracle prefill this compares against is NOT under
+    # build/goldens/qwen3-tts/... the way the icl-prompt oracle root above is:
+    # scripts/dump_reference_qwen3_tts_voicedesign.py's own usage example (and
+    # this task's brief) writes to reports/porting/qwen3-tts/<variant>/oracle/
+    # instead, which is why .gitignore carries a dedicated
+    # /reports/porting/**/oracle rule (Task 7 Fix Round 1) rather than this
+    # living under the already-ignored build/ tree. Referenced here rather
+    # than moved, since the location was the plan's own instruction.
+    set(_synth_qwen3_tts_voicedesign_prefill_oracle
+        "${CMAKE_SOURCE_DIR}/reports/porting/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign/oracle/prefill.f32")
+    if(EXISTS "${SYNTH_QWEN3_TTS_VOICEDESIGN_TEST_MODEL}"
+            AND EXISTS "${_synth_qwen3_tts_voicedesign_prefill_oracle}")
+        set(_synth_qwen3_tts_voicedesign_prefill_fixtures
+            "${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-voicedesign-prefill")
+        file(MAKE_DIRECTORY "${_synth_qwen3_tts_voicedesign_prefill_fixtures}")
+
+        # A silently absent bound is how this exact defect comes back, so this
+        # reads it with the same ERROR_VARIABLE -> FATAL_ERROR shape
+        # _synth_qwen3_tts_icl_embed_gate uses above: a missing cell aborts
+        # configure rather than skipping the gate quietly.
+        file(READ "${CMAKE_SOURCE_DIR}/tests/tolerances/qwen3-tts.json"
+            _synth_qwen3_tts_voicedesign_prefill_tolerance_json)
+        string(JSON _synth_qwen3_tts_voicedesign_prefill_gate
+            ERROR_VARIABLE _synth_qwen3_tts_voicedesign_prefill_gate_error
+            GET "${_synth_qwen3_tts_voicedesign_prefill_tolerance_json}"
+                variants qwen3-tts-12hz-1-7b-voicedesign profiles BF16 stages replay
+                probes "prefill" max_relative)
+        if(_synth_qwen3_tts_voicedesign_prefill_gate_error)
+            message(FATAL_ERROR
+                "tests/tolerances/qwen3-tts.json has no "
+                "variants/qwen3-tts-12hz-1-7b-voicedesign/profiles/BF16/stages/replay/probes/"
+                "\"prefill\"/max_relative -- synthesize-qwen3-tts-voicedesign-prefill-real "
+                "enforces that cell and must not fall back to a literal "
+                "(${_synth_qwen3_tts_voicedesign_prefill_gate_error})")
+        endif()
+
+        add_executable(synthesize-qwen3-tts-voicedesign-prefill-real qwen3_tts_voicedesign_prefill_real.cpp)
+        target_include_directories(synthesize-qwen3-tts-voicedesign-prefill-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
+        target_link_libraries(synthesize-qwen3-tts-voicedesign-prefill-real PRIVATE synthesize ggml)
+        synth_register_integration_target(synthesize-qwen3-tts-voicedesign-prefill-real)
+        # Text and language are literals, not read from a manifest case: this
+        # variant's Golden Manifest still carries `cases: []` (Task 6,
+        # `suite_status: "incremental"`), so there is no case to read them
+        # from yet -- the same reason the oracle dump was driven by explicit
+        # arguments rather than --manifest in Step 2. Matches the oracle dump
+        # exactly, which is what makes the comparison meaningful.
+        add_test(NAME synthesize-qwen3-tts-voicedesign-prefill-real
+            COMMAND synthesize-qwen3-tts-voicedesign-prefill-real
+                ${SYNTH_QWEN3_TTS_VOICEDESIGN_TEST_MODEL}
+                "Qwen3-TTS is awesome!"
+                English
+                "${_synth_qwen3_tts_voicedesign_prefill_fixtures}/prefill.f32"
+                ${_synth_qwen3_tts_voicedesign_prefill_oracle}
+                ${_synth_qwen3_tts_voicedesign_prefill_gate})
+        set_tests_properties(synthesize-qwen3-tts-voicedesign-prefill-real PROPERTIES
             LABELS "integration;qwen3-tts;golden"
             TIMEOUT 600)
     endif()

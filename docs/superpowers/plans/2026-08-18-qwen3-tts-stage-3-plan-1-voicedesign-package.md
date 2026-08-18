@@ -1002,6 +1002,26 @@ writes the prefill embeddings to a file for comparison. It asserts nothing — i
 is an adapter, like the family's other `*-real` drivers. Register it in
 `tests/CMakeLists.txt` with `synth_register_integration_target`.
 
+**Erratum, 2026-08-18 — Task 7 Fix Round 2 — "it asserts nothing" is no
+longer true.** A review of the completed task found that this sentence, taken
+literally, left the completion gate enforcing nothing: the driver printed its
+observations and exited 0 regardless of what they were, so a fault-injected
+build reporting a 365× tolerance breach and a shape mismatch still passed
+whatever ran it. Put to jiangzhuo, because a finding that contradicts approved
+plan text is not a reviewer's or an implementer's to overrule alone. Ruling:
+the finding governs, this sentence does not. The driver now takes the
+committed `max_relative` bound from `tests/tolerances/qwen3-tts.json` as an
+argument — read at CMake configure time and passed to `add_test`, the same
+shape `prompt.icl_embed`'s own gate already has
+(`tests/CMakeLists.txt`'s `synthesize-qwen3-tts-icl-prompt-real` block) — and
+exits non-zero when the measured p95 exceeds it or when the shapes disagree.
+Without a bound argument it still behaves exactly as this section describes,
+which is what a manual, unregistered run still gets. **The tier did not
+change**: it remains an integration target behind
+`-DSYNTH_BUILD_INTEGRATION_TESTS=ON`, registered only with
+`synth_register_integration_target` plus (now) one `add_test`, and it still
+never enters `synthesize-check-unit`. Only the exit code changed.
+
 - [ ] **Step 4: Compare, and record the tolerance**
 
 Compare the driver's prefill against the oracle's with the p95 relative

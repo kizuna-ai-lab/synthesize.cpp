@@ -135,6 +135,15 @@ set(SYNTH_QWEN3_TTS_TEST_MODEL
 set(SYNTH_QWEN3_TTS_BASE_TEST_MODEL
     "${CMAKE_SOURCE_DIR}/models/qwen3-tts-12hz-0-6b-base/qwen3-tts-12hz-0-6b-base-BF16.gguf"
     CACHE FILEPATH "Local Qwen3-TTS Base BF16 GGUF used by integration tests")
+# Stage 3's Reference Model Variant: the VoiceDesign checkpoint, profile-sources
+# voice mode, Description Text rather than Reference Audio, no Preset Voice
+# Catalog. Same BF16 source-profile reasoning as the two variables above.
+# Added in Task 7 Fix Round 2, once synthesize-qwen3-tts-voicedesign-prefill-real
+# gained an add_test that needs a real model path at configure time -- the
+# same reason SYNTH_QWEN3_TTS_BASE_TEST_MODEL exists rather than a literal.
+set(SYNTH_QWEN3_TTS_VOICEDESIGN_TEST_MODEL
+    "${CMAKE_SOURCE_DIR}/models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-BF16.gguf"
+    CACHE FILEPATH "Local Qwen3-TTS VoiceDesign BF16 GGUF used by integration tests")
 # The Base variant's clone path needs a second locally-materialized artifact
 # besides the package: the Reference Audio it enrolls from. It is a cache
 # variable for the same reason every model path above is -- `models/` is

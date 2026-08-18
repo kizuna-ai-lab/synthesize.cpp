@@ -41,6 +41,16 @@
 // unconditioned path, `instruct_ids.append(None)`) and a NON-EMPTY one --
 // the crash reproduced on both, so both are asserted here rather than
 // trusting that fixing one fixes the other.
+//
+// Stage 3 Plan 2's Task 5 adds a third case: create -> serialize -> load ->
+// synthesize, entirely through the public seam, against the SAME real
+// package. tests/qwen3_tts_design_profile_test.cpp's own
+// test_serialize_and_load_round_trip_through_the_public_seam pins the
+// dispatch-routing half of this (a hand-built `synth_model`, no real weights
+// needed) at the `unit` tier; this file is what proves the loaded-back
+// Profile is not just structurally equal to the original but ACTUALLY
+// SYNTHESIZES, which needs the real talker/codec weights a `unit` test
+// cannot carry (docs/testing.md).
 
 #include "synthesize.h"
 #include "test-assert.h"
@@ -138,6 +148,74 @@ bool run_case(synth_model_t * model, const char * label, const std::string & ins
     return any_nonzero;
 }
 
+// Task 5's own round trip: create a design Profile, serialize it, load the
+// bytes back through synth_voice_profile_load_from_memory (the call this
+// task's own capability-bit fix is what makes succeed at all against this
+// package -- before it, this returned SYNTH_ERR_UNSUPPORTED_VOICE
+// unconditionally, since the dispatch never reached this family's loader for
+// a VoiceDesign Model), and confirm the LOADED profile synthesizes non-silent
+// audio too -- not merely that loading returns SYNTH_OK.
+bool run_round_trip_case(synth_model_t * model) {
+    const std::string                instruct = "A cheerful, bright female voice speaking with fast pacing.";
+    synth_voice_description_params_t create_params;
+    synth_voice_description_params_init(&create_params, sizeof(create_params));
+    create_params.description      = instruct.data();
+    create_params.description_size = instruct.size();
+
+    synth_voice_profile_t * created     = nullptr;
+    const synth_status_t created_status = synth_voice_profile_create_from_description(model, &create_params, &created);
+    std::fprintf(stderr, "round-trip: create_from_description -> %d\n", int(created_status));
+    if (created_status != SYNTH_OK || created == nullptr) {
+        return false;
+    }
+
+    synth_voice_profile_serialize_params_t serialize_params;
+    synth_voice_profile_serialize_params_init(&serialize_params, sizeof(serialize_params));
+    synth_byte_buffer_t * bytes            = nullptr;
+    const synth_status_t  serialize_status = synth_voice_profile_serialize(created, &serialize_params, &bytes);
+    std::fprintf(stderr, "round-trip: serialize -> %d (data_size=%llu)\n", int(serialize_status),
+                 bytes != nullptr ? (unsigned long long) bytes->data_size : 0ull);
+    synth_voice_profile_free(created);
+    if (serialize_status != SYNTH_OK || bytes == nullptr || bytes->data_size == 0) {
+        return false;
+    }
+
+    synth_voice_profile_load_params_t load_params;
+    synth_voice_profile_load_params_init(&load_params, sizeof(load_params));
+    load_params.data      = bytes->data;
+    load_params.data_size = bytes->data_size;
+
+    synth_voice_profile_t * loaded        = nullptr;
+    const synth_status_t    loaded_status = synth_voice_profile_load_from_memory(model, &load_params, &loaded);
+    std::fprintf(stderr, "round-trip: load_from_memory -> %d\n", int(loaded_status));
+    synth_byte_buffer_free(bytes);
+    if (loaded_status != SYNTH_OK || loaded == nullptr) {
+        return false;
+    }
+
+    std::vector<float> pcm;
+    uint64_t           frame_count = 0;
+    uint32_t           channels    = 0;
+    uint32_t           sample_rate = 0;
+    const bool         synthesized = synthesize_pcm(model, loaded, "This is the loaded-back profile speaking.", pcm,
+                                                    frame_count, channels, sample_rate);
+    std::fprintf(stderr, "round-trip: synthesize(loaded) frame_count=%llu channels=%u sample_rate=%u samples=%zu\n",
+                 (unsigned long long) frame_count, channels, sample_rate, pcm.size());
+    synth_voice_profile_free(loaded);
+
+    if (!synthesized || frame_count == 0 || pcm.empty()) {
+        return false;
+    }
+    bool any_nonzero = false;
+    for (float sample : pcm) {
+        if (sample != 0.0f) {
+            any_nonzero = true;
+            break;
+        }
+    }
+    return any_nonzero;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
@@ -165,6 +243,10 @@ int main(int argc, char ** argv) {
     // prefill into a real decode loop.
     SYNTH_TEST_CHECK(run_case(model, "nonempty-instruct",
                               "A cheerful, bright female voice speaking with fast pacing and high energy."));
+
+    // Case 3 (Task 5): create -> serialize -> load -> synthesize, entirely
+    // through the public seam.
+    SYNTH_TEST_CHECK(run_round_trip_case(model));
 
     synth_model_free(model);
     return 0;

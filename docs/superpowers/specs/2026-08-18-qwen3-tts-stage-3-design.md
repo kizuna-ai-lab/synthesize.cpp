@@ -156,6 +156,20 @@ embedding dimension. The published shape is therefore the same all-zero "no
 runtime Voice Profile support" shape CustomVoice already reports, for a
 different reason.
 
+**Second erratum, 2026-08-18 — Plan 2's Task 5 republishes what the erratum
+above withheld.** The narrowing above held for a real interval and stands as
+written; it does not describe the runtime as of Plan 2's close. Plan 2's
+Task 2 gave `create_from_description` its Qwen3-TTS arm, closing the reason
+`source_flags == 0` was ruled correct, and Task 3 made
+`load_profile_from_memory` route on a design envelope's own declared kind
+ahead of the x-vector size check this erratum cites, so a serialized design
+Profile loads and `SERIALIZED_PROFILE` stops being dishonest too. With both
+premises gone, `fill_voice_profile_capability` publishes
+`hparams.profile_sources` directly again — D4's own original rule, applied
+without the narrower withholding this erratum layered on top of it — and a
+VoiceDesign package's `source_flags` reads
+`DESCRIPTION_TEXT | SERIALIZED_PROFILE` once more.
+
 **D5. Language is a per-synthesis field and does not enter the Profile.**
 Upstream takes `text`, `instruct` and `language` as three separate arguments to
 `generate_voice_design`; the request already carries language.
@@ -228,6 +242,14 @@ its Qwen3-TTS arm by Stage 2 Plan 2), so its `REF | SER` cell stands; the
 once `create_from_description` is wired for this family — a later plan — and
 until then the cell the RUNTIME's own capability query reports is `(none)`,
 matching `CustomVoice`'s, for a different reason.
+
+**Second erratum, 2026-08-18 — Plan 2's Task 5 closes the "until then" above.**
+`create_from_description` was wired for this family by Plan 2's Task 2, and
+Task 3 made a serialized design Profile loadable, closing the second reason
+the RUNTIME's own query reported `(none)` for VoiceDesign. As of Task 5 the
+`VoiceDesign` column's `Source flags` cell is `DESC | SER` for BOTH readings —
+the PACKAGE's declaration and the RUNTIME's published capability agree again,
+exactly as the un-erratumed table above this row already shows.
 
 ## 4. Package and Conversion
 

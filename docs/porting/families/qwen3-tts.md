@@ -67,6 +67,21 @@ own declared `synthesize.voice.profile_sources` still names
 See "Stage 3: VoiceDesign Package, Task 6", "Load result" below for the
 corrected measurement table.
 
+**Second correction, 2026-08-18, Stage 3 Plan 2's Task 5: the withholding above
+is no longer current.** It was a true account of a real interval, so it stands
+rather than being rewritten, but a reader stopping at the paragraph above today
+would be misled about what the runtime currently publishes. Both reasons for
+the withholding are closed: Plan 2's Task 2 gave
+`synth_voice_profile_create_from_description` a Qwen3-TTS arm, so the seam no
+longer routes every request to the generic unsupported fallback, and Task 3
+made `load_profile_from_memory` route on a design envelope's own declared kind
+before the x-vector size check that used to refuse every serialized Profile
+against this package. With both gaps closed, Task 5 republished the capability:
+the VoiceDesign package now reports **zero Preset Voices and
+`SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`
+with Reference Audio absent** -- exactly what Task 6 originally measured and
+the design originally predicted, before the interval this section records.
+
 **Packages converted before `synthesize.voice.profile_sources` existed do not
 load under this runtime any more.** Stage 3's loader change
 (`src/arch/qwen3-tts/weights.cpp`) made a `profile-sources`-mode package

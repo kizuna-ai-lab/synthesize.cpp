@@ -726,6 +726,19 @@ carries the corresponding update; its VoiceDesign case now asserts the same
 all-zero shape `check_reports_no_voice_profile_support` already pins for
 CustomVoice, rather than the three assertions shown in Step 1's snippet.
 
+**Second erratum, 2026-08-18 — Plan 2's Task 5 republished the bit this
+erratum withheld.** The masking above held for a real interval and is not
+rewritten, but Plan 2 closed both reasons for it: Task 2 gave
+`create_from_description` a Qwen3-TTS arm and Task 3 made a serialized design
+Profile loadable, so `fill_voice_profile_capability` no longer masks
+`SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT` out of what it publishes and this
+task's original rule (`source_flags` follows what the package declared,
+unmasked) is what the function currently implements. A VoiceDesign package
+publishes `DESCRIPTION_TEXT | SERIALIZED_PROFILE` again, and
+`test_capability_follows_the_declared_sources` was updated a second time to
+assert that rather than the withheld all-zero shape. See Plan 2's own Task 5
+for the full account and its own errata trail.
+
 - [ ] **Step 4: Run and watch it pass**
 
 ```bash
@@ -980,6 +993,18 @@ statement about the RUNTIME only: the package's own declared
 `synthesize.voice.profile_sources` still names `description-text`, and Task 3's
 loader and its cross-checks are untouched.
 
+**Second erratum, 2026-08-18 — Plan 2's Task 5 republished the bit this
+erratum withheld.** The withholding above held for a real interval and is not
+rewritten, but Plan 2 closed the reason for it: Task 2 gave
+`synth_voice_profile_create_from_description` a Qwen3-TTS arm, so the seam no
+longer routes every request to the generic unsupported fallback, and Task 3
+made `load_profile_from_memory` route on a design envelope's own declared kind
+before the x-vector size check ran, so a serialized design Profile loads.
+`--info` against this same package now reports **zero Preset Voices** and
+Profile sources **Description Text + Serialized Profile**, with Reference
+Audio **absent** — the expectation this task originally stated, before the
+withholding this erratum corrected and Plan 2 later closed.
+
 - [ ] **Step 6: Record the intake in the family record**
 
 Add to `docs/porting/families/qwen3-tts.md`: the Stage 3 opening, the pinned
@@ -1123,6 +1148,18 @@ Preset Voices and zero Profile source flags** — the same shape a CustomVoice
 package reports. The PACKAGE's own declared `profile_sources` is unaffected
 and still names `description-text`; only the RUNTIME's published capability
 changed, and Task 3's loader is untouched.
+
+**Second erratum, 2026-08-18 — Plan 2's Task 5 republished the bit item 3
+originally stated, closing the erratum above rather than contradicting it
+again.** The withholding held for a real interval bounded by this plan's own
+close and Plan 2's Task 5, and is not rewritten; but by the time Plan 2 closed,
+both of its reasons were gone. Task 2 gave `create_from_description` a
+Qwen3-TTS arm, so the seam stopped routing every request to the generic
+unsupported fallback; Task 3 made `load_profile_from_memory` route on a design
+envelope's own declared kind ahead of the x-vector size check, so a serialized
+design Profile loads. Item 3 as originally written is what the capability
+snapshot reports again: zero Preset Voices and
+`DESCRIPTION_TEXT | SERIALIZED_PROFILE` with `REFERENCE_AUDIO` absent.
 
 Explicitly **not** delivered here, and not a gap: `create_from_description`, the
 `DesignInstruct` payload, the instruct prompt block, the public-seam validator,

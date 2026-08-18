@@ -693,6 +693,52 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
         ):
             self.assertIn(key, keys, key)
 
+    # The check above pins only that the three `synthesize.profile.*` keys
+    # REACH the file. Their values went unasserted until 2026-08-19: a
+    # converter that wrote the wrong schema name, a schema_version of 0, or an
+    # id hashed over the generation_config digest instead of the config one
+    # passed every test in this file. The id is the load-bearing one --
+    # src/arch/qwen3-tts/profile.cpp:1361 refuses a serialized Profile whose
+    # stored id differs from the model's with SYNTH_ERR_UNSUPPORTED_VOICE, so
+    # a wrong id here is not a cosmetic mismatch: it is a Profile that stops
+    # loading against the very package it was produced for.
+    def test_the_profile_block_carries_the_variants_own_schema_and_id(self) -> None:
+        metadata = self._written_metadata(carries_speaker_encoder=True, model_type="base")
+        self.assertEqual(metadata["synthesize.profile.schema"], "qwen3-tts-voice-clone")
+        self.assertEqual(metadata["synthesize.profile.schema_version"], 1)
+        # A known value over the fixture's own digests ("1"*64, "2"*64, "3"*64),
+        # deliberately NOT a re-call of `compatibility_id`: recomputing with the
+        # same helper the emission uses would still pass if `add_metadata` fed
+        # it the wrong pieces, which is the regression this test exists for.
+        # `CompatibilityIdTests` pins the formula itself, against the id the
+        # shipped Base package really carries.
+        self.assertEqual(
+            metadata["synthesize.profile.compatibility_id"],
+            "bbeb77755504bcba298f656b3b8a221957e5f21e03a72d171689e7711a531741",
+        )
+
+    def test_the_schema_name_is_hashed_into_the_compatibility_id(self) -> None:
+        """Two variants sharing every digest must not share an id.
+
+        The schema name is one of the hashed pieces, so VoiceDesign and the
+        clone schema diverge here even though this fixture hands both the
+        identical talker/codec/config digests. Were the schema dropped from
+        the formula, a Description Text Profile would satisfy
+        profile.cpp:1361 against a clone package built from the same weights.
+        """
+        design = self._written_metadata(carries_speaker_encoder=False, model_type="voice_design")
+        self.assertEqual(design["synthesize.profile.schema"], "qwen3-tts-voice-design")
+        self.assertEqual(design["synthesize.profile.schema_version"], 1)
+        self.assertEqual(
+            design["synthesize.profile.compatibility_id"],
+            "49c4cf86b4794be7400ada07c5a3af876563319f6dbe597f15ae086b3c20fd38",
+        )
+        clone = self._written_metadata(carries_speaker_encoder=True, model_type="base")
+        self.assertNotEqual(
+            design["synthesize.profile.compatibility_id"],
+            clone["synthesize.profile.compatibility_id"],
+        )
+
     def test_a_variant_without_a_speaker_encoder_carries_none_of_it(self) -> None:
         keys = self._written_keys(carries_speaker_encoder=False)
         leaked = [

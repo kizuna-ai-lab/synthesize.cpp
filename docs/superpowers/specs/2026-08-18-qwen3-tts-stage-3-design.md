@@ -414,6 +414,27 @@ rather than something inferred from tensor shapes. A `model_variant`-string
 cross-check would catch this one case but is a weaker contract than the
 tensor-shape checks the other two bullets rest on, and is not built here.
 
+**Second erratum, 2026-08-19 — Plan 2 Task 6 inherits the gap rather than
+closing it.** Task 6 implemented §6.3's three relations and as much of this
+section's refusals as `scripts/validate-qwen3-tts-public.py` can exercise:
+bullets one and two (probing `create_from_reference` / `create_from_description`
+against a loaded package's own declared sources) and bullet four (the prefill
+probe's own fault injection, §6.5). The third bullet is not checked there
+either, and for a reason that compounds rather than merely restates the erratum
+above: closing it would need either the `weights.cpp` cross-check this erratum
+already declines to build, or a malformed package — metadata claiming
+`DESCRIPTION_TEXT` over a CustomVoice-shaped tensor set — for the validator to
+load and confirm refused. Task 6's own scope is three files
+(`scripts/validate-qwen3-tts-public.py`, `tests/qwen3_tts_public_real.c`,
+`tests/tolerances/qwen3-tts.json`) and none of them can manufacture that
+package: the validator drives real converted packages on disk, and the C
+runner has no GGUF-writing path to forge one with. So the bullet stays open,
+now on record against two tasks rather than one, and closing it — if it is
+ever closed — will need either the weaker `model_variant`-string cross-check
+this file already named and declined, built in `weights.cpp`, or a synthetic
+GGUF fixture built specifically to carry the mismatch, neither of which this
+task builds.
+
 ### 6.5 Fault injection
 
 Each gate is shown to fail, per Plan 4's practice. Three faults, chosen because

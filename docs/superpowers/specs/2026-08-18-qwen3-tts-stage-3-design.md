@@ -140,7 +140,7 @@ everything across a package upgrade.
 **D7. Speed is not this rung's claim.** Talker parameters per layer go from
 15.73 M to 50.33 M — attention 6.29 M → 12.58 M, MLP 9.44 M → 37.75 M — a factor
 of **3.2×** at an unchanged 28 layers. The autoregressive half dominates CPU wall
-clock (Stage 2 measured CUDA buying only 8% end to end for that reason), and
+clock (Stage 2 measured CUDA buying only 6% end to end for that reason), and
 Base's Q8_MIXED measured RTF 0.863, so Stage 3's Q8_MIXED is **estimated at
 2.5–2.8** and is not expected to cross real time. This is arithmetic available
 before any download; it is recorded as an estimate and Plan 3 replaces it with a
@@ -371,7 +371,17 @@ CUDA twin for the speaker encoder and codec encoder because the transfer cost
 Stage 1's placement — codec decoder on the device, the autoregressive half on the
 CPU by the discrete-outputs rule — and because the talker is 3.2× larger, the AR
 half's share of wall clock grows, so **CUDA's end-to-end gain is expected to be
-smaller than Base's 8%**, not larger.
+smaller than Base's 6%**, not larger.
+
+**Erratum, 2026-08-18 — both CUDA figures above read 8% when this document was
+approved, and the correct number is about 6%.** Base measured 11.60 s → 10.85 s
+and RTF 3.15 → 2.95, which divide out to 6.47% and 6.35%; the family record had
+carried "about 8%" beside those same two pairs since Plan 4, and CodeRabbit
+caught it on PR #13. Corrected there in `5b2ee4b` and here. **The argument D7
+and this section make is unchanged and slightly strengthened**: a SMALLER
+end-to-end gain is more consistent with the claim that the autoregressive half
+dominates and CUDA reaches only the codec-decoder twin, so the RTF 2.5–2.8
+estimate stands as written.
 
 **The listening audit carries a question the previous three did not.** Earlier
 audits asked whether a profile regressed, against a baseline. This one must also

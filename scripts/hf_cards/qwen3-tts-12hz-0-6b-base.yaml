@@ -6,6 +6,14 @@
 # Every later edit to this file changes a live artifact and needs its own
 # confirmation to re-upload.
 #
+# CARD RE-UPLOADED 2026-08-18, on jiangzhuo's per-act confirmation naming that
+# same target and scoping it to the README alone -- the three GGUFs were NOT
+# re-uploaded and their digests below are unchanged. Two corrections: the CUDA
+# end-to-end figure was 8% and is about 6% (11.60 s -> 10.85 s and RTF 3.15 ->
+# 2.95 divide out to 6.47% and 6.35%; CodeRabbit caught it on PR #13), and the
+# publication note now states that these three files no longer load, which is a
+# deliberate package-format break and not a defect in them.
+#
 # This header read "PREPARED ... NOT PUBLISHED" until the upload and was
 # corrected in the same session, deliberately: the CustomVoice card's own header
 # records that its equivalent line stayed stale for two weeks after ITS upload
@@ -87,14 +95,14 @@ validation:
   # cost of about 1.69 s, so the transfer is 2.2x the compute it would
   # accelerate and no speedup makes it pay. They also run once per Voice Profile
   # rather than once per synthesis, so the amortization that justified the
-  # decoder's twin runs the other way here. CUDA buys about 8% end to end.
+  # decoder's twin runs the other way here. CUDA buys about 6% end to end.
   cuda_placement: partial
   cuda_placement_note: |
     The codec decoder runs on the device; everything else runs on the CPU.
 
     The autoregressive half is held there by the discrete-outputs rule — a
     sampled token index cannot absorb a tolerance — and it dominates the wall
-    clock, so CUDA buys about 8% end to end (RTF 3.15 to 2.95) rather than the
+    clock, so CUDA buys about 6% end to end (RTF 3.15 to 2.95) rather than the
     35x the decoder stage itself sees.
 
     The two graphs this variant adds are on the CPU by measurement, not by
@@ -163,6 +171,26 @@ validation:
       listener -- evidence, not a level.
 
 publication_note: |
+  THESE THREE FILES NO LONGER LOAD, and that is a deliberate break rather than a
+  defect in them. Read this before downloading.
+
+  They were converted on 2026-08-17, before the package format gained a key that
+  states positively which Voice Profile sources a package implements
+  (`synthesize.voice.profile_sources`). Until that key existed the runtime
+  inferred the answer from the Voice Mode, which worked only while
+  `profile-sources` meant exactly one model variant. It now means two, whose
+  source sets are disjoint, so the inference had to go and the loader requires
+  the declaration instead. No compatibility shim was written: the project is
+  pre-release and these packages have no dependent users, so a shim would buy
+  compatibility nobody needs at the cost of putting the inference back into a
+  loader that had just been made declarative.
+
+  What to do instead: convert from the upstream checkpoint with the current
+  `scripts/convert-qwen3-tts.py`. Everything else on this card -- the tolerances,
+  the validation counts, the x-vector cosines, the RTF figures -- was measured on
+  these exact files and still describes what the package computes. Only loading
+  changed.
+
   Published 2026-08-17. Both the pinned source at `022e286b` and the checkpoint
   at `5d839924` carry an explicit Apache-2.0 grant, so no redistribution
   assumption is required for this variant.

@@ -1,6 +1,6 @@
 # Qwen3-TTS 12 Hz 0.6B Base
 
-Status: Confirmed 2026-08-17. **Published 2026-08-17** to
+Status: Confirmed 2026-08-18. **Published 2026-08-17** to
 [`jiangzhuo9357/qwen3-tts-12hz-0-6b-base-gguf`](https://huggingface.co/jiangzhuo9357/qwen3-tts-12hz-0-6b-base-gguf)
 carrying BF16, F16 and Q8_MIXED, on jiangzhuo's per-act confirmation naming that
 exact target. Every later change to the packages or the card is its own act and
@@ -91,8 +91,8 @@ that justified Stage 1's codec-decoder twin runs the other way.
 
 Only `public` measures anything different on CUDA, through that Stage 1 twin,
 which does move on a Base package: 7 checks pass, and the audio differs from CPU
-as the codec decoder's TF32 arithmetic predicts. CUDA buys about 8 % end to end
-(RTF 3.15 → 2.95). `docs/backends.md` requires performance measurement for
+as the codec decoder's TF32 arithmetic predicts. CUDA buys about 6 % end to end
+(RTF 3.15 → 2.95, and 11.60 s → 10.85 s on the same tree). `docs/backends.md` requires performance measurement for
 support but no minimum speedup, so CUDA is not described as accelerated here
 beyond what that number says.
 

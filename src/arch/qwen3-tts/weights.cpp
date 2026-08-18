@@ -474,9 +474,14 @@ bool is_sha256_hex(const std::string & value) {
 
 // Nothing consumes a Voice Profile before Plan 2, but a package whose contract
 // is wrong cannot be discovered then without re-cutting it, so it is refused
-// now. Matches omnivoice's read_profile_contract shape (weights.cpp:524):
-// same schema fields, same reference-bound ordering, same compatibility-id
-// check, differing only in the schema name this family requires.
+// now. Shaped after omnivoice's read_profile_contract (weights.cpp:524) for
+// the schema/version/compatibility-id fields and the reference-bound checks,
+// but not identical to it since Stage 3: omnivoice's one variant always
+// carries reference audio, so it reads the synthesize.reference.* block
+// unconditionally, while this family's Description Text source carries none
+// of those keys and accepts either of two schema names depending on what the
+// package declared (read_profile_sources, defined further down alongside its
+// caller, read_profile_and_speaker_encoder).
 bool read_profile_contract(const GgufMetadata & meta, HParams & hparams) {
     ProfileContract & profile = hparams.profile;
     if (!meta.string("synthesize.profile.schema", profile.schema) ||

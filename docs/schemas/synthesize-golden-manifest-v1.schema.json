@@ -110,6 +110,11 @@
           "type": "string",
           "minLength": 1
         },
+        "terms": {
+          "description": "Optional. What is known about this artifact's licence terms, for an artifact whose publisher declares none. A locator plus a digest records WHERE a thing came from; this records what the project may and may not say about it. Never a grant: the manifest cannot create rights, and an artifact this repository does not redistribute needs none.",
+          "type": "string",
+          "minLength": 1
+        },
         "repository_path": {
           "$ref": "#/$defs/relativePath"
         },

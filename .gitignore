@@ -39,10 +39,18 @@ CMakeUserPresets.json
 # payload itself is exactly the golden-payload class docs/testing.md's
 # "commit golden contracts, not golden payloads" rule refuses: several hundred
 # KB of float32/int32 per case, mechanically regenerable from the checkpoint.
-# Matches only an "oracle" entry directly inside a variant directory, so
-# intake.json/tensor-inventory.json/_porting-log.md and friends one level up
-# stay committable. No trailing slash, for the same symlink reason as the
-# block above.
+# Matches an entry NAMED "oracle" at ANY depth under reports/porting/: `**`
+# spans zero or more directories, so reports/porting/oracle and
+# reports/porting/<family>/<variant>/a/b/oracle both match, not only the
+# <family>/<variant> depth the dumper actually writes. That breadth is the
+# right direction for a rule whose whole job is surviving a stray
+# `git add -A` -- the payload is mechanically regenerable from the
+# checkpoint, so over-ignoring costs a regeneration and under-ignoring costs
+# a committed golden payload. What keeps intake.json, tensor-inventory.json,
+# _porting-log.md and friends committable is the NAME, not the depth: they
+# are never named "oracle" at any level. (This comment claimed the narrower
+# depth until 2026-08-19; `git check-ignore -v` disagreed with it.)
+# No trailing slash, for the same symlink reason as the block above.
 /reports/porting/**/oracle
 
 # Stage 3 Plan 2 Task 4: a SECOND dump directory from the same script, one

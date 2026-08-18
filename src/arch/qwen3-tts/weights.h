@@ -193,7 +193,13 @@ struct HParams {
     bool                     has_package_default = false;
     std::vector<PresetVoice> preset_voices;
 
-    // Only present for a variant with a speaker encoder (currently just Base).
+    // Which Voice Profile sources this package DECLARES, as
+    // SYNTH_PROFILE_SOURCE_* bits. Declared rather than inferred: before Stage
+    // 3, `profile-sources` mode meant Base and therefore meant reference
+    // audio, and that stopped being true when VoiceDesign arrived with a
+    // disjoint source set and the same mode.
+    uint32_t             profile_sources     = 0;
+    // Only present for a variant with a speaker encoder (Base).
     bool                 has_speaker_encoder = false;
     SpeakerEncoderParams speaker_encoder;
     ProfileContract      profile;

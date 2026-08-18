@@ -152,6 +152,10 @@ bool GgufMetadata::string_array(const std::string & key, std::vector<std::string
     return true;
 }
 
+bool GgufMetadata::has(const std::string & key) const {
+    return gguf_find_key(gguf_, key.c_str()) >= 0;
+}
+
 bool GgufMetadata::require_string(const std::string & key, const char * expected) const {
     std::string value;
     if (!string(key, value)) {

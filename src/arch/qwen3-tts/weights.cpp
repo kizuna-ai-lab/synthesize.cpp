@@ -481,16 +481,13 @@ bool read_profile_contract(const GgufMetadata & meta, HParams & hparams) {
     ProfileContract & profile = hparams.profile;
     if (!meta.string("synthesize.profile.schema", profile.schema) ||
         !meta.u32("synthesize.profile.schema_version", profile.schema_version) ||
-        !meta.string("synthesize.profile.compatibility_id", profile.compatibility_id_hex) ||
-        !meta.u32("synthesize.reference.target_sample_rate", profile.reference_sample_rate) ||
-        !meta.u32("synthesize.reference.target_channels", profile.reference_channels) ||
-        !meta.u64("synthesize.reference.min_frames_per_clip", profile.min_frames_per_clip) ||
-        !meta.u64("synthesize.reference.max_frames_per_clip", profile.max_frames_per_clip) ||
-        !meta.u64("synthesize.reference.max_total_frames", profile.max_total_frames) ||
-        !meta.u64("synthesize.reference.max_reference_count", profile.max_reference_count)) {
+        !meta.string("synthesize.profile.compatibility_id", profile.compatibility_id_hex)) {
         return false;
     }
-    if (profile.schema != "qwen3-tts-voice-clone" || profile.schema_version != kProfileSchemaVersion) {
+    const char * expected_schema = (hparams.profile_sources & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) != 0 ?
+                                       "qwen3-tts-voice-clone" :
+                                       "qwen3-tts-voice-design";
+    if (profile.schema != expected_schema || profile.schema_version != kProfileSchemaVersion) {
         std::fprintf(stderr, "qwen3-tts: unsupported profile schema %s version %u\n", profile.schema.c_str(),
                      profile.schema_version);
         return false;
@@ -498,6 +495,26 @@ bool read_profile_contract(const GgufMetadata & meta, HParams & hparams) {
     if (!is_sha256_hex(profile.compatibility_id_hex)) {
         std::fprintf(stderr, "qwen3-tts: profile compatibility id %s is not 32 bytes of lowercase hex\n",
                      profile.compatibility_id_hex.c_str());
+        return false;
+    }
+    // Everything below describes REFERENCE AUDIO specifically: the clip limits
+    // and the encoder's own front-end rate. A source set with no
+    // reference-audio bit carries none of the synthesize.reference.* keys at
+    // all -- scripts/convert-qwen3-tts.py's add_metadata only emits that block
+    // when the variant carries a speaker encoder -- so reading them
+    // unconditionally would refuse every Description Text package on keys it
+    // never had reason to write. Gated on has_speaker_encoder, which
+    // read_profile_and_speaker_encoder has already proven equals the declared
+    // reference-audio bit by the time this function runs.
+    if (!hparams.has_speaker_encoder) {
+        return true;
+    }
+    if (!meta.u32("synthesize.reference.target_sample_rate", profile.reference_sample_rate) ||
+        !meta.u32("synthesize.reference.target_channels", profile.reference_channels) ||
+        !meta.u64("synthesize.reference.min_frames_per_clip", profile.min_frames_per_clip) ||
+        !meta.u64("synthesize.reference.max_frames_per_clip", profile.max_frames_per_clip) ||
+        !meta.u64("synthesize.reference.max_total_frames", profile.max_total_frames) ||
+        !meta.u64("synthesize.reference.max_reference_count", profile.max_reference_count)) {
         return false;
     }
     // Reference audio is resampled to mono at this rate before it reaches the
@@ -523,6 +540,8 @@ bool read_profile_contract(const GgufMetadata & meta, HParams & hparams) {
     // would return SYNTH_OK and a frequency-scaled x-vector -- a silent
     // mis-clone. read_speaker_encoder runs before this function so the
     // comparison has something to make; see read_profile_and_speaker_encoder.
+    // Unreachable when this package carries no speaker encoder: the early
+    // return above already left the function for that case.
     if (profile.reference_sample_rate != hparams.speaker_encoder.sample_rate) {
         std::fprintf(stderr, "qwen3-tts: reference audio is resampled to %u Hz but the speaker encoder runs at %u Hz\n",
                      profile.reference_sample_rate, hparams.speaker_encoder.sample_rate);
@@ -690,31 +709,75 @@ bool read_frontend(const GgufMetadata & meta, HParams & hparams) {
     return true;
 }
 
-// A CustomVoice package carries none of the profile/speaker-encoder keys at
-// all -- it has a Preset Catalog and no Voice Profile contract -- and must
-// keep loading exactly as it does today. Gated on the declared Voice Mode
-// (populated by read_voices, which always runs first in the chain below)
-// rather than on raw key presence: gating on presence alone would let a
-// package that claims profile-sources but never actually got its
-// synthesize.profile.* / synthesize.qwen3-tts.speaker_encoder.* blocks
-// written load clean with a zeroed ProfileContract and no encoder -- a model
-// that says every request must carry a Voice Profile, with nothing to
-// validate one against. That is exactly the truncation read_voices's own
-// profile-sources comment above claims to rule out; gating on the mode
-// closes the gap because a truncated package still fails inside
-// read_profile_contract/read_speaker_encoder on their own missing keys.
+// The declared source names, mapped to the public bits. An unknown name is a
+// refusal rather than a skip: a package written by a newer converter must not
+// load with a capability quietly narrower than it claims.
+bool read_profile_sources(const GgufMetadata & meta, HParams & hparams) {
+    std::vector<std::string> names;
+    if (!meta.string_array("synthesize.voice.profile_sources", names) || names.empty()) {
+        std::fprintf(stderr, "qwen3-tts: profile-sources mode declares no profile sources\n");
+        return false;
+    }
+    hparams.profile_sources = 0;
+    for (const std::string & name : names) {
+        if (name == "reference-audio") {
+            hparams.profile_sources |= SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO;
+        } else if (name == "description-text") {
+            hparams.profile_sources |= SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT;
+        } else {
+            std::fprintf(stderr, "qwen3-tts: unknown profile source %s\n", name.c_str());
+            return false;
+        }
+    }
+    return true;
+}
+
+// A CustomVoice package carries none of the profile/speaker-encoder/
+// profile_sources keys at all -- it has a Preset Catalog and no Voice Profile
+// contract -- and must keep loading exactly as it does today. This function
+// is gated on the declared Voice Mode (populated by read_voices, which always
+// runs first in the chain below) rather than on raw key presence: gating on
+// presence alone would let a package that claims profile-sources but never
+// actually got any of its synthesize.voice.profile_sources /
+// synthesize.profile.* / synthesize.qwen3-tts.speaker_encoder.* keys written
+// load clean with a zeroed ProfileContract, no declared sources, and no
+// encoder -- a model that says every request must carry a Voice Profile, with
+// nothing to validate one against. That is exactly the truncation
+// read_voices's own profile-sources comment above claims to rule out; gating
+// on the mode closes the gap because a truncated package still fails, now at
+// the first step: read_profile_sources refuses a missing or empty
+// declaration before either block is even considered.
 //
-// The speaker encoder is read FIRST, though the contract is the more
-// externally visible half: read_profile_contract ties the declared reference
-// target rate to the encoder's own rate, and cannot do that against a
-// SpeakerEncoderParams nobody has filled in yet. Same ordering rule the rest
-// of read_hparams follows -- read_speaker_encoder itself only checks enc_dim
-// against the talker and its rate against the codec because read_talker and
-// read_codec already ran. Nothing in read_speaker_encoder reads
-// hparams.profile, so the pair has exactly one valid order.
+// The declaration and the package's actual shape are cross-checked rather
+// than either one alone deciding what to read: Reference Audio needs the
+// encoder and the reference limits; Description Text needs neither and must
+// not carry them, because a package that ships an encoder while claiming it
+// cannot clone disagrees with itself and one of the two statements is wrong.
+//
+// The speaker encoder is read FIRST when it is read at all, though the
+// contract is the more externally visible half: read_profile_contract ties
+// the declared reference target rate to the encoder's own rate, and cannot do
+// that against a SpeakerEncoderParams nobody has filled in yet. Same ordering
+// rule the rest of read_hparams follows -- read_speaker_encoder itself only
+// checks enc_dim against the talker and its rate against the codec because
+// read_talker and read_codec already ran. Nothing in read_speaker_encoder
+// reads hparams.profile, so the pair has exactly one valid order.
 bool read_profile_and_speaker_encoder(const GgufMetadata & meta, HParams & hparams) {
-    hparams.has_speaker_encoder = true;
-    return read_speaker_encoder(meta, hparams) && read_profile_contract(meta, hparams);
+    if (!read_profile_sources(meta, hparams)) {
+        return false;
+    }
+    const bool wants_reference = (hparams.profile_sources & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) != 0;
+    const bool carries_encoder = meta.has("synthesize.qwen3-tts.speaker_encoder.enc_dim");
+    if (wants_reference != carries_encoder) {
+        std::fprintf(stderr, "qwen3-tts: package declares reference-audio=%d but carries a speaker encoder=%d\n",
+                     int(wants_reference), int(carries_encoder));
+        return false;
+    }
+    if (wants_reference) {
+        hparams.has_speaker_encoder = true;
+        return read_speaker_encoder(meta, hparams) && read_profile_contract(meta, hparams);
+    }
+    return read_profile_contract(meta, hparams);
 }
 
 }  // namespace

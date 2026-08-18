@@ -183,6 +183,7 @@ GgufContext base_metadata() {
     gguf_set_val_str(g, "synthesize.voice.mode", "profile-sources");
     gguf_set_val_u32(g, "synthesize.voice.preset_count", 0);
     set_string_array(g, "synthesize.qwen3-tts.speakers.names", {});
+    set_string_array(g, "synthesize.voice.profile_sources", { "reference-audio" });
     gguf_set_val_str(g, "synthesize.profile.schema", "qwen3-tts-voice-clone");
     gguf_set_val_u32(g, "synthesize.profile.schema_version", 1);
     gguf_set_val_str(g, "synthesize.profile.compatibility_id", std::string(64, 'a').c_str());
@@ -216,6 +217,25 @@ GgufContext truncated_base_metadata() {
     gguf_set_val_str(g, "synthesize.voice.mode", "profile-sources");
     gguf_set_val_u32(g, "synthesize.voice.preset_count", 0);
     set_string_array(g, "synthesize.qwen3-tts.speakers.names", {});
+    return c;
+}
+
+// A voice_design package: profile-sources mode, zero presets, doubled talker
+// dimensions, no speaker encoder, and a design Profile schema.
+GgufContext voice_design_metadata() {
+    GgufContext    c = valid_metadata();
+    gguf_context * g = c.get();
+    gguf_set_val_str(g, "synthesize.model_variant", "qwen3-tts-12hz-1-7b-voicedesign");
+    gguf_set_val_str(g, "synthesize.voice.mode", "profile-sources");
+    gguf_set_val_bool(g, "synthesize.voice.has_package_default", false);
+    gguf_set_val_u32(g, "synthesize.voice.preset_count", 0);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.talker.hidden_size", 2048);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.talker.intermediate_size", 6144);
+    set_string_array(g, "synthesize.voice.profile_sources", { "description-text" });
+    gguf_set_val_str(g, "synthesize.profile.schema", "qwen3-tts-voice-design");
+    gguf_set_val_u32(g, "synthesize.profile.schema_version", 1);
+    gguf_set_val_str(g, "synthesize.profile.compatibility_id",
+                     "0000000000000000000000000000000000000000000000000000000000000001");
     return c;
 }
 
@@ -315,6 +335,61 @@ int test_truncated_profile_sources_package_is_refused() {
     GgufContext              c = truncated_base_metadata();
     synth::qwen3tts::HParams hparams;
     SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    return 0;
+}
+
+// Stage 3: a package declares which Profile sources it implements, and the
+// loader demands exactly the blocks that declaration implies. Before this,
+// `profile-sources` meant Base and therefore meant reference audio; it now
+// means two variants whose sources are disjoint.
+int test_profile_sources_are_declared_not_inferred() {
+    // A voice_design package: description-text, no encoder block, no reference
+    // limits. This must LOAD -- before Stage 3 it failed on the missing
+    // speaker-encoder keys.
+    {
+        GgufContext              c = voice_design_metadata();
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) == SYNTH_OK);
+        SYNTH_TEST_CHECK(hparams.voice_mode == synth::qwen3tts::VoiceMode::ProfileSources);
+        SYNTH_TEST_CHECK(!hparams.has_speaker_encoder);
+        SYNTH_TEST_CHECK(hparams.profile_sources == SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT);
+        SYNTH_TEST_CHECK(hparams.profile.schema == "qwen3-tts-voice-design");
+    }
+    // Declaring description-text while carrying a speaker encoder is a package
+    // that disagrees with itself. Refused, not reconciled.
+    {
+        GgufContext c = voice_design_metadata();
+        gguf_set_val_u32(c.get(), "synthesize.qwen3-tts.speaker_encoder.enc_dim", 2048);
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    }
+    // Declaring reference-audio without the encoder block is the same fault
+    // from the other side, and was already impossible; it must stay so.
+    {
+        GgufContext c = voice_design_metadata();
+        set_string_array(c.get(), "synthesize.voice.profile_sources", { "reference-audio" });
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    }
+    // An unknown source name is refused rather than ignored: a package from a
+    // future converter must not load with a silently narrower capability.
+    {
+        GgufContext c = voice_design_metadata();
+        set_string_array(c.get(), "synthesize.voice.profile_sources", { "telepathy" });
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    }
+    // A truncated package: profile-sources mode with the declaration missing
+    // entirely. It says every request must carry a Profile and offers no way
+    // to make one. Tested by REMOVING the key rather than writing an empty
+    // array, because a missing key is the shape a truncated package actually
+    // takes and `gguf_set_arr_str` with n = 0 passes a null data pointer.
+    {
+        GgufContext c = voice_design_metadata();
+        gguf_remove_key(c.get(), "synthesize.voice.profile_sources");
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    }
     return 0;
 }
 
@@ -709,5 +784,6 @@ int main() {
     SYNTH_TEST_CHECK(test_zero_reference_bounds_are_refused() == 0);
     SYNTH_TEST_CHECK(test_profile_sources_names_a_package_default_is_refused() == 0);
     SYNTH_TEST_CHECK(test_truncated_profile_sources_package_is_refused() == 0);
+    SYNTH_TEST_CHECK(test_profile_sources_are_declared_not_inferred() == 0);
     return 0;
 }

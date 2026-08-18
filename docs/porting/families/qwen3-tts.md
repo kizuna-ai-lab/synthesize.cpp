@@ -35,6 +35,26 @@ commit `d4df99e8`), on jiangzhuo's per-act confirmation naming that target --
 which closes Stage 2 on the same terms Stage 1 closed on. Stage 3 (Description
 Text) is not started. See the three Stage 2 paragraphs below.
 
+**Packages converted before `synthesize.voice.profile_sources` existed do not
+load under this runtime any more.** Stage 3's loader change
+(`src/arch/qwen3-tts/weights.cpp`) made a `profile-sources`-mode package
+declare which Voice Profile sources it implements, rather than the loader
+inferring "Base, therefore reference audio" from the mode alone -- inference
+the mode stopped supporting once VoiceDesign started using the same mode for
+Description Text. The three packages published above on 2026-08-17 (BF16, F16,
+Q8_MIXED, commit `d4df99e8`) predate that key and are refused by
+`synth_model_load`, so `tests/qwen3_tts_base_load_real.cpp` and the Base Golden
+targets (`synthesize-qwen3-tts-base-xvector-golden`,
+`synthesize-qwen3-tts-base-mel-shape`) will fail against them until the local
+copy is re-converted. This is deliberate, not an oversight: the project is
+pre-release with no users, so no compatibility shim was written to infer the
+declaration from a package's other contents -- that is exactly the inference
+this loader change exists to remove. Re-cut a local Base package with the
+current `scripts/convert-qwen3-tts.py` before turning on
+`-DSYNTH_BUILD_INTEGRATION_TESTS=ON` against it; whether the already-published
+Hugging Face artifacts get re-uploaded is a separate act this paragraph makes
+no claim about.
+
 **Until 2026-08-12 this line read "Q8_MIXED, the public backend control and
 stage 8 are not done. Port validation is not started."** All four clauses were
 false, and each was contradicted by a later section of this same document —

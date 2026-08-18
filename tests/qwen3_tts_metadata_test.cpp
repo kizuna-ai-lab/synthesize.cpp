@@ -231,6 +231,19 @@ GgufContext voice_design_metadata() {
     gguf_set_val_u32(g, "synthesize.voice.preset_count", 0);
     gguf_set_val_u32(g, "synthesize.qwen3-tts.talker.hidden_size", 2048);
     gguf_set_val_u32(g, "synthesize.qwen3-tts.talker.intermediate_size", 6144);
+    // valid_metadata() writes a nine-entry Preset Voice catalog; a
+    // profile-sources package has none, and the converter cannot emit these
+    // keys for a variant with a zero preset_count. Removed rather than left
+    // in place, so the fixture describes a package the converter could
+    // actually produce.
+    gguf_remove_key(g, "synthesize.qwen3-tts.speakers.names");
+    gguf_remove_key(g, "synthesize.qwen3-tts.speakers.token_ids");
+    gguf_remove_key(g, "synthesize.qwen3-tts.speakers.dialect_override");
+    for (int index = 0; index < 9; ++index) {
+        const std::string prefix = "synthesize.voice." + std::to_string(index) + ".";
+        gguf_remove_key(g, (prefix + "id").c_str());
+        gguf_remove_key(g, (prefix + "flags").c_str());
+    }
     set_string_array(g, "synthesize.voice.profile_sources", { "description-text" });
     gguf_set_val_str(g, "synthesize.profile.schema", "qwen3-tts-voice-design");
     gguf_set_val_u32(g, "synthesize.profile.schema_version", 1);
@@ -365,6 +378,17 @@ int test_profile_sources_are_declared_not_inferred() {
     }
     // Declaring reference-audio without the encoder block is the same fault
     // from the other side, and was already impossible; it must stay so.
+    //
+    // This is a regression guard, not a witness for the `wants_reference !=
+    // carries_encoder` check above it: delete that check and this case is
+    // still refused, because `wants_reference` is still true here and
+    // `read_speaker_encoder` still runs and still fails on the missing
+    // `enc_dim` -- the package carries none of the eight speaker-encoder
+    // keys, not just an inconsistent one. There is no way to construct "no
+    // encoder block at all" so that only the mismatch check catches it; the
+    // case above (description-text declared, `enc_dim` present) is the one
+    // that actually isolates that check, by the same reasoning
+    // read_speaker_encoder's own comments apply to their zero-checks.
     {
         GgufContext c = voice_design_metadata();
         set_string_array(c.get(), "synthesize.voice.profile_sources", { "reference-audio" });

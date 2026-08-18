@@ -775,7 +775,7 @@ bool read_profile_and_speaker_encoder(const GgufMetadata & meta, HParams & hpara
     const bool carries_encoder = meta.has("synthesize.qwen3-tts.speaker_encoder.enc_dim");
     if (wants_reference != carries_encoder) {
         std::fprintf(stderr, "qwen3-tts: package declares reference-audio=%d but carries a speaker encoder=%d\n",
-                     int(wants_reference), int(carries_encoder));
+                     static_cast<int>(wants_reference), static_cast<int>(carries_encoder));
         return false;
     }
     if (wants_reference) {

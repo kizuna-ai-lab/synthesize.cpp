@@ -77,4 +77,29 @@ bool resolve_qwen3_tts_target_spec(const Profile & profile, const std::string & 
 bool resolve_omnivoice_target_type(const Profile & profile, const std::string & name, ggml_type & type_out);
 bool resolve_omnivoice_target_spec(const Profile & profile, const std::string & name, TargetSpec & spec_out);
 
+// Whether this architecture may be CUT with this profile at all, asked before
+// any tensor is resolved. Returns false and fills `reason_out` for the
+// combinations a resolver would happily answer for and the runtime would then
+// refuse.
+//
+// WHY THIS IS SEPARATE FROM THE RESOLVERS. A resolver's false means "I do not
+// recognise this tensor", which stops the run with that message. A profile that
+// does not apply to a family is a different fault and deserves a different
+// sentence, decided once at the top rather than re-derived per tensor.
+//
+// WHERE THE BOUNDARY IS, AND WHY IT IS NOT WIDER. Cutting VITS or Kokoro with
+// an omnivoice profile name also writes a package that will not load -- but it
+// fails at the runtime's own profile-string check (src/arch/*/weights.cpp),
+// which names the profile and is already loud. Qwen3-TTS's `BF16` is the one
+// combination that passes that check and fails later on a tensor type, because
+// `BF16` is that family's converter-produced SOURCE profile and its runtime
+// therefore accepts the string. Measured 2026-08-17: a `--quant BF16` cut of
+// the shipped CustomVoice package succeeds, writes 2.2 GB, and is rejected at
+// load on `talker.text_projection.linear_fc1.bias` -- a Sensitive tensor, on a
+// package holding no ConvKernel tensors at all, so the mismatch is the whole
+// profile row rather than any one role.
+bool profile_applies_to_architecture(const std::string & architecture,
+                                     const Profile &     profile,
+                                     std::string &       reason_out);
+
 }  // namespace synth::quantize

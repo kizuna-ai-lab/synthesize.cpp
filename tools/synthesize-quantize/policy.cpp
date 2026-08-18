@@ -153,6 +153,22 @@ enum class CatalogRole {
     Unknown,
     MatrixWeight,
     TransposeWeight,
+    // A forward convolution kernel, stored [kernel, in, out]: held at the
+    // profile's halved fallback column at its native three-axis shape, never
+    // block-quantized and never packed.
+    //
+    // This is arithmetic, not caution. A block runs along ne[0], which for a
+    // convolution kernel is the KERNEL extent, and qwen3-tts's speaker encoder
+    // has 38 of them at kernel 1, 3 and 5 against Q8_0's block of 32 -- so
+    // quantize.cpp's own row-size check refuses every one. The alternative is
+    // the packed [kernel * in, out] 2-D layout, which this family's runtime
+    // implements nowhere: its Resolver::find has no packed branch (Kokoro's
+    // does) and its same_conv1d reads ne[0..2] as {kernel, in, out}. The role
+    // is shaped like OmniVoice's ConvKernel and reaches the same column for a
+    // different, family-local reason; qwen3-tts's own codec half is separately
+    // Sensitive for a measured speed reason, and neither is imported by the
+    // other. See Plan 4 Task 6.
+    ConvKernel,
     Sensitive,
 };
 
@@ -355,8 +371,75 @@ CatalogRole classify_qwen3_codec_shape(const std::vector<std::string_view> & tok
 // back is not worth the time it costs. The talker half is where both the
 // parameters and the win are: halving it took the talker from 13.7 seconds to 1.7
 // and the predictor from 25.1 to 3.7.
+// The encoder half of the speech tokenizer, which only the Base package
+// carries: 161 tensors under `codec.encoder.*`. They are RECOGNISED here and
+// then reported Sensitive by the caller, exactly as the decoder's are and for
+// the same reason the paragraph above records -- `codec.` is one half in
+// src/arch/qwen3-tts/catalog.cpp too (`name.compare(0, 6, "codec.") == 0`), so
+// the runtime already expects F32 for every one of these under every profile
+// and the tool and the runtime were never in disagreement here. The
+// contradiction Plan 4 Task 6 had to settle was in `speaker_encoder.*` alone.
+//
+// Recognition is by name and stricter than the decoder's, which short-circuits
+// its whole `quantizer` subtree. Every one of the 23 distinct name shapes this
+// package carries is spelled out, so a tensor arriving under a new shape is an
+// error rather than something that inherits Sensitive by prefix.
+CatalogRole classify_qwen3_codec_encoder_shape(const std::vector<std::string_view> & tokens) {
+    // codec.encoder.downsample.conv.weight -- one tensor, no bias.
+    if (tokens.size() == 5 && tokens[2] == "downsample" && tokens[3] == "conv" && tokens[4] == "weight") {
+        return CatalogRole::Sensitive;
+    }
+    // codec.encoder.enc_transformer.layers.N.*
+    if (tokens.size() > 5 && tokens[2] == "enc_transformer" && tokens[3] == "layers" && is_index(tokens[4])) {
+        if (tokens.size() == 7 && one_of(tokens[5], { "input_layernorm", "post_attn_norm" }) &&
+            one_of(tokens[6], { "weight", "bias" })) {
+            return CatalogRole::Sensitive;
+        }
+        if (tokens.size() == 7 && one_of(tokens[5], { "self_attn_scale", "mlp_scale" }) && tokens[6] == "scale") {
+            return CatalogRole::Sensitive;
+        }
+        if (tokens.size() == 8 && tokens[5] == "self_attn" && tokens[7] == "weight" &&
+            one_of(tokens[6], { "q_proj", "k_proj", "v_proj", "o_proj" })) {
+            return CatalogRole::Sensitive;
+        }
+        if (tokens.size() == 8 && tokens[5] == "mlp" && tokens[7] == "weight" && one_of(tokens[6], { "fc1", "fc2" })) {
+            return CatalogRole::Sensitive;
+        }
+        return CatalogRole::Unknown;
+    }
+    // codec.encoder.encoder.layers.N.[block.M.]conv.{weight,bias} -- the SEANet
+    // stack: six stage convolutions and eight residual-block ones.
+    if (tokens.size() > 5 && tokens[2] == "encoder" && tokens[3] == "layers" && is_index(tokens[4])) {
+        if (tokens.size() == 7 && tokens[5] == "conv" && one_of(tokens[6], { "weight", "bias" })) {
+            return CatalogRole::Sensitive;
+        }
+        if (tokens.size() == 9 && tokens[5] == "block" && is_index(tokens[6]) && tokens[7] == "conv" &&
+            one_of(tokens[8], { "weight", "bias" })) {
+            return CatalogRole::Sensitive;
+        }
+        return CatalogRole::Unknown;
+    }
+    // codec.encoder.quantizer.{semantic,acoustic}_rvq.*
+    if (tokens.size() > 4 && tokens[2] == "quantizer" && one_of(tokens[3], { "semantic_rvq", "acoustic_rvq" })) {
+        if (tokens.size() == 6 && one_of(tokens[4], { "input_proj", "output_proj" }) && tokens[5] == "weight") {
+            return CatalogRole::Sensitive;
+        }
+        if (tokens.size() == 7 && tokens[4] == "layers" && is_index(tokens[5]) && tokens[6] == "codebook") {
+            return CatalogRole::Sensitive;
+        }
+        return CatalogRole::Unknown;
+    }
+    return CatalogRole::Unknown;
+}
+
 CatalogRole classify_qwen3_codec(const std::vector<std::string_view> & tokens) {
-    if (tokens.size() < 3 || tokens[0] != "codec" || tokens[1] != "decoder") {
+    if (tokens.size() < 3 || tokens[0] != "codec") {
+        return CatalogRole::Unknown;
+    }
+    if (tokens[1] == "encoder") {
+        return classify_qwen3_codec_encoder_shape(tokens);
+    }
+    if (tokens[1] != "decoder") {
         return CatalogRole::Unknown;
     }
     // Recognised below for the catalog's sake, then reported as sensitive so no
@@ -463,10 +546,82 @@ CatalogRole classify_qwen3_codec_shape(const std::vector<std::string_view> & tok
     return CatalogRole::Unknown;
 }
 
+// The ECAPA-TDNN speaker encoder, which only the Base package carries: 76
+// tensors, 38 convolution weights and their 38 biases. The topology is a stem,
+// three blocks of {tdnn1, 7 res2net, se1, se2, tdnn2}, then mfa, asp.tdnn, asp
+// and fc -- 1 + 3*11 + 4 = 38, and src/arch/qwen3-tts/catalog.cpp's
+// resolve_speaker_encoder names the same 38 in the same order.
+//
+// Every weight is [kernel, in, out] and takes ConvKernel; every bias is a
+// per-channel vector and takes Sensitive, which is what the runtime's own
+// resolver already expects for them (Resolver::conv resolves `.bias` at the
+// default Role::Sensitive).
+CatalogRole classify_qwen3_speaker_encoder(const std::vector<std::string_view> & tokens) {
+    if (tokens.empty() || tokens[0] != "speaker_encoder") {
+        return CatalogRole::Unknown;
+    }
+    const std::string_view leaf = tokens.back();
+    if (leaf != "weight" && leaf != "bias") {
+        return CatalogRole::Unknown;
+    }
+    const CatalogRole role = leaf == "weight" ? CatalogRole::ConvKernel : CatalogRole::Sensitive;
+
+    // speaker_encoder.fc.{weight,bias} -- the only leaf that is not under a
+    // convolution node at all, because upstream's final projection is a bare
+    // 1-wide convolution rather than a wrapped one.
+    if (tokens.size() == 3 && tokens[1] == "fc") {
+        return role;
+    }
+    // speaker_encoder.blocks.N.se_block.{conv1,conv2}.{weight,bias}. Checked
+    // before the `.conv.` wrapper rule below and NOT folded into it: these two
+    // are named `conv1`/`conv2` directly, with no inner `.conv.` node, so the
+    // wrapper rule would reject them. Getting this order wrong classifies six
+    // real tensors Unknown and stops the tool dead on them, which is how it was
+    // caught.
+    if (tokens.size() == 6 && tokens[1] == "blocks" && is_index(tokens[2]) && tokens[3] == "se_block" &&
+        one_of(tokens[4], { "conv1", "conv2" })) {
+        return role;
+    }
+    // Everything remaining ends `.conv.{weight,bias}`, and the segment before
+    // the leaf is what says so. Requiring it is what keeps a future
+    // non-convolution tensor under this prefix an error rather than something
+    // that inherits a convolution's role by position.
+    if (tokens.size() < 4 || tokens[tokens.size() - 2] != "conv") {
+        return CatalogRole::Unknown;
+    }
+    // speaker_encoder.{mfa,asp}.conv.*
+    if (tokens.size() == 4 && one_of(tokens[1], { "mfa", "asp" })) {
+        return role;
+    }
+    // speaker_encoder.blocks.0.conv.* -- the stem.
+    if (tokens.size() == 5 && tokens[1] == "blocks" && is_index(tokens[2])) {
+        return role;
+    }
+    // speaker_encoder.asp.tdnn.conv.*
+    if (tokens.size() == 5 && tokens[1] == "asp" && tokens[2] == "tdnn") {
+        return role;
+    }
+    if (tokens[1] == "blocks" && is_index(tokens[2])) {
+        // speaker_encoder.blocks.N.{tdnn1,tdnn2}.conv.*
+        if (tokens.size() == 6 && one_of(tokens[3], { "tdnn1", "tdnn2" })) {
+            return role;
+        }
+        // speaker_encoder.blocks.N.res2net_block.blocks.M.conv.*
+        if (tokens.size() == 8 && tokens[3] == "res2net_block" && tokens[4] == "blocks" && is_index(tokens[5])) {
+            return role;
+        }
+    }
+    return CatalogRole::Unknown;
+}
+
 CatalogRole classify_qwen3_tts_tensor(const std::string & name) {
     const std::vector<std::string_view> tokens = split_name(name);
     const CatalogRole                   talker = classify_qwen3_talker(tokens);
-    return talker != CatalogRole::Unknown ? talker : classify_qwen3_codec(tokens);
+    if (talker != CatalogRole::Unknown) {
+        return talker;
+    }
+    const CatalogRole speaker = classify_qwen3_speaker_encoder(tokens);
+    return speaker != CatalogRole::Unknown ? speaker : classify_qwen3_codec(tokens);
 }
 
 CatalogRole classify_vits_tensor(const std::string & name) {
@@ -494,6 +649,21 @@ const Profile * find_profile(const char * name) {
     return nullptr;
 }
 
+bool profile_applies_to_architecture(const std::string & architecture,
+                                     const Profile &     profile,
+                                     std::string &       reason_out) {
+    reason_out.clear();
+    if (architecture == "qwen3-tts" && iequals(profile.name, "BF16")) {
+        reason_out =
+            "BF16 is Qwen3-TTS's source profile, written by the converter and not reproducible by this tool: "
+            "src/arch/qwen3-tts/catalog.cpp holds every talker-half tensor at BF16 regardless of role, while this "
+            "profile's sensitive and conv-kernel columns are F32. A cut would succeed and the package would fail to "
+            "load. Convert from the checkpoint to obtain BF16; cut F16, Q8_MIXED or Q5_K_MIXED from it.";
+        return false;
+    }
+    return true;
+}
+
 bool resolve_qwen3_tts_target_spec(const Profile & profile, const std::string & name, TargetSpec & spec_out) {
     switch (classify_qwen3_tts_tensor(name)) {
         case CatalogRole::MatrixWeight:
@@ -504,6 +674,17 @@ bool resolve_qwen3_tts_target_spec(const Profile & profile, const std::string & 
             // a column matrix multiply into col2im_1d, and CUDA's F16 matrix
             // multiply accumulates in half precision. There are six of them.
             spec_out = { GGML_TYPE_F32, TensorLayout::Native };
+            return true;
+        case CatalogRole::ConvKernel:
+            // The profile's halved fallback column, at native three-axis shape.
+            // Never block-quantized and never packed: a block runs along ne[0],
+            // which is the kernel extent -- 1, 3 or 5 across the speaker
+            // encoder's 38 -- against Q8_0's block of 32, so quantize.cpp's own
+            // row-size check refuses every one of them. F16 under F16,
+            // Q8_MIXED and Q5_K_MIXED; src/arch/qwen3-tts/catalog.cpp's
+            // Role::ConvKernel returns the same three, and the two must not
+            // drift.
+            spec_out = { profile.transpose_weight_type, TensorLayout::Native };
             return true;
         case CatalogRole::Sensitive:
             spec_out = { profile.sensitive_type, TensorLayout::Native };
@@ -538,6 +719,14 @@ bool resolve_vits_target_spec(const Profile & profile, const std::string & name,
             // tolerances to match.
             spec_out = { GGML_TYPE_F32, TensorLayout::Native };
             return true;
+        case CatalogRole::ConvKernel:
+            // Unreachable: classify_vits_tensor never returns it. VITS's own
+            // convolution kernels are already MatrixWeight or Sensitive by
+            // name, and this arm exists only because the enumerator is shared
+            // with qwen3-tts. Refused rather than mapped, so a future VITS
+            // classifier that starts returning it fails loudly here instead of
+            // silently inheriting another family's fallback column.
+            return false;
         case CatalogRole::Sensitive:
             spec_out = { profile.sensitive_type, TensorLayout::Native };
             return true;

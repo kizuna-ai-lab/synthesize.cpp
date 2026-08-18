@@ -9,6 +9,14 @@
  * relations and their meaning live in scripts/validate-qwen3-tts-public.py.
  */
 
+/* This driver reaches outside ISO C for two things -- `clock_gettime` for the
+ * real-time factor and `strdup` for the `ref:` spec -- and CMake asks for C11.
+ * They are declared today only because CMake leaves C_EXTENSIONS on and the
+ * build lands on gnu11, so the macro states the dependency instead of relying
+ * on that default. Note tests/omnivoice_public_real.c has the same
+ * `clock_gettime` dependency and no macro; the tree declares none anywhere. */
+#define _POSIX_C_SOURCE 200809L
+
 #include "synthesize.h"
 
 #include <stdio.h>
@@ -37,11 +45,51 @@ static int write_pcm(const char * path, const float * samples, uint64_t count) {
     return written == (size_t) count && flushed;
 }
 
+/* Raw little-endian float32 mono samples, which is what this adapter already
+ * WRITES for its output. Reading the same shape avoids a fifth WAV parser in
+ * this directory -- and in C, where the four that exist are C++ -- while
+ * keeping the reference an ordinary buffer of audio. The caller converts
+ * whatever it has; scripts/validate-qwen3-tts-public.py does it with soundfile,
+ * from the manifest's own pinned artifact. */
+static float * read_f32(const char * path, uint64_t * out_count) {
+    FILE * file = fopen(path, "rb");
+    if (file == NULL) {
+        return NULL;
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return NULL;
+    }
+    const long size = ftell(file);
+    if (size < 0 || (size % (long) sizeof(float)) != 0 || size == 0) {
+        fclose(file);
+        return NULL;
+    }
+    rewind(file);
+    float * samples = (float *) malloc((size_t) size);
+    if (samples == NULL) {
+        fclose(file);
+        return NULL;
+    }
+    const size_t count = (size_t) size / sizeof(float);
+    const size_t read  = fread(samples, sizeof(float), count, file);
+    fclose(file);
+    if (read != count) {
+        free(samples);
+        return NULL;
+    }
+    *out_count = (uint64_t) count;
+    return samples;
+}
+
 int main(int argc, char ** argv) {
     if (argc < 6) {
         fprintf(stderr,
-                "usage: %s <model.gguf> <out.pcm> <voice-id> <language-tag|-> <seed|random> "
-                "[max-frames] [cpu|cuda] [threads]\n",
+                "usage: %s <model.gguf> <out.pcm> <voice-id|ref:PATH.f32[:TRANSCRIPT]> <language-tag|-> "
+                "<seed|random> [max-frames] [cpu|cuda] [threads]\n"
+                "  a `ref:` voice creates a Voice Profile from reference audio instead of naming a\n"
+                "  Preset Voice, which is the only way to synthesize from a package that catalogues\n"
+                "  none -- qwen3-tts-12hz-0-6b-base declares preset_ids: []\n",
                 argv[0]);
         return 2;
     }
@@ -103,13 +151,81 @@ int main(int argc, char ** argv) {
     int32_t threads_used = 0;
     synth_context_get_threads(context, &threads_used);
 
+    /* A `ref:` voice becomes a Voice Profile prepared through the public seam,
+     * which is the path a Base-package caller actually has. Everything after
+     * this point is identical for both kinds of Voice -- the request carries
+     * either a voice_id or a voice_profile and nothing else changes -- so the
+     * checks the validator runs are the same checks. */
+    synth_voice_profile_t * profile          = NULL;
+    float *                 reference_pcm    = NULL;
+    uint64_t                reference_frames = 0;
+    if (strncmp(voice_id, "ref:", 4) == 0) {
+        char * spec = strdup(voice_id + 4);
+        if (spec == NULL) {
+            fprintf(stderr, "out of memory\n");
+            synth_context_free(context);
+            synth_model_free(model);
+            return 1;
+        }
+        /* An optional transcript after a colon selects transcript-assisted
+         * (ICL) mode; without one the Profile is prepared in x-vector mode. */
+        char * transcript = strchr(spec, ':');
+        if (transcript != NULL) {
+            *transcript = '\0';
+            ++transcript;
+        }
+        reference_pcm = read_f32(spec, &reference_frames);
+        if (reference_pcm == NULL) {
+            fprintf(stderr, "cannot read %s as raw float32 mono samples\n", spec);
+            free(spec);
+            synth_context_free(context);
+            synth_model_free(model);
+            return 1;
+        }
+
+        synth_voice_reference_t reference;
+        synth_voice_reference_init(&reference, sizeof reference);
+        reference.samples       = reference_pcm;
+        reference.frame_count   = reference_frames;
+        reference.sample_rate   = 24000;
+        reference.channel_count = 1;
+        if (transcript != NULL && transcript[0] != '\0') {
+            reference.transcript      = transcript;
+            reference.transcript_size = strlen(transcript);
+            if (language != NULL) {
+                reference.language_tag      = language;
+                reference.language_tag_size = strlen(language);
+            }
+        }
+
+        synth_voice_reference_params_t reference_params;
+        synth_voice_reference_params_init(&reference_params, sizeof reference_params);
+        reference_params.references       = &reference;
+        reference_params.reference_count  = 1;
+        reference_params.reference_stride = sizeof reference;
+
+        status = synth_voice_profile_create_from_reference(model, &reference_params, &profile);
+        free(spec);
+        if (status != SYNTH_OK) {
+            fprintf(stderr, "voice_profile_create_from_reference -> %d\n", (int) status);
+            free(reference_pcm);
+            synth_context_free(context);
+            synth_model_free(model);
+            return 1;
+        }
+    }
+
     synth_request_t request;
     synth_request_init(&request, sizeof request);
-    request.input_kind    = SYNTH_INPUT_TEXT_UTF8;
-    request.input_data    = text;
-    request.input_count   = text_size;
-    request.voice_id      = voice_id;
-    request.voice_id_size = strlen(voice_id);
+    request.input_kind  = SYNTH_INPUT_TEXT_UTF8;
+    request.input_data  = text;
+    request.input_count = text_size;
+    if (profile != NULL) {
+        request.voice_profile = profile;
+    } else {
+        request.voice_id      = voice_id;
+        request.voice_id_size = strlen(voice_id);
+    }
     if (language != NULL) {
         request.language_tag      = language;
         request.language_tag_size = strlen(language);
@@ -129,6 +245,8 @@ int main(int argc, char ** argv) {
     const double synthesis_seconds = now_seconds() - synthesis_started;
     if (status != SYNTH_OK) {
         fprintf(stderr, "synthesize -> %d\n", (int) status);
+        synth_voice_profile_free(profile);
+        free(reference_pcm);
         synth_context_free(context);
         synth_model_free(model);
         return 1;
@@ -137,6 +255,8 @@ int main(int argc, char ** argv) {
     if (!write_pcm(out_path, audio->samples, audio->frame_count)) {
         fprintf(stderr, "cannot write %s\n", out_path);
         synth_audio_buffer_free(audio);
+        synth_voice_profile_free(profile);
+        free(reference_pcm);
         synth_context_free(context);
         synth_model_free(model);
         return 1;
@@ -152,6 +272,11 @@ int main(int argc, char ** argv) {
         result.resolved_language_tag == NULL ? "" : result.resolved_language_tag);
 
     synth_audio_buffer_free(audio);
+    /* Freed in the order a caller would: the Profile is independent of the
+     * Context that consumed it, and the samples it was prepared from are the
+     * caller's for the whole of its life. */
+    synth_voice_profile_free(profile);
+    free(reference_pcm);
     synth_context_free(context);
     synth_model_free(model);
     return 0;

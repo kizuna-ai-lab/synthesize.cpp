@@ -135,6 +135,14 @@ bool quantize_file(const std::string & input_path,
         return fail(error_out, "unsupported input GGUF general.architecture: " + architecture);
     }
 
+    // Asked before any tensor is read, so a combination that cannot produce a
+    // loadable package costs a message rather than several gigabytes of output.
+    std::string profile_reason;
+    if (!profile_applies_to_architecture(architecture, *profile, profile_reason)) {
+        return fail(error_out, "profile " + std::string(profile->name) + " does not apply to architecture " +
+                                   architecture + ": " + profile_reason);
+    }
+
     struct PlanEntry {
         ggml_tensor *          source;
         ggml_type              target_type;

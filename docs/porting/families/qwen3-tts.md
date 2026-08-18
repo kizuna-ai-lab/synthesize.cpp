@@ -1,6 +1,6 @@
 # Qwen3-TTS Family Selection and Port Plan
 
-Status: Confirmed 2026-08-14. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
+Status: Confirmed 2026-08-18. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
 complete and published. Intake, the oracle and conversion are done; stages 4
 through 7 have their measured work done: oracle replay and the public seam
 pass, and the codec runs on CUDA while the autoregressive half stays on the CPU
@@ -17,9 +17,23 @@ accepted on 2026-07-26; the intake packet is
 `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/`. **Stage 2
 (`qwen3-tts-12hz-0.6b-base`) has Plans 1, 2 and 3 done** -- the package, the
 x-vector clone path, and the transcript-assisted (ICL) clone path, all on CPU;
-Plan 4 (quantization, CUDA and the listening pass) is not started, Stage 3
-(Description Text) is not started, and the Base variant is **not published**.
-See the three Stage 2 paragraphs below.
+**Plan 4 executed 2026-08-17 and is complete, all sixteen tasks.**
+It measured both Quantization Profiles (F16 clears every gate and does NOT pay
+-- it is 184,448 bytes *larger* than its source; Q8_MIXED pays on both, 33.7 %
+smaller at RTF 0.863 against BF16's 3.15, faster than real time), settled the
+quantizer's blocker on the Base package's 237 new tensors, removed the semantic
+gate's cliff, and **declined** a CUDA twin for the two new graphs on a
+measurement -- the transfer costs 2.2× the compute it would accelerate. **The first ICL
+Listening Audit ran on 2026-08-17 and recorded `no_obvious_regression`** across
+five blind pairs and two labelled resemblance checks, meeting `spec:532`'s audit
+gate; both clones were judged the same speaker as their source, and the two
+quantization profiles were audible but not degraded.
+See "Stage 2 Plan 4: what it measured, and what it refused to claim" below.
+**The Base variant was published on 2026-08-17** to
+`jiangzhuo9357/qwen3-tts-12hz-0-6b-base-gguf` (BF16, F16 and Q8_MIXED, 6.70 GB,
+commit `d4df99e8`), on jiangzhuo's per-act confirmation naming that target --
+which closes Stage 2 on the same terms Stage 1 closed on. Stage 3 (Description
+Text) is not started. See the three Stage 2 paragraphs below.
 
 **Until 2026-08-12 this line read "Q8_MIXED, the public backend control and
 stage 8 are not done. Port validation is not started."** All four clauses were
@@ -2990,7 +3004,10 @@ agreement rates below are recorded as evidence and gate nothing.**
 > says "three cases", or prints two columns side by side, or notes that "the
 > three calibration cases sit at 0.00/3.96/3.96%" — the identical 3.96/3.96
 > being that clip measured twice — **none of it is independent corroboration**.
-> A second speaker would be, and there is not one. `tests/tolerances/qwen3-tts.json`,
+> A second speaker would be, and **since 2026-08-17 there is one** — see "The
+> second reference recording" below, which also records what it changed and
+> what it did not. Everything above this sentence describes the four cases that
+> existed before it. `tests/tolerances/qwen3-tts.json`,
 > `scripts/dump_reference_qwen3_tts_codec_encoder.py` and
 > `scripts/validate-qwen3-tts-codec_encoder.py` have all stated this from the
 > start; this file — the one a later variant's implementer is directed to —
@@ -3012,6 +3029,533 @@ error. What it does not buy is a proof that this port's *selections* match
 upstream's, and nothing here may be read as though it did. The 100.000% row
 above is the strongest available substitute and it is a comparison against
 upstream's own float32 run, not against the shipped bf16 oracle.
+
+### CUDA placement for the speaker and codec encoders: measured, and declined
+
+Stage 2 Plan 4 Task 12. §7 says the CUDA Execution Backend "reuses Stage 1's
+wiring", and Stage 1's twin pass covers `codec.decoder.*` only -- the encoder is
+deliberately outside it, by a decision recorded at `model.cpp:523-540` with its
+byte cost. Reading §7 as commissioning a twin for the two new graphs is a
+reading, not the text. So this task measured what a twin could possibly buy
+before writing one, and the answer is that it cannot pay.
+
+**The two graphs' CPU cost, measured on a `Release`-typed tree.** Each driver
+loads the 2.4 GiB package before it runs its graph, so one timing is load plus
+graph. Timing the same driver on a 1-second clip and a 30-second one separates
+them, because the load is identical and the graph is not. Median of three, in
+`build` at `CMAKE_BUILD_TYPE=Release`:
+
+| driver | 1 s of audio | 30 s of audio | difference | per second of audio |
+| --- | ---: | ---: | ---: | ---: |
+| codec encoder | 1.943 s | 7.125 s | 5.182 s | **0.179 s** |
+| speaker encoder | 1.800 s | 2.777 s | 0.977 s | **0.034 s** |
+
+Both extrapolate to the same fixed cost -- 1.764 s and 1.766 s of model load --
+which is the cross-check that the separation is real rather than a fit.
+
+**A third point tests the extrapolation rather than assuming it.** The model
+predicts 1.764 + 0.179 × 8.08 = **3.21 s** for the codec encoder on the
+8.08-second reference; measured, median of three, it is **3.183 s** — within
+0.9 %, and taken while a CUDA build was competing for cores, so if anything the
+measurement is the pessimistic one. The graph's own share there is
+3.183 − 1.764 = **1.42 s**.
+
+So on that reference the two graphs together cost about **1.69 s**: 1.42 s in
+the codec encoder and 0.27 s in the speaker encoder.
+
+**What a twin would cost, against Stage 1's own measurement.** Mirroring the
+codec encoder is 224,674,944 bytes (`model.cpp:523-540`); the speaker encoder
+adds about 17 MiB. Stage 1 measured roughly **7 s of extra load for 457 MB**, so
+about **3.7 s** for these 241 MB.
+
+**So the transfer costs 2.2× the entire compute it would accelerate, before any
+speedup is applied.** Even at Stage 1's 35× -- the figure its codec-decoder twin
+actually achieved -- the saving is 1.69 × (1 − 1/35) ≈ 1.64 s against a 3.7 s
+cost. There is no speedup at which this twin pays, because the ceiling is the
+graphs' whole CPU time and the floor is a larger one-time transfer.
+
+**And the amortization runs the wrong way.** Stage 1's codec-decoder split is a
+deployment choice -- a net loss for a one-shot utterance and a clear win for a
+load-once process -- because the decoder runs on every synthesis. These two run
+**once per Voice Profile**, not once per synthesis: the Profile carries the
+x-vector and the reference codes, and every later synthesis reuses them. A
+load-once process therefore pays the mirror once and saves almost nothing,
+which is the opposite of what made Stage 1's twin worth having.
+
+**Outcome: the second. The twin is not worth writing, and it was not written.**
+`model.cpp:523-540`'s comment said a later plan might measure this; it has been
+measured and the comment is updated to say so. The discrete-outputs rule is not
+even reached -- it would have held the RVQ argmin on the host regardless, so
+only part of the codec encoder was ever eligible.
+
+**What that leaves for the CUDA sub-grid, stated rather than skipped.** Under
+this outcome the two new graphs stay on the CPU, so a `codec_encoder` CUDA cell
+would describe a placement nothing runs on. But the Stage 1 codec-decoder twin
+*does* move on a Base package, so `public` and `replay` CUDA figures are real
+and are measured anyway -- `docs/backends.md` gate 5 applies to the placement
+that demonstrably exists. Task 13 decides where they are recorded, and the
+coverage rule's all-or-nothing sub-grid means they cannot become a `backends`
+key without a third stage that would be a fabrication.
+
+### The Base variant carries no CUDA sub-grid, and one real CUDA measurement
+
+Stage 2 Plan 4 Task 13, conditional on Task 12's second outcome. The coverage
+rule makes a `backends` sub-grid all-or-nothing -- every one must carry the
+reference profile's full stage set, which for this variant is
+{`public`, `replay`, `codec_encoder`} -- and an absent `backends` key is legal,
+which is the permitted hole CustomVoice's `Q8_MIXED` already occupies.
+
+**Only ONE of the three stages exercises CUDA on this variant, not the two Plan
+4 expected.** Task 12's second outcome anticipated that `public` and `replay`
+would both stay measurable. `replay` does not, and the reason is structural
+rather than a matter of effort:
+
+| stage | does a CUDA run measure anything different? | why |
+| --- | --- | --- |
+| `public` | **yes** | the Stage 1 codec-decoder twin does move on a Base package, so `synth_model_load` with `SYNTH_BACKEND_CUDA` puts a real graph on the device |
+| `replay` | **no** | its two probes are `speaker.x_vector` and `prompt.icl_embed`. `tests/qwen3_tts_xvector_driver.cpp` calls `Model::load_cpu` and has no backend argument at all, and the ICL prompt comparison is host-side assembly. A "CUDA" run would return the identical numbers. |
+| `codec_encoder` | **no** | Task 12 measured the twin and declined it, so this graph runs on the CPU under a CUDA request |
+
+So two of the three cells a sub-grid needs could only be filled by recording CPU
+figures under a CUDA key. **That is not done**, and the sub-grid is therefore not
+committed. `tests/tolerances/qwen3-tts.json` gains no `backends` key for
+`qwen3-tts-12hz-0-6b-base`.
+
+**The measurement that IS real, recorded here because the cell cannot hold it.**
+`scripts/validate-qwen3-tts-public.py` against the BF16 Base package with
+`--backend cuda`, runner built from the `rel-dgx-spark` preset
+(`CMAKE_BUILD_TYPE=Release`, sm_121a, CUDA 13.3), through a reference-audio
+Voice Profile:
+
+- **7 checks pass, 3 skipped**, the same seven and the same three structural
+  skips as every CPU cell -- the Voice kind is a property of the package's
+  catalogue, not of the backend.
+- The audio differs from CPU, which is what says the request reached the
+  device: seed 7 through reference A gives `ed32bb3b13800fe1` on CUDA against
+  `9eef2beaf63cb60e` on CPU. That is the codec decoder's TF32 arithmetic, the
+  same shape Stage 1 recorded when only `audio.pcm` moved between backends.
+- Seed reporting, same-seed byte-identical repeatability, different-seed
+  divergence and Voice divergence all hold **within** the CUDA backend.
+
+**No threshold was derived, because nothing here needed one.** Plan 4's Task 13
+Step 1 exists to stop the CPU `codec.chain` gate of 1.0e-3 being reused for a
+backend whose own CUDA-versus-CPU disagreement is 5.20e-03 -- 5.2× that gate and
+about 1.33 bf16 units. That derivation is only owed for a `codec_encoder` CUDA
+cell, and there is none: the graph did not move. The 5.20e-03 figure stands
+unused and unretracted, and a later rung that does place this graph must derive
+from it rather than from the CPU gate.
+
+**What this does not claim.** `docs/backends.md` gate 5 wants latency, RTF and
+peak memory for a supported backend; those are Task 14's and are not asserted
+here. This section records agreement and placement only.
+
+### The first ICL Listening Audit, 2026-08-17: `no_obvious_regression`
+
+Stage 2 Plan 4 Task 15. **No ICL listening audit had ever run for this family.**
+The 2026-08-13 audit covered x-vector mode only and said so; ICL did not exist
+when it ran.
+
+One listener (jiangzhuo), five blind pairs and two labelled resemblance checks,
+all on the same sentence at seed 7, generated from `build/rel-dgx-spark`
+(`CMAKE_BUILD_TYPE=Release`). A/B positions were shuffled with a recorded seed
+and the key was not on the page.
+
+| # | comparison | verdict |
+| --- | --- | --- |
+| 1 | BF16 against **F16**, ICL, reference A | different, **neither degraded** |
+| 2 | BF16 against **Q8_MIXED**, ICL, reference A | different, **neither degraded** |
+| 3 | **CUDA** against **CPU**, BF16, ICL, reference A | indistinguishable |
+| 4 | ICL against x-vector, BF16, reference A | indistinguishable |
+| 5 | ICL against x-vector, BF16, reference B (second speaker) | indistinguishable |
+| L1 | reference A source against its ICL clone | **same speaker** |
+| L2 | reference B source against its ICL clone | **same speaker** |
+
+**Result: `no_obvious_regression`.** No pair produced a named regression.
+
+**Every pair differed in bytes**, checked before the verdict was recorded, so
+each "indistinguishable" is a listening judgement rather than a trivial truth —
+the two sides of pairs 3, 4 and 5 are genuinely different audio.
+
+**What each row buys.**
+
+- **Both quantization profiles are audible but not degraded.** That is exactly
+  what a profile should produce, and for `Q8_MIXED` it is the audible evidence
+  the measurements could not supply: 33.7 % smaller and RTF 0.863 is only worth
+  having if it still sounds right, and a tolerance table cannot say whether it
+  does.
+- **CPU and CUDA are indistinguishable** despite differing bytes. That is the
+  codec decoder's TF32 arithmetic being inaudible, and it is the same kind of
+  evidence that removed this project's strict-FP32 gate on 2026-07-26 — two
+  renderings differing only in that gate, compared sample-aligned, inaudible.
+- **ICL and x-vector are indistinguishable on both references.** This is the
+  first audible comparison of the two clone modes and it is **scoped, not a
+  verdict on ICL**: two clips, one sentence, one listener. ICL's machinery may
+  well matter on material these two references do not represent — prosody
+  carried by the transcript, longer or harder utterances — and nothing here
+  tests that. What it does say is that on these clips the extra path costs
+  nothing audible and buys nothing audible either.
+- **Both clones were judged the same speaker as their source, including the
+  second speaker.** The 2026-08-13 audit produced that judgement on one source
+  clip; this is the second, on a different speaker and a different recording
+  chain.
+
+**What it does not establish.** Two recordings, one sentence, one listener. The
+Validation Level does not move and `quality_evaluation` stays deferred per ADR
+0017 — this is evidence, not a level. `spec:532`'s "audit recorded" gate is now
+**met**, which is a statement about this plan's deliverable and not about
+publication.
+
+The material is preserved at `build/listening-icl/` — `artifact.html` with the
+audio embedded, the per-clip WAVs, and `manifest.json` carrying the shuffle seed
+and the blind key.
+
+### Stage 2 Plan 4: what it measured, and what it refused to claim
+
+Executed 2026-08-17. Plan 4 was written as a **measurement** plan whose stated
+correct answers include "this profile does not pay" and "this twin is not worth
+writing", and both of those are among its results. The sections below this one
+carry each measurement with the artifact that produced it; this is the summary
+and the ledger of what remains.
+
+**The blocker, first.** `synthesize-quantize` could not cut a Base package at
+all: 76 `speaker_encoder.*` and 161 `codec.encoder.*` classified `Unknown` and
+the tool stopped on the first one. Worse, the runtime disagreed with it -- the
+`codec.` prefix put the encoder in the right half, but the speaker encoder's 38
+convolution weights were `Role::Matrix`, so the runtime expected Q8_0 for a
+package the tool refused to emit.
+
+**The ruling settled it per region, and neither uniform answer was available.**
+Holding those 38 at the profile's block type is not merely undesirable, it is
+impossible: a block runs along `ne[0]`, which for a convolution kernel is the
+kernel extent -- 1, 3 and 5 across all 38 -- against Q8_0's block of 32. The
+packed alternative clears the block size but emits rank 2, and this family's
+runtime implements neither half of consuming that. So they take a `ConvKernel`
+role at the halved fallback, native three-axis. All three published CustomVoice
+packages were re-cut and their digests proved unchanged.
+
+**What each measurement answered**
+
+| question | answer | where |
+| --- | --- | --- |
+| Does F16 pay? | **No.** 184,448 bytes *larger* than its source | "Stage 2 Plan 4" cells in `tests/tolerances/qwen3-tts.json` |
+| Does Q8_MIXED pay? | **Yes, on both.** 33.7 % smaller, RTF 3.15 → 0.863 | "Base latency, RTF and peak memory" |
+| Does quantizing the speaker encoder pay? | **No, and there is nothing to gain** | "Does quantizing the speaker encoder pay?" |
+| Does the conv-exempt precedent transfer? | **No.** Drift is exactly zero | "Does the conv-exempt precedent transfer?" |
+| Is a CUDA twin for the two new graphs worth writing? | **No.** Transfer is 2.2× the compute | "CUDA placement for the speaker and codec encoders" |
+| Can the semantic gate's cliff be removed? | **Yes**, by changing which frames the percentile covers | `gate_scope_warning_retired` in the tolerance file |
+
+**Five results contradicted what the plan expected, and each is recorded with
+the contradiction rather than smoothed over.**
+
+1. The flip rate is **not monotone in reference length**, so the length-scoping
+   branch `gate_scope_warning` offered is refuted -- by the second speaker Task 1
+   added precisely to test it.
+2. The masked statistic the plan prescribed -- condition on non-flipped frames --
+   has **~1× discrimination** and is undefined on several cases, because a mask
+   that mentions the port selects away a fault in the port. The committed mask
+   comes from `upstream-f32` against the oracle instead, and reaches 390–644×.
+3. Both quantization routes the plan offered for the 38 convolutions are
+   unavailable, for the block-arithmetic reason above.
+4. The public validator's **entire model of a Voice** was inapplicable to a
+   package with no Preset Voice catalogue, not merely a few of its checks.
+5. Only **one** of three stages measures anything different on CUDA, not the two
+   the plan assumed -- the x-vector driver has no backend argument at all.
+
+**Two corrections to this plan's own reasoning, kept because they are the useful
+part.** An inversion was written expecting a *cut* to fail on a row-size check;
+the cut succeeded and it is the runtime that refuses, and in the normal
+configuration the type check fires first so the rank disagreement is *masked*
+until both sides are moved together. And a 25× tightening of the acoustic bound
+passed every case in the validator and **failed the C++ arm on its first run**,
+because the two consumers feed the port different inputs; it was withdrawn.
+
+**The Listening Audit returned `no_obvious_regression` on 2026-08-17**, which is
+recorded in its own section above and which met `spec:532`'s audit gate.
+
+**What Plan 4 did NOT deliver, stated plainly.**
+
+- **Publication.** Nothing was uploaded and nothing asked to be. The Base variant
+  is not published.
+- **Any movement of the Validation Level.** `quality_evaluation` stays deferred
+  per ADR 0017.
+- **A CUDA sub-grid**, by the measured decision above; the coverage rule permits
+  the absent `backends` key and the one real CUDA measurement is recorded in
+  prose instead of a fabricated cell.
+- **Stage 3, the 1.7B variant, multi-clip enrollment, Native Streaming Synthesis,
+  Voice Conversion, and the CLI** -- all §10 non-goals, untouched.
+
+**Carried forward.** `prompt.icl_embed` is measured for BF16 only. The
+autoregressive replay probes CustomVoice carries are still unmeasured here. The
+`278` figure in the design's fifth erratum remains unverified -- its *companion*
+was re-measured over five cases and reproduces, which narrows but does not close
+what that erratum warns about.
+
+### Base latency, RTF and peak memory, measured on Release 2026-08-17
+
+Stage 2 Plan 4 Task 14, separate from Task 13 because it is a separate build
+tree and that separation is the point: a `dev-*` preset proves correctness and
+never wall-clock time.
+
+**Every figure below comes from `build/rel-dgx-spark`** -- the committed
+`rel-dgx-spark` preset, `CMAKE_BUILD_TYPE=Release`, sm_121a, CUDA Toolkit 13.3,
+on a DGX Spark/GB10. Workload: "This is a test of Qwen three T T S base voice
+cloning." synthesized through an ICL reference-audio Voice Profile prepared from
+`base-icl-en`'s waveform, seed 7, `max_output_frames` 983040, 10 threads.
+
+| profile | backend | frames | audio | synthesis | **RTF** | load | peak RSS |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| BF16 | CPU | 88,320 | 3.680 s | 11.60 s | **3.15** | 1.50 s | 3.29 GiB |
+| BF16 | CUDA | 88,320 | 3.680 s | 10.85 s | **2.95** | 1.64 s | 3.29 GiB |
+| Q8_MIXED | CPU | 78,720 | 3.280 s | 2.84 s | **0.863** | 1.13 s | 2.23 GiB |
+
+Medians of three (BF16) and six (Q8_MIXED) runs. RTF is each row's own
+synthesis time over its own audio length, never across rows -- the two profiles
+stop at different frame counts, which is a property of their weights and not an
+error.
+
+**Q8_MIXED crosses real time and is the profile that pays.** RTF 3.15 → 0.863 is
+a **3.65×** improvement, alongside a package 33.7 % smaller and 1.06 GiB less
+peak RSS. That is the speed half Task 8 handed forward, and it turns Task 8's
+"it pays on size" into "it pays on both". For orientation only, Stage 1 recorded
+RTF 0.85 for CustomVoice's Q8_MIXED on its own workload -- a different variant
+and a different case, but the closeness is a consistency signal rather than a
+coincidence, since both quantize the same autoregressive half.
+
+**CUDA buys about 6 % and that is the expected amount.** 11.60 s → 10.85 s on
+the same tree, RTF 3.15 → 2.95 — 6.5 % and 6.3 % respectively, which is what
+those two pairs divide out to. This paragraph read "about 8 %" until 2026-08-18,
+against its own numbers on the same line. Only the Stage 1 codec-decoder twin moves; the
+autoregressive half is held on the CPU by the discrete-outputs rule and
+dominates, and the two new graphs stay on the CPU by Task 12's measured
+decision. `docs/backends.md` requires performance measurement for support but no
+minimum speedup, so this is recorded as measured and CUDA is **not** described
+as accelerated for this variant beyond what the number says.
+
+**Gate 6, repeated runs and cleanup.** Every repetition at a fixed seed produced
+byte-identical frame counts -- 88,320 for BF16 and 78,720 for Q8_MIXED across
+all runs -- and peak RSS varied by under 0.03 % between repetitions of the same
+configuration, so nothing accumulates across runs.
+
+**Two contaminants, named rather than discovered.** The second BPE frontend costs
+about +45 MB of peak RSS and is inside every figure above. And the first
+measurement pass produced BF16 and Q8_MIXED synthesis times spread 2.8–9.7 s
+while a CUDA build was finishing on the same machine; re-measured on a quiet
+machine, Q8_MIXED lands in 2.765–2.893 s across six runs. **The contended
+figures are discarded, not averaged in.** One BF16 repetition still read 20.9 s
+against its neighbours' 11.56 and 11.64; it is treated as an outlier and the
+median of the stable runs is reported, which is why the run counts are stated
+above.
+
+**What is not claimed.** These are one machine, one workload and one utterance
+length. `docs/testing.md` records that generated length is build-dependent, so
+an RTF computed from a frame count taken on another tree would be wrong; every
+figure here is same-tree. No listening judgement is implied -- Task 15 owns
+that, and a tolerance table is not audible evidence.
+
+### Does quantizing the speaker encoder pay? Measured 2026-08-17
+
+Stage 2 Plan 4 Task 9. §7 says the speaker encoder "is small enough that
+quantizing it is unlikely to pay" and then forbids assuming it. This is the
+posterior.
+
+**The artifact, as §7 requires.** Packages
+`build/qwen3-tts-12hz-0-6b-base-{F16,Q8_MIXED}.gguf`, cut by
+`build/bin/synthesize-quantize` from
+`models/qwen3-tts-12hz-0-6b-base/qwen3-tts-12hz-0-6b-base-BF16.gguf`
+(sha256 `993f4cd1…`); tensor census read with `gguf.GGUFReader`; x-vectors driven
+by `synthesize-qwen3-tts-xvector-driver` through
+`scripts/validate-qwen3-tts-replay.py --compare-x-vector`; trees `build` and
+`build-integration`, both `CMAKE_BUILD_TYPE=Release`.
+
+**Size — the subject is 38 convolution weights, 8,843,264 elements.**
+
+| profile | storage | bytes | note |
+| --- | --- | ---: | --- |
+| BF16 (source) | BF16 | 16.87 MiB | 0.703 % of the package |
+| F16 | F16 | **16.87 MiB** | **exactly zero saved** — both are two-byte types |
+| Q8_MIXED | F16 | **16.87 MiB** | **exactly zero saved** — Task 6's ConvKernel ruling holds them at the halved fallback here too |
+| *Q8_0, packed (hypothetical)* | *Q8_0* | *8.96 MiB* | *would save 7.91 MiB, 0.329 % of the package* |
+
+The 38 biases are F32 under every non-source profile and are not the question.
+
+**Accuracy — no measurable cost.** Worst x-vector cosine against the oracle,
+over the four cases Task 4 made drivable: BF16 **0.99999467**, F16 and Q8_MIXED
+both **0.99999501**. The two halved profiles are byte-identical to each other
+and very slightly *better* than the source profile, which is run-to-run scale
+rather than an improvement. The reason is recorded in the BF16 cell: the
+residual is the **oracle's** bf16 storage, not the port's weights — recomputing
+the oracle's own final ASP/FC layer in float64 disagrees with the oracle by more
+than the port does — so an F16 port weight is still finer than what it is being
+compared against.
+
+**Wall time is not claimed.** No latency, RTF or peak-memory figure was taken;
+`docs/backends.md` gate 5 wants all three and Task 14 owns them.
+
+**The outcome is the second — it does not pay — and the remedy that outcome
+prescribes would make things worse.** Plan 4's Task 9 says that on this outcome
+"the 38 weights become `Sensitive`". For this family `Sensitive` means F32, four
+bytes, so that change would make the package **16.87 MiB larger** than it is
+now. Of the three classifications actually available, the committed one is the
+best:
+
+| classification | storage | bytes | reachable? |
+| --- | --- | ---: | --- |
+| `ConvKernel` (committed) | F16 | 16.87 MiB | yes |
+| `Sensitive` | F32 | 33.75 MiB | yes, and strictly worse |
+| `MatrixWeight` packed | Q8_0 | 8.96 MiB | **no** — needs a packed branch in `Resolver::find` and a packed path in `same_conv1d`, neither of which this family has (Task 6) |
+
+So "it does not pay" here means **there is nothing available to gain**, not that
+the current classification is wrong. §7's prior is confirmed, and for a stronger
+reason than §7 gave: the speaker encoder does not shrink under any profile this
+family has, because the only profile type narrower than its source is one the
+runtime cannot consume.
+
+### Does the conv-exempt precedent transfer? Measured 2026-08-17
+
+Stage 2 Plan 4 Task 10. §7 says the codec encoder "is convolution-heavy, which
+is the shape that produced the conv-exempt policy in another family" and then
+says neither precedent is imported by analogy. This is the measurement that
+replaces the analogy.
+
+**The drift is zero.** The port's codec encoder was driven from all three
+packages over all five cases and its output compared byte for byte:
+
+| comparison | artifacts × cases | identical |
+| --- | ---: | ---: |
+| F16 against BF16 | 4 × 5 | **20 of 20** |
+| Q8_MIXED against BF16 | 5 × 5 | **25 of 25** |
+
+covering `latents.f32`, `rvq_reconstruction.f32`, `codes.i32`, `downsample.f32`
+and `rvq_distance_margin.f32`. Not a small drift: **no drift**. Zero code flips,
+on every case, at every profile.
+
+**The first outcome is unreachable, and Plan 4 says so in advance.** It would
+require some `codec.encoder.*` tensor to be in a quantized role at all.
+`src/arch/qwen3-tts/catalog.cpp` splits halves on the `codec.` prefix, so the
+whole encoder is F32 under every profile; Task 6's census confirmed all 161 of
+its tensors are F32 in every package it cut. There is no role to add and nothing
+for a `ConvKernel`-style exemption to protect.
+
+**So the outcome is the second: the exemption does not transfer, because this
+family's existing rule already covers the case.** Recorded with the drift
+numbers that establish it rather than as an inheritance of that rule — which
+would be the same analogy running the other way, and is the error Plan 4 names
+explicitly.
+
+**What the other family's evidence actually was, so the comparison is against
+the real thing.** OmniVoice's `ConvKernel` role took clone-path RVQ drift from
+1,023 of 2,808 positions to 98, and both its codec-half profiles remain
+**blocked** because `ref.tokens` is 0/2 exact (`docs/quantization.md`). The
+failure mode is real and this family's codec encoder has the same shape — a
+nearest-neighbour RVQ argmin over a reference clip. It cannot arise here for a
+reason that has nothing to do with convolutions: qwen3-tts never quantizes that
+half at all, on an independent and separately measured ground recorded at
+`classify_qwen3_codec` — halving it made the codec **1.75× slower on CPU**,
+because its convolutions run through im2col into a matrix multiply where ggml's
+F16 path is slower than its F32 one.
+
+**What this does not say.** It does not say a quantized codec encoder would be
+safe here; nothing measured one, because none exists. If a future profile ever
+quantizes this half, the other family's evidence becomes live again and this
+section is not a licence to skip it.
+
+### The second reference recording
+
+Added 2026-08-17 by Stage 2 Plan 4 Task 1, as `base-icl-en-second-speaker`.
+Every flip-rate figure this family had came from one recording, and the task
+that was about to derive a flip-rate threshold from them could not tell a
+property of the port from a property of that clip.
+
+**Provenance and licence, recorded here because the Golden Manifest cannot hold
+them.** The plan directed that provenance and licence be written into "the
+manifest case description"; the manifest schema
+(`docs/schemas/synthesize-golden-manifest-v1.schema.json`) declares `case` with
+`additionalProperties: false` and no `description` member, so there is nowhere
+in the case object to put them. They live here instead, and the case's
+`origin.locator` points at this section — which is what `origin` is for.
+
+| | |
+| --- | --- |
+| locator | `https://zhu-han.github.io/omnivoice/audios/seedtts/prompt/seedtts_ref_en_1.wav` |
+| sha256 | `57f25abc75c2e7cc4d3c9a6e45f54160034bc714b2ba952407dae7f91d6d31f3` |
+| format | 24 kHz, mono, 16-bit PCM WAV — the package's own native rate, so nothing resamples |
+| duration | 14.071916 s (337,726 samples), inside the declared 1 s–30 s bounds |
+| reference code frames | 176 |
+| transcript | "Some call me nature. Others call me Mother Nature. I've been here for over four point and five billion years, twenty-two thousand five hundred times longer than you." |
+| licence | **Not stated upstream.** It is the Seed-TTS eval English reference set, served from the OmniVoice demo site; `BytedanceSpeech/seed-tts-eval` carries no `LICENSE` file at all. |
+
+**Why this clip and not a cleaner-licensed one.** This repository already pins
+and consumes these exact bytes: the same locator and the same digest are a
+`reference-audio` artifact of `tests/golden/omnivoice/omnivoice-0-6b.manifest.json`,
+and both committed OmniVoice clone goldens drive it. Reusing it adds a second
+consumer of a dependency this tree already has, rather than a new one. The
+alternative considered and rejected was upstream Qwen's own second demo asset,
+`tokenizer_demo_1.wav` (24 kHz mono, 10.53 s), whose licence posture is
+cleaner — same Apache-2.0 repository as `clone.wav` — but which publishes **no
+transcript**, so an ICL case built on it would rest on a machine transcription,
+and transcript mismatch is this family's one known catastrophic input (475.91 s
+of CPU to `SYNTH_ERR_OUTPUT_LIMIT` with zero audio). The licence gap is recorded
+above rather than resolved; it is the one thing this choice does not fix.
+
+It is a genuinely different recording and not a transform of `clone.wav`: a
+different speaker, a different corpus and a different recording chain, with
+`ref_rms` 0.12291 against the port's own encoder. That distinction is the whole
+point — the flip rate is a property of where a recording's latents fall
+relative to the codebook, and a pitch-shifted or noise-added copy of one clip
+moves along the same manifold and corroborates nothing.
+
+**What it measured.** Dumped through the Base oracle, the ICL-prompt oracle,
+the codec-encoder oracle and both float32 twins, all at the same
+`dtype=torch.bfloat16` the other cases use (pinned at
+`scripts/dump_reference_qwen3_tts_base.py:585`, not passed by the caller). It
+takes the ICL alignment's **pad** arm (T1 50, T2 177), and all 25 of the
+prompt oracle's checks pass, including the bitwise agreement between the
+assembled block and the Base dumper's own `icl_embed.f32`.
+
+Against the committed BF16/CPU `codec_encoder` gates, on the `Release`-typed
+`build/` tree, it **passes every one**:
+
+| quantity | measured | gate |
+| --- | ---: | ---: |
+| chain `rel_absmax` (worst stage `rvq_residual_s15`) | 2.483e-05 — 0.0064 of one bf16 unit | 1.0e-3 |
+| semantic reconstruction p95 relative | 0.004152 | 2.0e-2 |
+| acoustic reconstruction p95 relative | 0.2988 | 5.0e-1 |
+| port vs upstream-f32 code agreement | **100.000%** (0 of 2816) | recorded, gates nothing |
+
+The chain figure is **tighter than any of the other four cases**, including the
+8.431e-05 that `base-ref-max` clears.
+
+**The finding, which is not the one the plan expected.** Its semantic flip rate
+is **1.70%** (3 of 176). Ordered by reference length the five rates now read:
+
+| case | reference code frames | semantic flip rate | recording |
+| --- | ---: | ---: | --- |
+| `base-ref-min` | 13 | 0.00% | `clone.wav`, trimmed to 1.0 s |
+| `base-icl-en` | 101 | 3.96% | `clone.wav`, full 8.08 s |
+| `base-text-short` | 101 | 3.96% | `clone.wav`, full 8.08 s |
+| **`base-icl-en-second-speaker`** | **176** | **1.70%** | **`seedtts_ref_en_1.wav`, full 14.07 s** |
+| `base-ref-max` | 375 | 5.33% | `clone.wav`, **looped** to 30.0 s |
+
+**That sequence is not monotone.** A longer reference from a second speaker
+sits at less than half the rate of the shorter same-speaker cases. So reference
+length does not order the flip rate, and "scope this probe by reference length"
+— the first of the two branches `gate_scope_warning` offered the next plan — is
+**refuted as a sufficient rule**. Plan 4 Task 1 Step 3 predicted three outcomes
+and attached to its first one the inference that "the cliff is confirmed as a
+function of reference length rather than of speaker": the measurement lands in
+that outcome by its threshold (below ~5%) and **contradicts its inference**.
+Both halves are recorded, because the plan's sentence is not evidence.
+
+One confound is named rather than left implicit: `base-ref-max` is not a longer
+recording. It is `clone.wav` **looped** to 30 s by `np.tile`
+(`scripts/dump_reference_qwen3_tts_base.py:339-342`), roughly 3.7 repeats, so
+its 5.33% may carry seam discontinuities rather than anything about length.
+That makes the 375-frame point the weakest of the five for a length argument,
+not the strongest.
+
+**What this does not establish.** One additional speaker is two recordings, not
+a corpus. Nobody has listened to this case's output — Task 15 owns that — and
+the Validation Level does not move.
 
 ### Measured tolerances
 

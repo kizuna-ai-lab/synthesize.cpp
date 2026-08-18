@@ -3,7 +3,10 @@
 Status: Approved in discussion with jiangzhuo on 2026-08-11; three errata added
 2026-08-12 after Plan 1 (the Base package) was executed, a fourth added
 2026-08-13 from a measurement taken while Plan 3 (the ICL path) was scoped, and
-a fifth added 2026-08-15 from Plan 3's review, on an unreproduced figure. This
+a fifth added 2026-08-15 from Plan 3's review, on an unreproduced figure, which
+Plan 4 answered on 2026-08-17 with an addendum rather than a sixth erratum: it
+re-measured that figure's COMPANION over five cases and left the unreproduced
+one standing. This
 is the design record for the second rung of the Qwen3-TTS Reference Model Variant
 Ladder (`docs/porting/families/qwen3-tts.md`, "Reference Model Variant Ladder").
 The family record itself is extended at intake, per `docs/model-porting.md`.
@@ -454,6 +457,43 @@ turn on the count: baking a bf16 table would still leave the port's F32 SEANet
 and F32 encoder transformer handing the quantizer latents the oracle's bf16
 stack never produced, which is the structural argument the paragraph above
 makes and which `278` only illustrates.
+
+**Addendum, 2026-08-17 — Plan 4 Task 16 did NOT re-measure `278`, and no Plan 4
+conclusion turned on it. Its COMPANION figure was re-measured and reproduces.**
+The paragraph above weighs two counts against each other: the all-f32 upstream
+load at **794 of 1616**, and the table alone at **278**. Plan 4's runs re-measure
+the first and not the second, because the `_float32` twin dumper runs the whole
+of upstream in float32 — stack and table together — which is the 794 comparison.
+Isolating the table would need an f32 stack against a bf16 table, and nothing in
+this plan does that.
+
+Re-measured over five cases, `upstream-f32` against the bf16 oracle:
+
+| case | frames | divergent code decisions | rate |
+| --- | ---: | ---: | ---: |
+| `base-icl-en` | 101 | **760 of 1616** | 47.03 % |
+| `base-text-short` | 101 | 760 of 1616 | 47.03 % |
+| `base-ref-min` | 13 | 96 of 208 | 46.15 % |
+| `base-ref-max` | 375 | 2887 of 6000 | 48.12 % |
+| `base-icl-en-second-speaker` | 176 | 1201 of 2816 | 42.65 % |
+
+760 against the recorded 794, on the same 1616-decision case: the companion
+number reproduces within 4.3 %, and is now measured on five cases and two
+recordings rather than one. **`278` remains unverified**, and the erratum above
+stands unchanged.
+
+That is a narrower gap than the erratum found, and it does not rescue the
+reading it warns about. "The stack's contribution is the larger one" compares
+794 to 278; with 794 reproduced and 278 still unreproduced, the comparison still
+rests on one unverified number. A later rung that wants it must isolate the
+table itself.
+
+**Why Plan 4 did not need it.** Task 10 asked where codec drift comes from under
+quantization and measured **zero** — byte-identical output across BF16, F16 and
+Q8_MIXED — so it reasons about the table's contribution not at all. Task 3's
+redesigned gate masks on the per-case `upstream-f32` versus oracle disagreement,
+which is the 794-family quantity measured directly per case, never the 278
+constant.
 
 *Keeping plain equality and absorbing the flips through `oracle.alternate_grids`.*
 Rejected on what that mechanism is. An alternate grid is a further grid the

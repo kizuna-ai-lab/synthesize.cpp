@@ -287,9 +287,22 @@ def run_compare_x_vector(arguments: argparse.Namespace, manifest: dict, oracle_r
     path -- no codes, no audio. Folding this comparison in there would silently
     drop exactly the case this mode exists to cover.
     """
+    # x_vector_only cases, PLUS any case whose oracle parameters carry a
+    # `trim_seconds`.
+    #
+    # The second half arrived with Plan 4 Task 4. The tolerance file records why
+    # it is worth having: 10 of this variant's 12 x-vectors are byte-identical,
+    # so widening this comparison for its own sake "would be theatre -- the two
+    # that differ need trim_seconds". Those two are base-ref-min and
+    # base-ref-max, and what makes their x-vectors differ IS the trim. So a
+    # trimmed case is exactly a case that adds a data point, which is why that
+    # is the predicate rather than a hand-listed pair.
+    def selected(case: dict) -> bool:
+        parameters = case.get("oracle", {}).get("parameters", {})
+        return bool(parameters.get("x_vector_only")) or parameters.get("trim_seconds") is not None
+
     cases = [case for case in manifest["cases"]
-             if case.get("oracle", {}).get("parameters", {}).get("x_vector_only")
-             and (not arguments.cases or case["id"] in arguments.cases)]
+             if selected(case) and (not arguments.cases or case["id"] in arguments.cases)]
     if not cases:
         print("no case in the manifest has oracle.parameters.x_vector_only set "
               "(or --cases excluded all of them)")
@@ -338,9 +351,19 @@ def run_compare_x_vector(arguments: argparse.Namespace, manifest: dict, oracle_r
         work_dir.mkdir(parents=True, exist_ok=True)
         work_x_vector = work_dir / "x_vector.f32"
 
-        finished = subprocess.run(
-            [str(arguments.xvector_driver), str(arguments.xvector_model), str(wav_path), str(work_x_vector)],
-            capture_output=True, text=True)
+        # The trim the oracle applied, applied to the port's input too. Without
+        # it the port encodes the full clip while the oracle encoded a trimmed
+        # one, and the comparison fails for a reason that is not the port's
+        # arithmetic -- which is exactly why these two cases could not be driven
+        # before Plan 4 Task 4. Same name, same units, same semantics as
+        # scripts/dump_reference_qwen3_tts_base.py's flag, including the loop on
+        # an over-length request.
+        command = [str(arguments.xvector_driver), str(arguments.xvector_model), str(wav_path),
+                   str(work_x_vector)]
+        trim_seconds = case.get("oracle", {}).get("parameters", {}).get("trim_seconds")
+        if trim_seconds is not None:
+            command += ["--trim-seconds", repr(float(trim_seconds))]
+        finished = subprocess.run(command, capture_output=True, text=True)
         if finished.returncode != 0:
             print(f"  {case['id']}: {arguments.xvector_driver} failed: {finished.stderr.strip()}")
             return 1

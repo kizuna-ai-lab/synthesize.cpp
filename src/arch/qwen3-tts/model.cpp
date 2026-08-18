@@ -538,6 +538,27 @@ synth_status_t Model::load(const std::string &      path,
         // exactly as speaker-encoder.cpp's ECAPA graph does. Moving it onto an
         // accelerator is a twin pass of its own, with its own prefix; it is not
         // this one widened by one strncmp.
+        //
+        // THAT TWIN WAS MEASURED AND DECLINED ON 2026-08-17 by Stage 2 Plan 4
+        // Task 12, so this is no longer a decision a later plan still owes.
+        // On a Release tree the two new graphs cost about 1.69 s together on
+        // the 8.08-second reference -- 1.42 s in the codec encoder at 0.179 s
+        // per second of audio, 0.27 s in the speaker encoder at 0.034 s --
+        // while mirroring their 241 MB costs about 3.7 s, scaled from Stage 1's
+        // measured ~7 s for 457 MB. The transfer is 2.2x the entire compute it
+        // would accelerate, so no speedup makes it pay: even at the 35x Stage
+        // 1's codec-decoder twin achieved, the saving is ~1.64 s against 3.7 s.
+        //
+        // And the amortization runs the wrong way from the decoder's. The
+        // decoder runs on every synthesis, which is what makes its twin a
+        // deployment choice. These two run ONCE PER VOICE PROFILE -- the
+        // Profile carries the x-vector and the reference codes and every later
+        // synthesis reuses them -- so a load-once process pays the mirror once
+        // and saves almost nothing.
+        //
+        // See "CUDA placement for the speaker and codec encoders" in
+        // docs/porting/families/qwen3-tts.md for the measurement and its
+        // artifacts.
         const bool split = implementation->backend_plan->primary() != implementation->backend_plan->cpu_backend();
         if (split) {
             ggml_init_params twin_params{};

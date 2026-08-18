@@ -19,9 +19,11 @@
 // states for the mel front end alone.
 
 #include "arch/qwen3-tts/qwen3-tts.h"
+#include "qwen3_tts_trim.h"
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <memory>
@@ -201,13 +203,31 @@ bool write_f32(const std::string & path, const std::vector<float> & values) {
 }  // namespace
 
 int main(int argc, char ** argv) {
-    if (argc != 4) {
-        std::fprintf(stderr, "usage: %s <model.gguf> <input.wav> <output-x_vector.f32>\n", argv[0]);
+    if (argc != 4 && argc != 6) {
+        std::fprintf(stderr, "usage: %s <model.gguf> <input.wav> <output-x_vector.f32> [--trim-seconds <seconds>]\n",
+                     argv[0]);
         return 2;
     }
     const std::string model_path(argv[1]);
     const std::string input_path(argv[2]);
     const std::string output_path(argv[3]);
+
+    // Same name, same units and same semantics as
+    // scripts/dump_reference_qwen3_tts_base.py's `--trim-seconds`, including the
+    // half a reader would get wrong from the name: an over-length request LOOPS
+    // the clip rather than truncating it. See tests/qwen3_tts_trim.h.
+    double trim_seconds = 0.0;
+    if (argc == 6) {
+        if (std::string(argv[4]) != "--trim-seconds") {
+            std::fprintf(stderr, "%s: unknown option %s\n", argv[0], argv[4]);
+            return 2;
+        }
+        trim_seconds = std::strtod(argv[5], nullptr);
+        if (!(trim_seconds > 0.0)) {
+            std::fprintf(stderr, "%s: --trim-seconds must be positive, got %s\n", argv[0], argv[5]);
+            return 2;
+        }
+    }
 
     WavAudio    wav;
     std::string error;
@@ -227,6 +247,20 @@ int main(int argc, char ** argv) {
                      "(24000 Hz for this family) -- this driver does not resample\n",
                      input_path.c_str(), wav.sample_rate);
         return 1;
+    }
+
+    // Applied AFTER the rate check and BEFORE the encoder, which is the order
+    // the oracle uses: it loads at the source rate, then trims. Applying it the
+    // other way round would trim a number of samples derived from a rate the
+    // clip does not have.
+    if (trim_seconds > 0.0) {
+        synth::qwen3_tts::testing::TrimOutcome outcome;
+        if (!synth::qwen3_tts::testing::trim_reference(wav.samples, trim_seconds, wav.sample_rate, outcome)) {
+            std::fprintf(stderr, "%s: cannot apply --trim-seconds %g\n", argv[0], trim_seconds);
+            return 1;
+        }
+        std::fprintf(stderr, "qwen3-tts-xvector: trimmed to %g s -- %zu samples, looped=%s repeats=%lld\n",
+                     trim_seconds, outcome.samples, outcome.looped ? "true" : "false", (long long) outcome.repeats);
     }
 
     std::unique_ptr<synth::qwen3tts::Model> model;

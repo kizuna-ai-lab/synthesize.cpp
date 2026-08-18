@@ -41,7 +41,14 @@
       {
         "role": "reference-audio",
         "locator": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+        "terms": "Fetched by whoever runs the integration tier, from the third party's own site, at test time. This repository redistributes no audio -- it commits this locator and this digest, which is what its commit-golden-contracts-not-golden-payloads rule requires -- and it asserts no rights in the clip. The publisher declares no terms for it, so none are claimed here either.",
         "sha256": "480f55f41c71c3d79c2a9acc48f0bfb3c5a46222e6e9ebf3e2888e93501a6b5c"
+      },
+      {
+        "role": "reference-audio",
+        "locator": "https://zhu-han.github.io/omnivoice/audios/seedtts/prompt/seedtts_ref_en_1.wav",
+        "terms": "Fetched by whoever runs the integration tier, from the third party's own site, at test time. This repository redistributes no audio -- it commits this locator and this digest, which is what its commit-golden-contracts-not-golden-payloads rule requires -- and it asserts no rights in the clip. The publisher declares no terms for it, so none are claimed here either.",
+        "sha256": "57f25abc75c2e7cc4d3c9a6e45f54160034bc714b2ba952407dae7f91d6d31f3"
       }
     ]
   },
@@ -354,6 +361,115 @@
           "language": "English",
           "x_vector_only": false,
           "ref_text": "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "speaker.x_vector",
+            "path": "speaker/x_vector.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.reference",
+            "path": "codes/reference.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "prompt.icl_embed",
+            "path": "prompt/icl_embed.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.semantic",
+            "path": "codes/semantic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "codes.acoustic",
+            "path": "codes/acoustic.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "audio.pcm",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          },
+          {
+            "name": "metadata",
+            "path": "metadata.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "base-icl-en-second-speaker",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#the-second-reference-recording"
+      },
+      "coverage": [
+        "transcript-assisted",
+        "icl-mode",
+        "alignment-arm-pad",
+        "second-reference-recording"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "This is a test of Qwen three T T S base voice cloning.",
+        "reference": {
+          "artifact": "https://zhu-han.github.io/omnivoice/audios/seedtts/prompt/seedtts_ref_en_1.wav",
+          "transcript": "Some call me nature. Others call me Mother Nature. I've been here for over four point and five billion years, twenty-two thousand five hundred times longer than you.",
+          "language_tag": "english"
+        }
+      },
+      "voice": {
+        "kind": "reference_audio"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "x_vector_only": false,
+          "ref_text": "Some call me nature. Others call me Mother Nature. I've been here for over four point and five billion years, twenty-two thousand five hundred times longer than you.",
           "seeded_by": "request.seed_u64"
         },
         "stochastic_inputs": [

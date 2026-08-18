@@ -197,6 +197,7 @@
 #include "arch/qwen3-tts/qwen3-tts.h"
 #include "arch/qwen3-tts/weights.h"
 #include "model-info.h"
+#include "qwen3_tts_percentile.h"
 #include "synthesize.h"
 #include "test-assert.h"
 
@@ -360,45 +361,16 @@ bool write_f32(const std::string & path, const std::vector<float> & values) {
     return bool(file);
 }
 
-// numpy.percentile's default ("linear") interpolation, over a copy that this
-// function is free to sort. The statistic is transcribed from
-// scripts/validate-qwen3-tts-codec_encoder.py rather than approximated: that
-// script is where the committed gate was measured, and a nearest-rank
-// percentile here would compare a different number against it.
-double percentile_linear(std::vector<double> values, double percent) {
-    if (values.empty()) {
-        return 0.0;
-    }
-    std::sort(values.begin(), values.end());
-    const double position = percent / 100.0 * double(values.size() - 1);
-    const size_t low      = size_t(std::floor(position));
-    const size_t high     = size_t(std::ceil(position));
-    if (low == high) {
-        return values[low];
-    }
-    return values[low] + (values[high] - values[low]) * (position - double(low));
-}
-
-// The p95 of the per-frame L2 deviation, relative to the REFERENCE frame's own
-// L2 norm -- one branch of the [2, frames, projected] reconstruction. Same
-// statistic, same operand order (`b` is the oracle and is the denominator) as
-// scripts/validate-qwen3-tts-codec_encoder.py:243-252.
-double reconstruction_p95_relative(const float * port, const float * oracle, size_t frames, size_t projected) {
-    std::vector<double> relative;
-    relative.reserve(frames);
-    for (size_t frame = 0; frame < frames; ++frame) {
-        double difference = 0.0;
-        double reference  = 0.0;
-        for (size_t column = 0; column < projected; ++column) {
-            const double a = double(port[frame * projected + column]);
-            const double b = double(oracle[frame * projected + column]);
-            difference += (a - b) * (a - b);
-            reference += b * b;
-        }
-        relative.push_back(std::sqrt(difference) / std::sqrt(reference));
-    }
-    return percentile_linear(relative, 95.0);
-}
+// Both of these moved to tests/qwen3_tts_percentile.h on Plan 4 Task 2, with
+// their arithmetic byte-identical, so that a `unit`-labelled test can reach
+// them: this file is integration-tier and synthesize-check-unit does not build
+// it, which is exactly why the two implementations of this statistic (here and
+// in scripts/validate-qwen3-tts-codec_encoder.py) had no registered
+// cross-check. tests/qwen3_tts_percentile_test.cpp and
+// tests/python/test_percentile_agreement.py now hold both to one committed
+// fixture.
+using synth::qwen3_tts::testing::percentile_linear;
+using synth::qwen3_tts::testing::reconstruction_p95_relative;
 
 // Whether `needle` occurs verbatim in `bytes`. GGUF stores metadata keys and
 // tensor names as length-prefixed UTF-8 with no compression, so a key's or a
@@ -555,21 +527,28 @@ bool load_profile(synth_model_t * model, const synth_byte_buffer_t * bytes, synt
 }  // namespace
 
 int main(int argc, char ** argv) {
-    if (argc != 9) {
+    if (argc != 11) {
         std::fprintf(stderr,
                      "usage: %s <model.gguf> <reference.wav> <transcript.txt> <rvq_reconstruction.f32> "
-                     "<reference-codes.i32> <semantic-p95> <acoustic-p95> <scratch-dir>\n",
+                     "<reference-codes.i32> <semantic-p95> <acoustic-p95> <scratch-dir> "
+                     "<upstream-f32-codes.i32> <semantic-flip-rate>\n",
                      argv[0]);
         return 2;
     }
-    const std::string model_path        = argv[1];
-    const std::string reference_wav     = argv[2];
-    const std::string transcript_path   = argv[3];
-    const std::string oracle_recon_path = argv[4];
-    const std::string oracle_codes_path = argv[5];
-    const double      semantic_p95_gate = std::strtod(argv[6], nullptr);
-    const double      acoustic_p95_gate = std::strtod(argv[7], nullptr);
-    const std::string scratch_dir       = argv[8];
+    const std::string model_path          = argv[1];
+    const std::string reference_wav       = argv[2];
+    const std::string transcript_path     = argv[3];
+    const std::string oracle_recon_path   = argv[4];
+    const std::string oracle_codes_path   = argv[5];
+    const double      semantic_p95_gate   = std::strtod(argv[6], nullptr);
+    const double      acoustic_p95_gate   = std::strtod(argv[7], nullptr);
+    const std::string scratch_dir         = argv[8];
+    // Added by Plan 4 Task 3. The upstream-float32 codes are the OTHER half of
+    // the codebook mask -- the gated statistic is now a percentile over the
+    // frames where upstream-f32 and the bf16 oracle chose the same code -- and
+    // the flip rate is a second gate that this file did not have.
+    const std::string upstream_codes_path = argv[9];
+    const double      semantic_flip_gate  = std::strtod(argv[10], nullptr);
 
     // Both gates arrive from tests/tolerances/qwen3-tts.json through
     // tests/CMakeLists.txt, never as a literal here -- the same rule
@@ -580,6 +559,7 @@ int main(int argc, char ** argv) {
     // mis-wired registration cannot become a test that gates on 0.
     SYNTH_TEST_CHECK(semantic_p95_gate > 0.0 && semantic_p95_gate < 1.0);
     SYNTH_TEST_CHECK(acoustic_p95_gate > 0.0 && acoustic_p95_gate < 1.0);
+    SYNTH_TEST_CHECK(semantic_flip_gate > 0.0 && semantic_flip_gate < 1.0);
 
     std::vector<float> pcm;
     uint32_t           sample_rate = 0;
@@ -813,19 +793,62 @@ int main(int argc, char ** argv) {
         // run, into the build tree's fixtures directory.
         SYNTH_TEST_CHECK(write_f32(scratch_dir + "/rvq_reconstruction.f32", encoding.reconstruction));
 
-        const size_t branch_stride = size_t(icl->frames) * projected;
-        const double semantic_p95  = reconstruction_p95_relative(
-            encoding.reconstruction.data(), oracle_reconstruction.data(), size_t(icl->frames), projected);
-        const double acoustic_p95 =
-            reconstruction_p95_relative(encoding.reconstruction.data() + branch_stride,
-                                        oracle_reconstruction.data() + branch_stride, size_t(icl->frames), projected);
+        // THE CODEBOOK MASK, which is what Plan 4 Task 3 made the gated
+        // statistic depend on. It keeps the frames where upstream-f32 and the
+        // bf16 oracle chose the same code, so it contains no port at all -- a
+        // mask that mentioned the port would select away a fault IN the port,
+        // measured at ~1x discrimination and refused. The validator computes
+        // exactly this, and the two must not drift.
+        std::vector<int32_t> upstream_codes;
+        if (!read_binary(upstream_codes_path, upstream_codes)) {
+            std::fprintf(stderr,
+                         "qwen3-tts-icl-real: cannot read the upstream-float32 codes at %s. It is an "
+                         "uncommitted dump artifact -- run "
+                         "scripts/dump_reference_qwen3_tts_codec_encoder_float32.py for case base-icl-en, "
+                         "then re-configure so this test registers again.\n",
+                         upstream_codes_path.c_str());
+            return 1;
+        }
+        SYNTH_TEST_CHECK(upstream_codes.size() == oracle_codes.size());
+
+        const size_t      frame_count   = size_t(icl->frames);
+        const size_t      group_count   = size_t(groups);
+        std::vector<char> semantic_keep = synth::qwen3_tts::testing::codebook_keep_mask(
+            upstream_codes, oracle_codes, frame_count, group_count, /*semantic=*/true);
+        std::vector<char> acoustic_keep = synth::qwen3_tts::testing::codebook_keep_mask(
+            upstream_codes, oracle_codes, frame_count, group_count, /*semantic=*/false);
+
+        const size_t branch_stride = frame_count * projected;
+        const double semantic_p95  = synth::qwen3_tts::testing::reconstruction_p95_relative_masked(
+            encoding.reconstruction.data(), oracle_reconstruction.data(), frame_count, projected, semantic_keep);
+        const double acoustic_p95 = synth::qwen3_tts::testing::reconstruction_p95_relative_masked(
+            encoding.reconstruction.data() + branch_stride, oracle_reconstruction.data() + branch_stride, frame_count,
+            projected, acoustic_keep);
         std::fprintf(stderr,
-                     "qwen3-tts-icl-real: reconstruction p95 relative L2 -- semantic %.6g (gate %.3g), "
-                     "acoustic %.6g (gate %.3g) over %llu frames x %zu\n",
-                     semantic_p95, semantic_p95_gate, acoustic_p95, acoustic_p95_gate, (unsigned long long) icl->frames,
-                     projected);
+                     "qwen3-tts-icl-real: CODEBOOK-MASKED reconstruction p95 relative L2 -- semantic %.6g "
+                     "(gate %.3g, over %zu frames), acoustic %.6g (gate %.3g, over %zu frames) of %llu x %zu\n",
+                     semantic_p95, semantic_p95_gate, size_t(std::count(semantic_keep.begin(), semantic_keep.end(), 1)),
+                     acoustic_p95, acoustic_p95_gate, size_t(std::count(acoustic_keep.begin(), acoustic_keep.end(), 1)),
+                     (unsigned long long) icl->frames, projected);
+        // A mask that kept nothing yields NaN, and NaN <= gate is FALSE, so this
+        // refuses rather than passing. That is the intended behaviour and the
+        // header says so; it has never been observed on a committed case.
         SYNTH_TEST_CHECK(semantic_p95 <= semantic_p95_gate);
         SYNTH_TEST_CHECK(acoustic_p95 <= acoustic_p95_gate);
+
+        // The second gate the redesign added: the semantic branch's flip rate
+        // against the bf16 oracle. Gated here where the acoustic one is not,
+        // because the acoustic rate is already near saturation clean (75-85%)
+        // and reads 100% under the injected fault -- a separation no threshold
+        // can use.
+        size_t semantic_flips = 0;
+        for (size_t frame = 0; frame < frame_count; ++frame) {
+            semantic_flips += size_t(icl->codes[frame * group_count] != oracle_codes[frame * group_count]);
+        }
+        const double semantic_flip_rate = double(semantic_flips) / double(frame_count);
+        std::fprintf(stderr, "qwen3-tts-icl-real: semantic flip rate %.3f%% (%zu of %zu); gate %.1f%%\n",
+                     100.0 * semantic_flip_rate, semantic_flips, frame_count, 100.0 * semantic_flip_gate);
+        SYNTH_TEST_CHECK(semantic_flip_rate <= semantic_flip_gate);
 
         // RECORDED, GATING NOTHING -- and printed on a passing run as well as a
         // failing one, which is the whole point: the committed rate is ~53%

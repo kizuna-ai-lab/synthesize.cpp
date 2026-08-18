@@ -66,9 +66,10 @@
             "public": {
               "backend": "CPU",
               "description": "The public C seam driven end to end: seed reporting and repeatability, Voice and language resolution.",
-              "checks": 8,
+              "checks": 10,
               "all_passed": true,
-              "note": "Behavioural rather than numeric. This stage has no probes: it gates on relations between runs -- that one seed reproduces and another does not, that a Voice change moves the audio -- which hold within a backend and cannot be expressed as a threshold against the oracle."
+              "note": "Behavioural rather than numeric. This stage has no probes: it gates on relations between runs -- that one seed reproduces and another does not, that a Voice change moves the audio -- which hold within a backend and cannot be expressed as a threshold against the oracle.\n\nRE-MEASURED 2026-08-17 AND THE COUNT WAS STALE: 8 -> 10. Plan 4 Task 5 ran this validator against this same published BF16 package as a regression check, after teaching it a second kind of Voice, and all TEN of its checks passed. The 8 recorded here was an honest number when it was written and had become a claim about a validator that has since grown; this file's own top note complains about exactly that shape ('an honest historical number that read as a current claim'), so it is corrected rather than left beside a freshly measured neighbour.\n\nONLY THIS CELL MOVED. The F16/CPU, Q8_MIXED/CPU, BF16/CUDA and F16/CUDA public cells still record 8 and were NOT re-run by this task. Copying 10 into them would be asserting a measurement that did not happen, which is the error this whole cell exists to avoid.",
+              "remeasured": "2026-08-17"
             }
           },
           "backends": {
@@ -323,28 +324,86 @@
       }
     },
     "qwen3-tts-12hz-0-6b-base": {
-      "case_count": 12,
+      "case_count": 13,
       "suite_version": 1,
       "status": "partial-measurement-conditioning-path-only",
-      "note": "case_count (12) tracks this variant's manifest (tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json), not a measurement.\n\n`public` is still an honest empty placeholder (see its own `description`): `checks: 0` / `all_passed: null`, because no public-seam run exists yet for this variant.\n\n`replay` carries TWO real probes with DIFFERENT case sets, and `replay.cases` covers only the first -- read the probes' own `cases`/`case_ids`, never the stage's. `speaker.x_vector` is measured over base-xvector-en and base-xvector-zh, which is what `replay.cases: 2` describes; `prompt.icl_embed` was added on this branch and is measured over base-icl-en, base-ref-min and base-text-short, none of which is either of those two. The stage-level count is therefore NOT a bound on its probes and is kept at 2 only because it describes the x-vector probe it was written for; a stage-level number that no longer covers its own stage is a defect this file records rather than papers over, and the right fix (per-probe case sets everywhere, or a stage count that is the union) belongs to whoever next touches this schema. The deep talker/audio probes customvoice's `replay` carries (`talker.hidden_l*`, `talker.final`, `talker.logits`, `audio.pcm`) are still unmeasured here: this variant has no autoregressive replay in the grid yet, so this status stays partial.\n\n`codec_encoder` became a real measured stage on 2026-08-14. It replaces `provisional_variants.qwen3-tts-12hz-0-6b-base`, a sibling container this file carried until that date, whose `codec_encoder` held eight probes copied verbatim from customvoice's BF16 `replay` stage -- a different model's talker prefill probes, not this stage's own tensors, as that entry's own description said plainly. `speaker_encoder` had lived beside it under the identical caveat with the identical copied numbers, and was retired on 2026-08-12 the day a real speaker cell existed. `codec_encoder` is retired the same way and for the same reason: keeping both would describe one subsystem twice, once as an honest placeholder and once as an actual measurement, and the placeholder is the one with nothing left to say. The container is gone entirely, because that entry was its last occupant.\n\nThe stage/validator relation changed shape on 2026-08-14, and the sentence that used to stand here was wrong for six tasks -- it claimed this variant's checked stage set equals the family-wide validator set {public, replay}, which stopped being true the moment scripts/validate-qwen3-tts-codec_encoder.py was committed and left tests/python/test_tolerance_coverage.py red for BOTH variants, unnoticed because that test was not registered with CTest. It is registered now (synthesize-tolerance-coverage). The rule it enforces is no longer per-variant exact equality: every validator must have a measurement in at least ONE variant, and every measured stage must have a validator. This variant measures {codec_encoder, public, replay}; qwen3-tts-12hz-0-6b-customvoice measures {public, replay} and correctly does not carry codec_encoder, because its package does not contain a codec encoder at all -- 657 tensors against this variant's 894, the 237-tensor difference being exactly 76 speaker_encoder + 161 codec encoder (see the family record's tensor census and its 'The codec encoder is not carried' section). Under the old rule, measuring the codec encoder on the variant that HAS one would have forced five fabricated codec_encoder cells into customvoice's BF16/F16/Q8_MIXED grids and their CUDA sub-grids.",
+      "note": "case_count (13) tracks this variant's manifest (tests/golden/qwen3-tts/qwen3-tts-12hz-0-6b-base.manifest.json), not a measurement. It moved from 12 to 13 on 2026-08-17 when Plan 4 Task 1 added base-icl-en-second-speaker, the first case in this suite whose reference recording is not clone.wav.\n\n`public` is still an honest empty placeholder (see its own `description`): `checks: 0` / `all_passed: null`, because no public-seam run exists yet for this variant.\n\n`replay` carries TWO real probes with DIFFERENT case sets, and `replay.cases` covers only the first -- read the probes' own `cases`/`case_ids`, never the stage's. `speaker.x_vector` is measured over base-xvector-en and base-xvector-zh, which is what `replay.cases: 2` describes; `prompt.icl_embed` was added on this branch and is measured over base-icl-en, base-ref-min and base-text-short, none of which is either of those two. The stage-level count is therefore NOT a bound on its probes and is kept at 2 only because it describes the x-vector probe it was written for; a stage-level number that no longer covers its own stage is a defect this file records rather than papers over, and the right fix (per-probe case sets everywhere, or a stage count that is the union) belongs to whoever next touches this schema. The deep talker/audio probes customvoice's `replay` carries (`talker.hidden_l*`, `talker.final`, `talker.logits`, `audio.pcm`) are still unmeasured here: this variant has no autoregressive replay in the grid yet, so this status stays partial.\n\n`codec_encoder` became a real measured stage on 2026-08-14. It replaces `provisional_variants.qwen3-tts-12hz-0-6b-base`, a sibling container this file carried until that date, whose `codec_encoder` held eight probes copied verbatim from customvoice's BF16 `replay` stage -- a different model's talker prefill probes, not this stage's own tensors, as that entry's own description said plainly. `speaker_encoder` had lived beside it under the identical caveat with the identical copied numbers, and was retired on 2026-08-12 the day a real speaker cell existed. `codec_encoder` is retired the same way and for the same reason: keeping both would describe one subsystem twice, once as an honest placeholder and once as an actual measurement, and the placeholder is the one with nothing left to say. The container is gone entirely, because that entry was its last occupant.\n\nThe stage/validator relation changed shape on 2026-08-14, and the sentence that used to stand here was wrong for six tasks -- it claimed this variant's checked stage set equals the family-wide validator set {public, replay}, which stopped being true the moment scripts/validate-qwen3-tts-codec_encoder.py was committed and left tests/python/test_tolerance_coverage.py red for BOTH variants, unnoticed because that test was not registered with CTest. It is registered now (synthesize-tolerance-coverage). The rule it enforces is no longer per-variant exact equality: every validator must have a measurement in at least ONE variant, and every measured stage must have a validator. This variant measures {codec_encoder, public, replay}; qwen3-tts-12hz-0-6b-customvoice measures {public, replay} and correctly does not carry codec_encoder, because its package does not contain a codec encoder at all -- 657 tensors against this variant's 894, the 237-tensor difference being exactly 76 speaker_encoder + 161 codec encoder (see the family record's tensor census and its 'The codec encoder is not carried' section). Under the old rule, measuring the codec encoder on the variant that HAS one would have forced five fabricated codec_encoder cells into customvoice's BF16/F16/Q8_MIXED grids and their CUDA sub-grids.",
       "profiles": {
         "BF16": {
           "stages": {
             "public": {
               "backend": "CPU",
-              "description": "PROVISIONAL placeholder, not yet measured. No public-seam check has ever been run against qwen3-tts-12hz-0-6b-base: no C++ port or converter output exists yet for it (Tasks 4 through 10 build that). This key exists only so this variant's stage set satisfies tests/python/test_tolerance_coverage.py's family-wide validator check (scripts/validate-qwen3-tts-public.py exists and is family-wide, not per-variant) ahead of any real run against this variant. `checks: 0` and `all_passed: null` are deliberately not customvoice's `8`/`true` -- copying those would claim a result that has never happened.",
-              "checks": 0,
-              "all_passed": null
+              "description": "The public C seam driven end to end against the real Base package: seed reporting and repeatability, Voice and language resolution. Measured 2026-08-17 by Plan 4 Task 5, replacing the PROVISIONAL placeholder (checks 0 / all_passed null) that stood here because no public-seam run had ever been made against this variant.",
+              "checks": 7,
+              "all_passed": true,
+              "skipped": 3,
+              "voice_kind": "reference_audio",
+              "measured": "2026-08-17",
+              "build": "build-integration, CMAKE_BUILD_TYPE=Release, SYNTH_BUILD_INTEGRATION_TESTS=ON",
+              "max_output_frames": 983040,
+              "references": [
+                "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+                "https://zhu-han.github.io/omnivoice/audios/seedtts/prompt/seedtts_ref_en_1.wav"
+              ],
+              "skipped_checks": [
+                {
+                  "check": "the resolved Voice is reported",
+                  "inapplicable_because": "a Voice Profile has no id, so the seam has nothing to resolve or echo and resolved_voice comes back empty. Observed, not assumed."
+                },
+                {
+                  "check": "a dialect speaker synthesizes",
+                  "inapplicable_because": "a dialect speaker is a Preset Voice and this package catalogues none"
+                },
+                {
+                  "check": "a dialect speaker differs from a plain one",
+                  "inapplicable_because": "a dialect speaker is a Preset Voice and this package catalogues none"
+                }
+              ],
+              "note": "WHY THE COUNT DIFFERS FROM customvoice's, which is the question the placeholder was written to force. It is not that a few checks happened not to apply: scripts/validate-qwen3-tts-public.py was written entirely around Preset Voices, and this package catalogues NONE -- its committed manifest declares `preset_ids: []` and its Voice Profile sources are reference_audio and serialized_profile. Every one of the ten checks names a Voice, so before this task not one of them could run here, and that is why the cell was a placeholder rather than a failure.\n\nWHAT WAS ADDED to make it runnable, since the plan's file table listed only this file. tests/qwen3_tts_public_real.c gained a `ref:PATH` Voice, which prepares a Voice Profile through synth_voice_profile_create_from_reference and puts it on request.voice_profile instead of a voice_id -- the path a Base-package caller actually has. The validator gained --reference (passed twice) and branches on it. Everything after the Voice is identical for the two kinds, so the seven checks that DO run here are the same seven checks, not weaker ones.\n\nTHE THREE SKIPS ARE STRUCTURAL, and each is recorded above with what was observed rather than inferred. `a different Voice changes the audio` survives in the form that means something for a package without a catalogue: two different reference RECORDINGS, which is the first use this suite has made of the second recording Task 1 added.\n\nONE CHECK FAILED ON THE FIRST RUN AND IT WAS NOT A PACKAGE DEFECT. At the validator's default --max-frames of 46080 (1.92 s) the random-seed synthesis returned SYNTH_ERR_OUTPUT_LIMIT (15). The seeded runs at 7 and 8 draw 23040 frames, comfortably inside it; a random seed drew past it. That default was calibrated on customvoice, whose preset path is short and stable; the Base clone path's length varies with the drawn seed. Re-run at 983040, the runner's own default, and all seven pass. The cap is recorded above because a check count means nothing without it."
             },
             "replay": {
               "phase": "oracle_replay",
               "description": "The Base variant's deterministic conditioning half on CPU: reference audio through the mel front end and the ECAPA-TDNN speaker encoder, compared against the oracle's own x-vector. The autoregressive half is not yet replayed here -- only the two x-vector-only cases can be driven end to end until Plan 3 lands ICL.",
-              "cases": 2,
+              "cases": 4,
               "probes": {
                 "speaker.x_vector": {
                   "min_cosine": 0.9999767764206815,
-                  "observed_min_cosine": 0.9999953552841363,
-                  "observed_max_abs": 0.021114349365234375
+                  "observed_min_cosine": 0.99999467,
+                  "observed_max_abs": 0.021114349365234375,
+                  "cases": 4,
+                  "case_ids": [
+                    "base-xvector-en",
+                    "base-xvector-zh",
+                    "base-ref-min",
+                    "base-ref-max"
+                  ],
+                  "observed_by_case": {
+                    "base-xvector-en": {
+                      "cosine": 0.99999536,
+                      "max_abs": 0.0211143,
+                      "samples": 193920,
+                      "mel_frames": 757
+                    },
+                    "base-xvector-zh": {
+                      "cosine": 0.99999536,
+                      "max_abs": 0.0211143,
+                      "samples": 193920,
+                      "mel_frames": 757
+                    },
+                    "base-ref-min": {
+                      "cosine": 0.99999467,
+                      "max_abs": 0.0171118,
+                      "samples": 24000,
+                      "mel_frames": 93
+                    },
+                    "base-ref-max": {
+                      "cosine": 0.99999705,
+                      "max_abs": 0.0111361,
+                      "samples": 720000,
+                      "mel_frames": 2812
+                    }
+                  },
+                  "note": "WIDENED FROM TWO CASES TO FOUR ON 2026-08-17 by Plan 4 Task 4, and the two that were added are the only two that add anything: base-ref-min and base-ref-max are the only cases in this variant whose x-vector differs from the other ten, because their reference audio is trimmed to 1 s and looped to 30 s. The other ten are byte-identical to base-xvector-en -- one sha256 across ten of thirteen cases -- because they all point at the same untrimmed clone.wav and the speaker path reads nothing else.\n\nWHAT UNBLOCKED IT was giving the x-vector driver `--trim-seconds`, which it had never had: run_compare_x_vector hands the driver a WAV path, so before this the port encoded the full clip while the oracle encoded a trimmed one and the comparison failed for a reason that was not the port's arithmetic. The flag matches scripts/dump_reference_qwen3_tts_base.py's exactly, INCLUDING the half a reader would get wrong from its name: an over-length request LOOPS the clip (np.tile) rather than truncating it. base-ref-max asks 30 s of an 8.08 s recording and the driver now reports looped=true repeats=4, landing on exactly 720000 samples.\n\nWHAT IT BOUGHT, stated as a measurement rather than as a count. The residual now rests on THREE distinct clip lengths -- 24000, 193920 and 720000 samples, 93, 757 and 2812 mel frames -- where it rested on one. All four pass. The observed worst got slightly WORSE, from 0.9999953552841363 to 0.99999467 on base-ref-min, which is the point of adding cases: the previous figure was the worst of one clip length. Headroom against the committed 0.9999767764206815 is 4.5x in (1 - cosine) terms.\n\nIT IS STILL ONE RECORDING. All four cases are clone.wav at three lengths. base-icl-en-second-speaker is a genuinely different speaker but is not x_vector_only and carries no trim, so it is not selected here; a second SPEAKER in this comparison is coverage this stage still does not have."
                 },
                 "prompt.icl_embed": {
                   "max_relative": 0.02,
@@ -391,20 +450,27 @@
               },
               "backend": "CPU",
               "note": "Measured 2026-08-12 on CPU (build/, CMAKE_BUILD_TYPE=Release) over base-xvector-en and base-xvector-zh, via scripts/validate-qwen3-tts-replay.py --compare-x-vector against the real qwen3-tts-12hz-0-6b-base-BF16.gguf and models/qwen3-tts-reference-audio/clone.wav. The gate is 5x the measured deviation in (1 - cosine), the rule this file's own top-level note states for every other probe here. max_abs is recorded but does not gate: an x-vector is a direction consumed by a dot product against the prompt, so cosine is the quantity that matters, the same reasoning that leaves max_abs ungated on the talker probes above and gating only on audio.pcm.\n\nOnly one independent measurement, not two: both cases point at the identical reference clip with no trim, and every file under speaker/ is byte-identical between them (conventions.json's own measurement_coverage note) -- only the synthesis text and language differ, which the speaker path never reads. Running both is what shows the whole pipeline (load, resample, encode, mel, ECAPA, x-vector) is deterministic case to case, not a second data point on the residual.\n\nThe residual is bfloat16 quantization of the *oracle*, not a port defect. The oracle's own speaker_encoder weights run in torch.bfloat16 and its dumped tensors round-trip through bfloat16 exactly for seven of the eight speaker/*.f32 files -- verified directly, max abs diff 0.0 -- everything except mel.f32, whose bf16 round-trip differs by up to ~0.031 (conventions.json's own artifact_dtypes note). At the x-vector's own largest element (|ref| = 7.28), 0.02111 is 0.68 of one bfloat16 ulp; recomputing the oracle's own final ASP/FC layer directly in float64 disagrees with the oracle's recorded x_vector by more (0.022367) than this port does. A tolerance whose story was 'the filterbank rounds differently' would be wrong: the mel front end that feeds this graph is essentially exact on its own (max_abs 3.31e-4 against the oracle, and against a float64 truth the port's own mel is *closer* -- 1.14e-4 against the oracle's 2.21e-4). The budget spent here is almost entirely the ECAPA graph's bf16-quantized-weights arithmetic across 38 convolutions, not the mel stage -- the mel comparison above was run specifically to rule the mel stage out before this number was committed, not merely alongside it.",
-              "cases_not_extended": {
-                "measured": "2026-08-14",
-                "identical_x_vector_cases": 10,
-                "distinct_x_vector_cases": [
+              "cases_extended": {
+                "measured": "2026-08-17",
+                "by": "Plan 4 Task 4",
+                "from_cases": 2,
+                "to_cases": 4,
+                "outcome": "first of three -- both added cases agree within the existing gate; nothing was widened",
+                "added": [
                   "base-ref-min",
                   "base-ref-max"
                 ],
+                "worst_min_cosine": 0.99999467,
+                "worst_max_abs": 0.0211143,
+                "gate_min_cosine": 0.9999767764206815,
+                "supersedes": "the `cases_not_extended` block measured 2026-08-14, which recorded that these two were the only cases that would add a data point and that the missing driver flag was what made them undrivable. Both halves of that were correct; the flag now exists.",
                 "note": "Task 12 was asked to extend this stage past its two cases and MEASURED THAT DOING SO WOULD ADD NOTHING, so it stayed at two. All ten ICL cases now have oracle dumps, and their speaker/x_vector.f32 files are BYTE-IDENTICAL to the two x-vector cases already here -- one sha256 across ten of the twelve cases. That is expected rather than surprising: every one of them points at the same untrimmed clone.wav, and the speaker path reads nothing else (not the text, not the language, not the seed). Raising `cases` from 2 to 10 on that evidence would multiply the same measurement by five and call it coverage.\n\nTHE ONLY TWO CASES THAT WOULD ADD A DATA POINT are base-ref-min and base-ref-max, whose x-vectors do differ (three distinct digests across the twelve) because their reference audio is trimmed to 1 s and looped to 30 s respectively. They are also the two this comparison cannot currently drive: run_compare_x_vector hands the driver the WAV path and the driver has no trim, so the port would encode the full clip while the oracle encoded a trimmed one, and the comparison would fail for a reason that is not the port's arithmetic. Giving the driver `trim_seconds` is what would make this stage genuinely wider, and it is not done here; the x-vector residual therefore still rests on ONE reference clip, exactly as this stage's own probe note already says."
               }
             },
             "codec_encoder": {
               "phase": "oracle_replay",
               "description": "The Base variant's reference-audio codec encoder, compared stage by stage: waveform through the eleven-convolution SEANet stack, the frame downsampler, the eight-layer transformer and the sixteen-stage split RVQ. Three artifact sets in the same on-disk element order -- this port (F32), an upstream float32 re-run (scripts/dump_reference_qwen3_tts_codec_encoder_float32.py) and the committed bfloat16 oracle dump -- so port vs upstream-f32 isolates this port's own arithmetic while port vs oracle carries the oracle's bf16 rounding. Gated by scripts/validate-qwen3-tts-codec_encoder.py.",
-              "cases": 3,
+              "cases": 5,
               "backend": "CPU",
               "probes": {
                 "codec.chain": {
@@ -619,28 +685,153 @@
                 },
                 "codec.rvq_reconstruction.semantic": {
                   "p95_relative_l2": 0.02,
+                  "statistic": "p95 of the per-frame L2 relative to the oracle frame's own norm, over frames where upstream-f32 and the oracle select the same code",
+                  "measured": "2026-08-17",
+                  "cases": 5,
                   "observed_p95_relative_l2": 0.004103,
+                  "observed_worst_case": "base-ref-min",
                   "headroom": 4.9,
                   "fault_injection_p95_relative_l2": 1.601,
-                  "observed_p95_relative_l2_from_wav_input": 0.004033,
-                  "headroom_from_wav_input": 5.0,
-                  "note": "A PERCENTILE, NEVER A MAXIMUM, and that is measured rather than predicted. One flipped code displaces the reconstruction by about a full codebook-row separation (median |dRecon|/||e_i-e_j|| = 1.21), so this branch's per-frame maximum is 235.8 absolute against a median of 0.55, with 4 of 101 frames flipping. No bf16-scale maximum survives that, and widening one until it fit would destroy the gate. The statistic is the 95th percentile of the per-frame L2 deviation, relative to the reference frame's own L2 norm.\n\n2.0e-2 is 5x one bf16 unit, where the design says this branch's median belongs; it flips on only 4 of 101 frames so the tail stays contained. Injected fault p95 1.601, an 80x discrimination.\n\nThe two branches get separate keys and are NEVER averaged: they are an order of magnitude apart in rms (13.5 against 3.11) and, more to the point, differ sharply in dynamic range -- this branch's p95 moves 0.004103 -> 1.601 under the fault (390x) while the acoustic branch's moves only 0.2491 -> 1.741 (7.0x) -- corrected 2026-08-14 from '0.004 -> 1.20 (300x)' and '0.25 -> 1.15 (4.6x)', figures that matched neither the `fault_injection_p95_relative_l2` recorded in these same two cells nor any other measurement in the file. Averaging would blunt the sharper instrument with the duller one."
+                  "fault_injection_worst_case": "base-ref-min",
+                  "discrimination": 80.05,
+                  "discrimination_definition": "fault_injection_p95_relative_l2 divided by the BOUND -- how far above the gate an injected fault lands. `discrimination_by_case` below divides by the CLEAN MEASUREMENT instead, which is why it is larger. Two quantities, similar names.",
+                  "observed_by_case": {
+                    "base-icl-en": 0.003576,
+                    "base-ref-min": 0.004103,
+                    "base-text-short": 0.003576,
+                    "base-ref-max": 0.003756,
+                    "base-icl-en-second-speaker": 0.003845
+                  },
+                  "fault_injection_by_case": {
+                    "base-icl-en": 1.642,
+                    "base-ref-min": 1.601,
+                    "base-text-short": 1.642,
+                    "base-ref-max": 1.782,
+                    "base-icl-en-second-speaker": 1.727
+                  },
+                  "discrimination_by_case": {
+                    "base-icl-en": 459.2,
+                    "base-ref-min": 390.2,
+                    "base-text-short": 459.2,
+                    "base-ref-max": 474.4,
+                    "base-icl-en-second-speaker": 449.2
+                  },
+                  "self_masked_rejected": {
+                    "note": "the port-vs-oracle mask, measured and refused",
+                    "clean_by_case": {
+                      "base-icl-en": 0.003576,
+                      "base-ref-min": 0.004103,
+                      "base-ref-max": 0.003756,
+                      "base-icl-en-second-speaker": 0.003845
+                    },
+                    "fault_by_case": {
+                      "base-icl-en": 0.003511,
+                      "base-ref-min": null,
+                      "base-ref-max": 0.003511,
+                      "base-icl-en-second-speaker": 0.003546
+                    },
+                    "fault_undefined_on": [
+                      "base-ref-min"
+                    ],
+                    "discrimination": 0.98
+                  },
+                  "note": "THE STATISTIC CHANGED ON 2026-08-17 AND THE THRESHOLD DID NOT. This is no longer the p95 over every frame; it is the p95 over the frames the ORACLE'S OWN CODEBOOK did not flip -- the frames where upstream-f32 and the bf16 oracle select the same code.\n\nWHY. The unmasked statistic sat on a cliff, recorded here until this date as `gate_scope_warning`: a 95th percentile only enters the flipped-frame tail above roughly a 5% flip rate, so base-ref-max at 5.333% read 0.3478 against this same 2.0e-2 while the calibration cases read 0.004. Widening to 0.35 was refused because it would have left the injected fault 4.6x above the gate instead of 80x.\n\nWHY THE MASK COMES FROM upstream-f32 VS THE ORACLE, WHICH IS THE HALF THAT DECIDES WHETHER THIS WORKS. The obvious mask -- condition on the frames where the PORT and the oracle agree -- was measured and FAILS OUTRIGHT. Under the injected symmetric-pad fault the port flips 89-100% of frames, so that mask selects exactly the frames the fault did not reach: it reads 0.003511 against a clean 0.003576, a discrimination of about 1x, and on base-ref-min and on every acoustic branch it is UNDEFINED because no frame survives. A mask that mentions the port cannot see a fault in the port. The upstream-f32-vs-oracle mask contains no port at all, so the fault cannot move it: it drops the same frames clean and faulted, and the faulted frames stay in.\n\nBoth measurements are recorded in `self_masked_rejected` below, because the failed design is what makes the committed one legible.\n\nTHE THRESHOLD IS UNCHANGED AT 2.0e-2 AND THAT IS NOT A COINCIDENCE: base-ref-min has no codebook flips at all, so its masked and unmasked figures are the same number and it is still the worst case. What changed is that base-ref-max now reads 0.003756 instead of 0.3478, so the gate holds on all five cases and `cases` moves from 3 to 5."
                 },
                 "codec.rvq_reconstruction.acoustic": {
                   "p95_relative_l2": 0.5,
-                  "observed_p95_relative_l2": 0.2491,
-                  "headroom": 2.0,
-                  "fault_injection_p95_relative_l2": 1.741,
-                  "observed_p95_relative_l2_from_wav_input": 0.304719,
-                  "headroom_from_wav_input": 1.64,
-                  "note": "Same percentile statistic and same never-averaged rule as the semantic branch; see its note for why a maximum is unsatisfiable here.\n\nNOT at bf16 scale, and it cannot be. This branch aggregates fifteen stages and disagreement with the bf16 oracle grows monotonically down the cascade (4, 6, 20, 34, ... 74 of 101 frames), so almost every frame carries at least one flip and the branch sits in the flip tail at the MEDIAN (0.1317), not only at its p95. The design's predicted 0.18 absolute L2 for this branch is 39x too small against a measured median of 7.014 absolute and must not be used.\n\nHEADROOM IS ~2x HERE AND IT IS DRAWN FROM ONE RECORDING. base-ref-min is a byte-exact prefix of base-icl-en and base-text-short is that same clip again at full length: three cases, one speaker, one microphone. A second speaker would be independent corroboration and there is not one, so this figure and the semantic one should be revisited the first time a second reference clip exists, rather than treated as settled by three passing cases. Injected fault p95 1.741, a 3.5x discrimination -- the narrowest of the three gates."
+                  "statistic": "same as the semantic branch, over the same codebook mask",
+                  "measured": "2026-08-17",
+                  "cases": 5,
+                  "observed_p95_relative_l2": 0.003818,
+                  "observed_worst_case": "base-icl-en-second-speaker",
+                  "headroom": 131.0,
+                  "fault_injection_p95_relative_l2": 1.734,
+                  "fault_injection_worst_case": "base-ref-min",
+                  "discrimination": 3.5,
+                  "discrimination_definition": "fault_injection_p95_relative_l2 divided by the BOUND -- how far above the gate an injected fault lands. `discrimination_by_case` below divides by the CLEAN MEASUREMENT instead, which is why it is two orders of magnitude larger. Two quantities, similar names, and the note above compared one against the other until 2026-08-17.",
+                  "observed_by_case": {
+                    "base-icl-en": 0.00347,
+                    "base-ref-min": 0.00284,
+                    "base-text-short": 0.00347,
+                    "base-ref-max": 0.003766,
+                    "base-icl-en-second-speaker": 0.003818
+                  },
+                  "fault_injection_by_case": {
+                    "base-icl-en": 2.183,
+                    "base-ref-min": 1.734,
+                    "base-text-short": 2.183,
+                    "base-ref-max": 2.207,
+                    "base-icl-en-second-speaker": 2.459
+                  },
+                  "discrimination_by_case": {
+                    "base-icl-en": 629.1,
+                    "base-ref-min": 610.6,
+                    "base-text-short": 629.1,
+                    "base-ref-max": 586.0,
+                    "base-icl-en-second-speaker": 644.1
+                  },
+                  "note": "THE STATISTIC CHANGED ON 2026-08-17 AND THE THRESHOLD DID NOT. This is no longer the p95 over every frame; it is the p95 over the frames the ORACLE'S OWN CODEBOOK did not flip -- the frames where upstream-f32 and the bf16 oracle select the same code.\n\nWHY. The unmasked statistic sat on a cliff, recorded here until this date as `gate_scope_warning`: a 95th percentile only enters the flipped-frame tail above roughly a 5% flip rate, so base-ref-max at 5.333% read 0.3478 against this same 2.0e-2 while the calibration cases read 0.004. Widening to 0.35 was refused because it would have left the injected fault 4.6x above the gate instead of 80x.\n\nWHY THE MASK COMES FROM upstream-f32 VS THE ORACLE, WHICH IS THE HALF THAT DECIDES WHETHER THIS WORKS. The obvious mask -- condition on the frames where the PORT and the oracle agree -- was measured and FAILS OUTRIGHT. Under the injected symmetric-pad fault the port flips 89-100% of frames, so that mask selects exactly the frames the fault did not reach: it reads 0.003511 against a clean 0.003576, a discrimination of about 1x, and on base-ref-min and on every acoustic branch it is UNDEFINED because no frame survives. A mask that mentions the port cannot see a fault in the port. The upstream-f32-vs-oracle mask contains no port at all, so the fault cannot move it: it drops the same frames clean and faulted, and the faulted frames stay in.\n\nBoth measurements are recorded in `self_masked_rejected` below, because the failed design is what makes the committed one legible.\n\nA 25x TIGHTENING TO 2.0e-2 WAS MEASURED, ATTEMPTED AND WITHDRAWN -- see `tightening_attempted_and_withdrawn`. THE BOUND STAYS AT 5.0e-1. The old bound had to be that wide because the unmasked statistic sat in the flip tail at the MEDIAN (0.1317), not only at its p95: fifteen stages compound, so almost every frame carried at least one flip. Masked, this branch is at bf16 scale like the semantic one, which is WHY a tightening looked available at all. THE NEXT SENTENCE DERIVES THE VALUE THAT WAS REFUSED, NOT THE ONE IN FORCE: 2.0e-2 came from this file's own rule -- five times the measured deviation, 5 x 0.003818 = 0.0191, rounded up. The enforced bound is `p95_relative_l2` above, which is 5.0e-1.\n\nTHE TWO DISCRIMINATION FIGURES IN THIS CELL ARE IN DIFFERENT UNITS, and this sentence compared them against each other until 2026-08-17. `discrimination_by_case` divides the injected fault by the CLEAN MEASUREMENT and reads 586-644x. `discrimination` divides it by the BOUND and reads 3.5x. Both describe the same masked statistic; the gap between them is the headroom a bound of 5.0e-1 carries, which is exactly what the withdrawn tightening would have removed. The 1.64x real headroom from WAV input that this cell used to carry as its binding constraint belonged to the unmasked statistic and no longer applies; the registered end-to-end consumer is updated in the same change.",
+                  "observed_p95_relative_l2_from_wav_input": 0.181149,
+                  "headroom_from_wav_input": 2.76,
+                  "tightening_attempted_and_withdrawn": {
+                    "proposed": 0.02,
+                    "measured": "2026-08-17",
+                    "withdrawn_because": "the SECOND registered consumer reads 0.181149 where this script reads 0.003818, and 2.0e-2 would have failed it. tests/qwen3_tts_icl_real.cpp feeds the port the WAV; the validator feeds it the oracle's own bfloat16-rounded waveform. The acoustic branch aggregates fifteen stages, so the 2.954e-03 input rounding compounds down the cascade -- a factor of 47 here, against the semantic branch where the two consumers agree to six digits (0.003576 against 0.00357636).\n\nFOUND BY THE CROSS-CHECK, NOT BY REVIEW: the tightening passed the validator on all five cases and failed the C++ arm on its first run. That is what `registered_consumers` exists for."
+                  }
+                },
+                "codec.semantic_flip_rate": {
+                  "max_fraction": 0.2,
+                  "statistic": "fraction of frames whose SEMANTIC code (column 0) differs between the port and the bf16 oracle",
+                  "measured": "2026-08-17",
+                  "cases": 5,
+                  "observed_by_case": {
+                    "base-icl-en": 0.0396,
+                    "base-ref-min": 0.0,
+                    "base-text-short": 0.0396,
+                    "base-ref-max": 0.05333,
+                    "base-icl-en-second-speaker": 0.01705
+                  },
+                  "fault_injection_by_case": {
+                    "base-icl-en": 0.9604,
+                    "base-ref-min": 1.0,
+                    "base-text-short": 0.9604,
+                    "base-ref-max": 0.97333,
+                    "base-icl-en-second-speaker": 0.89205
+                  },
+                  "observed_worst": 0.05333,
+                  "fault_injection_best": 0.89205,
+                  "headroom": 3.75,
+                  "discrimination": 4.46,
+                  "note": "PLAN 3'S RULING, CARRIED OUT: 'gate the flip rate separately from the reconstruction error on non-flipped frames'. Two quantities where there was one.\n\nTHE THRESHOLD IS DERIVED FROM THE MEASUREMENT AND FROM NOTHING ELSE. Clean, the five cases read 0.000 / 1.705 / 3.960 / 3.960 / 5.333 %; under the injected symmetric-pad fault they read 89.205 / 96.040 / 96.040 / 97.333 / 100.000 %. There is no overlap and the gap is 16.7x. 20% sits between them: 3.75x above the worst clean case, 4.46x below the best faulted one. It is NOT carried over from another family and NOT derived from the erratum's codebook-isolated 4.04% floor -- this file already records one such conflation being corrected.\n\nA FLIP RATE IS BOUNDED ABOVE BY 100%, so its discrimination is structurally limited in a way the reconstruction's is not. It is a second instrument reading a different failure, not a replacement for the first.\n\nFIVE CASES, TWO RECORDINGS. Four of the five are clone.wav at three lengths and one is seedtts_ref_en_1.wav. A threshold calibrated on one recording is what Plan 4 Task 1 was sequenced first to avoid, and two is better than one without being a corpus."
+                },
+                "codec.acoustic_flip_rate_ungated": {
+                  "gated": false,
+                  "measured": "2026-08-17",
+                  "observed_by_case": {
+                    "base-icl-en": 0.79208,
+                    "base-ref-min": 0.84615,
+                    "base-text-short": 0.79208,
+                    "base-ref-max": 0.832,
+                    "base-icl-en-second-speaker": 0.75568
+                  },
+                  "fault_injection_by_case": {
+                    "base-icl-en": 1.0,
+                    "base-ref-min": 1.0,
+                    "base-text-short": 1.0,
+                    "base-ref-max": 1.0,
+                    "base-icl-en-second-speaker": 1.0
+                  },
+                  "separation": 1.18,
+                  "note": "RECORDED AND DELIBERATELY NOT GATED, on a measurement rather than on caution. A frame counts as acoustically flipped if ANY of its fifteen acoustic columns differs, so the clean rate is already near saturation at 75.6-84.6% against 100.0% under the injected fault -- a separation of 1.18x, which no threshold can use. A gate here would be one that cannot fail, and this suite refuses to commit those.\n\nPROVED TO BE UNGATED RATHER THAN ASSERTED: changing any value in this block makes nothing fail, which is the point of it. That is not an inversion; it is the evidence that this quantity is evidence."
                 }
               },
-              "note": "Measured by Task 5 of the ICL plan and committed with the validator that reproduces it; promoted out of `provisional_variants` into this grid on 2026-08-14, which is what retired the copied placeholder described in this variant's own note. The thresholds and every observed figure below are transcribed from scripts/validate-qwen3-tts-codec_encoder.py, which states each one beside the measurement it clears and the injected fault it still catches; they are not re-derived here.\n\nTHE CODES ARE NOT THE GATE. The design's fourth erratum (2026-08-13) dropped plain equality on codes/reference.i32: the oracle's RVQ codebook is bfloat16 and the converter's is float32, upstream disagrees with ITSELF depending on whether `dtype` is passed at load, so an equality gate would test a load-time keyword argument rather than this port. The measured agreement rates live in `code_agreement` beside these probes, where the earlier 4.04%-versus-observed confusion is also corrected; they are observations and gate nothing. For the same reason this stage records no `codec.reference_codes` probe and the manifest carries no `alternate_grids`: enumerating admissible grids would mean committing a second oracle's output for every case.\n\nWhat the reconstruction's exact zero does and does not say: port vs upstream-f32 on rvq_reconstruction measures 0 exactly, and under an injected fault it reads 1.115, so it is a comparison that CAN fail. But it decomposes into three conjuncts at once -- the codes agree, the two float32 codebook tables are bit-identical BY CONSTRUCTION, and the accumulation order matches -- so it is a consistency check, not independent evidence about the codebook conversion. The load-bearing independent evidence is `codec.chain`.\n\nThree cases (base-icl-en, base-ref-min, base-text-short), CPU, float32 port against the committed bfloat16 oracle dump and an upstream float32 re-run of the same taps. They are ONE RECORDING AT TWO LENGTHS -- base-ref-min is a byte-exact 24,000-sample prefix of base-icl-en, and base-text-short is base-icl-en again at full length -- not three independent recordings -- see the acoustic probe's note.",
+              "note": "Measured by Task 5 of the ICL plan and committed with the validator that reproduces it; promoted out of `provisional_variants` into this grid on 2026-08-14, which is what retired the copied placeholder described in this variant's own note. The thresholds and every observed figure below are transcribed from scripts/validate-qwen3-tts-codec_encoder.py, which states each one beside the measurement it clears and the injected fault it still catches; they are not re-derived here.\n\nTHE CODES ARE NOT THE GATE. The design's fourth erratum (2026-08-13) dropped plain equality on codes/reference.i32: the oracle's RVQ codebook is bfloat16 and the converter's is float32, upstream disagrees with ITSELF depending on whether `dtype` is passed at load, so an equality gate would test a load-time keyword argument rather than this port. The measured agreement rates live in `code_agreement` beside these probes, where the earlier 4.04%-versus-observed confusion is also corrected; they are observations and gate nothing. For the same reason this stage records no `codec.reference_codes` probe and the manifest carries no `alternate_grids`: enumerating admissible grids would mean committing a second oracle's output for every case.\n\nWhat the reconstruction's exact zero does and does not say: port vs upstream-f32 on rvq_reconstruction measures 0 exactly, and under an injected fault it reads 1.115, so it is a comparison that CAN fail. But it decomposes into three conjuncts at once -- the codes agree, the two float32 codebook tables are bit-identical BY CONSTRUCTION, and the accumulation order matches -- so it is a consistency check, not independent evidence about the codebook conversion. The load-bearing independent evidence is `codec.chain`.\n\nFive cases, CPU, float32 port against the committed bfloat16 oracle dump and an upstream float32 re-run of the same taps. They are TWO RECORDINGS, not five. Four are clone.wav (8.08 s / 193,920 samples): base-icl-en at its native length, base-text-short the same clip again, base-ref-min a 1.0 s trim that truncates to a byte-exact 24,000-sample prefix, and base-ref-max a 30.0 s trim that LOOPS the clip because it is shorter than that. The fifth, base-icl-en-second-speaker, is seedtts_ref_en_1.wav -- the independent second speaker Plan 4's Task 1 acquired, and the case that refuted the flip rate being monotone in reference length. See the acoustic probe's note.",
               "case_ids": [
                 "base-icl-en",
                 "base-ref-min",
-                "base-text-short"
+                "base-text-short",
+                "base-ref-max",
+                "base-icl-en-second-speaker"
               ],
               "code_agreement": {
                 "port_vs_upstream_f32_percent": 100.0,
@@ -667,22 +858,207 @@
                 "fault_injection_check": "symmetric (non-causal) MimiConv1d padding split, injected 2026-08-14 into src/arch/qwen3-tts/codec-encoder.cpp and reverted: synthesize-qwen3-tts-codec-encoder-golden fails all three cells on all three cases -- worst stage seanet_stage1 at rel_absmax 1.879 (481x one bf16 unit) against the 1.0e-3 chain gate, semantic p95 1.634 and acoustic p95 2.115 on base-icl-en, reproducing this grid's recorded 1.649/1.601/1.741 on base-ref-min. The registration is load-bearing, demonstrated rather than assumed.",
                 "note": "WHO ACTUALLY RUNS THESE CELLS, and on what. Until 2026-08-14 the answer was NOBODY. scripts/validate-qwen3-tts-codec_encoder.py computes every figure in this stage and nothing invoked it -- no CTest test, no CI (there is none), so it ran by hand or not at all, and it was the only unregistered validator in the tree while every validate-vits-*, both validate-omnivoice-* and the other two validate-qwen3-tts-* scripts were registered. All three thresholds committed here were therefore INERT at the close of the task that committed them, `codec.chain` most of all: it had no consumer of any kind. `synthesize-tolerance-coverage`, the check that exists to catch exactly this, asserts only that a cell and a same-named validator script both exist -- it never runs one and never compares a number -- so it was structurally incapable of noticing. That is the generalizable lesson: metadata coverage is not enforcement.\n\nBOTH CONSUMERS NOW EXIST AND THEY ARE NOT INTERCHANGEABLE. The golden test is the primary one: it drives the committed validator, so it enforces `codec.chain` and all three cases, and it is the ONLY thing that does. The end-to-end test enforces the two reconstruction cells from the other end, on one case, from a Profile prepared through the public seam.\n\nTHE TWO FEED DIFFERENT INPUTS, DELIBERATELY, AND THAT IS WHY THEIR FIGURES DIFFER. The oracle's `codec_encoder/waveform.f32` is EXACTLY `bfloat16(clone.wav)` -- verified element for element on 2026-08-14, because the reference model loads in bfloat16 -- and the validator hands the port that rounded waveform so its comparison holds the input identical and isolates the port's own arithmetic. The end-to-end test hands the port the WAV, because that is what a caller hands the library, so it carries one extra input rounding (rel_absmax 2.954e-03 on the waveform, 0.76 of one bf16 unit). Cost, measured: the semantic branch is unchanged for practical purposes (0.004103 -> 0.004033) and the acoustic branch spends 22% more of its budget (0.2491 -> 0.304719). READ THE HEADROOM FIELDS ACCORDINGLY: `headroom` describes the waveform.f32 comparison the thresholds were calibrated on; `headroom_from_wav_input` describes the end-to-end one, and for the acoustic branch that is 1.64x rather than 2.0x.\n\nNOTHING WAS WIDENED. Both thresholds are unchanged and every comparison passes. This is recorded so that a reader who runs the two gates and gets two different numbers for what looks like one comparison finds the reason here instead of hunting a regression. The same input difference moves the recorded code agreement from 52.970% (760 of 1616 differ) to 50.743% (796 differ); neither gates anything.\n\nWHAT IS STILL NOT COVERED, stated so nobody reads two green tests as more than they are. The end-to-end test transcribes the p95 statistic from the validator by hand (numpy-linear percentile of the per-frame L2 relative to the oracle frame's own norm), and the two implementations have NO registered cross-check -- they were compared once, manually, on the same buffers, agreeing to every printed digit, and could drift apart silently afterwards. And the semantic cell is enforced on cases where it is known to hold; see `gate_scope_warning`, which records it failing on base-ref-max at 0.3478."
               },
-              "gate_scope_warning": {
-                "measured": "2026-08-14",
-                "case": "base-ref-max",
-                "reference_code_frames": 375,
-                "result": "semantic branch FAILS the committed gate: p95 relative 0.3478 against 2.0e-2",
-                "chain_rel_absmax": 8.431e-05,
-                "acoustic_p95_relative_l2": 0.2946,
-                "port_vs_upstream_f32_code_agreement_percent": 100.0,
-                "semantic_flip_rate_percent": {
-                  "base-ref-min": 0.0,
-                  "base-icl-en": 3.96,
-                  "base-text-short": 3.96,
-                  "base-ref-max": 5.33
+              "gate_scope_warning_retired": {
+                "retired": "2026-08-17",
+                "by": "Plan 4 Task 3",
+                "outcome": "first of three -- the redesigned statistic holds >=80x and the flip rate has a defensible threshold, so both are committed and base-ref-max joins `cases`",
+                "what_it_recorded": "that the committed semantic gate FAILED on base-ref-max at p95 0.3478 against 2.0e-2, that it was not a port defect, and that the statistic sat on a cliff at a 5% flip rate",
+                "how_it_was_resolved": "not by widening -- the refusal it recorded is upheld -- but by changing which frames the percentile is computed over. base-ref-max now reads 0.003756 on the same 2.0e-2 threshold.",
+                "which_of_its_two_branches_was_taken": "NEITHER, and the one it named first is refuted. It offered 'scope this probe by reference length' or 'replace the percentile with a statistic that does not have a cliff in it'. Task 1 refuted the length branch by measuring a second speaker whose flip rate is NOT ordered by length. The second branch is what was done, and the specific statistic -- a codebook-masked percentile -- is neither of the two it suggested (a flip-rate-conditioned measure or the median).",
+                "superseded_note": "NOTHING BELOW WAS WIDENED, AND base-ref-max WAS NOT ADDED TO `cases`. This records a gate that does not hold on a case outside the three it was calibrated on, because the rule this suite follows is that a deviation above scale gets FOUND, not accommodated.\n\nIT IS NOT A PORT DEFECT, and three independent readings say so. On base-ref-max the port agrees with upstream-f32 on 100.000% of code decisions (0 of 6000); the continuous chain gate PASSES at 8.431e-05, tighter than base-icl-en's 9.303e-05; and the acoustic branch passes at 0.2946. The only failing quantity is the semantic reconstruction against the bfloat16 ORACLE -- a comparison in which this port does not appear on the deviating side.\n\nTHE GATE SITS ON A CLIFF AT A 5% SEMANTIC FLIP RATE, and that is the actual finding. The statistic is the 95th percentile of per-frame deviation, so it only enters the flipped-frame tail once more than 5% of frames carry a semantic flip. The three calibration cases sit at 0.00%, 3.96% and 3.96% -- all below the line, so their p95 measures unflipped frames and lands at 0.004. base-ref-max sits at 5.33%, the p95 lands inside the tail, and the figure jumps 85x to 0.3478. The gate did not drift; the percentile crossed a discontinuity.\n\nSo `2.0e-2` is not a bound on this port's semantic reconstruction in general -- it is a bound conditional on the reference's semantic flip rate staying under ~5%, which in practice means short references. That condition is undocumented in the gate itself and is exactly the kind of hidden precondition a later plan would trip over. Widening the gate to ~0.35 would make it pass here and destroy its power everywhere else: the injected fault it is meant to catch reads 1.601, only 4.6x above 0.35 rather than 80x above 0.02.\n\nWHAT THE NEXT PLAN MUST DECIDE, and this task deliberately does not: either scope this probe by reference length (and say so in the gate), or replace the percentile with a statistic that does not have a cliff in it (a flip-rate-conditioned measure, or the median, which sits at 0.0027 here and is stable across all four cases). Until then the codec_encoder stage covers references up to 101 frames, which is what `cases: 3` and `case_ids` describe.\n\nA FIFTH POINT ARRIVED ON 2026-08-17, FROM A SECOND SPEAKER, AND IT REFUTES THE LENGTH READING ABOVE. Plan 4 Task 1 added base-icl-en-second-speaker: seedtts_ref_en_1.wav, a different speaker recorded on a different chain, 14.07 s and 176 reference code frames, driven through every oracle at the same bfloat16 dtype as the other four. It PASSES every committed gate -- chain rel_absmax 2.483e-05 (0.0064 of one bf16 unit, against the 1.0e-3 gate, and tighter than any of the four), semantic p95 relative 0.004152 against 2.0e-2, acoustic 0.2988 against 5.0e-1 -- and the port agrees with upstream-f32 on 100.000% of its code decisions (0 of 2816).\n\nIts semantic flip rate is 1.70% (3 of 176), and that is the finding. Ordered by reference length the five rates now read: 13 frames 0.00%, 101 frames 3.96%, 101 frames 3.96%, 176 frames 1.70%, 375 frames 5.33%. THAT IS NOT MONOTONE. A longer reference from a second speaker sits at less than half the rate of the shorter same-speaker cases, so reference length does not order the flip rate, and 'scope this probe by reference length' -- the first of the two branches this note offered the next plan -- is refuted as a sufficient rule. The flip rate behaves as a property of where a particular recording's latents fall relative to the codebook, which is what the paragraph above already said it was and what a one-recording calibration could not show.\n\nOne confound is named here rather than left implicit: base-ref-max is not a longer recording, it is clone.wav LOOPED to 30 s by np.tile (scripts/dump_reference_qwen3_tts_base.py:339-342), so its 5.33% may carry the seam discontinuities of ~3.7 repeats rather than anything about length. That makes the 375-frame point the weakest of the five for a length argument, not the strongest.\n\nPlan 4 Task 1 Step 3 named three outcomes for this measurement. It lands in the FIRST by that outcome's own threshold ('below ~5%') while CONTRADICTING the inference the plan attached to it ('the cliff is confirmed as a function of reference length rather than of speaker'). It is recorded that way deliberately: the rate is on the safe side of the cliff and Task 3 gains a fifth calibration point, but nothing measured here confirms a length rule, and the plan's sentence is not evidence."
+              },
+              "inversions": {
+                "measured": "2026-08-17",
+                "by": "Plan 4 Task 3 Step 4",
+                "outcome_the_set_belongs_to": "first of three -- both a masked reconstruction gate and a gated flip rate were committed, so all three of that outcome's inversions have a target",
+                "value": {
+                  "dimension": "the port's arithmetic",
+                  "perturbation": "re-inject upstream's symmetric MimiConv1d padding split in place of the causal all-left one (src/arch/qwen3-tts/codec-encoder.cpp's conv_padding)",
+                  "result": "BOTH new gates fail on all four faulted cases",
+                  "codebook_masked_p95": "1.601 - 2.459 against 0.02",
+                  "semantic_flip_rate": "89.205% - 100.000% against 20.0%"
                 },
-                "note": "NOTHING BELOW WAS WIDENED, AND base-ref-max WAS NOT ADDED TO `cases`. This records a gate that does not hold on a case outside the three it was calibrated on, because the rule this suite follows is that a deviation above scale gets FOUND, not accommodated.\n\nIT IS NOT A PORT DEFECT, and three independent readings say so. On base-ref-max the port agrees with upstream-f32 on 100.000% of code decisions (0 of 6000); the continuous chain gate PASSES at 8.431e-05, tighter than base-icl-en's 9.303e-05; and the acoustic branch passes at 0.2946. The only failing quantity is the semantic reconstruction against the bfloat16 ORACLE -- a comparison in which this port does not appear on the deviating side.\n\nTHE GATE SITS ON A CLIFF AT A 5% SEMANTIC FLIP RATE, and that is the actual finding. The statistic is the 95th percentile of per-frame deviation, so it only enters the flipped-frame tail once more than 5% of frames carry a semantic flip. The three calibration cases sit at 0.00%, 3.96% and 3.96% -- all below the line, so their p95 measures unflipped frames and lands at 0.004. base-ref-max sits at 5.33%, the p95 lands inside the tail, and the figure jumps 85x to 0.3478. The gate did not drift; the percentile crossed a discontinuity.\n\nSo `2.0e-2` is not a bound on this port's semantic reconstruction in general -- it is a bound conditional on the reference's semantic flip rate staying under ~5%, which in practice means short references. That condition is undocumented in the gate itself and is exactly the kind of hidden precondition a later plan would trip over. Widening the gate to ~0.35 would make it pass here and destroy its power everywhere else: the injected fault it is meant to catch reads 1.601, only 4.6x above 0.35 rather than 80x above 0.02.\n\nWHAT THE NEXT PLAN MUST DECIDE, and this task deliberately does not: either scope this probe by reference length (and say so in the gate), or replace the percentile with a statistic that does not have a cliff in it (a flip-rate-conditioned measure, or the median, which sits at 0.0027 here and is stable across all four cases). Until then the codec_encoder stage covers references up to 101 frames, which is what `cases: 3` and `case_ids` describe."
+                "kind": {
+                  "dimension": "WHICH FRAMES the percentile is computed over",
+                  "perturbation": "invert the mask's polarity -- condition on the FLIPPED frames instead of the non-flipped ones",
+                  "case": "base-ref-max, chosen because its flip rate is non-zero (5.333%); on base-ref-min the rate is 0.00% and the inverted mask would select the empty set, where no ratio exists and the assertion could not fail",
+                  "result": "both branches move sharply and the gates fail",
+                  "semantic": "0.003756 -> 1.512, a factor of 403",
+                  "acoustic": "0.003766 -> 0.3089, a factor of 82",
+                  "what_it_proves": "the frames the mask drops ARE the tail the cliff came from, so the mask's polarity is load-bearing rather than incidental"
+                },
+                "presence": {
+                  "dimension": "whether the flip-rate gate is load-bearing ON ITS OWN",
+                  "perturbation": "lower the threshold from 20% to 5%, in the grid and the module together, on base-ref-max whose rate is 5.333%",
+                  "result": "the flip gate FAILS while BOTH reconstruction gates PASS",
+                  "what_it_proves": "the run fails on a quantity no other gate measures. This is deliberately stronger than the plan's own suggestion -- 'drop the gate and confirm the rate stops being checked' would only show a line disappearing from the output, which is consistent with a gate that never bit."
+                },
+                "not_owed": {
+                  "acoustic_flip_rate": "RECORDED AND UNGATED, so there is no inversion to run. Changing any value in codec.acoustic_flip_rate_ungated makes nothing fail, and that is the proof it is evidence rather than a gate -- labelling it an inversion would be the mandated-check-that-cannot-fail this suite refuses."
+                },
+                "gate_result_for_the_commit_that_owed_these": "a574814 recorded its build-sanitize run as still building and therefore unverified. It came back afterwards at 103 tests with only the two pre-existing failures Task 1 recorded by name, so that commit's gate claim is complete. It is written here rather than amended into the commit because the branch was already pushed and this project does not rewrite pushed history."
+              },
+              "cross_profile_identity": {
+                "measured": "2026-08-17",
+                "by": "Plan 4 Task 7",
+                "claim": "the codec encoder's output is BYTE-IDENTICAL between the BF16 and F16 packages",
+                "evidence": "20 of 20 sha256 comparisons match -- latents.f32, rvq_reconstruction.f32, codes.i32 and downsample.f32, over all five cases -- with the port driven from build/qwen3-tts-12hz-0-6b-base-F16.gguf against the same oracle waveforms",
+                "why": "the F16 profile does not touch this half at all. src/arch/qwen3-tts/catalog.cpp splits halves on the `codec.` prefix, so every codec tensor is F32 under every profile, and Plan 4 Task 6's census confirmed all 161 codec.encoder.* tensors are F32 in BOTH packages. The graph reads the same weights, so it computes the same numbers.",
+                "consequence_for_the_grid": "an F16 `codec_encoder` cell is NOT an independent measurement of this port. Its figures are the BF16 figures, arrived at by running the same F32 weights through the same graph. The coverage rule requires the cell to exist, so it will exist -- but it must say this, or it reads as five more cases of evidence when it is the same computation recorded twice. That is the same error this stage's own `cases_not_extended` block refused when it declined to raise `cases` from 2 to 10 on ten byte-identical x-vectors.",
+                "what_it_does_not_cover": "the talker half, which IS halved under F16 and is where an F16 cell's `public` and `replay` stages carry real information. Those two were not measured by this observation and are still owed.",
+                "how_the_stale_binary_was_caught": "the first F16 run reported 449 graph nodes on base-icl-en where BF16 reports 445, and a package's dtype cannot change a node count. The cause was a driver binary left over from Task 3's fault injection: that script restored codec-encoder.cpp on exit but did not rebuild, so build/bin still held the symmetric-pad build, whose padding_right is non-zero even when extra_padding is 0 and therefore takes the ragged replicate-pad branch on every case. Rebuilt and re-driven; the node counts then matched BF16 exactly (445/449/445/445/445) and so did narrowest_gap. Recorded because the node count is what made a wrong measurement visible at all."
               }
+            }
+          }
+        },
+        "F16": {
+          "stages": {
+            "public": {
+              "backend": "CPU",
+              "description": "The public C seam driven end to end against the F16 Base package, through a reference-audio Voice Profile. Same seven checks and same three structural skips as the BF16 cell -- the Voice kind is a property of the package's catalogue, not of its Quantization Profile.",
+              "checks": 7,
+              "all_passed": true,
+              "skipped": 3,
+              "voice_kind": "reference_audio",
+              "measured": "2026-08-17",
+              "build": "build-integration, CMAKE_BUILD_TYPE=Release",
+              "max_output_frames": 983040,
+              "note": "THE AUDIO DIFFERS FROM BF16 AND THAT IS THE POINT OF THE CELL. Seed 7 through reference A gives 96a143de53c1c29a here against 9eef2beaf63cb60e under BF16, so the F16 profile does reach the talker. Every relation the checks assert -- a seed reproduces, a different seed does not, a different Voice does not -- holds within this profile, which is what a behavioural stage can claim.\n\nThe three skips are the same three and for the same structural reason: a Voice Profile has no id for the seam to echo, and a dialect speaker is a Preset Voice this package does not catalogue."
+            },
+            "replay": {
+              "backend": "CPU",
+              "cases": 4,
+              "case_ids": [
+                "base-xvector-en",
+                "base-xvector-zh",
+                "base-ref-min",
+                "base-ref-max"
+              ],
+              "measured": "2026-08-17",
+              "probes": {
+                "speaker.x_vector": {
+                  "min_cosine": 0.9999767764206815,
+                  "observed_min_cosine": 0.99999501,
+                  "observed_max_abs": 0.0215769,
+                  "observed_by_case": {
+                    "base-xvector-en": {
+                      "cosine": 0.99999501,
+                      "max_abs": 0.0215769
+                    },
+                    "base-xvector-zh": {
+                      "cosine": 0.99999501,
+                      "max_abs": 0.0215769
+                    },
+                    "base-ref-min": {
+                      "cosine": 0.99999521,
+                      "max_abs": 0.0187035
+                    },
+                    "base-ref-max": {
+                      "cosine": 0.99999603,
+                      "max_abs": 0.0108986
+                    }
+                  },
+                  "note": "THE SAME BOUND AS BF16, AND IT IS NOT TIGHTER HERE BECAUSE IT DOES NOT NEED TO BE. Halving the speaker encoder's 38 convolution weights to F16 costs nothing measurable: the worst cosine is 0.99999501 against BF16's 0.99999467 -- very slightly BETTER, which is run-to-run scale rather than an improvement.\n\nWHY: the residual is the ORACLE's, not the port's. The BF16 cell already records that at the x-vector's largest element the max_abs is 0.68 of one bfloat16 ulp, and that recomputing the oracle's own final ASP/FC layer in float64 disagrees with the oracle by MORE than the port does. An F16 port weight is still finer than the oracle's bf16 storage, so the comparison is bounded by the oracle at both profiles."
+                }
+              },
+              "probes_not_measured": {
+                "prompt.icl_embed": "measured for BF16 over three cases and NOT re-measured here. The coverage rule requires the same STAGE set per profile, not the same probe set, and asserting a probe this task did not run would be the fabricated placeholder this file spent two plans removing."
+              }
+            },
+            "codec_encoder": {
+              "backend": "CPU",
+              "measured": "2026-08-17",
+              "cases": 5,
+              "case_ids": [
+                "base-icl-en",
+                "base-ref-min",
+                "base-text-short",
+                "base-ref-max",
+                "base-icl-en-second-speaker"
+              ],
+              "identical_to": "BF16",
+              "probes": {
+                "codec.chain": {
+                  "rel_absmax": 0.001
+                },
+                "codec.rvq_reconstruction.semantic": {
+                  "p95_relative_l2": 0.02
+                },
+                "codec.rvq_reconstruction.acoustic": {
+                  "p95_relative_l2": 0.5
+                },
+                "codec.semantic_flip_rate": {
+                  "max_fraction": 0.2
+                }
+              },
+              "note": "BYTE-IDENTICAL TO THE BF16 CELL, MEASURED RATHER THAN ASSUMED: 20 of 20 sha256 comparisons match over latents.f32, rvq_reconstruction.f32, codes.i32 and downsample.f32 across all five cases, with the port driven from the F16 package.\n\nIt is identical by construction. src/arch/qwen3-tts/catalog.cpp splits halves on the `codec.` prefix, so every codec tensor is F32 under EVERY profile; Plan 4 Task 6's census confirmed all 161 codec.encoder.* tensors are F32 in both packages. The graph reads the same weights and computes the same numbers.\n\nTHIS CELL IS THEREFORE NOT INDEPENDENT EVIDENCE, and it says so rather than presenting five cases twice. It exists because tests/python/test_tolerance_coverage.py requires every profile to carry the reference profile's full stage set; the thresholds are the BF16 ones because the computation is the BF16 one. See `cross_profile_identity` in the BF16 codec_encoder cell for the evidence."
+            }
+          }
+        },
+        "Q8_MIXED": {
+          "stages": {
+            "public": {
+              "backend": "CPU",
+              "description": "The public C seam driven end to end against the Q8_MIXED Base package, through a reference-audio Voice Profile.",
+              "checks": 7,
+              "all_passed": true,
+              "skipped": 3,
+              "voice_kind": "reference_audio",
+              "measured": "2026-08-17",
+              "build": "build-integration, CMAKE_BUILD_TYPE=Release",
+              "max_output_frames": 983040,
+              "note": "ALL THREE PROFILES PRODUCE DISTINCT AUDIO, which is what says the talker half is genuinely quantized. Seed 7 through reference A: BF16 9eef2beaf63cb60e, F16 96a143de53c1c29a, Q8_MIXED 22852e21195a3ddd. Every relation the checks assert holds WITHIN this profile -- a seed reproduces, a different seed does not, a different Voice does not -- which is what a behavioural stage can claim.\n\nThe same three structural skips as the other two cells: a Voice Profile has no id, and a dialect speaker is a Preset Voice this package does not catalogue."
+            },
+            "replay": {
+              "backend": "CPU",
+              "cases": 4,
+              "case_ids": [
+                "base-xvector-en",
+                "base-xvector-zh",
+                "base-ref-min",
+                "base-ref-max"
+              ],
+              "measured": "2026-08-17",
+              "probes": {
+                "speaker.x_vector": {
+                  "min_cosine": 0.9999767764206815,
+                  "observed_min_cosine": 0.99999501,
+                  "observed_max_abs": 0.0215769,
+                  "identical_to": "F16",
+                  "note": "BYTE-IDENTICAL TO THE F16 CELL, AND THAT WAS PREDICTED BEFORE IT WAS MEASURED. Plan 4 Task 6's ConvKernel ruling holds the speaker encoder's 38 convolution weights at the profile's halved fallback -- F16 -- under BOTH F16 and Q8_MIXED, and their 38 biases are F32 under both. So the speaker encoder's weights are bit-identical between the two packages and the graph computes the same x-vector. Confirmed: 4 of 4 sha256 comparisons match.\n\nThat is an independent check on the ruling rather than a restatement of it: the prediction follows from the classification and would have failed if the classification were wrong.\n\nThe residual against the oracle is unchanged from F16 for the same reason the F16 cell records -- it is the ORACLE's bf16 storage, not the port's weights, that bounds this comparison."
+                }
+              },
+              "probes_not_measured": {
+                "prompt.icl_embed": "not re-measured for this profile; the coverage rule requires the same stage set, not the same probe set, and a copied figure would be a measurement that did not happen."
+              }
+            },
+            "codec_encoder": {
+              "backend": "CPU",
+              "measured": "2026-08-17",
+              "cases": 5,
+              "case_ids": [
+                "base-icl-en",
+                "base-ref-min",
+                "base-text-short",
+                "base-ref-max",
+                "base-icl-en-second-speaker"
+              ],
+              "identical_to": "BF16",
+              "probes": {
+                "codec.chain": {
+                  "rel_absmax": 0.001
+                },
+                "codec.rvq_reconstruction.semantic": {
+                  "p95_relative_l2": 0.02
+                },
+                "codec.rvq_reconstruction.acoustic": {
+                  "p95_relative_l2": 0.5
+                },
+                "codec.semantic_flip_rate": {
+                  "max_fraction": 0.2
+                }
+              },
+              "note": "BYTE-IDENTICAL TO BF16, measured: 25 of 25 sha256 comparisons match over latents.f32, rvq_reconstruction.f32, codes.i32, downsample.f32 and rvq_distance_margin.f32 across all five cases. Together with the F16 cell's own 20 of 20, the codec encoder is now shown identical across ALL THREE profiles.\n\nTHE CODES DO NOT MOVE, AND THAT IS THE ANSWER TO THE QUESTION THIS TASK WAS TOLD TO ASK. Plan 4 Task 8 Step 2 says to expect the codes to move and to measure by how much, because OmniVoice's codec-half profiles were BLOCKED when quantization flipped RVQ tokens on the clone path. That failure mode cannot arise here: this family holds its whole codec half at the reference dtype under every profile, so the RVQ argmin sees the same F32 weights and the same latents and returns the same codes. Zero flips, on every case, at every profile. Handed to Task 10, whose subject is exactly whether the other family's conv-exempt precedent transfers."
             }
           }
         }

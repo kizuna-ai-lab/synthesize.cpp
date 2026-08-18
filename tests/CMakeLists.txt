@@ -176,6 +176,28 @@ if(SYNTH_BUILD_PYTHON_TESTS)
         LABELS "unit;python;golden"
         TIMEOUT 120
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    # The Python half of the p95 cross-check; synthesize-qwen3-tts-percentile-test
+    # is the C++ half, and both answer to
+    # tests/fixtures/qwen3-tts/percentile-cross-check.json.
+    #
+    # Same environment reasoning as the two above -- the VITS environment owns
+    # the repository's locked Python tooling and this test is not VITS-specific.
+    # It needs numpy and nothing else: no model, no build artifact, no network.
+    # The pin matters here in a way it does not for the other two: the fixture's
+    # expected values were generated under numpy 1.26.4, which is what both this
+    # environment and scripts/envs/qwen3-tts lock, so a bump that changed
+    # np.percentile's default interpolation would fail this test rather than
+    # silently move the target the C++ side is measured against.
+    add_test(
+        NAME synthesize-qwen3-tts-percentile-agreement
+        COMMAND ${SYNTH_UV_EXECUTABLE} run
+            --project ${CMAKE_SOURCE_DIR}/scripts/envs/vits
+            --locked python -m unittest
+            tests.python.test_percentile_agreement)
+    set_tests_properties(synthesize-qwen3-tts-percentile-agreement PROPERTIES
+        LABELS "unit;python;qwen3-tts"
+        TIMEOUT 120
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 if(SYNTH_BUILD_SHARED AND UNIX AND NOT APPLE)
     add_test(NAME synthesize-shared-exports
@@ -535,6 +557,201 @@ add_test(NAME synthesize-qwen3-tts-wav-reader-test
 set_tests_properties(synthesize-qwen3-tts-wav-reader-test PROPERTIES LABELS "unit;qwen3-tts")
 synth_register_unit_target(synthesize-qwen3-tts-wav-reader-test)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-wav-reader)
+
+# The p95 statistic's two implementations, held to one committed fixture.
+#
+# tests/tolerances/qwen3-tts.json recorded the gap this closes: the C++ arm in
+# qwen3_tts_icl_real.cpp transcribes the validator's percentile by hand and the
+# two "have NO registered cross-check -- they were compared once, manually".
+# Plan 4 Task 2 lifted the arithmetic into tests/qwen3_tts_percentile.h so a
+# `unit` test can reach it (icl_real.cpp is integration-tier and
+# synthesize-check-unit never builds it), and the fixture is the third party
+# both sides answer to.
+#
+# THE FIXTURE IS JSON AND THIS TREE HAS NO C++ JSON PARSER, so CMake projects it
+# into a flat whitespace-separated file the test reads -- the same shape the ICL
+# prompt test already uses for alignment.json's token ids, and for the same
+# reason. The JSON stays the single committed source. The layout is documented
+# at the top of qwen3_tts_percentile_test.cpp and written below; the two must be
+# read together.
+#
+# Both the DECLARED `entry_count` and the ACTUAL array LENGTH are written, and
+# the test asserts they agree. That is what makes deleting an entry from the
+# fixture a test failure rather than a quieter test -- and it is written this
+# way round deliberately: driving the loop from the declared count instead would
+# make `string(JSON GET)` abort the whole configure on the missing index, which
+# is a broken build rather than a failing assertion.
+set(_synth_qwen3_tts_percentile_json
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/qwen3-tts/percentile-cross-check.json")
+# Editing the fixture must re-run configure, or the projection below goes stale
+# and the value/length/presence inversions would silently keep passing.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${_synth_qwen3_tts_percentile_json}")
+file(READ "${_synth_qwen3_tts_percentile_json}" _synth_qwen3_tts_percentile_doc)
+
+string(JSON _synth_qwen3_tts_percentile_percent
+    GET "${_synth_qwen3_tts_percentile_doc}" percentile percent)
+string(JSON _synth_qwen3_tts_percentile_declared
+    GET "${_synth_qwen3_tts_percentile_doc}" percentile entry_count)
+string(JSON _synth_qwen3_tts_percentile_actual
+    LENGTH "${_synth_qwen3_tts_percentile_doc}" percentile entries)
+set(_synth_qwen3_tts_percentile_flat
+    "${_synth_qwen3_tts_percentile_percent}\n${_synth_qwen3_tts_percentile_declared}\n${_synth_qwen3_tts_percentile_actual}\n")
+if(_synth_qwen3_tts_percentile_actual GREATER 0)
+    math(EXPR _synth_qwen3_tts_percentile_last "${_synth_qwen3_tts_percentile_actual} - 1")
+    foreach(_synth_qwen3_tts_percentile_i RANGE 0 ${_synth_qwen3_tts_percentile_last})
+        string(JSON _synth_qwen3_tts_percentile_n
+            LENGTH "${_synth_qwen3_tts_percentile_doc}" percentile entries
+                ${_synth_qwen3_tts_percentile_i} values)
+        string(JSON _synth_qwen3_tts_percentile_expected
+            GET "${_synth_qwen3_tts_percentile_doc}" percentile entries
+                ${_synth_qwen3_tts_percentile_i} expected)
+        string(APPEND _synth_qwen3_tts_percentile_flat
+            "${_synth_qwen3_tts_percentile_n}\n${_synth_qwen3_tts_percentile_expected}\n")
+        math(EXPR _synth_qwen3_tts_percentile_vlast "${_synth_qwen3_tts_percentile_n} - 1")
+        foreach(_synth_qwen3_tts_percentile_j RANGE 0 ${_synth_qwen3_tts_percentile_vlast})
+            string(JSON _synth_qwen3_tts_percentile_v
+                GET "${_synth_qwen3_tts_percentile_doc}" percentile entries
+                    ${_synth_qwen3_tts_percentile_i} values ${_synth_qwen3_tts_percentile_j})
+            string(APPEND _synth_qwen3_tts_percentile_flat "${_synth_qwen3_tts_percentile_v}\n")
+        endforeach()
+    endforeach()
+endif()
+
+string(JSON _synth_qwen3_tts_recon_declared
+    GET "${_synth_qwen3_tts_percentile_doc}" reconstruction entry_count)
+string(JSON _synth_qwen3_tts_recon_actual
+    LENGTH "${_synth_qwen3_tts_percentile_doc}" reconstruction entries)
+string(APPEND _synth_qwen3_tts_percentile_flat
+    "${_synth_qwen3_tts_recon_declared}\n${_synth_qwen3_tts_recon_actual}\n")
+if(_synth_qwen3_tts_recon_actual GREATER 0)
+    math(EXPR _synth_qwen3_tts_recon_last "${_synth_qwen3_tts_recon_actual} - 1")
+    foreach(_synth_qwen3_tts_recon_i RANGE 0 ${_synth_qwen3_tts_recon_last})
+        foreach(_synth_qwen3_tts_recon_key frames projected
+                expected_p95_relative expected_p95_relative_operands_swapped)
+            string(JSON _synth_qwen3_tts_recon_value
+                GET "${_synth_qwen3_tts_percentile_doc}" reconstruction entries
+                    ${_synth_qwen3_tts_recon_i} ${_synth_qwen3_tts_recon_key})
+            string(APPEND _synth_qwen3_tts_percentile_flat "${_synth_qwen3_tts_recon_value}\n")
+        endforeach()
+        foreach(_synth_qwen3_tts_recon_side port oracle)
+            string(JSON _synth_qwen3_tts_recon_count
+                LENGTH "${_synth_qwen3_tts_percentile_doc}" reconstruction entries
+                    ${_synth_qwen3_tts_recon_i} ${_synth_qwen3_tts_recon_side})
+            math(EXPR _synth_qwen3_tts_recon_vlast "${_synth_qwen3_tts_recon_count} - 1")
+            foreach(_synth_qwen3_tts_recon_j RANGE 0 ${_synth_qwen3_tts_recon_vlast})
+                string(JSON _synth_qwen3_tts_recon_v
+                    GET "${_synth_qwen3_tts_percentile_doc}" reconstruction entries
+                        ${_synth_qwen3_tts_recon_i} ${_synth_qwen3_tts_recon_side}
+                        ${_synth_qwen3_tts_recon_j})
+                string(APPEND _synth_qwen3_tts_percentile_flat "${_synth_qwen3_tts_recon_v}\n")
+            endforeach()
+        endforeach()
+    endforeach()
+endif()
+
+# The mask block. Its port/oracle pair is the reconstruction block's, deliberately
+# not re-stated in the JSON: the masked answers only mean something read against
+# that block's unmasked one, and a second copy could drift from it. The reader
+# therefore keeps the first reconstruction entry's buffers and asserts the
+# declared frames/projected match.
+#
+# A null `expected_p95_relative_masked` means the mask keeps nothing and the
+# function must REFUSE. JSON has no NaN, so the projection carries a presence
+# flag ahead of the value rather than a sentinel number that could be mistaken
+# for an answer.
+string(JSON _synth_qwen3_tts_mask_declared GET "${_synth_qwen3_tts_percentile_doc}" mask entry_count)
+string(JSON _synth_qwen3_tts_mask_actual LENGTH "${_synth_qwen3_tts_percentile_doc}" mask entries)
+string(JSON _synth_qwen3_tts_mask_frames GET "${_synth_qwen3_tts_percentile_doc}" mask frames)
+string(JSON _synth_qwen3_tts_mask_projected GET "${_synth_qwen3_tts_percentile_doc}" mask projected)
+string(APPEND _synth_qwen3_tts_percentile_flat
+    "${_synth_qwen3_tts_mask_declared}\n${_synth_qwen3_tts_mask_actual}\n${_synth_qwen3_tts_mask_frames}\n${_synth_qwen3_tts_mask_projected}\n")
+if(_synth_qwen3_tts_mask_actual GREATER 0)
+    math(EXPR _synth_qwen3_tts_mask_last "${_synth_qwen3_tts_mask_actual} - 1")
+    foreach(_synth_qwen3_tts_mask_i RANGE 0 ${_synth_qwen3_tts_mask_last})
+        string(JSON _synth_qwen3_tts_mask_type ERROR_VARIABLE _synth_qwen3_tts_mask_err
+            TYPE "${_synth_qwen3_tts_percentile_doc}" mask entries
+                ${_synth_qwen3_tts_mask_i} expected_p95_relative_masked)
+        if(_synth_qwen3_tts_mask_type STREQUAL "NULL")
+            string(APPEND _synth_qwen3_tts_percentile_flat "0\n0\n")
+        else()
+            string(JSON _synth_qwen3_tts_mask_expected
+                GET "${_synth_qwen3_tts_percentile_doc}" mask entries
+                    ${_synth_qwen3_tts_mask_i} expected_p95_relative_masked)
+            string(APPEND _synth_qwen3_tts_percentile_flat "1\n${_synth_qwen3_tts_mask_expected}\n")
+        endif()
+        math(EXPR _synth_qwen3_tts_mask_klast "${_synth_qwen3_tts_mask_frames} - 1")
+        foreach(_synth_qwen3_tts_mask_j RANGE 0 ${_synth_qwen3_tts_mask_klast})
+            string(JSON _synth_qwen3_tts_mask_k
+                GET "${_synth_qwen3_tts_percentile_doc}" mask entries
+                    ${_synth_qwen3_tts_mask_i} keep ${_synth_qwen3_tts_mask_j})
+            string(APPEND _synth_qwen3_tts_percentile_flat "${_synth_qwen3_tts_mask_k}\n")
+        endforeach()
+    endforeach()
+endif()
+
+# The codebook block. One shared pair of code grids, then one entry per branch,
+# because the two branches read disjoint column sets of the SAME grids -- that is
+# the property being tested and two separate grids would lose it.
+string(JSON _synth_qwen3_tts_cb_declared GET "${_synth_qwen3_tts_percentile_doc}" codebook entry_count)
+string(JSON _synth_qwen3_tts_cb_actual LENGTH "${_synth_qwen3_tts_percentile_doc}" codebook entries)
+string(JSON _synth_qwen3_tts_cb_frames GET "${_synth_qwen3_tts_percentile_doc}" codebook frames)
+string(JSON _synth_qwen3_tts_cb_groups GET "${_synth_qwen3_tts_percentile_doc}" codebook groups)
+string(APPEND _synth_qwen3_tts_percentile_flat
+    "${_synth_qwen3_tts_cb_declared}\n${_synth_qwen3_tts_cb_actual}\n${_synth_qwen3_tts_cb_frames}\n${_synth_qwen3_tts_cb_groups}\n")
+math(EXPR _synth_qwen3_tts_cb_codes "${_synth_qwen3_tts_cb_frames} * ${_synth_qwen3_tts_cb_groups} - 1")
+foreach(_synth_qwen3_tts_cb_side upstream oracle)
+    foreach(_synth_qwen3_tts_cb_j RANGE 0 ${_synth_qwen3_tts_cb_codes})
+        string(JSON _synth_qwen3_tts_cb_v
+            GET "${_synth_qwen3_tts_percentile_doc}" codebook ${_synth_qwen3_tts_cb_side}
+                ${_synth_qwen3_tts_cb_j})
+        string(APPEND _synth_qwen3_tts_percentile_flat "${_synth_qwen3_tts_cb_v}\n")
+    endforeach()
+endforeach()
+if(_synth_qwen3_tts_cb_actual GREATER 0)
+    math(EXPR _synth_qwen3_tts_cb_last "${_synth_qwen3_tts_cb_actual} - 1")
+    math(EXPR _synth_qwen3_tts_cb_klast "${_synth_qwen3_tts_cb_frames} - 1")
+    foreach(_synth_qwen3_tts_cb_i RANGE 0 ${_synth_qwen3_tts_cb_last})
+        string(JSON _synth_qwen3_tts_cb_semantic
+            GET "${_synth_qwen3_tts_percentile_doc}" codebook entries
+                ${_synth_qwen3_tts_cb_i} semantic)
+        # CMake reports JSON booleans as ON/OFF; the reader wants 1/0.
+        if(_synth_qwen3_tts_cb_semantic)
+            string(APPEND _synth_qwen3_tts_percentile_flat "1\n")
+        else()
+            string(APPEND _synth_qwen3_tts_percentile_flat "0\n")
+        endif()
+        foreach(_synth_qwen3_tts_cb_j RANGE 0 ${_synth_qwen3_tts_cb_klast})
+            string(JSON _synth_qwen3_tts_cb_k
+                GET "${_synth_qwen3_tts_percentile_doc}" codebook entries
+                    ${_synth_qwen3_tts_cb_i} expected_keep ${_synth_qwen3_tts_cb_j})
+            string(APPEND _synth_qwen3_tts_percentile_flat "${_synth_qwen3_tts_cb_k}\n")
+        endforeach()
+    endforeach()
+endif()
+
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-percentile)
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-percentile/cross-check.txt"
+    "${_synth_qwen3_tts_percentile_flat}")
+
+# The reference-clip trim. Same gap as the percentile pair: qwen3_tts_trim.h was
+# reachable only from tests/qwen3_tts_icl_real.cpp, which is integration-tier.
+# No fixture -- the oracle is five lines of Python, restated by hand in the test.
+add_executable(synthesize-qwen3-tts-trim-test qwen3_tts_trim_test.cpp)
+target_include_directories(synthesize-qwen3-tts-trim-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME synthesize-qwen3-tts-trim-test COMMAND synthesize-qwen3-tts-trim-test)
+set_tests_properties(synthesize-qwen3-tts-trim-test PROPERTIES LABELS "unit;qwen3-tts")
+synth_register_unit_target(synthesize-qwen3-tts-trim-test)
+
+add_executable(synthesize-qwen3-tts-percentile-test qwen3_tts_percentile_test.cpp)
+target_include_directories(synthesize-qwen3-tts-percentile-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME synthesize-qwen3-tts-percentile-test
+    COMMAND synthesize-qwen3-tts-percentile-test
+        ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-percentile/cross-check.txt)
+set_tests_properties(synthesize-qwen3-tts-percentile-test PROPERTIES LABELS "unit;qwen3-tts")
+synth_register_unit_target(synthesize-qwen3-tts-percentile-test)
 
 # A thin adapter, not a test: runs the codec encoder graph over a real package
 # and writes every stage tap in the oracle's own layout, so Task 1's
@@ -1163,9 +1380,39 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         "${_synth_qwen3_tts_icl_real_case}/codes/reference.i32")
     set(_synth_qwen3_tts_icl_real_alignment
         "${_synth_qwen3_tts_icl_real_case}/prompt/alignment.json")
+    # A FOURTH uncommitted artifact since Plan 4 Task 3: the upstream-float32
+    # codes, which are the other half of the codebook mask the gated statistic
+    # is computed over. Guarded like the other three, so a missing dump is a
+    # missing test rather than a passing one -- without it the mask would keep
+    # every frame and the gate would silently be the pre-redesign one, which is
+    # exactly the cliff this task removed.
+    # The upstream-float32 dump root, shared with the codec-encoder golden gate
+    # further down. Set here rather than there because this registration comes
+    # first and both need it.
+    #
+    # A CACHE VARIABLE SINCE PLAN 4 TASK 11, with the historical path as its
+    # default so every existing configuration is byte-identical. It was a plain
+    # `set` until then, which meant a SECOND build tree could not point either
+    # gate at its own dumps -- and this plan needs exactly that, because
+    # performance figures must come from a `Release`-typed tree
+    # (docs/testing.md) while the dumps live under the source tree's `build/`.
+    #
+    # The override does NOT weaken the registration guard. Both gates stay
+    # guarded on the artifacts EXISTING under whatever root is given, so
+    # pointing this at an empty directory leaves the tests unregistered rather
+    # than registered against nothing -- "a missing dump is a missing test, not
+    # a passing one".
+    set(SYNTH_QWEN3_TTS_CODEC_UPSTREAM_F32_ROOT
+        "${CMAKE_SOURCE_DIR}/build/qwen3-tts-codec-encoder-f32"
+        CACHE PATH
+        "Root of the upstream-float32 codec-encoder dumps that the qwen3-tts codec gates compare against")
+    set(_synth_qwen3_tts_codec_upstream_root "${SYNTH_QWEN3_TTS_CODEC_UPSTREAM_F32_ROOT}")
+    set(_synth_qwen3_tts_icl_real_upstream_codes
+        "${_synth_qwen3_tts_codec_upstream_root}/base-icl-en/codec_encoder/codes.i32")
     set(_synth_qwen3_tts_icl_real_ok FALSE)
     if(EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}" AND EXISTS "${SYNTH_QWEN3_TTS_REFERENCE_WAV}"
             AND EXISTS "${_synth_qwen3_tts_icl_real_recon}" AND EXISTS "${_synth_qwen3_tts_icl_real_codes}"
+            AND EXISTS "${_synth_qwen3_tts_icl_real_upstream_codes}"
             AND EXISTS "${_synth_qwen3_tts_icl_real_alignment}")
         file(READ "${_synth_qwen3_tts_icl_real_alignment}" _synth_qwen3_tts_icl_real_json)
         string(JSON _synth_qwen3_tts_icl_real_text
@@ -1211,6 +1458,21 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
             set(_synth_qwen3_tts_icl_real_${_synth_qwen3_tts_icl_real_branch}
                 "${_synth_qwen3_tts_icl_real_gate}")
         endforeach()
+        # The third gate, added by Plan 4 Task 3 and resolved the same way for
+        # the same reason.
+        string(JSON _synth_qwen3_tts_icl_real_flip
+            ERROR_VARIABLE _synth_qwen3_tts_icl_real_flip_error
+            GET "${_synth_qwen3_tts_icl_real_tolerance_json}"
+                variants qwen3-tts-12hz-0-6b-base profiles BF16 stages codec_encoder
+                probes "codec.semantic_flip_rate" max_fraction)
+        if(_synth_qwen3_tts_icl_real_flip_error)
+            message(FATAL_ERROR
+                "tests/tolerances/qwen3-tts.json has no "
+                "variants/qwen3-tts-12hz-0-6b-base/profiles/BF16/stages/codec_encoder/probes/"
+                "\"codec.semantic_flip_rate\"/max_fraction -- synthesize-qwen3-tts-icl-real enforces "
+                "that cell and must not fall back to a literal "
+                "(${_synth_qwen3_tts_icl_real_flip_error})")
+        endif()
 
         add_executable(synthesize-qwen3-tts-icl-real qwen3_tts_icl_real.cpp)
         target_include_directories(synthesize-qwen3-tts-icl-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -1226,7 +1488,9 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
                 ${_synth_qwen3_tts_icl_real_codes}
                 ${_synth_qwen3_tts_icl_real_semantic}
                 ${_synth_qwen3_tts_icl_real_acoustic}
-                ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-icl-real/scratch)
+                ${CMAKE_CURRENT_BINARY_DIR}/fixtures/qwen3-tts-icl-real/scratch
+                ${_synth_qwen3_tts_icl_real_upstream_codes}
+                ${_synth_qwen3_tts_icl_real_flip})
         set_tests_properties(synthesize-qwen3-tts-icl-real PROPERTIES
             LABELS "integration;qwen3-tts;abi"
             # Five full autoregressive synthesis passes over a two-word sentence
@@ -1267,8 +1531,10 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
     # but the comparison it exists for -- two float32 arithmetics, where a
     # defect in this port would live -- is unavailable, so the gate is not
     # registered at all rather than registered in a weaker form.
-    set(_synth_qwen3_tts_codec_upstream_root
-        "${CMAKE_SOURCE_DIR}/build/qwen3-tts-codec-encoder-f32")
+    # Defined further up since Plan 4 Task 3, because synthesize-qwen3-tts-icl-real
+    # now needs the same root for its codebook mask and is registered before this
+    # block. It was set here and used only here until then; setting it twice
+    # would be two places to edit.
     set(_synth_qwen3_tts_codec_cases base-icl-en base-ref-min base-text-short)
     set(_synth_qwen3_tts_codec_ok TRUE)
     if(NOT EXISTS "${SYNTH_QWEN3_TTS_BASE_TEST_MODEL}")

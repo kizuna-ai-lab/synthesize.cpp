@@ -42,6 +42,22 @@ enum class Role {
     // col2im_1d. CUDA's F16 multiply accumulates in half precision, so these
     // stay F32 under every profile.
     Transpose,
+    // A forward convolution kernel, stored [kernel, in, out]. Never
+    // block-quantized and never packed, and that is arithmetic rather than
+    // caution: a block runs along ne[0], which here is the KERNEL extent -- 1,
+    // 3 or 5 across all 38 of this family's speaker-encoder convolutions -- and
+    // Q8_0's block is 32, so quantize.cpp's own row-size check refuses every
+    // one of them. Kokoro states the same constraint from the other side: "a
+    // 32-wide block cannot straddle the kernel axis" (kokoro/operations.cpp).
+    // The alternative is the packed [kernel * in, out] 2-D layout Kokoro emits,
+    // and this family implements neither half of it -- Resolver::find has no
+    // packed branch and same_conv1d reads ne[0..2] as {kernel, in, out}, so a
+    // packed weight would be misread before it was rejected. So these are held
+    // at the profile's halved fallback (F16) at their native three-axis shape,
+    // which is the same column and the same shape OmniVoice's ConvKernel role
+    // uses -- arrived at here from this family's own block arithmetic, not
+    // imported from that family's RVQ-drift reason. See Plan 4 Task 6.
+    ConvKernel,
     // Norms, biases, layer scales, SnakeBeta curves, the quantizer's tables:
     // each multiplies or seeds a whole branch, and together they are a rounding
     // error of the file.
@@ -97,8 +113,14 @@ class Resolver {
         return ok_;
     }
 
+    // Every caller of this is either a `codec.*` convolution -- where the half
+    // decides the type and the role is never consulted -- or one of the 38
+    // `speaker_encoder.*` convolutions, which is what Role::ConvKernel is for.
+    // It was Role::Matrix until Plan 4 Task 6, which changed nothing for the
+    // codec half and made the speaker encoder's own expectation match what the
+    // quantizer can actually emit.
     bool conv(const std::string & prefix, int64_t kernel, int64_t in, int64_t out, Conv1dWeights & target) {
-        target.weight = find(prefix + ".weight", { kernel, in, out }, Role::Matrix);
+        target.weight = find(prefix + ".weight", { kernel, in, out }, Role::ConvKernel);
         target.bias   = find(prefix + ".bias", { out });
         return ok_;
     }
@@ -147,7 +169,18 @@ class Resolver {
                 // 37-frame case -- so halving 457 MB costs more time than the
                 // space is worth. See the quantizer's policy, which classifies
                 // the same way.
-                if (half == Half::Codec || role != Role::Matrix) {
+                if (half == Half::Codec) {
+                    return GGML_TYPE_F32;
+                }
+                // Held at the halved fallback rather than at the profile's
+                // block type, for the block-versus-kernel-axis reason recorded
+                // at Role::ConvKernel. F16 under all three halved profiles,
+                // matching what the quantizer emits from
+                // profile.transpose_weight_type -- the two must not drift.
+                if (role == Role::ConvKernel) {
+                    return GGML_TYPE_F16;
+                }
+                if (role != Role::Matrix) {
                     return GGML_TYPE_F32;
                 }
                 switch (hparams_.quantization_profile) {

@@ -218,6 +218,29 @@ class Model {
                                bool                     include_accelerators,
                                std::unique_ptr<Model> & output);
 
+    // TEST-ONLY. Builds a Model whose hparams() returns exactly `hparams` and
+    // every other accessor its own type's default (no weights, no frontend, no
+    // backend) -- load()/load_cpu() remain the only ways to build a Model any
+    // synthesis or reference/codec-encoding call can actually use.
+    //
+    // Exists because src/voice-profile.cpp's create_from_description dispatch
+    // (unlike create_from_reference's) must read HParams::profile_sources off a
+    // live Model to tell VoiceDesign apart from CustomVoice/Base: that dispatch
+    // gates on the package's DECLARED sources rather than the published
+    // capability bit (VoiceDesign's own bit stays SYNTH_PROFILE_SOURCE
+    // unpublished until a later task -- see that dispatch's own comment), and
+    // `model->info.voice_profile` carries only the published bit, not the
+    // declared one. This family has no synthetic-package test harness the way
+    // OmniVoice's write_synthetic_package (tests/omnivoice_synthetic_package.h)
+    // gives that family -- load()/load_cpu() need a full, real GGUF with every
+    // talker/codec tensor present, which is out of reach for a `unit` test
+    // (docs/testing.md) -- so a `unit` test exercising the PUBLIC SEAM
+    // (synth_voice_profile_create_from_description) against a Model whose
+    // declared sources it controls has no other way to get one.
+    //
+    // Only ever called from tests/qwen3_tts_design_profile_test.cpp.
+    static std::unique_ptr<Model> create_for_testing(const HParams & hparams);
+
     ~Model();
     Model(const Model &)             = delete;
     Model & operator=(const Model &) = delete;

@@ -9,14 +9,19 @@
 
 #include "arch/qwen3-tts/profile.h"
 #include "arch/qwen3-tts/weights.h"
+#include "model-handle.h"
+#include "synthesize.h"
 #include "test-assert.h"
+#include "voice-profile-handle.h"
 
+#include <cstdint>
 #include <string>
 
 using synth::qwen3tts::create_design_profile;
 using synth::qwen3tts::DesignInstruct;
 using synth::qwen3tts::HParams;
 using synth::qwen3tts::kMaxDesignInstructBytes;
+using synth::qwen3tts::Model;
 
 namespace {
 
@@ -25,6 +30,57 @@ HParams voice_design_hparams() {
     hparams.model_variant   = "qwen3-tts-12hz-1-7b-voicedesign";
     hparams.profile_sources = SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT;
     return hparams;
+}
+
+// A Base-shaped package: ProfileSources mode, REFERENCE_AUDIO declared instead
+// of DESCRIPTION_TEXT. Mirrors tests/qwen3_tts_voice_required_test.cpp's own
+// base_hparams() at the level this file's dispatch actually reads --
+// abbreviated to the one field create_qwen3_tts_profile_from_description
+// consults, since the other Reference Audio contract fields that file's own
+// fixture carries are irrelevant to a Description Text refusal.
+HParams base_hparams() {
+    HParams hparams;
+    hparams.model_variant   = "qwen3-tts-12hz-1-7b-base";
+    hparams.voice_mode      = synth::qwen3tts::VoiceMode::ProfileSources;
+    hparams.profile_sources = SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO;
+    return hparams;
+}
+
+// A CustomVoice-shaped package: a Preset Voice Catalog, no Voice Profile
+// contract at all. Mirrors tests/qwen3_tts_voice_required_test.cpp's own
+// customvoice_hparams() at the level this file's dispatch reads.
+HParams customvoice_hparams() {
+    HParams hparams;
+    hparams.model_variant = "qwen3-tts-12hz-1-7b-customvoice";
+    hparams.voice_mode    = synth::qwen3tts::VoiceMode::PresetCatalog;
+    return hparams;
+}
+
+// Wraps `hparams` in a synth_model whose family is Qwen3Tts and whose
+// qwen3_tts pointer is a REAL (if otherwise empty) Model -- built through
+// Model::create_for_testing rather than Model::load/load_cpu, because this
+// family has no synthetic-package test harness a `unit` test may depend on
+// (that test-only factory's own header comment says why). This is what lets
+// the three tests below exercise the PUBLIC SEAM
+// (synth_voice_profile_create_from_description) with a Model whose declared
+// sources they control, rather than a hand-built handle with qwen3_tts left
+// null the way tests/qwen3_tts_voice_required_test.cpp's cross-family guard
+// uses for create_from_reference/load_from_memory -- that trick would only
+// prove the defensive null-check inside create_qwen3_tts_profile_from_description,
+// not the declared-sources gate these tests are actually aimed at.
+synth_model make_model(const HParams & hparams) {
+    synth_model model;
+    model.info.family = synth::ModelFamily::Qwen3Tts;
+    model.qwen3_tts   = Model::create_for_testing(hparams);
+    return model;
+}
+
+synth_voice_description_params_t description_params(const std::string & description) {
+    synth_voice_description_params_t params;
+    synth_voice_description_params_init(&params, sizeof(params));
+    params.description      = description.data();
+    params.description_size = description.size();
+    return params;
 }
 
 }  // namespace
@@ -81,10 +137,87 @@ int test_an_over_long_instruct_is_refused_at_the_boundary() {
     return 0;
 }
 
+// =============================================================================
+// Task 2: synth_voice_profile_create_from_description's Qwen3-TTS arm
+// (src/voice-profile.cpp). The three tests below use the real public entry
+// point, through make_model()'s Model::create_for_testing-backed fixture --
+// see that helper's own comment for why a hand-built handle with qwen3_tts
+// left null is not enough here, unlike the reference/load-from-memory guard
+// tests/qwen3_tts_voice_required_test.cpp already carries.
+// =============================================================================
+
+// The public seam. A Model whose package declares description-text gets a
+// Profile; the other two variants get the unsupported-source refusal, which is
+// the same answer they gave before this arm existed and must keep giving.
+int test_create_from_description_accepts_a_voicedesign_model() {
+    synth_model                            model       = make_model(voice_design_hparams());
+    const std::string                      description = "A warm, low voice, unhurried, with a slight rasp.";
+    const synth_voice_description_params_t params      = description_params(description);
+
+    synth_voice_profile_t * profile = nullptr;
+    SYNTH_TEST_CHECK(synth_voice_profile_create_from_description(&model, &params, &profile) == SYNTH_OK);
+    SYNTH_TEST_CHECK(profile != nullptr);
+    SYNTH_TEST_CHECK(profile->family_tag == synth::ProfileFamilyTag::Qwen3TtsDesign);
+    // model is filled too, not just family_tag/payload -- create_from_reference's
+    // own create_qwen3_tts_profile_from_reference sets it (voice-profile.cpp:701)
+    // and this arm must not skip it, a half-filled handle being the trap this
+    // task's own brief warned about.
+    SYNTH_TEST_CHECK(profile->model == &model);
+    synth_voice_profile_free(profile);
+    // synth_voice_profile_free is safe on null too -- proves the free path
+    // itself does not depend on this handle's particular shape, so a caller
+    // freeing twice by mistake (or freeing an already-null profile from a
+    // failed call) cannot crash.
+    synth_voice_profile_free(nullptr);
+    return 0;
+}
+
+int test_create_from_description_refuses_the_clone_variants() {
+    const std::string                      description = "irrelevant -- refused before this is ever read";
+    const synth_voice_description_params_t params      = description_params(description);
+
+    for (const HParams & hparams : { base_hparams(), customvoice_hparams() }) {
+        synth_model             model   = make_model(hparams);
+        // A non-null sentinel rather than a pre-nulled pointer: the assertion
+        // below must prove the dispatch itself wrote null, not merely that it
+        // left an already-null pointer alone. Mirrors
+        // tests/qwen3_tts_voice_required_test.cpp's own
+        // test_customvoice_model_refuses_public_profile_calls.
+        synth_voice_profile_t * profile = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+        SYNTH_TEST_CHECK(synth_voice_profile_create_from_description(&model, &params, &profile) ==
+                         SYNTH_ERR_UNSUPPORTED_VOICE);
+        SYNTH_TEST_CHECK(profile == nullptr);
+    }
+    return 0;
+}
+
+// Invalid UTF-8 through the public entry point returns SYNTH_ERR_INVALID_ARG
+// rather than reaching the payload -- this pins that Task 1's validation is
+// actually wired into the dispatch and not bypassed. Uses a VoiceDesign Model:
+// a Base or CustomVoice Model would refuse this same description with
+// SYNTH_ERR_UNSUPPORTED_VOICE regardless of its validity, which would prove
+// nothing about the UTF-8 check specifically.
+int test_create_from_description_refuses_a_malformed_description() {
+    synth_model                            model  = make_model(voice_design_hparams());
+    // A lone continuation byte -- the same malformed sequence
+    // test_invalid_utf8_is_refused above pins at create_design_profile's own
+    // level; here it is pinned again one layer up, through the dispatch.
+    const std::string                      bad    = "\x80";
+    const synth_voice_description_params_t params = description_params(bad);
+
+    synth_voice_profile_t * profile = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+    SYNTH_TEST_CHECK(synth_voice_profile_create_from_description(&model, &params, &profile) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(profile == nullptr);
+    return 0;
+}
+
 int main() {
     SYNTH_TEST_CHECK(test_design_profile_holds_the_string_verbatim() == 0);
     SYNTH_TEST_CHECK(test_an_empty_instruct_is_accepted() == 0);
     SYNTH_TEST_CHECK(test_invalid_utf8_is_refused() == 0);
     SYNTH_TEST_CHECK(test_an_over_long_instruct_is_refused_at_the_boundary() == 0);
+    SYNTH_TEST_CHECK(test_create_from_description_accepts_a_voicedesign_model() == 0);
+    SYNTH_TEST_CHECK(test_create_from_description_refuses_the_clone_variants() == 0);
+    SYNTH_TEST_CHECK(test_create_from_description_refuses_a_malformed_description() == 0);
     return 0;
 }

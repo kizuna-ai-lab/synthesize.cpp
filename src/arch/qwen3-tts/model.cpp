@@ -693,6 +693,16 @@ synth_status_t Model::load(const std::string &      path,
     }
 }
 
+// See this method's own declaration (qwen3-tts.h) for why it exists. Every
+// field `Impl` declares besides `hparams` already default-initializes to
+// null/empty, so this is the whole of it: no gguf, no backend plan, no
+// weights, no frontend -- only hparams() is safe to call on the result.
+std::unique_ptr<Model> Model::create_for_testing(const HParams & hparams) {
+    auto implementation     = std::make_unique<Impl>();
+    implementation->hparams = hparams;
+    return std::unique_ptr<Model>(new Model(std::move(implementation)));
+}
+
 namespace {
 
 // The talker's cache spans the utterance; the predictor's covers one frame and

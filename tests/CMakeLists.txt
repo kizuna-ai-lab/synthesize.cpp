@@ -523,6 +523,17 @@ target_include_directories(synthesize-qwen3-tts-replay-real PRIVATE ${CMAKE_SOUR
 target_link_libraries(synthesize-qwen3-tts-replay-real PRIVATE synthesize ggml)
 synth_register_integration_target(synthesize-qwen3-tts-replay-real)
 
+# Stage 3 Plan 1's completion gate: the talker's assembled prefill at an empty
+# instruct, with the speaker slot correctly absent, against the real 1.7B
+# VoiceDesign package. A pure adapter -- same role as the driver above -- so it
+# takes no add_test: the p95-relative distance it prints is recorded by hand
+# into tests/tolerances/qwen3-tts.json rather than enforced here. See the
+# file's own header comment.
+add_executable(synthesize-qwen3-tts-voicedesign-prefill-real qwen3_tts_voicedesign_prefill_real.cpp)
+target_include_directories(synthesize-qwen3-tts-voicedesign-prefill-real PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(synthesize-qwen3-tts-voicedesign-prefill-real PRIVATE synthesize ggml)
+synth_register_integration_target(synthesize-qwen3-tts-voicedesign-prefill-real)
+
 # A tiny driver, not a test: runs compute_log_mel over a real WAV file so
 # scripts/validate-qwen3-tts-replay.py --compare-mel can diff it against Task
 # 1's oracle dump. No GGUF and no Model -- host DSP alone -- so unlike the

@@ -249,6 +249,31 @@ def variant_profile(config: dict[str, Any]) -> VariantProfile:
     raise ConverterError(f"unsupported tts_model_type {model_type!r}")
 
 
+def profile_source_names(profile: VariantProfile) -> list[str]:
+    """Which Voice Profile sources this variant implements.
+
+    Named rather than derived at the read side, because after Stage 3 the Voice
+    Mode no longer determines this: `profile-sources` covers both Base, which
+    clones from a recording, and VoiceDesign, which cannot clone at all. The
+    runtime refuses a package whose declared sources do not match the blocks it
+    carries, so this is a claim the package has to earn.
+    """
+    if profile.carries_speaker_encoder:
+        return ["reference-audio"]
+    if profile.model_type == "voice_design":
+        return ["description-text"]
+    return []
+
+
+def profile_schema_name(profile: VariantProfile) -> str | None:
+    """The Profile Schema this variant serializes under, or None if it prepares nothing."""
+    if profile.carries_speaker_encoder:
+        return "qwen3-tts-voice-clone"
+    if profile.model_type == "voice_design":
+        return "qwen3-tts-voice-design"
+    return None
+
+
 # modeling_qwen3_tts.py:1941 -- the speaker encoder consumes a 128-bin mel, not
 # a waveform. These five numbers are the front end's whole contract and they are
 # carried in the package rather than written into the C++ port.
@@ -738,9 +763,20 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
         writer.add_array("synthesize.qwen3-tts.speakers.token_ids", speaker_token_ids)
         writer.add_array("synthesize.qwen3-tts.speakers.dialect_override", speaker_dialects)
 
-    if profile.carries_speaker_encoder:
-        writer.add_string("synthesize.profile.schema", "qwen3-tts-voice-clone")
+    sources = profile_source_names(profile)
+    schema = profile_schema_name(profile)
+    if sources:
+        writer.add_array("synthesize.voice.profile_sources", sources)
+        writer.add_string("synthesize.profile.schema", schema)
         writer.add_uint32("synthesize.profile.schema_version", 1)
+        writer.add_string(
+            "synthesize.profile.compatibility_id",
+            compatibility_id(schema, 1, (digests["talker"], digests["codec"], digests["config"])),
+        )
+    # The reference limits and the encoder's own front-end contract describe
+    # REFERENCE AUDIO. A package that cannot take a recording has nothing to
+    # say here, and writing zeros would be a claim rather than a silence.
+    if profile.carries_speaker_encoder:
         reference = package["profile"]["reference"]
         for key in ("target_sample_rate", "target_channels"):
             writer.add_uint32(f"synthesize.reference.{key}", int(reference[key]))
@@ -752,13 +788,6 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
                 writer.add_float32(f"synthesize.qwen3-tts.speaker_encoder.{key}", value)
             else:
                 writer.add_uint32(f"synthesize.qwen3-tts.speaker_encoder.{key}", int(value))
-        writer.add_string(
-            "synthesize.profile.compatibility_id",
-            compatibility_id(
-                "qwen3-tts-voice-clone", 1,
-                (digests["talker"], digests["codec"], digests["config"]),
-            ),
-        )
 
     languages = sorted(talker["codec_language_id"], key=lambda n: talker["codec_language_id"][n])
     writer.add_array("synthesize.qwen3-tts.languages.names", languages)

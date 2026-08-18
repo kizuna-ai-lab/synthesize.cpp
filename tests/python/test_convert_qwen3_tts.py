@@ -727,5 +727,35 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
             self.assertNotIn(key, metadata, key)
 
 
+class ProfileSourceDeclarationTests(unittest.TestCase):
+    """A package declares which Profile sources it implements, positively.
+
+    Before Stage 3 the runtime inferred this from the Voice Mode, which worked
+    only while `profile-sources` meant exactly one variant. It now means two,
+    whose sources differ, so the package has to say.
+    """
+
+    def test_base_declares_reference_audio(self) -> None:
+        profile = convert.variant_profile({
+            "tts_model_type": "base",
+            "tts_model_size": "0b6",
+            "speaker_encoder_config": {"enc_dim": 1024, "sample_rate": 24000},
+        })
+        self.assertEqual(convert.profile_source_names(profile), ["reference-audio"])
+        self.assertEqual(convert.profile_schema_name(profile), "qwen3-tts-voice-clone")
+
+    def test_voice_design_declares_description_text(self) -> None:
+        profile = convert.variant_profile({"tts_model_type": "voice_design", "tts_model_size": "1b7"})
+        self.assertEqual(convert.profile_source_names(profile), ["description-text"])
+        self.assertEqual(convert.profile_schema_name(profile), "qwen3-tts-voice-design")
+
+    def test_custom_voice_declares_none(self) -> None:
+        # A preset-catalog package prepares nothing, so it carries no contract
+        # at all -- not an empty one, which is a different claim.
+        profile = convert.variant_profile({"tts_model_type": "custom_voice", "tts_model_size": "0b6"})
+        self.assertEqual(convert.profile_source_names(profile), [])
+        self.assertIsNone(convert.profile_schema_name(profile))
+
+
 if __name__ == "__main__":
     unittest.main()

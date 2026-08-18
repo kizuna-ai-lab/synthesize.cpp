@@ -481,6 +481,36 @@ int test_mixed_profile_sources_are_refused() {
     return 0;
 }
 
+// The final whole-branch review of Stage 3 Plan 2, 2026-08-19, on the very
+// check the test above pins: it was written as a comparison of the ORed bitmask
+// against each single flag, which counts DISTINCT sources, while its own message
+// said "declares more than one profile source". A repeated name ORs back to one
+// bit, so ["description-text", "description-text"] loaded clean -- the message
+// and the code disagreed, and the code was the wrong one. Both duplications are
+// tested, one per source name, because the two names take different arms of the
+// mapping loop and a check written on either arm's bit alone would still let one
+// of them through. Each fixture is the one that ALREADY matches that name's own
+// downstream shape (voice_design_metadata for description-text, base_metadata
+// for reference-audio), so nothing but the duplication can be what fails: the
+// single-name spelling of each is asserted to LOAD elsewhere in this file, by
+// test_profile_sources_are_declared_not_inferred and by base_metadata()'s own
+// use throughout.
+int test_a_duplicated_profile_source_is_refused() {
+    {
+        GgufContext c = voice_design_metadata();
+        set_string_array(c.get(), "synthesize.voice.profile_sources", { "description-text", "description-text" });
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    }
+    {
+        GgufContext c = base_metadata();
+        set_string_array(c.get(), "synthesize.voice.profile_sources", { "reference-audio", "reference-audio" });
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    }
+    return 0;
+}
+
 // The other half of the same review finding: a Description Text package that
 // still carries synthesize.reference.* keys -- e.g. a converter regression
 // that fails to omit them for a variant with no speaker encoder -- must be
@@ -939,6 +969,7 @@ int main() {
     SYNTH_TEST_CHECK(test_truncated_profile_sources_package_is_refused() == 0);
     SYNTH_TEST_CHECK(test_profile_sources_are_declared_not_inferred() == 0);
     SYNTH_TEST_CHECK(test_mixed_profile_sources_are_refused() == 0);
+    SYNTH_TEST_CHECK(test_a_duplicated_profile_source_is_refused() == 0);
     SYNTH_TEST_CHECK(test_description_text_package_with_surplus_reference_keys_is_refused() == 0);
     return 0;
 }

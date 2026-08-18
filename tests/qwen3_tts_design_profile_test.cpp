@@ -221,6 +221,43 @@ int test_create_from_description_refuses_the_clone_variants() {
     return 0;
 }
 
+// Design section 6.4's FIRST refusal, pinned directly: a VoiceDesign package
+// refuses create_from_reference, because it has no speaker encoder.
+//
+// It was already true, but only by COMPOSITION of two other facts held in two
+// other files -- that create_from_reference is gated on the published
+// SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO bit (tests/qwen3_tts_voice_required_test.
+// cpp's test_customvoice_model_refuses_public_profile_calls, which proves the
+// gate with an all-zero capability snapshot), and that a VoiceDesign package
+// publishes DESCRIPTION_TEXT without REFERENCE_AUDIO (the same file's
+// test_capability_follows_the_declared_sources). Neither one names this
+// refusal, and a regression that made the reference gate accept any nonzero
+// source_flags would leave both of them green while opening exactly the hole
+// 6.4's first bullet is about. The final whole-branch review of Stage 3 Plan 2
+// asked for it here, where voice_design_model() -- the same fixture the
+// create_from_description tests above use, so the two directions are asserted
+// against ONE description of what a VoiceDesign Model looks like -- already
+// exists.
+//
+// Zero references, deliberately: the package-support gate in src/voice-profile.
+// cpp runs before reference_count is ever consulted, so an empty reference
+// array reaches the same refusal a real recording would, and the assertion
+// cannot be satisfied by an unrelated "at least one reference" complaint.
+// scripts/validate-qwen3-tts-public.py's own `probe:reference` check against a
+// real loaded package is built on the identical observation.
+int test_create_from_reference_refuses_a_voicedesign_model() {
+    synth_model                    model = voice_design_model();
+    synth_voice_reference_params_t params;
+    synth_voice_reference_params_init(&params, sizeof(params));
+
+    // A non-null sentinel, for the reason the clone-variant test above states.
+    synth_voice_profile_t * profile = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+    SYNTH_TEST_CHECK(synth_voice_profile_create_from_reference(&model, &params, &profile) ==
+                     SYNTH_ERR_UNSUPPORTED_VOICE);
+    SYNTH_TEST_CHECK(profile == nullptr);
+    return 0;
+}
+
 // Invalid UTF-8 through the public entry point returns SYNTH_ERR_INVALID_ARG
 // rather than reaching the payload -- this pins that Task 1's validation is
 // actually wired into the dispatch and not bypassed. Uses a VoiceDesign Model:
@@ -978,6 +1015,7 @@ int main() {
     SYNTH_TEST_CHECK(test_an_over_long_instruct_is_refused_at_the_boundary() == 0);
     SYNTH_TEST_CHECK(test_create_from_description_accepts_a_voicedesign_model() == 0);
     SYNTH_TEST_CHECK(test_create_from_description_refuses_the_clone_variants() == 0);
+    SYNTH_TEST_CHECK(test_create_from_reference_refuses_a_voicedesign_model() == 0);
     SYNTH_TEST_CHECK(test_create_from_description_refuses_a_malformed_description() == 0);
     SYNTH_TEST_CHECK(test_create_from_description_accepts_both_empty_description_spellings() == 0);
     SYNTH_TEST_CHECK(test_create_from_description_refuses_a_random_seed() == 0);

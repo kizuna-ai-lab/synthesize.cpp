@@ -1,6 +1,6 @@
 # Voice Conditioning Survey
 
-Status: Research snapshot on 2026-07-21; the public source set, all four source-specific C representations, Reference Audio normalization, the Serialized Profile format and compatibility rules, and the declaration rule for invertible derived conditioning stated below are confirmed; amended 2026-08-14, and again on 2026-08-15, for the qwen3-tts ICL Profile's recoverable transcript.
+Status: Research snapshot on 2026-07-21; the public source set, all four source-specific C representations, Reference Audio normalization, the Serialized Profile format and compatibility rules, and the declaration rule for invertible derived conditioning stated below are confirmed; amended 2026-08-14, and again on 2026-08-15, for the qwen3-tts ICL Profile's recoverable transcript; amended again on 2026-08-19, so that a non-empty Description Text prompt is the default requirement rather than an absolute one.
 
 ## Purpose
 
@@ -54,7 +54,7 @@ Validated builds vendor and statically compile pinned libsamplerate 0.2.2 source
 
 The normalizer uses the stateful full API, marks finite input with `end_of_input`, and drains the conversion while honoring the reported input-used and output-generated counts. Reference Frame Equivalents are computed as `ceil(input_frames * target_rate / input_rate)` for checked limit preflight and do not force the resampler's output length. The normalizer neither pads nor crops output merely to reach that equivalent. Pinning source, configuration, and processing order provides one validated numerical path, but cross-architecture behavior is judged by numerical tolerance rather than a bit-identity promise.
 
-Description Text is one borrowed, non-empty, length-delimited UTF-8 prompt with an optional explicit description-language tag and a concrete preparation seed. Its natural-language schema stays Model Variant-defined. The description language is separate from synthesis output language, no automatic detection occurs, and the returned profile no longer depends on the prompt bytes.
+Description Text is one borrowed, length-delimited UTF-8 prompt with an optional explicit description-language tag and a concrete preparation seed. A non-empty prompt is the DEFAULT requirement, not an absolute one: a Model Variant may accept an empty prompt as a distinct legal input, and Qwen3-TTS VoiceDesign does, where it requests an unconditioned Voice. A variant that does not accept one returns `SYNTH_ERR_INVALID_ARG`. v1 has no machine-readable declaration of which a variant is -- no capability field and no Model Package key -- so a caller finds out by attempting the call; see `docs/c-interface.md`'s v1 Description Text Profile Preparation section for the full rule. Its natural-language schema stays Model Variant-defined. The description language is separate from synthesis output language, no automatic detection occurs, and the returned profile no longer depends on the prompt bytes.
 
 Random Seed has no borrowed identity payload: one concrete `uint64_t` selects from the Loaded Model's own Voice distribution and produces a model-bound profile. The seed has no cross-model meaning and is separate from later synthesis randomness. Profile preparation does not accept `SYNTH_SEED_RANDOM`; Adapters generate and retain a concrete seed when nondeterministic selection is desired.
 

@@ -1075,7 +1075,7 @@
             "replay": {
               "phase": "oracle_replay",
               "description": "The talker's assembled prefill at an empty instruct, with the speaker slot correctly ABSENT -- Plan 1's completion gate (docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md section 5.3, section 8's plan table). No instruct block exists in the port yet (Plan 2's job) and none is needed: upstream's own empty-instruct path (design decision D3) builds no instruct block either, so the comparison is exact for what it covers. The autoregressive codes and the decoded waveform are dumped by the oracle script for the record but are not yet compared here -- this stage measures the deterministic prefill only.",
-              "cases": 1,
+              "cases": 2,
               "probes": {
                 "prefill": {
                   "max_relative": 0.01,
@@ -1135,7 +1135,8 @@
                   }
                 }
               },
-              "backend": "CPU"
+              "backend": "CPU",
+              "note": "Corrected 2026-08-19 by Stage 3 Plan 2's final whole-branch review: this read 1 while probes.prefill.cases read 2 with two case_ids, from the round that added the non-empty-instruct case and updated only the probe. Nothing in the tree reads a stage-level `cases` -- every consumer descends into `probes` -- so no gate could have caught the disagreement, which is why the same staleness is already recorded against the `base` variant."
             },
             "public": {
               "backend": "CPU",

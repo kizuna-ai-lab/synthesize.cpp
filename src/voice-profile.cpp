@@ -738,8 +738,14 @@ synth_status_t create_omnivoice_profile_from_description(const synth_model_t *  
         return SYNTH_ERR_INVALID_ARG;
     }
 
-    // Step 1: description required, non-empty (docs/c-interface.md:566:
-    // "description is required, non-empty, length-delimited UTF-8").
+    // Step 1: this variant requires a non-empty description. That is the
+    // DEFAULT the contract states rather than a rule every variant must
+    // follow -- docs/c-interface.md's v1 Description Text section was
+    // amended on 2026-08-19 to say a Model Variant MAY accept an empty
+    // description as a distinct legal input (Qwen3-TTS VoiceDesign does,
+    // below). OmniVoice takes the default: upstream conditions on a closed
+    // attribute vocabulary and has no unconditioned path, so an empty
+    // instruct has nothing to mean here.
     if (description == nullptr || description_size == 0) {
         emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.description_required",
                         "a Description Text Voice Profile requires a non-empty description");
@@ -958,8 +964,14 @@ synth_status_t create_qwen3_tts_profile_from_description(const synth_model_t *  
     // one.
     // `create_design_profile` (profile.cpp) never reads `hparams` -- its own
     // `(void) hparams;` and header comment say the payload does not depend on
-    // the package, because the CALLER (here) already checked the variant via
-    // `declares_description_text` above. A default-constructed HParams is
+    // the package, because the variant was already checked before this
+    // function was reached. NOT "here": Task 5 moved that check out to
+    // synth_voice_profile_create_from_description, the outer dispatcher,
+    // where it reads the published SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT bit
+    // under the name `qwen3_tts_supports_description` -- see this function's
+    // own header comment and the dispatcher's. This comment still named the
+    // pre-Task-5 in-function check `declares_description_text` until
+    // 2026-08-19. A default-constructed HParams is
     // passed rather than `model->qwen3_tts->hparams()` so this function never
     // dereferences `model->qwen3_tts` at all -- see this function's own
     // header comment for why that matters now.

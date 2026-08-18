@@ -83,10 +83,30 @@ slot when it must be absent) is a prefill-shape defect, not a seam relation --
 tests/qwen3_tts_voicedesign_prefill_real.cpp's own fault injection is what
 catches it, not this file.
 
-Run from the repository root:
+Run from the repository root. The default --model is the CustomVoice package,
+which --description is refused by, so the Description Text run needs its own
+--model as well as the two --description values:
 
     uv run --project scripts/envs/qwen3-tts --locked python \
       scripts/validate-qwen3-tts-public.py --report reports/validate/qwen3-tts/public.json
+
+Description Text, the invocation the tests/tolerances/qwen3-tts.json
+voicedesign/BF16/public cell records (11 checks, CPU). --description is passed
+TWICE because relation 1 compares two different descriptions against each
+other; one --description is a usage error, not a shorter run:
+
+    uv run --project scripts/envs/qwen3-tts --locked python \
+      scripts/validate-qwen3-tts-public.py \
+      --model models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-BF16.gguf \
+      --description "A cheerful, bright female voice speaking with fast pacing and high energy." \
+      --description "A deep, calm male voice speaking slowly and quietly." \
+      --report reports/validate/qwen3-tts/public-voicedesign.json
+
+Neither invocation is registered with CTest -- like --reference, this driver
+needs a real multi-GB package that is deliberately not committed, so it is run
+by hand and its result recorded in the tolerances file. Recorded here 2026-08-19
+because the command existed in no doc, report or docstring: the cell above
+proves the run happened but does not say how to repeat it.
 """
 
 from __future__ import annotations

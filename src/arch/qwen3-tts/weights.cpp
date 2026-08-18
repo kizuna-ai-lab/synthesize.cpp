@@ -762,11 +762,23 @@ bool read_profile_sources(const GgufMetadata & meta, HParams & hparams) {
     // 2026-08-19; closed here rather than in the cross-check below because
     // this is where the combination is first knowable, before either source's
     // own downstream fields are even considered.
-    if (hparams.profile_sources != SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO &&
-        hparams.profile_sources != SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT) {
+    //
+    // COUNTED ON THE ENTRIES, NOT ON THE BITS, and the difference is a real
+    // hole rather than a stylistic one. The first form of this check compared
+    // the ORed `hparams.profile_sources` against each single flag, which asks
+    // "how many DISTINCT sources" -- so ["description-text", "description-text"]
+    // ORed back to one bit, passed, and loaded, while the message printed on
+    // the neighbouring path said "declares more than one profile source". A
+    // duplicate is the same class of malformed declaration as a mixture: the
+    // converter emits a one-element array, and anything else is a package
+    // disagreeing with the shape this runtime validates against. `names.size()`
+    // answers the question the message actually asks. Found by the final
+    // whole-branch review of Stage 3 Plan 2, 2026-08-19.
+    if (names.size() != 1) {
         std::fprintf(stderr,
-                     "qwen3-tts: profile-sources mode declares more than one profile source, but this "
-                     "runtime supports exactly one per package\n");
+                     "qwen3-tts: profile-sources mode declares %zu profile sources, but this runtime "
+                     "supports exactly one per package\n",
+                     names.size());
         return false;
     }
     return true;

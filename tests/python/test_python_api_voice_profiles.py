@@ -184,14 +184,63 @@ class PythonApiVoiceProfileTests(unittest.TestCase):
             model.create_voice_profile_from_reference([])
         with self.assertRaisesRegex(TypeError, "VoiceReference"):
             model.create_voice_profile_from_reference([object()])
-        with self.assertRaisesRegex(ValueError, "description"):
-            model.create_voice_profile_from_description("")
+        with self.assertRaisesRegex(TypeError, "description must be str"):
+            model.create_voice_profile_from_description(b"warm narrator")
         with self.assertRaisesRegex(ValueError, "concrete"):
             model.create_random_voice_profile(seed=2**64 - 1)
         with self.assertRaisesRegex(ValueError, "channel_count"):
             voices.VoiceReference(
                 array.array("f", [0.0]), sample_rate=16000, channel_count=3
             )
+        model.close()
+
+    # Until 2026-08-19 test_source_validation above asserted a ValueError on an
+    # empty description, pinning a hardcoded check in models.py. That check was
+    # wrong: whether an empty description is legal is a per-Model-Variant
+    # semantic rule the Adapter cannot know (docs/c-interface.md's v1
+    # Description Text section -- non-empty is the DEFAULT, and Qwen3-TTS
+    # VoiceDesign accepts an empty one as its unconditioned path), so the
+    # Adapter made the C layer's own answer unreachable in BOTH directions:
+    # a variant that accepts empty could not be reached, and a variant that
+    # refuses it (OmniVoice) could not report its own refusal.
+    #
+    # THE ASSERTION IS RE-SITED, NOT DELETED, and it had to be: this file
+    # drives a FakeNative stub, so nothing here reaches the C layer and no
+    # test in this file can assert what a real variant does with "". What is
+    # testable here is the Adapter's two halves of that contract, and both are
+    # pinned below -- the empty string reaches the native entry point verbatim
+    # (so the C layer gets to decide at all), and a native refusal is surfaced
+    # rather than swallowed. The C layer's own decision is pinned where it can
+    # be: tests/qwen3_tts_design_profile_test.cpp's
+    # test_create_from_description_accepts_both_empty_description_spellings
+    # for the accepting variant, and the OmniVoice arm's own refusal tests for
+    # the refusing one.
+    def test_empty_description_reaches_native_and_a_native_refusal_is_reported(self):
+        module, native = self.load_models_module()
+        model = module.Model("voice.gguf")
+
+        # Half one: pass-through. The Adapter does not gate on emptiness, so
+        # the C layer receives "" verbatim and decides for its own variant.
+        profile = model.create_voice_profile_from_description("")
+        self.assertEqual(native.calls[0][0:5], ("description", ("model", 1), "", None, 0))
+        profile.close()
+
+        # Half two: error mapping. A variant whose C arm refuses an empty
+        # description returns SYNTH_ERR_INVALID_ARG, which
+        # bindings/python/src/native_loader.c's synth_set_status_error turns
+        # into a RuntimeError -- the exception type asserted here. The Adapter
+        # must re-raise it as SynthesizeError with its own context, not let the
+        # bare RuntimeError escape and not convert it to ValueError.
+        def refuse(*arguments):
+            raise RuntimeError(
+                "synth_voice_profile_create_from_description failed: invalid argument (-2)"
+            )
+
+        native.voice_profile_create_from_description = refuse
+        with self.assertRaises(module.SynthesizeError) as raised:
+            model.create_voice_profile_from_description("")
+        self.assertIn("could not prepare Voice Profile from Description Text", str(raised.exception))
+        self.assertIn("invalid argument", str(raised.exception))
         model.close()
 
     def test_synthesis_selects_one_model_bound_profile(self):

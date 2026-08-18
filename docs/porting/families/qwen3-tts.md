@@ -1,6 +1,6 @@
 # Qwen3-TTS Family Selection and Port Plan
 
-Status: Confirmed 2026-08-17. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
+Status: Confirmed 2026-08-18. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
 complete and published. Intake, the oracle and conversion are done; stages 4
 through 7 have their measured work done: oracle replay and the public seam
 pass, and the codec runs on CUDA while the autoregressive half stays on the CPU
@@ -3321,8 +3321,10 @@ RTF 0.85 for CustomVoice's Q8_MIXED on its own workload -- a different variant
 and a different case, but the closeness is a consistency signal rather than a
 coincidence, since both quantize the same autoregressive half.
 
-**CUDA buys about 8 % and that is the expected amount.** 11.60 s → 10.85 s on
-the same tree, RTF 3.15 → 2.95. Only the Stage 1 codec-decoder twin moves; the
+**CUDA buys about 6 % and that is the expected amount.** 11.60 s → 10.85 s on
+the same tree, RTF 3.15 → 2.95 — 6.5 % and 6.3 % respectively, which is what
+those two pairs divide out to. This paragraph read "about 8 %" until 2026-08-18,
+against its own numbers on the same line. Only the Stage 1 codec-decoder twin moves; the
 autoregressive half is held on the CPU by the discrete-outputs rule and
 dominates, and the two new graphs stay on the CPU by Task 12's measured
 decision. `docs/backends.md` requires performance measurement for support but no

@@ -87,14 +87,14 @@ validation:
   # cost of about 1.69 s, so the transfer is 2.2x the compute it would
   # accelerate and no speedup makes it pay. They also run once per Voice Profile
   # rather than once per synthesis, so the amortization that justified the
-  # decoder's twin runs the other way here. CUDA buys about 8% end to end.
+  # decoder's twin runs the other way here. CUDA buys about 6% end to end.
   cuda_placement: partial
   cuda_placement_note: |
     The codec decoder runs on the device; everything else runs on the CPU.
 
     The autoregressive half is held there by the discrete-outputs rule — a
     sampled token index cannot absorb a tolerance — and it dominates the wall
-    clock, so CUDA buys about 8% end to end (RTF 3.15 to 2.95) rather than the
+    clock, so CUDA buys about 6% end to end (RTF 3.15 to 2.95) rather than the
     35x the decoder stage itself sees.
 
     The two graphs this variant adds are on the CPU by measurement, not by

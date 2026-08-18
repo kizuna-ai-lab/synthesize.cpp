@@ -907,6 +907,19 @@ void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & i
     // `hparams.profile_sources` named description-text for a VoiceDesign
     // package throughout, and Task 3's loader and its refusals were untouched
     // by any of this -- only the RUNTIME's published snapshot changed, twice.
+    //
+    // This is the CANONICAL account of the withholding and its close (Round 1
+    // review, M3): the same narrative, at varying length, is also told in
+    // this function's own declaration (weights.h), src/voice-profile.cpp's
+    // create_qwen3_tts_profile_from_description and its outer dispatcher
+    // synth_voice_profile_create_from_description, tests/qwen3_tts_voice_required_test.cpp's
+    // test_capability_follows_the_declared_sources, README.md's VoiceDesign
+    // row, and as dated errata in docs/porting/families/qwen3-tts.md and the
+    // two Stage 3 Plan 1 / design documents under docs/superpowers/. Not
+    // consolidated -- each copy is scoped to what its own file needs to say
+    // and several are historical records that must stay put -- but noted
+    // here once so an editor updating this account knows how many places
+    // would need the same update to stay consistent.
     info.source_flags = hparams.profile_sources | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE;
 
     if ((hparams.profile_sources & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) == 0) {

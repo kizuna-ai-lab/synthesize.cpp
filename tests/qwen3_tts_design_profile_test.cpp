@@ -312,6 +312,31 @@ int test_create_from_description_refuses_a_random_seed() {
     return 0;
 }
 
+// Round-1 review finding (I3): description_language is
+// SYNTH_REQUIREMENT_UNSUPPORTED for this family (this file's own
+// voice_design_model() fixture doesn't need to say so -- the dispatch itself
+// never validates language_tag against any declared vocabulary, unlike
+// OmniVoice's own arm -- but tests/qwen3_tts_voice_required_test.cpp's
+// test_capability_follows_the_declared_sources pins the published capability
+// value this refusal is required by, docs/c-interface.md:478). A
+// WELL-FORMED tag must still be refused, not merely a malformed one --
+// test_create_from_description_refuses_a_malformed_description above only
+// proves the shape check; this proves the support check runs after it.
+int test_create_from_description_refuses_a_language_tag() {
+    synth_model                      model       = voice_design_model();
+    const std::string                description = "a description, otherwise unremarkable";
+    const std::string                language    = "ja";
+    synth_voice_description_params_t params      = description_params(description);
+    params.language_tag                          = language.data();
+    params.language_tag_size                     = language.size();
+
+    synth_voice_profile_t * profile = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+    SYNTH_TEST_CHECK(synth_voice_profile_create_from_description(&model, &params, &profile) ==
+                     SYNTH_ERR_UNSUPPORTED_INPUT);
+    SYNTH_TEST_CHECK(profile == nullptr);
+    return 0;
+}
+
 // =============================================================================
 // Task 5: Republish the capability bit -- the PUBLIC-SEAM serialize/load
 // round trip, closing the asymmetry Task 5's own brief named: before this
@@ -956,6 +981,7 @@ int main() {
     SYNTH_TEST_CHECK(test_create_from_description_refuses_a_malformed_description() == 0);
     SYNTH_TEST_CHECK(test_create_from_description_accepts_both_empty_description_spellings() == 0);
     SYNTH_TEST_CHECK(test_create_from_description_refuses_a_random_seed() == 0);
+    SYNTH_TEST_CHECK(test_create_from_description_refuses_a_language_tag() == 0);
     SYNTH_TEST_CHECK(test_serialize_and_load_round_trip_through_the_public_seam() == 0);
     SYNTH_TEST_CHECK(test_design_profile_round_trips() == 0);
     SYNTH_TEST_CHECK(test_the_two_envelope_kinds_are_not_confusable() == 0);

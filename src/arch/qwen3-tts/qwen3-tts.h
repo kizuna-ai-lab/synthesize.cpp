@@ -23,7 +23,6 @@ namespace synth::qwen3tts {
 struct HParams;
 struct TalkerWeights;
 struct CodePredictorWeights;
-class Model;
 
 struct ModelInfo {
     std::string family = "qwen3-tts";

@@ -1,6 +1,6 @@
 # Qwen3-TTS Family Selection and Port Plan
 
-Status: Confirmed 2026-08-18. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
+Status: Confirmed 2026-08-19. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
 complete and published. Intake, the oracle and conversion are done; stages 4
 through 7 have their measured work done: oracle replay and the public seam
 pass, and the codec runs on CUDA while the autoregressive half stays on the CPU
@@ -81,6 +81,10 @@ the VoiceDesign package now reports **zero Preset Voices and
 `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`
 with Reference Audio absent** -- exactly what Task 6 originally measured and
 the design originally predicted, before the interval this section records.
+See "Stage 3: VoiceDesign Package, Task 6", "Load result" below for Task 5's
+own re-measurement against the real package (`0xa`, `qwen3-tts-voice-design`
+version 1) -- the all-zero table the first correction above points to is
+itself superseded there, in turn.
 
 **Packages converted before `synthesize.voice.profile_sources` existed do not
 load under this runtime any more.** Stage 3's loader change
@@ -4296,6 +4300,25 @@ The PACKAGE's own declared `synthesize.voice.profile_sources` is unaffected by
 this correction and still names `description-text`; Task 3's loader and its
 cross-checks are untouched.
 
+**Second correction, 2026-08-19, Stage 3 Plan 2's Task 5 -- the table
+immediately above is itself superseded.** Round 1 of that task's own review
+re-ran the same probe against the same real package after Task 5 landed and
+measured the table this section originally reported, unchanged from Task 6:
+
+| Field | VoiceDesign (Task 5 re-measurement) |
+| --- | --- |
+| `preset_voice_count` | 0 |
+| `profile_source_flags` | `0xa` = `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT \| SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` |
+| `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO` | absent |
+| six `reference_*` limits | all 0 |
+| `profile_schema` | `qwen3-tts-voice-design`, version 1 |
+
+Both reasons the first correction gave are closed: Task 2 gave
+`create_from_description` a Qwen3-TTS arm, and Task 3 made a serialized design
+Profile loadable. The all-zero "corrected" table above held only for the
+interval between the final whole-branch review and Task 5's own close, and is
+not rewritten; a reader today wants this table, not that one.
+
 ## Stage 3: VoiceDesign Package, Task 7
 
 Executed 2026-08-18. Plan 1's completion gate -- a prefill built at empty
@@ -4415,6 +4438,13 @@ in full). Not delivered here, and not a gap against Plan 1's own scope:
 `create_from_description`, the `DesignInstruct` payload, the instruct prompt
 block, the public-seam validator, quantization, backends, and the listening
 audit -- Plans 2 and 3.
+
+**This is Plan 1's own gate as it stood at Plan 1's close, and is left as
+history.** Plan 2's Task 5 republished the capability once Task 2 wired
+`create_from_description` and Task 3 made a serialized design Profile
+loadable -- see "Load result" above's own second correction for the
+re-measurement (`0xa`, `DESCRIPTION_TEXT | SERIALIZED_PROFILE`, matching this
+paragraph's original, pre-correction claim).
 
 ## Open Questions for Intake
 

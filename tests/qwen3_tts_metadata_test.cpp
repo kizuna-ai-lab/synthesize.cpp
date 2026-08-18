@@ -458,6 +458,92 @@ int test_profile_sources_are_declared_not_inferred() {
     return 0;
 }
 
+// External review of Stage 3 Plan 2's sibling PR, 2026-08-19: read_profile_sources
+// ORs the declared names' bits together rather than refusing a combination, so
+// a package declaring BOTH "reference-audio" and "description-text" -- with a
+// speaker encoder attached, so the pre-existing `wants_reference ==
+// carries_encoder` cross-check is satisfied -- loaded clean. Built from
+// base_metadata() specifically, not voice_design_metadata(): base_metadata()
+// already carries a full, self-consistent speaker encoder and reference
+// contract (enc_dim 1024 == the talker's own hidden size, schema
+// "qwen3-tts-voice-clone"), so this fixture isolates the exactly-one-source
+// rule -- every OTHER check `read_profile_and_speaker_encoder` performs would
+// pass on it unmodified; only adding "description-text" to its
+// profile_sources should be what makes it fail. No real converter emits this
+// shape (scripts/convert-qwen3-tts.py's profile_source_names always returns
+// exactly one name), but a positively-declaring loader exists to refuse
+// exactly the malformed shapes a converter would never write.
+int test_mixed_profile_sources_are_refused() {
+    GgufContext c = base_metadata();
+    set_string_array(c.get(), "synthesize.voice.profile_sources", { "reference-audio", "description-text" });
+    synth::qwen3tts::HParams hparams;
+    SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    return 0;
+}
+
+// The other half of the same review finding: a Description Text package that
+// still carries synthesize.reference.* keys -- e.g. a converter regression
+// that fails to omit them for a variant with no speaker encoder -- must be
+// refused rather than silently ignored. read_profile_contract's own
+// has_speaker_encoder-gated early return never inspects them, so before this
+// check they passed through unread. Each of the six reference-only keys is
+// tested individually, added one at a time to an otherwise-valid voice_design
+// package, because a converter regression is more likely to leave a SINGLE
+// stray key (a partial revert, a merge conflict) than the whole block -- and
+// the loader must catch that shape too, not only a fully-reconstructed
+// reference contract.
+int test_description_text_package_with_surplus_reference_keys_is_refused() {
+    {
+        GgufContext c = voice_design_metadata();
+        gguf_set_val_u32(c.get(), "synthesize.reference.target_sample_rate", 24000);
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    }
+    {
+        GgufContext c = voice_design_metadata();
+        gguf_set_val_u32(c.get(), "synthesize.reference.target_channels", 1);
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    }
+    {
+        GgufContext c = voice_design_metadata();
+        gguf_set_val_u64(c.get(), "synthesize.reference.min_frames_per_clip", 24000);
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    }
+    {
+        GgufContext c = voice_design_metadata();
+        gguf_set_val_u64(c.get(), "synthesize.reference.max_frames_per_clip", 720000);
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    }
+    {
+        GgufContext c = voice_design_metadata();
+        gguf_set_val_u64(c.get(), "synthesize.reference.max_total_frames", 720000);
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    }
+    {
+        GgufContext c = voice_design_metadata();
+        gguf_set_val_u64(c.get(), "synthesize.reference.max_reference_count", 1);
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    }
+    // The full block together must be refused too, not only each key alone.
+    {
+        GgufContext c = voice_design_metadata();
+        gguf_set_val_u32(c.get(), "synthesize.reference.target_sample_rate", 24000);
+        gguf_set_val_u32(c.get(), "synthesize.reference.target_channels", 1);
+        gguf_set_val_u64(c.get(), "synthesize.reference.min_frames_per_clip", 24000);
+        gguf_set_val_u64(c.get(), "synthesize.reference.max_frames_per_clip", 720000);
+        gguf_set_val_u64(c.get(), "synthesize.reference.max_total_frames", 720000);
+        gguf_set_val_u64(c.get(), "synthesize.reference.max_reference_count", 1);
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    }
+    return 0;
+}
+
 int run_valid_package() {
     GgufContext context = valid_metadata();
     SYNTH_TEST_CHECK(context != nullptr);
@@ -852,5 +938,7 @@ int main() {
     SYNTH_TEST_CHECK(test_profile_sources_names_a_package_default_is_refused() == 0);
     SYNTH_TEST_CHECK(test_truncated_profile_sources_package_is_refused() == 0);
     SYNTH_TEST_CHECK(test_profile_sources_are_declared_not_inferred() == 0);
+    SYNTH_TEST_CHECK(test_mixed_profile_sources_are_refused() == 0);
+    SYNTH_TEST_CHECK(test_description_text_package_with_surplus_reference_keys_is_refused() == 0);
     return 0;
 }

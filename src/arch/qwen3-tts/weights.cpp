@@ -749,6 +749,26 @@ bool read_profile_sources(const GgufMetadata & meta, HParams & hparams) {
             return false;
         }
     }
+    // Every variant this runtime can load implements exactly one Voice Profile
+    // source today: the loop above ORs the declared names' bits together
+    // rather than refusing a combination, so a package declaring BOTH
+    // ["reference-audio", "description-text"] would set both bits, pass the
+    // `wants_reference == carries_encoder` cross-check below cleanly (with a
+    // speaker encoder attached), and load -- a malformed shape no real
+    // converter emits (scripts/convert-qwen3-tts.py's profile_source_names
+    // always returns exactly one name), but exactly the kind of thing a
+    // positively-declaring loader exists to refuse rather than silently
+    // accept. Found by an external review of Stage 3 Plan 2's sibling PR,
+    // 2026-08-19; closed here rather than in the cross-check below because
+    // this is where the combination is first knowable, before either source's
+    // own downstream fields are even considered.
+    if (hparams.profile_sources != SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO &&
+        hparams.profile_sources != SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT) {
+        std::fprintf(stderr,
+                     "qwen3-tts: profile-sources mode declares more than one profile source, but this "
+                     "runtime supports exactly one per package\n");
+        return false;
+    }
     return true;
 }
 
@@ -796,6 +816,29 @@ bool read_profile_and_speaker_encoder(const GgufMetadata & meta, HParams & hpara
     if (wants_reference) {
         hparams.has_speaker_encoder = true;
         return read_speaker_encoder(meta, hparams) && read_profile_contract(meta, hparams);
+    }
+    // A package that does not declare reference-audio (a Description Text
+    // package, the only other case this runtime accepts once the
+    // exactly-one-source refusal above has run) must not carry the
+    // synthesize.reference.* block either. The cross-check above already
+    // refuses a stray speaker encoder
+    // (its `enc_dim` anchor), but read_profile_contract's own
+    // has_speaker_encoder-gated early return never inspects these six keys at
+    // all -- so before this check, a converter regression (or hand-edited
+    // metadata) that left them on a converted VoiceDesign-shaped package would
+    // load silently rather than being refused for declaring reference-audio
+    // limits it does not implement. Found alongside the exactly-one-source
+    // defect above, by the same external review, 2026-08-19.
+    static const char * const kReferenceOnlyKeys[] = {
+        "synthesize.reference.target_sample_rate",  "synthesize.reference.target_channels",
+        "synthesize.reference.min_frames_per_clip", "synthesize.reference.max_frames_per_clip",
+        "synthesize.reference.max_total_frames",    "synthesize.reference.max_reference_count",
+    };
+    for (const char * key : kReferenceOnlyKeys) {
+        if (meta.has(key)) {
+            std::fprintf(stderr, "qwen3-tts: package does not declare reference-audio but carries %s\n", key);
+            return false;
+        }
     }
     return read_profile_contract(meta, hparams);
 }

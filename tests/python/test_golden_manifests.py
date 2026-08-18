@@ -17,6 +17,17 @@ SCHEMA_PATH = REPO_ROOT / "docs/schemas/synthesize-golden-manifest-v1.schema.jso
 GOLDEN_ROOT = REPO_ROOT / "tests/golden"
 UINT64_MAX = 2**64 - 1
 
+# The manifest filenames permitted to carry `suite_status`, named explicitly
+# rather than left as "whatever the schema happens to accept". A manifest
+# landing with the flag set is a decision, not a default -- see
+# GoldenManifestSchemaTest.test_suite_status_matches_an_incrementally_built_manifest_exactly,
+# which enforces this set in both directions. Empty as of 2026-08-19 (Stage 3
+# Plan 2 Task 7): the one manifest that ever needed it,
+# qwen3-tts-12hz-1-7b-voicedesign.manifest.json, grew to the twelve-case floor
+# in that same task and had the flag removed, closing the interval it existed
+# for -- the strongest form this allowlist can take.
+SUITE_STATUS_ALLOWLIST = frozenset()
+
 
 def load_json(path):
     with path.open(encoding="utf-8") as handle:
@@ -54,6 +65,58 @@ class GoldenManifestSchemaTest(unittest.TestCase):
             with self.subTest(manifest=path.name):
                 self.assertEqual(path.parent.name, manifest["family"])
                 self.assertEqual(path.name, f"{manifest['variant']}.manifest.json")
+
+    def test_suite_status_matches_an_incrementally_built_manifest_exactly(self):
+        """`suite_status` and the schema's own case-count floor must agree, in both directions.
+
+        Before this test, the two mechanisms that read `suite_status` did not
+        know about each other. The schema's top-level `if`/`then`/`else`
+        waives `cases.minItems` from 12 to 0 for whoever sets `suite_status:
+        "incremental"`. This file's own exemptions
+        (test_upstream_examples_are_present,
+        test_tolerance_case_count_matches_manifest) waived themselves for
+        whoever had zero cases -- keyed on `if not manifest["cases"]`, never
+        on the flag itself. Nothing tied the two conditions together: a
+        manifest could carry the flag WITH cases (the schema's floor waived
+        for a manifest that did not need it waived -- demonstrated live
+        against a 3-case copy of vits-ljspeech's own committed manifest, which
+        validated clean once `suite_status: "incremental"` was added to it),
+        or have zero cases WITHOUT the flag (this file's two exemptions would
+        silently skip such a manifest even though the schema itself would
+        reject it as too short) -- and either shape passed every check that
+        existed before this one.
+
+        This binds both directions at once, against SUITE_STATUS_ALLOWLIST
+        (module level, top of file): the set of manifests carrying
+        `suite_status` must equal the allowlist exactly, AND a manifest
+        carrying it must have zero cases while a manifest without it must
+        have at least twelve -- the same floor the schema enforces, checked
+        here independently of the schema library so a schema regression and a
+        test regression cannot silently agree with each other.
+        """
+        carrying = frozenset(path.name for path, manifest in self.manifests if "suite_status" in manifest)
+        self.assertEqual(
+            SUITE_STATUS_ALLOWLIST,
+            carrying,
+            f"suite_status is carried by {sorted(carrying)}, which disagrees with the named "
+            f"allowlist {sorted(SUITE_STATUS_ALLOWLIST)} -- update the allowlist if this is "
+            f"deliberate, not merely this test",
+        )
+        for path, manifest in self.manifests:
+            with self.subTest(manifest=path.name):
+                if manifest.get("suite_status") == "incremental":
+                    self.assertEqual(
+                        [],
+                        manifest["cases"],
+                        f"{path.name}: carries suite_status but is not empty -- the flag exists "
+                        f"only for a manifest committed before its case suite exists",
+                    )
+                else:
+                    self.assertGreaterEqual(
+                        len(manifest["cases"]),
+                        12,
+                        f"{path.name}: carries no suite_status but has fewer than twelve cases",
+                    )
 
     def test_case_ids_are_unique(self):
         for path, manifest in self.manifests:
@@ -191,22 +254,35 @@ class GoldenManifestSchemaTest(unittest.TestCase):
         `variants.qwen3-tts-12hz-1-7b-voicedesign.case_count` entry since this
         docstring's "four" was written. That landing is itself the shape this
         docstring warns about, one level up: a third variant added to the
-        shared `qwen3-tts.json`, arriving with a new skip beneath --
-        the `if not manifest["cases"]: continue` a few lines down, which
-        exempts it here because its manifest is deliberately committed with
-        no cases yet (Stage 3 Plan 1). Deliberate and named, unlike the hole
-        this docstring is about, but the same shape, so it is worth saying
-        rather than assuming this method is immune to its own warning.
+        shared `qwen3-tts.json`, arriving with a new skip beneath -- the
+        exemption a few lines down, which exempted it here because its
+        manifest was deliberately committed with no cases yet (Stage 3 Plan
+        1). Deliberate and named, unlike the hole this docstring is about,
+        but the same shape, so it was worth saying rather than assuming this
+        method was immune to its own warning.
+
+        **2026-08-19, Stage 3 Plan 2 Task 7:** the exemption below used to
+        read `if not manifest["cases"]`, which is the same defect
+        test_suite_status_matches_an_incrementally_built_manifest_exactly
+        (above) now guards against generally: a manifest could have zero
+        cases without carrying `suite_status` at all, and this method would
+        have silently exempted it rather than failing the way an ordinary
+        empty-suite manifest should. Keyed on `suite_status`'s own value now,
+        not on `cases` being empty as a proxy for it -- the two are proven to
+        coincide by the guard above, so this exemption no longer has to
+        assume it independently. `qwen3-tts-12hz-1-7b-voicedesign` itself
+        landed its 13 cases and lost `suite_status` in this same task, so no
+        manifest exercises this branch today; it stays in place for whichever
+        manifest opts into `suite_status: "incremental"` next.
         """
         for path, manifest in self.manifests:
             with self.subTest(manifest=path.name):
-                if not manifest["cases"]:
-                    # Same incrementally-built-suite exemption as
-                    # test_upstream_examples_are_present: a manifest with no
-                    # cases yet has no case_count for any tolerance file --
-                    # shared or not -- to agree with. It does not need its own
-                    # entry in a shared per-variant file before it has a case
-                    # for that file to describe.
+                if manifest.get("suite_status") == "incremental":
+                    # A manifest committed before its case suite exists has
+                    # no case_count for any tolerance file -- shared or not --
+                    # to agree with. It does not need its own entry in a
+                    # shared per-variant file before it has a case for that
+                    # file to describe.
                     continue
                 tolerance_path = REPO_ROOT / manifest["tolerance_file"]
                 tolerance = json.loads(tolerance_path.read_text(encoding="utf-8"))
@@ -304,9 +380,20 @@ class GoldenManifestSchemaTest(unittest.TestCase):
                     self.assertIn(case["input"]["kind"], declared, case["id"])
 
     def test_upstream_examples_are_present(self):
+        """
+        Keyed on `suite_status`'s own value, not on `cases` being empty:
+        2026-08-19, Stage 3 Plan 2 Task 7, the same fix
+        test_tolerance_case_count_matches_manifest's own exemption got, and
+        for the same reason -- `if not manifest["cases"]` would silently
+        exempt a manifest with zero cases regardless of whether it declared
+        `suite_status: "incremental"` for that, which is exactly the
+        empty-suite-exemption hole an external review of this family found
+        independently of test_suite_status_matches_an_incrementally_built_manifest_exactly
+        (above), the guard that now proves the two conditions coincide.
+        """
         for path, manifest in self.manifests:
             with self.subTest(manifest=path.name):
-                if not manifest["cases"]:
+                if manifest.get("suite_status") == "incremental":
                     # An incrementally-built suite -- see the schema's "cases"
                     # description -- has no first case yet to check. This is
                     # not a skip-shaped hole: a manifest with 1+ cases still

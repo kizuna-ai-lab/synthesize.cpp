@@ -545,11 +545,16 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
     """
 
     @staticmethod
-    def _minimal_add_metadata_args(carries_speaker_encoder: bool) -> tuple:
+    def _minimal_add_metadata_args(carries_speaker_encoder: bool, model_type: str = "test") -> tuple:
         """The smallest fixture `add_metadata` accepts without raising.
 
         Field values are arbitrary except where a converter rule constrains
         them (e.g. the codec hop/frame-rate/quantizer-count cross-checks).
+        `model_type` defaults to a value no real variant uses, matching the
+        pre-existing behaviour of every caller that does not pass it; tests
+        that need `profile_source_names`/`profile_schema_name` to resolve as
+        a real variant would (`base`, `voice_design`, `custom_voice`) pass it
+        explicitly, alongside the matching `carries_speaker_encoder`.
         """
         manifest = {
             "variant": "qwen3-tts-test-variant",
@@ -631,17 +636,17 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
 
         digests = {"talker": "1" * 64, "codec": "2" * 64, "config": "3" * 64, "generation_config": "4" * 64}
         profile = convert.VariantProfile(
-            "test", carries_speaker_encoder, carries_speaker_encoder, "Test Display Name", "0.0B")
+            model_type, carries_speaker_encoder, carries_speaker_encoder, "Test Display Name", "0.0B")
         return (manifest, config, {}, codec_config, generation_config, {"a": 0, "b": 1}, [], digests, profile)
 
-    def _written_metadata(self, carries_speaker_encoder: bool) -> dict:
+    def _written_metadata(self, carries_speaker_encoder: bool, model_type: str = "test") -> dict:
         """Every KV of a real written-and-re-read GGUF, as plain Python values.
 
         Values, not just key names: an emission that writes the right keys
         with the wrong contents (a catalog ordered by token id against names
         ordered alphabetically, say) is silent everywhere else.
         """
-        args = self._minimal_add_metadata_args(carries_speaker_encoder)
+        args = self._minimal_add_metadata_args(carries_speaker_encoder, model_type)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "meta.gguf"
             writer = convert.GGUFWriter(str(path), convert.ARCH_KEY)
@@ -655,8 +660,8 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
             # which the TemporaryDirectory removes on exit.
             return {name: field.contents() for name, field in reader.fields.items()}
 
-    def _written_keys(self, carries_speaker_encoder: bool) -> set[str]:
-        return set(self._written_metadata(carries_speaker_encoder))
+    def _written_keys(self, carries_speaker_encoder: bool, model_type: str = "test") -> set[str]:
+        return set(self._written_metadata(carries_speaker_encoder, model_type))
 
     def test_a_variant_with_a_speaker_encoder_carries_the_profile_block(self) -> None:
         keys = self._written_keys(carries_speaker_encoder=True)
@@ -725,6 +730,42 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
             "synthesize.qwen3-tts.speakers.dialect_override",
         ):
             self.assertNotIn(key, metadata, key)
+
+    # `ProfileSourceDeclarationTests` below checks `profile_source_names` and
+    # `profile_schema_name` in isolation, against bare `VariantProfile`
+    # objects; it never calls `add_metadata`. Neither does anything else in
+    # this class check the `synthesize.voice.profile_sources` key specifically
+    # -- the two tests above assert only the `synthesize.profile.*`,
+    # `synthesize.reference.*` and `synthesize.qwen3-tts.speaker_encoder.*`
+    # prefixes, which is a different KV. So a regression that dropped the
+    # `writer.add_array("synthesize.voice.profile_sources", ...)` call, or
+    # misspelled the key, would pass every other test in this file. These
+    # three close that gap, one per real variant, checking the written VALUE
+    # and not just presence -- a key present with the wrong contents is the
+    # failure mode a presence-only check cannot see.
+    def test_base_writes_profile_sources_as_reference_audio(self) -> None:
+        metadata = self._written_metadata(carries_speaker_encoder=True, model_type="base")
+        self.assertEqual(metadata["synthesize.voice.profile_sources"], ["reference-audio"])
+
+    def test_voice_design_writes_profile_sources_as_description_text_and_no_reference_contract(self) -> None:
+        metadata = self._written_metadata(carries_speaker_encoder=False, model_type="voice_design")
+        self.assertEqual(metadata["synthesize.voice.profile_sources"], ["description-text"])
+        # VoiceDesign can serialize a Profile (the schema/compatibility_id
+        # keys are present) but takes no reference audio and carries no
+        # speaker encoder, so neither block belongs in its package.
+        leaked = [
+            key for key in metadata
+            if key.startswith("synthesize.reference.")
+            or key.startswith("synthesize.qwen3-tts.speaker_encoder.")
+        ]
+        self.assertEqual(leaked, [])
+
+    def test_custom_voice_writes_no_profile_sources_and_no_schema(self) -> None:
+        metadata = self._written_metadata(carries_speaker_encoder=False, model_type="custom_voice")
+        # A preset-catalog package prepares nothing, so it carries no
+        # contract at all -- not an empty one, which is a different claim.
+        self.assertNotIn("synthesize.voice.profile_sources", metadata)
+        self.assertNotIn("synthesize.profile.schema", metadata)
 
 
 class ProfileSourceDeclarationTests(unittest.TestCase):

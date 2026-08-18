@@ -456,6 +456,37 @@ own `expect_rejected` adversarial cases (`tests/qwen3_tts_metadata_test.cpp`)
 — except it would need to assert `read_hparams` currently **succeeds**, to
 pin the gap rather than a rejection that doesn't happen.
 
+**Ordering note, 2026-08-19.** The erratum immediately below was written on
+the branch that merged first and lands after the one above it, which is the
+chronological order. It also overtakes that erratum's closing suggestion: a
+test pinning the gap by asserting `read_hparams` SUCCEEDS is no longer
+writable for the Preset Voice Catalog case, because that case is now refused.
+The suggestion still stands for the `profile-sources`-mode case, which stays
+uncorroborated for the reason both errata give.
+
+**Erratum, 2026-08-19 — the CustomVoice case above is now refused, by a
+narrower rule than the one this erratum declined to build.** An external PR
+review raised the same gap, phrased for `docs/model-packages.md`'s claim that
+loading "reads and validates" the declaration: a Preset Voice Catalog package
+carrying `synthesize.voice.profile_sources` at all had it silently ignored,
+because `read_hparams` only reaches `read_profile_sources` in
+`VoiceMode::ProfileSources`. The fix is not the `model_variant`-string
+cross-check this erratum considered and declined -- that table would still
+refuse a legitimate future variant it had not been updated to name, the same
+over-refusal risk this project keeps guarding against. Instead
+`read_voices` (`src/arch/qwen3-tts/weights.cpp`) refuses the key outright,
+independent of its contents, whenever the package's Voice Mode is
+`preset-catalog`: such a package has no Voice Profile contract at all, so it
+has nothing to declare a source for, and any value written there -- including
+`description-text` -- is now a load-time refusal rather than an inert string.
+This closes the CustomVoice case named above. It does not add the
+corroboration this erratum already noted Description Text cannot have: a
+`profile-sources`-mode VoiceDesign package still declares `description-text`
+on nothing but its own say-so, because there is no tensor block to check it
+against. See `tests/qwen3_tts_metadata_test.cpp`'s two new
+`run_rejections()` cases and `docs/model-packages.md`'s revised Voice Profile
+Compatibility section.
+
 ### 6.5 Fault injection
 
 Each gate is shown to fail, per Plan 4's practice. Three faults, chosen because

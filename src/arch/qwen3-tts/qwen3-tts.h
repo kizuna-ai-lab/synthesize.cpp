@@ -23,6 +23,50 @@ namespace synth::qwen3tts {
 struct HParams;
 struct TalkerWeights;
 struct CodePredictorWeights;
+class Model;
+
+// A single, narrow, `friend`-gated seam for a `unit` test to build a Model --
+// declared ahead of `class Model` below so that class can name it as a friend
+// by its qualified name, and kept in its own `testing` namespace (the same
+// idiom `synth::omnivoice::testing` already establishes for
+// tests/omnivoice_synthetic_package.h) rather than as a member of `Model`
+// itself, so `Model`'s own public surface carries nothing a production caller
+// could reach by accident.
+namespace testing {
+
+// TEST-ONLY, and a `friend`, not a public member: `make_model_for_testing`
+// builds a Model whose hparams() returns exactly `hparams` and every other
+// accessor its own type's default (no weights, no frontend, no backend) --
+// Model::load()/load_cpu() remain the only ways to build a Model any
+// synthesis or reference/codec-encoding call can actually use, and nothing
+// outside this function (and Model's own `friend` grant to it) can reach
+// Model's private constructor to build one that skips them.
+//
+// Exists because src/voice-profile.cpp's create_from_description dispatch
+// (unlike create_from_reference's) must read HParams::profile_sources off a
+// live Model to tell VoiceDesign apart from CustomVoice/Base: that dispatch
+// gates on the package's DECLARED sources rather than the published
+// capability bit (VoiceDesign's own bit stays unpublished until a later task
+// -- see that dispatch's own comment), and `model->info.voice_profile`
+// carries only the published bit, not the declared one. This family has no
+// synthetic-package test harness the way OmniVoice's write_synthetic_package
+// gives that family -- load()/load_cpu() need a full, real GGUF with every
+// talker/codec tensor present, which is out of reach for a `unit` test
+// (docs/testing.md) -- so a `unit` test exercising the PUBLIC SEAM
+// (synth_voice_profile_create_from_description) against a Model whose
+// declared sources it controls has no other way to get one.
+//
+// TEMPORARY: once a later task republishes SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT,
+// create_from_description's own gate moves to model->info.voice_profile.source_flags
+// -- the way create_from_reference's gate already reads it -- and stops
+// needing a live Model to answer "does this variant support it" at all. This
+// function, its `friend` grant below, and the comment on both should all be
+// removed in that same change.
+//
+// Only ever called from tests/qwen3_tts_design_profile_test.cpp.
+std::unique_ptr<Model> make_model_for_testing(const HParams & hparams);
+
+}  // namespace testing
 
 struct ModelInfo {
     std::string family = "qwen3-tts";
@@ -218,29 +262,6 @@ class Model {
                                bool                     include_accelerators,
                                std::unique_ptr<Model> & output);
 
-    // TEST-ONLY. Builds a Model whose hparams() returns exactly `hparams` and
-    // every other accessor its own type's default (no weights, no frontend, no
-    // backend) -- load()/load_cpu() remain the only ways to build a Model any
-    // synthesis or reference/codec-encoding call can actually use.
-    //
-    // Exists because src/voice-profile.cpp's create_from_description dispatch
-    // (unlike create_from_reference's) must read HParams::profile_sources off a
-    // live Model to tell VoiceDesign apart from CustomVoice/Base: that dispatch
-    // gates on the package's DECLARED sources rather than the published
-    // capability bit (VoiceDesign's own bit stays SYNTH_PROFILE_SOURCE
-    // unpublished until a later task -- see that dispatch's own comment), and
-    // `model->info.voice_profile` carries only the published bit, not the
-    // declared one. This family has no synthetic-package test harness the way
-    // OmniVoice's write_synthetic_package (tests/omnivoice_synthetic_package.h)
-    // gives that family -- load()/load_cpu() need a full, real GGUF with every
-    // talker/codec tensor present, which is out of reach for a `unit` test
-    // (docs/testing.md) -- so a `unit` test exercising the PUBLIC SEAM
-    // (synth_voice_profile_create_from_description) against a Model whose
-    // declared sources it controls has no other way to get one.
-    //
-    // Only ever called from tests/qwen3_tts_design_profile_test.cpp.
-    static std::unique_ptr<Model> create_for_testing(const HParams & hparams);
-
     ~Model();
     Model(const Model &)             = delete;
     Model & operator=(const Model &) = delete;
@@ -354,6 +375,11 @@ class Model {
     struct Impl;
     explicit Model(std::unique_ptr<Impl> implementation);
     std::unique_ptr<Impl> implementation_;
+
+    // See testing::make_model_for_testing's own doc comment (above this
+    // class) for what this grant is for, why it is narrow -- one function,
+    // not the whole `testing` namespace -- and why it is temporary.
+    friend std::unique_ptr<Model> testing::make_model_for_testing(const HParams & hparams);
 };
 
 }  // namespace synth::qwen3tts

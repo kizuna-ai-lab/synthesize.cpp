@@ -21,7 +21,7 @@ using synth::qwen3tts::create_design_profile;
 using synth::qwen3tts::DesignInstruct;
 using synth::qwen3tts::HParams;
 using synth::qwen3tts::kMaxDesignInstructBytes;
-using synth::qwen3tts::Model;
+using synth::qwen3tts::testing::make_model_for_testing;
 
 namespace {
 
@@ -57,11 +57,12 @@ HParams customvoice_hparams() {
 }
 
 // Wraps `hparams` in a synth_model whose family is Qwen3Tts and whose
-// qwen3_tts pointer is a REAL (if otherwise empty) Model -- built through
-// Model::create_for_testing rather than Model::load/load_cpu, because this
-// family has no synthetic-package test harness a `unit` test may depend on
-// (that test-only factory's own header comment says why). This is what lets
-// the three tests below exercise the PUBLIC SEAM
+// qwen3_tts pointer is a REAL (if otherwise empty) Model -- built through the
+// narrow `friend` factory testing::make_model_for_testing rather than
+// Model::load/load_cpu, because this family has no synthetic-package test
+// harness a `unit` test may depend on (that factory's own header comment,
+// ahead of `class Model` in qwen3-tts.h, says why, and why it is temporary).
+// This is what lets the three tests below exercise the PUBLIC SEAM
 // (synth_voice_profile_create_from_description) with a Model whose declared
 // sources they control, rather than a hand-built handle with qwen3_tts left
 // null the way tests/qwen3_tts_voice_required_test.cpp's cross-family guard
@@ -71,7 +72,7 @@ HParams customvoice_hparams() {
 synth_model make_model(const HParams & hparams) {
     synth_model model;
     model.info.family = synth::ModelFamily::Qwen3Tts;
-    model.qwen3_tts   = Model::create_for_testing(hparams);
+    model.qwen3_tts   = make_model_for_testing(hparams);
     return model;
 }
 
@@ -139,10 +140,10 @@ int test_an_over_long_instruct_is_refused_at_the_boundary() {
 
 // =============================================================================
 // Task 2: synth_voice_profile_create_from_description's Qwen3-TTS arm
-// (src/voice-profile.cpp). The three tests below use the real public entry
-// point, through make_model()'s Model::create_for_testing-backed fixture --
-// see that helper's own comment for why a hand-built handle with qwen3_tts
-// left null is not enough here, unlike the reference/load-from-memory guard
+// (src/voice-profile.cpp). The tests below use the real public entry point,
+// through make_model()'s make_model_for_testing-backed fixture -- see that
+// helper's own comment for why a hand-built handle with qwen3_tts left null
+// is not enough here, unlike the reference/load-from-memory guard
 // tests/qwen3_tts_voice_required_test.cpp already carries.
 // =============================================================================
 
@@ -211,6 +212,77 @@ int test_create_from_description_refuses_a_malformed_description() {
     return 0;
 }
 
+// Round-1 review finding (Important #1/#2): D3's "an empty instruct is legal"
+// must be reachable through BOTH of its natural spellings -- a null
+// description pointer with a zero size, and a non-null pointer to a
+// zero-length buffer, which is what bindings/python/src/native_loader.c's
+// `PyBytes_AsString(b"")` hands this entry point (never null, even for an
+// empty bytes object). An earlier version of this arm copied OmniVoice's own
+// pairing check verbatim -- correct there, because OmniVoice refuses empty
+// regardless of spelling -- which refused the second spelling here with
+// SYNTH_ERR_INVALID_ARG and had zero test coverage: the reviewer's injection
+// of OmniVoice's exact "description required, non-empty" refusal left this
+// target 100% green, because nothing exercised D3 through the public seam at
+// all (Task 1's test_an_empty_instruct_is_accepted covers create_design_profile
+// directly, not this dispatch). Both spellings are asserted here so that
+// injection -- or the narrower pairing-check regression that motivated this
+// test -- fails loudly.
+int test_create_from_description_accepts_both_empty_description_spellings() {
+    synth_voice_description_params_t null_spelling;
+    synth_voice_description_params_init(&null_spelling, sizeof(null_spelling));
+    null_spelling.description      = nullptr;
+    null_spelling.description_size = 0;
+
+    synth_voice_description_params_t nonnull_spelling;
+    synth_voice_description_params_init(&nonnull_spelling, sizeof(nonnull_spelling));
+    // A string literal, not empty.data(): non-null is the property under
+    // test, and a literal makes that true by construction rather than by an
+    // implementation guarantee about std::string.
+    nonnull_spelling.description      = "";
+    nonnull_spelling.description_size = 0;
+
+    for (const synth_voice_description_params_t & params : { null_spelling, nonnull_spelling }) {
+        synth_model             model   = make_model(voice_design_hparams());
+        synth_voice_profile_t * profile = nullptr;
+        SYNTH_TEST_CHECK(synth_voice_profile_create_from_description(&model, &params, &profile) == SYNTH_OK);
+        SYNTH_TEST_CHECK(profile != nullptr);
+        SYNTH_TEST_CHECK(profile->family_tag == synth::ProfileFamilyTag::Qwen3TtsDesign);
+        synth_voice_profile_free(profile);
+    }
+    // What description == nullptr still refuses: a null pointer CLAIMING a
+    // nonzero size, which has nothing to read. Not a spelling of "empty" --
+    // a caller error.
+    synth_model                      model = make_model(voice_design_hparams());
+    synth_voice_description_params_t mismatched;
+    synth_voice_description_params_init(&mismatched, sizeof(mismatched));
+    mismatched.description          = nullptr;
+    mismatched.description_size     = 4;
+    synth_voice_profile_t * profile = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+    SYNTH_TEST_CHECK(synth_voice_profile_create_from_description(&model, &mismatched, &profile) ==
+                     SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(profile == nullptr);
+    return 0;
+}
+
+// Round-1 review finding (Important #3): docs/c-interface.md:570's ABI-wide
+// "v1 profile preparation rejects SYNTH_SEED_RANDOM" contract, which
+// OmniVoice's own create_from_description arm above enforces. This family's
+// Description Text preparation has nothing seed-dependent to fix -- unlike
+// OmniVoice's own arm, whose comment explains what ITS seed is for -- but
+// that is a fact about what the seed is used FOR, not licence to skip an
+// ABI-wide contract this file's sibling arm already enforces.
+int test_create_from_description_refuses_a_random_seed() {
+    synth_model                      model       = make_model(voice_design_hparams());
+    const std::string                description = "a description, otherwise unremarkable";
+    synth_voice_description_params_t params      = description_params(description);
+    params.seed                                  = SYNTH_SEED_RANDOM;
+
+    synth_voice_profile_t * profile = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+    SYNTH_TEST_CHECK(synth_voice_profile_create_from_description(&model, &params, &profile) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(profile == nullptr);
+    return 0;
+}
+
 int main() {
     SYNTH_TEST_CHECK(test_design_profile_holds_the_string_verbatim() == 0);
     SYNTH_TEST_CHECK(test_an_empty_instruct_is_accepted() == 0);
@@ -219,5 +291,7 @@ int main() {
     SYNTH_TEST_CHECK(test_create_from_description_accepts_a_voicedesign_model() == 0);
     SYNTH_TEST_CHECK(test_create_from_description_refuses_the_clone_variants() == 0);
     SYNTH_TEST_CHECK(test_create_from_description_refuses_a_malformed_description() == 0);
+    SYNTH_TEST_CHECK(test_create_from_description_accepts_both_empty_description_spellings() == 0);
+    SYNTH_TEST_CHECK(test_create_from_description_refuses_a_random_seed() == 0);
     return 0;
 }

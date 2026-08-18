@@ -846,6 +846,14 @@ synth_status_t create_omnivoice_profile_from_description(const synth_model_t *  
 // and this is the same defensive shape
 // tests/qwen3_tts_voice_required_test.cpp's own cross-family guard test
 // relies on for create_from_reference/load_from_memory.
+//
+// TEMPORARY, along with the whole reason model->qwen3_tts->hparams() (and
+// therefore testing::make_model_for_testing, the test-only friend that lets a
+// `unit` test reach this arm at all) is needed here in the first place: once
+// Task 5 republishes SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT, this gate moves to
+// model->info.voice_profile.source_flags the way create_from_reference's own
+// gate already reads it, and stops needing a live Model to answer "does this
+// variant support it" at all.
 synth_status_t create_qwen3_tts_profile_from_description(const synth_model_t *                    model,
                                                          const synth_voice_description_params_t * params,
                                                          synth_voice_profile_t **                 out_profile) {
@@ -866,21 +874,73 @@ synth_status_t create_qwen3_tts_profile_from_description(const synth_model_t *  
                                               static_cast<const char *>(nullptr));
     const uint64_t description_size =
         read_visible(params, offsetof(synth_voice_description_params_t, description_size), uint64_t(0));
-    // language_tag/language_tag_size and seed are read by neither this arm nor
-    // create_design_profile: design D5 ("Language is a per-synthesis field and
-    // does not enter the Profile") keeps the description language out of
-    // profile creation entirely, and this family's Description Text
-    // preparation has nothing seed-dependent to fix the way OmniVoice's does.
-    if ((description == nullptr) != (description_size == 0)) {
+    const char *   language_tag = read_visible(params, offsetof(synth_voice_description_params_t, language_tag),
+                                               static_cast<const char *>(nullptr));
+    const uint64_t language_tag_size =
+        read_visible(params, offsetof(synth_voice_description_params_t, language_tag_size), uint64_t(0));
+    const uint64_t seed = read_visible(params, offsetof(synth_voice_description_params_t, seed), uint64_t(0));
+
+    // D3 ("An empty instruct is a legal input, not an error") must be
+    // reachable through BOTH of its natural spellings -- a null description
+    // pointer with a zero size, and a NON-null pointer to a zero-length
+    // buffer, which is what bindings/python/src/native_loader.c's
+    // `PyBytes_AsString(b"")` hands this entry point (non-null even for an
+    // empty bytes object). OmniVoice's own pairing check, `(x == nullptr) !=
+    // (size == 0)`, refuses the second spelling -- correct for OmniVoice,
+    // which requires a non-empty description regardless, but copying it here
+    // verbatim (an earlier draft of this arm did) made D3's legal input
+    // reachable through only one of its two spellings and rejected the other
+    // one with SYNTH_ERR_INVALID_ARG. So only the genuinely malformed shape --
+    // a null pointer claiming a nonzero size, which has nothing to read -- is
+    // refused for `description`. `language_tag` keeps OmniVoice's exact
+    // pairing rule below: there is no equivalent design decision making an
+    // explicitly-empty language tag legal, so its two spellings are not both
+    // meant to mean the same thing the way description's are.
+    if (description == nullptr && description_size != 0) {
         return SYNTH_ERR_INVALID_ARG;
     }
-    if (description_size > std::numeric_limits<size_t>::max()) {
+    if ((language_tag == nullptr) != (language_tag_size == 0)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if (description_size > std::numeric_limits<size_t>::max() ||
+        language_tag_size > std::numeric_limits<size_t>::max()) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // docs/c-interface.md:570, "v1 profile preparation rejects
+    // SYNTH_SEED_RANDOM" -- an ABI-wide Confirmed contract, not a per-family
+    // option; OmniVoice's own arm enforces it above. This family's
+    // Description Text preparation has nothing seed-dependent to fix (unlike
+    // OmniVoice's own arm, whose comment explains why it accepts the
+    // sentinel for its own reason), but that is a fact about what the seed is
+    // FOR, not licence to skip a contract this file's sibling arm already
+    // enforces.
+    if (seed == SYNTH_SEED_RANDOM) {
+        emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.seed_must_be_concrete",
+                        "Voice Profile preparation does not accept SYNTH_SEED_RANDOM; generate a concrete seed first");
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // D5 ("Language is a per-synthesis field and does not enter the Profile")
+    // is why this value is never USED below it -- it selects nothing and is
+    // not stored in the payload -- but D5 does not license skipping
+    // validation: a malformed tag is still a malformed request, whichever
+    // field of this struct it arrived in.
+    if (language_tag != nullptr && !valid_bcp47_shape(language_tag, static_cast<size_t>(language_tag_size))) {
         return SYNTH_ERR_INVALID_ARG;
     }
 
     // D3: an empty description is a legal, unconditioned request, not an
-    // error -- unlike OmniVoice's own arm above, this family's create_design_profile
-    // accepts it, so there is no "required, non-empty" refusal to mirror here.
+    // error -- unlike OmniVoice's own arm above, this family's
+    // create_design_profile accepts it, so there is no "required, non-empty"
+    // refusal to mirror here. A params struct too short to carry a
+    // description at all (struct_size == sizeof(uint64_t), so `description`
+    // and `description_size` both read back at their read_visible defaults,
+    // {nullptr, 0}) resolves the same way as an explicit empty description:
+    // SYNTH_OK with an unconditioned Profile -- where OmniVoice's own arm
+    // refuses that identical truncated struct, because IT requires a
+    // non-empty description regardless of which spelling produced the empty
+    // one.
     const std::string    instruct(description != nullptr ? description : "", static_cast<size_t>(description_size));
     auto                 payload = std::make_shared<synth::qwen3tts::DesignInstruct>();
     const synth_status_t status =

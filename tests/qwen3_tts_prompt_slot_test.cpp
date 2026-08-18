@@ -651,11 +651,50 @@ int test_prompt_without_a_speaker_slot() {
 
     // The speaker token appears in one and not the other -- an implementation
     // that merely zeroed it would pass the count checks above.
-    bool found = false;
+    bool found_in_dropped = false;
     for (const synth::qwen3tts::TalkerInputPosition & p : dropped.positions) {
-        found = found || (p.has_codec && p.codec_token == 42);
+        found_in_dropped = found_in_dropped || (p.has_codec && p.codec_token == 42);
     }
-    SYNTH_TEST_CHECK(!found);
+    SYNTH_TEST_CHECK(!found_in_dropped);
+    // ...and it really was there in `kept` -- otherwise "absent from dropped"
+    // would be true of a request that never carried a speaker at all.
+    bool found_in_kept = false;
+    for (const synth::qwen3tts::TalkerInputPosition & p : kept.positions) {
+        found_in_kept = found_in_kept || (p.has_codec && p.codec_token == 42);
+    }
+    SYNTH_TEST_CHECK(found_in_kept);
+
+    // The counts above only establish HOW MANY codec positions exist; a
+    // hardcoded offset computed from the WITH-speaker codec run (e.g.
+    // `codec[kept_codec_run_length - 2]` instead of
+    // `codec[dropped_codec_run_length - 2]`) leaves every count unchanged and
+    // is still in range, so ASan says nothing and the counts still match --
+    // it just points every shifted position at the wrong token. Pin the exact
+    // sequence, read off build_talker_prompt's own construction rather than
+    // off whatever a run happens to emit: codec_think (has_language is set),
+    // codec_think_bos, the language token, codec_think_eos, then codec_pad
+    // once for the loop's closing (TtsBos) position and once more per
+    // trailing position (the three text tokens and tts_eos, all paired
+    // against codec_pad), and codec_bos closing the prompt.
+    std::vector<uint32_t> dropped_codec_values;
+    for (const synth::qwen3tts::TalkerInputPosition & p : dropped.positions) {
+        if (p.has_codec) {
+            dropped_codec_values.push_back(p.codec_token);
+        }
+    }
+    const std::vector<uint32_t> expected_dropped_codec_values = {
+        hparams.tokens.codec_think,      // has_language == true selects think, not nothink
+        hparams.tokens.codec_think_bos,
+        without_speaker.language_token,  // 7
+        hparams.tokens.codec_think_eos,
+        hparams.tokens.codec_pad,        // loop's closing position, paired with TtsBos
+        hparams.tokens.codec_pad,        // text_tokens[0] == 10
+        hparams.tokens.codec_pad,        // text_tokens[1] == 11
+        hparams.tokens.codec_pad,        // text_tokens[2] == 12
+        hparams.tokens.codec_pad,        // TtsEos
+        hparams.tokens.codec_bos,        // final TtsPad, closing the prompt
+    };
+    SYNTH_TEST_CHECK(dropped_codec_values == expected_dropped_codec_values);
 
     // No external substitution is pending: -1 means "the graph reads every
     // codec row", which is what talker.cpp's null-speaker branch expects.

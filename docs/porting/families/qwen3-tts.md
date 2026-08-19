@@ -5043,11 +5043,13 @@ residual is attributable to the *port* for the first time in this variant's
 profile history. `observed_max_relative` is the larger of the two (0.00613),
 giving **1.63x headroom** against the unchanged 0.01 bound -- positive and
 passing, but the thinnest headroom this variant's `replay.prefill` probe has
-recorded (BF16 3.72x, F16 3.45x, Q8_MIXED 1.63x), consistent with Base's own
-`Q8_MIXED` cell being visibly closer to its bound than its `F16` cell is. No
-fault injection was run against Q8_MIXED; this cell carries no
-`fault_injection_by_case` block, matching the standing instruction not to
-carry one forward from a profile it was not measured on.
+recorded (BF16 **3.44x** -- its own committed two-case figure,
+`tests/tolerances/qwen3-tts.json`'s BF16 `prefill` cell, not the
+empty-instruct-only 3.72x Plan 1 recorded before the non-empty case existed;
+F16 3.45x, nearly identical to BF16's; Q8_MIXED 1.63x). No fault injection was
+run against Q8_MIXED; this cell carries no `fault_injection_by_case` block,
+matching the standing instruction not to carry one forward from a profile it
+was not measured on.
 
 ### The `public` cell: eleven checks pass, filled after `replay`
 

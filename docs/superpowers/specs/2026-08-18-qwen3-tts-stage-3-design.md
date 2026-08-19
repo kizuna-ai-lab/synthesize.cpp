@@ -539,6 +539,52 @@ against. See `tests/qwen3_tts_metadata_test.cpp`'s two new
 `run_rejections()` cases and `docs/model-packages.md`'s revised Voice Profile
 Compatibility section.
 
+**Erratum, 2026-08-20 — the third bullet is now implemented, and the "Second
+erratum, 2026-08-19" above named the wrong obstacle for why it could not be.**
+That erratum wrote that closing the bullet would need "a synthetic GGUF
+fixture built specifically to carry the mismatch", and that Task 6's three
+files could not manufacture one. The second half is true; the first half is
+not, and it is the half a later reader would act on. The fixture requirement
+was the VALIDATOR's alone: `scripts/validate-qwen3-tts-public.py` drives real
+converted packages on disk and `tests/qwen3_tts_public_real.c` has no
+GGUF-writing path, so neither could forge a malformed one. But
+`tests/qwen3_tts_metadata_test.cpp` has built synthetic packages in memory
+since Stage 1 and needed nothing new to build this one -- as that same
+erratum's own next paragraph then said, giving the exact `voice_design_metadata()`
+recipe. The claim and its correction sat two paragraphs apart; this note
+supersedes the claim rather than the recipe, which was right and was followed.
+
+The bullet is closed at both ends. `check_variant_kind`
+(`src/arch/qwen3-tts/weights.cpp`, called from `read_hparams` after
+`read_voices` and the profile block) compares the Model Variant string's final
+segment -- its KIND -- against the declared Voice Mode and, under
+`profile-sources`, the declared source. `check_variant_kind`
+(`scripts/convert-qwen3-tts.py`, at the top of `add_metadata`) refuses the same
+disagreement between the manifest's `variant` and the checkpoint's
+`tts_model_type` before anything is written, which is the root cause: the two
+values reach the package from two different origins and nothing had made them
+agree. Both are KNOWN-VALUE rather than the whole-string table this file
+twice declined to build -- an unrecognized kind is enforced against nothing and
+passes through, so a future `qwen3-tts-24hz-3b-voicedesign` loads on the kind
+it shares with the published one, and a future *kind* needs a code change
+anyway because a kind is a Voice Mode plus a source and neither is derivable
+from the name.
+
+**The bullet's own wording overstates what this or any such check can do, and
+the wording is not corrected by implementing it.** The bullet says a package
+claiming `DESCRIPTION_TEXT` "without the variant behind it" is refused; what is
+actually refused is a package claiming `DESCRIPTION_TEXT` under a variant kind
+that names a different source. That is a MISLABELLED package, not an
+unimplemented one. The variant string is not the implementation, and the first
+erratum above already gave the reason no string comparison can reach further:
+Description Text has no distinguishing tensor of its own. Nothing here changes
+that, and no later reading of this section should take the closed bullet as
+evidence that a declared Description Text implementation is present. See
+`tests/qwen3_tts_metadata_test.cpp`'s
+`test_a_variant_kind_that_contradicts_the_package_is_refused` and
+`test_variant_strings_this_rule_does_not_govern_still_load`, and
+`tests/python/test_convert_qwen3_tts.py`'s `VariantKindAgreementTests`.
+
 ### 6.5 Fault injection
 
 Each gate is shown to fail, per Plan 4's practice. Three faults, chosen because

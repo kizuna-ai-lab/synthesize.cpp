@@ -872,6 +872,82 @@ bool read_profile_and_speaker_encoder(const GgufMetadata & meta, HParams & hpara
     return read_profile_contract(meta, hparams);
 }
 
+// The three Model Variant kinds this runtime knows, and what each one's Voice
+// declarations have to say. `profile_sources` is meaningful only on the
+// ProfileSources rows: a preset-catalog package declares no sources at all
+// (read_voices refuses the key outright), so `hparams.profile_sources` stays
+// zero there and is not compared.
+struct VariantKind {
+    const char * name;
+    VoiceMode    voice_mode;
+    uint32_t     profile_sources;
+};
+
+constexpr VariantKind kVariantKinds[] = {
+    { "base",        VoiceMode::ProfileSources, SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO  },
+    { "voicedesign", VoiceMode::ProfileSources, SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT },
+    { "customvoice", VoiceMode::PresetCatalog,  0                                     },
+};
+
+// `synthesize.model_variant` and the Voice Mode / `synthesize.voice.profile_sources`
+// pair are two independent statements about the same package, and until this
+// check nothing made them agree. They do not even share an origin in the
+// converter: the variant string is copied from the intake manifest's `variant`
+// field, while the sources come from the checkpoint's own `tts_model_type`
+// (scripts/convert-qwen3-tts.py's `profile_source_names`). So a package could
+// call itself CustomVoice while declaring `description-text` and load clean,
+// leaving `ModelInfo::variant` -- which a caller may route on -- saying
+// something the rest of the package contradicts. Raised by an external review
+// of Stage 3 Plan 2's PR, 2026-08-19; closed at both ends, here and in the
+// converter.
+//
+// WHAT THIS CATCHES IS A MISLABELLED PACKAGE, NOT AN UNIMPLEMENTED ONE, and
+// the difference matters enough to state rather than leave to inference. The
+// variant string is not the implementation. Description Text has no tensor
+// footprint of its own -- the instruct it conditions on is tokenized and fed
+// to the Talker exactly like request text -- so nothing here, and nothing any
+// string comparison could do, establishes that an implementation is present.
+// Two of the package's own declarations agreeing is the whole claim.
+//
+// KNOWN-VALUE, NOT AN ENUMERATION LOCK, and that is the point of reading a
+// SEGMENT rather than the string. The variant string carries frame rate and
+// parameter count alongside the kind (`qwen3-tts-12hz-0-6b-base`,
+// `qwen3-tts-12hz-1-7b-voicedesign`), so a table of whole strings would refuse
+// a legitimate future `qwen3-tts-24hz-3b-voicedesign` purely for not having
+// been updated to name it -- which is what src/arch/vits/weights.cpp's
+// `model_variant` handling does, deliberately, for a family whose two variants
+// are both already published and closed. This family is not closed. A future
+// variant KIND has to come here anyway, because a kind is exactly a Voice Mode
+// plus a source and neither can be guessed; a future variant SIZE must not.
+// An unrecognized kind is therefore governed by nothing and passes through
+// untouched, including a variant string with no separator at all.
+bool check_variant_kind(const HParams & hparams) {
+    const size_t separator = hparams.model_variant.rfind('-');
+    if (separator == std::string::npos) {
+        return true;
+    }
+    const std::string kind = hparams.model_variant.substr(separator + 1);
+    for (const VariantKind & known : kVariantKinds) {
+        if (kind != known.name) {
+            continue;
+        }
+        if (hparams.voice_mode != known.voice_mode) {
+            std::fprintf(stderr, "qwen3-tts: package calls itself %s but declares a voice mode no %s variant uses\n",
+                         hparams.model_variant.c_str(), known.name);
+            return false;
+        }
+        if (known.voice_mode == VoiceMode::ProfileSources && hparams.profile_sources != known.profile_sources) {
+            std::fprintf(stderr,
+                         "qwen3-tts: package calls itself %s but declares profile sources 0x%x; "
+                         "a %s variant declares 0x%x\n",
+                         hparams.model_variant.c_str(), hparams.profile_sources, known.name, known.profile_sources);
+            return false;
+        }
+        return true;
+    }
+    return true;
+}
+
 }  // namespace
 
 synth_status_t read_hparams(const gguf_context * gguf, HParams & hparams) {
@@ -885,7 +961,11 @@ synth_status_t read_hparams(const gguf_context * gguf, HParams & hparams) {
         read_talker(meta, hparams) && read_code_predictor(meta, hparams) && read_codec(meta, hparams) &&
         read_tokens(meta, hparams) && read_voices(meta, hparams) &&
         (hparams.voice_mode != VoiceMode::ProfileSources || read_profile_and_speaker_encoder(meta, hparams)) &&
-        read_languages(meta, hparams) && read_frontend(meta, hparams);
+        // After both, and only after both: this compares what read_voices put
+        // in `voice_mode` and what read_profile_sources put in
+        // `profile_sources` against the kind read_identity read off the
+        // variant string, so all three have to be populated first.
+        check_variant_kind(hparams) && read_languages(meta, hparams) && read_frontend(meta, hparams);
     return ok ? SYNTH_OK : SYNTH_ERR_GGUF;
 }
 

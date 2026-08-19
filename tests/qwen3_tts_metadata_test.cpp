@@ -574,6 +574,134 @@ int test_description_text_package_with_surplus_reference_keys_is_refused() {
     return 0;
 }
 
+// --- Model Variant kind against the package's own Voice declarations ---
+//
+// `synthesize.model_variant` and the Voice Mode / `synthesize.voice.profile_sources`
+// pair are two independent statements about the same package, written from two
+// different origins in the converter: the variant string comes from the intake
+// manifest's `variant` field (scripts/convert-qwen3-tts.py), the sources come
+// from the checkpoint's own `tts_model_type` (its `profile_source_names`).
+// Nothing made them agree, so a package could call itself CustomVoice while
+// declaring `description-text` and load clean, leaving `ModelInfo::variant` --
+// which a caller may route on -- saying something the rest of the package
+// contradicts.
+//
+// What this pins is the refusal of a MISLABELLED package, not of an
+// unimplemented one. The variant string is not the implementation: Description
+// Text has no tensor footprint of its own, so no string comparison can
+// establish that an implementation is present. Two declarations agreeing is
+// all this is and all it claims.
+//
+// Failures are COUNTED rather than returned at the first one, which
+// SYNTH_TEST_CHECK would do. Disabling the guard in weights.cpp must make
+// EVERY case below report, not just the first; a helper that aborted early
+// would hide whether the remaining cases were being caught by this guard or by
+// some earlier unrelated validation that happened to reject the fixture.
+int expect_variant_rejected(GgufContext context, const char * variant, const char * label) {
+    if (context == nullptr) {
+        std::fprintf(stderr, "fixture failed to build: %s\n", label);
+        return 1;
+    }
+    gguf_set_val_str(context.get(), "synthesize.model_variant", variant);
+    synth::qwen3tts::HParams hparams;
+    if (synth::qwen3tts::read_hparams(context.get(), hparams) == SYNTH_OK) {
+        std::fprintf(stderr, "expected rejection: %s (variant %s)\n", label, variant);
+        return 1;
+    }
+    return 0;
+}
+
+int expect_variant_accepted(GgufContext context, const char * variant, const char * label) {
+    if (context == nullptr) {
+        std::fprintf(stderr, "fixture failed to build: %s\n", label);
+        return 1;
+    }
+    gguf_set_val_str(context.get(), "synthesize.model_variant", variant);
+    synth::qwen3tts::HParams hparams;
+    if (synth::qwen3tts::read_hparams(context.get(), hparams) != SYNTH_OK) {
+        std::fprintf(stderr, "expected acceptance: %s (variant %s)\n", label, variant);
+        return 1;
+    }
+    if (hparams.model_variant != variant) {
+        std::fprintf(stderr, "variant not carried through: %s\n", label);
+        return 1;
+    }
+    return 0;
+}
+
+// Every ordered pair of (fixture, wrong kind). Each fixture is otherwise
+// untouched and is asserted to LOAD under its own kind by the test below, so
+// the variant string is the only thing that differs between the two verdicts
+// -- nothing else in the fixture can be what fails.
+int test_a_variant_kind_that_contradicts_the_package_is_refused() {
+    int failures = 0;
+
+    // The reviewer's own case, and the one the Stage 3 design's 2026-08-19
+    // erratum measured as still returning SYNTH_OK: a profile-sources package
+    // declaring description-text that calls itself CustomVoice. The
+    // preset-catalog refusal that landed in the sibling PR cannot reach this
+    // -- that one fires on `voice_mode == PresetCatalog`, and this package's
+    // mode is `profile-sources`.
+    failures += expect_variant_rejected(voice_design_metadata(), "qwen3-tts-12hz-0-6b-customvoice",
+                                        "a CustomVoice kind over a profile-sources package");
+    failures += expect_variant_rejected(base_metadata(), "qwen3-tts-12hz-0-6b-customvoice",
+                                        "a CustomVoice kind over a reference-audio package");
+
+    // A Base kind names reference-audio; these two declare something else.
+    failures += expect_variant_rejected(voice_design_metadata(), "qwen3-tts-12hz-0-6b-base",
+                                        "a Base kind over a description-text declaration");
+    failures += expect_variant_rejected(valid_metadata(), "qwen3-tts-12hz-0-6b-base",
+                                        "a Base kind over a preset-catalog package");
+
+    // A VoiceDesign kind names description-text; these two declare something else.
+    failures += expect_variant_rejected(base_metadata(), "qwen3-tts-12hz-1-7b-voicedesign",
+                                        "a VoiceDesign kind over a reference-audio declaration");
+    failures += expect_variant_rejected(valid_metadata(), "qwen3-tts-12hz-1-7b-voicedesign",
+                                        "a VoiceDesign kind over a preset-catalog package");
+
+    SYNTH_TEST_CHECK(failures == 0);
+    return 0;
+}
+
+// The other half, and the reason the rule reads a KIND rather than a whole
+// string: a future package that changes only its frame rate or parameter count
+// must still load, and a kind this build has never heard of must pass through
+// untouched rather than being refused for being unknown. Counted, not
+// short-circuited, for the same reason as above.
+int test_variant_strings_this_rule_does_not_govern_still_load() {
+    int failures = 0;
+
+    // The three committed variants, each on its own fixture.
+    failures += expect_variant_accepted(valid_metadata(), "qwen3-tts-12hz-0-6b-customvoice",
+                                        "the committed CustomVoice package");
+    failures += expect_variant_accepted(base_metadata(), "qwen3-tts-12hz-0-6b-base", "the committed Base package");
+    failures += expect_variant_accepted(voice_design_metadata(), "qwen3-tts-12hz-1-7b-voicedesign",
+                                        "the committed VoiceDesign package");
+
+    // A future SIZE and frame rate under a kind this build knows: recognized,
+    // agrees, loads. A whole-string table would refuse all three of these.
+    failures += expect_variant_accepted(valid_metadata(), "qwen3-tts-24hz-3b-customvoice", "a future CustomVoice size");
+    failures += expect_variant_accepted(base_metadata(), "qwen3-tts-24hz-3b-base", "a future Base size");
+    failures +=
+        expect_variant_accepted(voice_design_metadata(), "qwen3-tts-24hz-3b-voicedesign", "a future VoiceDesign size");
+
+    // A kind this build does not recognize is governed by nothing, so it loads
+    // on whichever package shape it arrives with -- including shapes a
+    // recognized kind would have been refused for.
+    failures +=
+        expect_variant_accepted(valid_metadata(), "qwen3-tts-24hz-3b-dialogue", "an unknown kind, preset-catalog");
+    failures +=
+        expect_variant_accepted(base_metadata(), "qwen3-tts-24hz-3b-dialogue", "an unknown kind, reference-audio");
+    failures += expect_variant_accepted(voice_design_metadata(), "qwen3-tts-24hz-3b-dialogue",
+                                        "an unknown kind, description-text");
+
+    // A variant string with no separator at all has no kind segment to read.
+    failures += expect_variant_accepted(voice_design_metadata(), "synthetic", "a variant string with no kind segment");
+
+    SYNTH_TEST_CHECK(failures == 0);
+    return 0;
+}
+
 int run_valid_package() {
     GgufContext context = valid_metadata();
     SYNTH_TEST_CHECK(context != nullptr);
@@ -990,5 +1118,7 @@ int main() {
     SYNTH_TEST_CHECK(test_mixed_profile_sources_are_refused() == 0);
     SYNTH_TEST_CHECK(test_a_duplicated_profile_source_is_refused() == 0);
     SYNTH_TEST_CHECK(test_description_text_package_with_surplus_reference_keys_is_refused() == 0);
+    SYNTH_TEST_CHECK(test_a_variant_kind_that_contradicts_the_package_is_refused() == 0);
+    SYNTH_TEST_CHECK(test_variant_strings_this_rule_does_not_govern_still_load() == 0);
     return 0;
 }

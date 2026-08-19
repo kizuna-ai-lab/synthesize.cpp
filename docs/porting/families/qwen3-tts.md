@@ -5659,6 +5659,216 @@ value, or arithmetic result changed -- every fix is in what the numbers were
 cited from or said to mean, matching the class of finding Tasks 2 and 3 each
 hit in their own fix rounds.
 
+## Stage 3: VoiceDesign Package, Plan 3 Task 6
+
+What CUDA buys this variant end to end, on Task 5's own fixed workload,
+reused verbatim for comparability. The design spec's expectation, with its
+reasoning: Stage 1's placement puts the codec decoder on the device and holds
+the autoregressive half on the CPU by the discrete-outputs rule; this
+variant's talker is 3.2x larger than Base's (hidden 1024 -> 2048,
+`qwen3-tts.md:311`), so the AR half's share of wall clock grows, and CUDA's
+end-to-end gain is expected **smaller than Base's ~6%, not larger**. A
+smaller gain would confirm the model, not undermine it.
+
+### What CUDA reaches on this variant, before any number
+
+Unlike Base, this variant introduces no new graphs at all -- no
+reference-audio path, so no ECAPA speaker encoder and no codec encoder for
+ICL enrollment. It is Stage 1's own graph set (text frontend, talker, codec
+decoder) at the 1.7B talker's width. There is therefore no placement
+*decision* to make here, only a measurement of the one Stage 1 already made.
+
+This variant's tolerance grid tracks exactly two stages, and only one of them
+can move:
+
+| stage | does a CUDA run measure anything different? | why |
+| --- | --- | --- |
+| `public` | **yes** | the Stage 1 codec-decoder twin moves under `SYNTH_BACKEND_CUDA`, the same twin Base's own `public` cell exercises -- this variant's `synth_model_load` puts the same graph on the device |
+| `replay` (`prefill` probe only) | **no** | `tests/qwen3_tts_voicedesign_prefill_real.cpp:289` calls `ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)` directly -- there is no backend argument to this driver at all, not even one that would be ignored. A "CUDA" run is not merely equal to the CPU one; it cannot be requested |
+
+One of this variant's two tolerance stages exercises CUDA, not Base's one of
+three -- fewer stages exist here because there are fewer graphs to begin
+with, not because more of them were declined.
+
+### The measurement: CPU vs CUDA, Task 5's fixed workload, same tree
+
+Every figure below comes from `build/rel-dgx-spark`, unchanged since Task 5's
+own measurement: the runner binary predates Task 5's first commit
+(`build/rel-dgx-spark/bin/synthesize-qwen3-tts-public-real` timestamped
+05:51:30, Task 5's own commit `f849f40` at 06:06:37 the same morning) and
+Task 5's fix round (`26609b2`) touched only prose, so the tree this task
+measures against is the one Task 5 already measured against, not a
+reconfigured one.
+
+**CPU was re-measured rather than reused.** Task 5's own CPU BF16 median was
+19.3006 s (n=3). This task's own CPU BF16 median, gathered fresh in the same
+session as the CUDA runs below (n=8: five untimed plus three wrapped in
+`/usr/bin/time -v` for peak RSS), is **18.9220 s** -- about 1.9% lower, inside
+the run-to-run variance Task 5's own report already characterized (spread
+under 2.4% within a profile) but large enough that pairing the CPU baseline
+with the CUDA measurement from the same sitting removes any session-to-session
+host drift as a possible confound in the backend comparison that follows.
+Task 5's figure is not used below; this task's own paired measurement is.
+
+```
+printf '%s' "This is a test of Qwen three T T S voice design synthesis." | \
+  build/rel-dgx-spark/bin/synthesize-qwen3-tts-public-real \
+  models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-BF16.gguf \
+  <out.pcm> \
+  "desc:A cheerful, bright female voice speaking with fast pacing and high energy." \
+  en 7 983040 <cpu|cuda> 10
+```
+
+| profile | backend | frames | audio | synthesis | **RTF** | load | peak RSS | n |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| BF16 | CPU | 97,920 | 4.080 s | 18.92 s | **4.64** | 2.29 s | 4.95 GiB | 8 |
+| BF16 | CUDA | 97,920 | 4.080 s | 17.76 s | **4.35** | 2.37 s | 4.95 GiB | 8 |
+
+Medians. Frame counts are byte-identical across all sixteen runs -- unlike
+this plan's own named risk (the AR stop decision can move between CPU and
+CUDA numerics), that risk did not materialize on this workload, so no
+RTF-adjustment for differing audio length is needed here: both rows describe
+the same 4.080 s of audio. Peak RSS medians of the three `/usr/bin/time -v`
+runs per backend (CPU 5,185,860 KiB, CUDA 5,186,428 KiB -- a 0.011%
+difference, not material) both round to the same 4.95 GiB Task 5 already
+reported for this profile on CPU, a cross-check that this session's CPU
+measurement is the same population as Task 5's. Synthesis-time spread stayed
+under 2.4% for CPU (2.30%) and under 4.6% for CUDA (4.59%) -- wider than
+CPU's own but nothing like a contention signature (no run doubled, unlike
+Base's Task 14 discards), so no run was discarded.
+
+### The gain, division shown
+
+**18.92 s -> 17.76 s and RTF 4.64 -> 4.35**, which divide out to
+(18.92 - 17.76) / 18.92 = **6.13%** and (4.64 - 4.35) / 4.64 = **6.25%** using
+the table's own rounded figures -- the two percentages differ from each
+other only because of that rounding. Base's own doc text
+(`qwen3-tts.md:3440-3441`) records its own pair the same way, at one decimal
+place: "11.60 s -> 10.85 s ... RTF 3.15 -> 2.95 -- 6.5 % and 6.3 %
+respectively" -- re-divided here rather than copied from the task brief's
+own paraphrase (which read "6.47% and 6.35%" and is not what the committed
+doc says): (11.60 - 10.85) / 11.60 = 6.47% and (3.15 - 2.95) / 3.15 = 6.35%
+unrounded, which is where the doc's own "6.5 %"/"6.3 %" came from. The
+precise, unrounded medians for this task -- 18.9220 s and 17.7564 s (n=8
+each) -- divide to **6.16%**, and RTF's own unrounded pair, 4.6377 -> 4.3520,
+divides to the identical **6.16%**: not a coincidence but an algebraic
+identity, since both backends produced the same 97,920-frame, 4.080 s audio
+for this workload, so RTF's shared denominator cancels and the two
+percentages restate one fraction rather than measuring two independent
+things that happen to agree.
+
+**Confirms the smaller-than-Base's-~6% prediction, narrowly.** 6.16% here
+against Base's own 6.47%/6.35% unrounded (6.5%/6.3% as the doc itself
+displays them, `qwen3-tts.md:3440-3441`) is smaller, in the direction the
+design spec's reasoning predicted -- but by about 0.2-0.3 percentage points,
+not by the large margin a literal reading of "the talker is 3.2x larger, so
+its share of wall clock grows 3.2x" might suggest. Stated plainly: the
+direction is right: **smaller, not larger**, but the model's single stated
+mechanism (AR share growing) does not by itself explain why the margin is
+this narrow.
+
+**Why the margin is narrow, not large -- inferred from a source-read fact,
+not independently re-derived.** The codec decoder -- the only graph CUDA
+moves here -- is byte-identical between the CustomVoice (0.6B) and
+VoiceDesign (1.7B) BF16 packages: 255 tensors, 457,161,476 bytes, same shapes,
+in both (`gguf.GGUFReader` against both packages' `codec.decoder.decoder.*`
+tensors). The "3.2x larger" figure is a talker-hidden-size fact
+(`qwen3-tts.md:311`) and does not touch the codec decoder at all. If the
+codec decoder's own per-frame cost -- and CUDA's saving from it -- tracks
+frame count rather than talker width, and this workload's frame counts are
+close between the two variants' own fixed-workload measurements (97,920 here
+against Base's 88,320, +10.9%), then the CUDA-accelerated numerator changes
+only a little between variants while the AR-dominated wall-clock denominator
+grows -- which points toward a small negative move in the percentage, not a
+large one. This is inferred from the tensor-identity finding and the two
+variants' own frame counts; this task did not isolate the codec decoder's
+own wall-clock cost in either build the way Stage 2 Plan 4 Task 12 isolated
+the speaker and codec *encoders*, so the size of the narrowing is not
+independently confirmed the way the direction is.
+
+### Structural agreement: CPU and CUDA disagree in bytes, as TF32 predicts
+
+Two independent pieces of evidence, both measured this task, not asserted:
+
+- `scripts/validate-qwen3-tts-public.py --backend cuda --profile BF16` against
+  the same two descriptions the CPU `public` cell already uses ("A cheerful,
+  bright female voice speaking with fast pacing and high energy." / "A deep,
+  calm male voice speaking slowly and quietly.", text `"Hi."`, its own
+  default): **all 11 checks pass, 3 skipped** for the same
+  `description_text`-package reasons the CPU cell already records. Seed 7's
+  own digest differs from the CPU cell's -- `dcc9279c69679412` (CUDA) against
+  `5e772fc5cc8b2a90` (CPU), reports at
+  `reports/validate/qwen3-tts/public-voicedesign-BF16-cuda.json` and
+  `reports/validate/qwen3-tts/public-voicedesign.json` -- which is what says
+  the request actually reached the device, the same shape Base's own Task 13
+  recorded.
+- On Task 5's own fixed workload (a different case from the validator's
+  `"Hi."` one, deliberately, so the agreement figure is not read off the same
+  text the structural checks used): comparing this task's own CPU and CUDA
+  seed-7 PCM output sample-for-sample (both 97,920 frames), **cosine
+  0.9999988, max_abs 0.002414**. That is on the ~1e-3 TF32-deviation scale
+  `docs/backends.md` predicts for a CUDA F32 matmul, and it is *not* the same
+  number as Stage 1's own `audio.pcm` CUDA-vs-CPU figure (cosine 0.999404,
+  max_abs 0.1602, a different package and a different case) -- cited here for
+  the same shape of comparison, not as an equal one.
+
+### The tolerance file: no CUDA sub-grid, for the same structural reason as Base
+
+`tests/python/test_tolerance_coverage.py`'s per-backend check
+(`:152-158`) requires any `backends.CUDA` sub-grid to carry the profile's
+full stage set exactly -- for this variant, {`public`, `replay`}. `replay`'s
+only probe is structurally CPU-only (previous section), so a `replay` cell
+under a `CUDA` key could only ever hold `replay`'s own CPU numbers copied
+over -- exactly the "recording CPU figures under a CUDA key" outcome Base's
+own Task 13 declined for the same coverage rule.
+
+**The sub-grid is therefore not committed.** `tests/tolerances/qwen3-tts.json`
+gains no `backends` key on any `qwen3-tts-12hz-1-7b-voicedesign` profile; a
+short paragraph was appended to the variant's own `note` field pointing here
+and at `docs/backends.md`'s own recorded-absence subsection for this variant.
+
+**No CUDA threshold was derived**, matching Base's own "nothing here needed
+one" reasoning, and for a simpler reason than Base's own: Base still had to
+say a threshold for a *hypothetical* future `codec_encoder` CUDA cell was
+not owed here (its declined speaker/codec-encoder twin might someday be
+revisited). This variant has no comparable third graph -- Step "What CUDA
+reaches" above exhausts its graph set at `public`'s codec decoder and
+`replay`'s prefill probe -- so there is no hypothetical cell to pre-derive
+a threshold for either. The cosine and max_abs figures measured above are
+recorded as evidence that the placement moves the audio, not as an input to
+any committed gate.
+
+### What is not claimed
+
+One machine, one workload, one build tree, one profile (BF16). F16,
+Q8_MIXED and Q5_K_MIXED were not measured under CUDA in this task -- Task 5
+already measured their CPU speed and this task's own brief scopes to "at
+least BF16" for the backend comparison, not a full profile x backend cross.
+No listening judgement is implied: a numeric agreement figure and an RTF
+number are not audible evidence, and no VoiceDesign CUDA listening comparison
+has run. No publication conclusion is drawn, and no movement of the
+Validation Level is claimed -- `quality_evaluation` stays deferred per
+ADR 0017.
+
+### Verification
+
+- No production code touched -- this task's diff is prose in this file and
+  in `docs/backends.md`, plus one appended paragraph in the
+  `qwen3-tts-12hz-1-7b-voicedesign` variant's own `note` field in
+  `tests/tolerances/qwen3-tts.json` (no tolerance cell, no `backends` key
+  added; round-tripped through `json.load`/`json.dumps(indent=2)` before
+  editing to confirm the file's existing formatting survives an
+  edit-and-reserialize).
+- Full unit gate, `build` tree (`SYNTH_BUILD_INTEGRATION_TESTS=ON`,
+  `CMAKE_BUILD_TYPE=Release`): the same two pre-existing, not-ours failures
+  (`synthesize-python-api-wheel-test`, `synthesize-vits-python-unit`'s sole
+  error `test_quantization_reports_match_current_artifacts`). No third.
+- `scripts/ci/clang-format.sh --check-diff`: clean (only `.md`/`.json`
+  changed).
+- `git status --porcelain` checked before staging: no `.gguf`, `.pcm` or
+  `/usr/bin/time` log staged; all scratch files for this task live under
+  `/tmp/qwen3-tts-task6/`, outside the worktree.
+
 ## Open Questions for Intake
 
 1. Confirm the codec decoder topology against upstream rather than against a

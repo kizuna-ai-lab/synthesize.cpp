@@ -1,6 +1,6 @@
 # Execution Backend Policy
 
-Status: Confirmed, last updated on 2026-08-17.
+Status: Confirmed, last updated on 2026-08-20.
 
 ## Shared Inference Graph
 
@@ -532,3 +532,47 @@ CPU audio as the codec decoder's TF32 arithmetic predicts.
 
 This is a placement-and-agreement result only. Gate 5's latency, real-time factor
 and peak memory are not claimed for it.
+
+### qwen3-tts-12hz-1-7b-voicedesign carries no CUDA sub-grid either, on the same measured shape
+
+Recorded 2026-08-20 by Stage 3 Plan 3 Task 6. Unlike Base, this variant
+introduces no new graphs at all -- no reference-audio path, so no speaker
+encoder and no codec encoder for ICL enrollment. It is Stage 1's own graph
+set (text frontend, talker, codec decoder) at the 1.7B talker's width, so
+there was no placement decision to make here, only a measurement of the one
+Stage 1 already made.
+
+This variant's tolerance grid tracks two stages, and only one of them can
+move under CUDA. `public` does, through the same Stage 1 codec-decoder twin
+Base's own `public` cell exercises. `replay` does not: its only probe is
+`prefill`, and `tests/qwen3_tts_voicedesign_prefill_real.cpp:289` calls
+`ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)` directly -- this
+driver takes no backend argument at all, so there is no "CUDA" request to
+even make for it, not merely one that would return the CPU numbers back.
+
+Since `tests/python/test_tolerance_coverage.py` requires a `backends`
+sub-grid to carry a variant's full stage set, and `replay` cannot move, a
+`backends.CUDA` sub-grid here would face the identical choice the Base
+subsection above declined: fabricate a `replay` CUDA cell out of `replay`'s
+own CPU numbers, or leave the sub-grid uncommitted. **It is left
+uncommitted**, and the one real measurement is recorded in
+`docs/porting/families/qwen3-tts.md` ("Stage 3: VoiceDesign Package, Plan 3
+Task 6") instead: on the family's own fixed VoiceDesign measurement workload
+(text, description, language, seed and thread count reused verbatim from
+Plan 3 Task 5), BF16 synthesizes in 18.92 s on CPU against 17.76 s on CUDA
+(RTF 4.64 -> 4.35), a **6.16%** end-to-end gain -- smaller than Base's own
+~6.5%/6.3% (`qwen3-tts.md:3440-3441`; 6.47%/6.35% unrounded), which is the
+direction Stage 3's design spec predicted for a talker 3.2x larger than
+Base's, held on the CPU by the discrete-outputs rule the same way. 11 of 11
+applicable `public`-seam checks pass under CUDA, and the CUDA waveform
+differs from the CPU one in bytes (cosine 0.9999988, max_abs 0.002414
+against the same seed and workload), which is the codec decoder's TF32
+arithmetic showing up exactly as gate 2's own tolerance model predicts, on a
+different package and case than Base's own comparison and not claimed to
+reproduce it exactly.
+
+No CUDA threshold was derived for this variant either. Unlike Base, there is
+also no hypothetical future graph within it to pre-derive one for -- its
+graph set is exhausted by the codec decoder and the prefill probe -- so the
+measured cosine and max_abs figures above stand as agreement evidence only,
+not as an input to any committed gate.

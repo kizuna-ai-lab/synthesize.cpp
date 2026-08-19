@@ -53,6 +53,26 @@ CMakeUserPresets.json
 # No trailing slash, for the same symlink reason as the block above.
 /reports/porting/**/oracle
 
+# Stage 3 Plan 2 Task 4: a SECOND dump directory from the same script, one
+# level below the same variant, for the non-empty-instruct case
+# tests/qwen3_tts_voicedesign_prefill_real.cpp compares beside the
+# empty-instruct control above. A second `--out` was required rather than
+# reusing `oracle/`: the dumper always writes the same four fixed filenames,
+# so a second run into the SAME directory would silently overwrite the
+# control's own prefill.f32 -- the file the fault-injection measurement in
+# tests/tolerances/qwen3-tts.json depends on staying what Plan 1 captured.
+# Same reasoning as the block above, one name over -- including its breadth:
+# `**` spans zero or more directories, so this matches an entry NAMED
+# `oracle-instruct` at ANY depth under reports/porting/, not only at the
+# <family>/<variant> depth the dumper writes. Deliberate, for the same
+# reason: the payload is regenerable, so over-ignoring costs a regeneration
+# and under-ignoring costs a committed golden payload. What keeps the
+# metadata files beside it committable is the NAME, not the depth.
+# (Stated here rather than inherited: the block above described itself as
+# narrower than it is until 2026-08-19, so a bare cross-reference would have
+# imported a claim that was wrong.)
+/reports/porting/**/oracle-instruct
+
 # Agent scratch. Nothing here is a project artifact: it is whatever a session
 # wrote while investigating. Added 2026-08-10 after `git add -A` swept 56 files
 # and 9.0 MB of rate-sweep probes, WAVs and f32 dumps into a commit -- the

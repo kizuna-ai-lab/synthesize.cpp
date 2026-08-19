@@ -147,6 +147,45 @@ synth_status_t create_x_vector_profile(const HParams &                         h
                                        const char *&                           out_diagnostic_code,
                                        const char *&                           out_diagnostic_message);
 
+// The maximum instruct this family will accept, in bytes.
+//
+// A bound rather than a vocabulary. Upstream applies neither, so this is the
+// project's own limit and exists only so a caller cannot hand the tokenizer an
+// unbounded string; it is generous against the descriptions upstream's own
+// examples use. NOT a semantic judgement about what makes a good description --
+// design D2 rules that out.
+constexpr size_t kMaxDesignInstructBytes = 4096;
+
+// The prepared Description Text payload. One member, deliberately: upstream
+// tokenizes the instruct at synthesis, so there is nothing to precompute, and
+// storing token ids instead would bind the Profile to a package's frontend for
+// no gain (design D1, D6).
+struct DesignInstruct {
+    std::string instruct;
+};
+
+// Validates a description and prepares its payload.
+//
+// Encoding, length, and round-trippability -- NOTHING else. See design D2:
+// OmniVoice's arm can reject on a closed attribute vocabulary because upstream
+// defines one, and this family's upstream defines none, so any rule invented
+// here would refuse input upstream accepts. An empty instruct is VALID (D3) --
+// it selects the unconditioned path, which is the same path Plan 1's
+// completion gate measured.
+//
+// The third invariant is an EMBEDDED NUL (PR #15's reviewer finding), and it
+// is not a semantic judgement either: gguf's KV API is null-terminated in both
+// directions, so an instruct carrying a 0x00 would serialize and load back as
+// the prefix before that byte -- a different Voice, returned with SYNTH_OK.
+// Refused at this entry, which is what makes the writer's own truncation
+// unreachable through the public seam rather than merely documented; see
+// serialize_design_profile's own comment on gguf_set_val_str (profile.cpp) for
+// the limitation and the two alternatives that were rejected in favour of
+// this one.
+//
+// `output` is left untouched on any non-OK return.
+synth_status_t create_design_profile(const HParams & hparams, const std::string & instruct, DesignInstruct & output);
+
 // The prepared clone payload a transcript-assisted (ICL) Reference Audio
 // Voice Profile carries. D5 (the design's own ruling) tabulates
 // exactly three rows for this mode, and this struct is those three rows: the
@@ -433,6 +472,49 @@ inline constexpr size_t kPrescanKnownKeyCount = sizeof(kPrescanKnownKeys) / size
 inline constexpr int64_t kPrescanKvCountXVector = 10;
 inline constexpr int64_t kPrescanKvCountIcl     = 12;
 
+// Task 3's design envelope has its own, wholly separate whitelist table
+// rather than a third PrescanKeyScope grafted onto kPrescanKnownKeys above:
+// moving `kind`/`ref_rms`/`language_tag` out of kCommon to make room for a
+// design-only scope would silently shrink what
+// tests/qwen3_tts_profile_test.cpp's own writer-agreement tests compute by
+// filtering that table on `scope == kCommon` / `kCommon || kIclOnly`, and
+// break them. There is no per-"kind" split the way PrescanKeySpec needs one
+// -- there is only one design shape -- so DesignPrescanKeySpec carries no
+// `scope` field at all.
+//
+// Declared here, `inline constexpr` at namespace scope like
+// kPrescanKnownKeys above, for the identical reason: a writer-agreement test
+// (tests/qwen3_tts_profile_test.cpp) drives the REAL serialize_design_profile
+// and checks its real output's key set against this SAME table, rather than
+// a second hand-transcription of it.
+struct DesignPrescanKeySpec {
+    const char * key;
+    gguf_type    type;
+    bool         is_array;
+    uint64_t     count;
+};
+
+// The exact, closed set of metadata keys serialize_design_profile ever
+// emits: eight, all required, none optional. Spelled as raw literals here
+// rather than through profile.cpp's own kKeyInstruct constant, matching how
+// kPrescanKnownKeys above spells its own ten clone keys -- this table has to
+// be usable by a test without depending on anything file-local to
+// profile.cpp.
+inline constexpr DesignPrescanKeySpec kPrescanDesignKnownKeys[] = {
+    { "general.architecture",                      GGUF_TYPE_STRING, false, 0  },
+    { "synthesize.voice_profile.format_version",   GGUF_TYPE_UINT32, false, 0  },
+    { "synthesize.voice_profile.model_family",     GGUF_TYPE_STRING, false, 0  },
+    { "synthesize.voice_profile.schema",           GGUF_TYPE_STRING, false, 0  },
+    { "synthesize.voice_profile.schema_version",   GGUF_TYPE_UINT32, false, 0  },
+    { "synthesize.voice_profile.compatibility_id", GGUF_TYPE_UINT8,  true,  32 },
+    { "synthesize.voice_profile.content_sha256",   GGUF_TYPE_UINT8,  true,  32 },
+    { "synthesize.voice_profile.instruct",         GGUF_TYPE_STRING, false, 0  },
+};
+inline constexpr size_t kPrescanDesignKnownKeyCount =
+    sizeof(kPrescanDesignKnownKeys) / sizeof(kPrescanDesignKnownKeys[0]);
+// Exactly eight, never a ceiling -- this writer never produces anything else.
+inline constexpr int64_t kPrescanKvCountDesign = int64_t(kPrescanDesignKnownKeyCount);
+
 // Serializes `profile` into a fresh v1 envelope. `compatibility_id` is the
 // Loaded Model's own 32-byte Profile Compatibility ID (already decoded from
 // the package's hex metadata by model-handle.h's
@@ -513,6 +595,48 @@ synth_status_t serialize_icl_profile(const HParams &    hparams,
                                      const uint8_t (&compatibility_id)[32],
                                      std::vector<uint8_t> & out_bytes);
 
+// Serializes `profile` into a fresh v1 envelope of its OWN schema,
+// "qwen3-tts-voice-design" -- a DIFFERENT string from serialize_x_vector_profile
+// / serialize_icl_profile's "qwen3-tts-voice-clone" above, not a third `kind`
+// value under that schema. The two names are not invented for this function:
+// they are the SAME pair weights.cpp's own read_profile_contract already
+// requires of a Loaded Model's package metadata (`expected_schema`, chosen
+// from `profile_sources & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO`) -- reused
+// here for the Serialized Voice Profile envelope rather than a third name,
+// because a design payload shares almost nothing with a clone one (no
+// x-vector, no `kind`, nothing audio-derived) and `schema` is already this
+// family's own way of naming that split at the package level.
+//
+// The envelope this writer emits carries ZERO tensors -- design D6 stores the
+// instruct TEXT verbatim and load_profile_from_memory re-tokenizes it at
+// synthesis, so there is nothing to precompute and nothing to check for a
+// wrong shape against a package width the way `enc_dim` is checked on the
+// clone path. write_envelope already handles an empty tensor list: `n_tensors
+// == 0` is a legal GGUF header and neither the alignment padding nor the
+// digest step below it assumes a nonzero tensor count.
+//
+// Returns SYNTH_ERR_INVALID_ARG if `profile.instruct` exceeds
+// kMaxDesignInstructBytes, is not well-formed UTF-8, or carries an embedded
+// NUL -- all three re-asserted here independently of whatever
+// create_design_profile already checked, the same reason
+// serialize_x_vector_profile re-checks `language_tag` against
+// kMaxLanguageTagLength: this writer has no way to know whether `profile`
+// reached it through create_design_profile or was built by hand, and it must
+// never be able to emit an envelope its own reader refuses. The NUL clause
+// carries a second obligation the other two do not: gguf's null-terminated KV
+// setter would TRUNCATE such a string rather than refuse it, so without the
+// re-check this writer could emit an envelope its reader accepts as a
+// different Voice, which is worse than refusing.
+//
+// `hparams` is unused (mirrors create_design_profile's own signature, and for
+// the same reason its own header comment gives): the payload does not depend
+// on the package, and nothing here range-checks against a package width.
+// Taken anyway so this writer's signature matches its clone siblings' shape.
+synth_status_t serialize_design_profile(const HParams &        hparams,
+                                        const DesignInstruct & profile,
+                                        const uint8_t (&compatibility_id)[32],
+                                        std::vector<uint8_t> & out_bytes);
+
 // Parses a v1 envelope of EITHER kind out of untrusted `data`/`data_size`,
 // against the caller's own `compatibility_id` and the package's own declared
 // widths in `hparams`. On success `out_payload` holds an `XVectorProfile` for
@@ -520,6 +644,40 @@ synth_status_t serialize_icl_profile(const HParams &    hparams,
 // `ProfileFamilyTag::Qwen3TtsClone` that covers both -- the payload's own
 // `CloneMode` is what discriminates (voice-profile-handle.h), and IclProfile's
 // first-member layout is what makes reading it back well-defined.
+//
+// TASK 3 ADDS A THIRD PATH, for serialize_design_profile's own envelope
+// (`ProfileFamilyTag::Qwen3TtsDesign`, payload a `DesignInstruct`). It is
+// resolved FIRST, in profile.cpp, by a self-contained prescan
+// (prescan_design_buffer) against that envelope's own closed, eight-key,
+// zero-tensor shape -- BEFORE prescan_buffer or any of the clone path's own
+// checks ever run. A buffer that does not match the design shape falls
+// through to the clone path exactly as it did before this task, unmodified;
+// one that does match returns from an entirely separate block that never
+// reaches the x-vector tensor lookup, the `tensor_bytes == 0` refusal, or the
+// `element_count == enc_dim` comparison below. THAT is what keeps a design
+// envelope loadable without touching -- or being able to weaken -- the
+// check that protects a clone envelope: the two paths do not share a single
+// line of size arithmetic. See profile.cpp's own comment at the top of that
+// block for why routing on the raw, untrusted bytes' own declared tensor
+// count is safe (each path fully and independently validates the bytes
+// regardless of which one this routing picked).
+//
+// THAT THIRD PATH ALSO ASKS `hparams` ONE QUESTION (PR #15's reviewer
+// finding): the package must declare SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT,
+// or the envelope is refused with SYNTH_ERR_UNSUPPORTED_VOICE. Routing on the
+// BUFFER's own shape decides which validation runs, never whether the
+// resulting Voice Profile is one this Model can be conditioned on -- and
+// `compatibility_id`, the only other per-Model check on that path, is a
+// digest of the package derivable by anyone holding it, so it proves the
+// envelope was not tampered with and nothing about which conditioning path it
+// belongs to. Before this check, a hand-built design envelope carrying a Base
+// package's compatibility_id loaded as `ProfileFamilyTag::Qwen3TtsDesign`
+// against a Base Model. Note the asymmetry with the CREATE side, which is
+// real and not an inconsistency: create_design_profile can ignore `hparams`
+// because its caller holds the Model and has checked the variant; this
+// function's caller (src/voice-profile.cpp's load dispatcher) has only
+// checked SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE, which a Base package
+// publishes too.
 //
 // WHY `HParams` AND NOT A BARE `enc_dim`, WHICH IS WHAT THIS TOOK THROUGH
 // PLAN 2. That parameter's own justification said, in as many words, that the
@@ -529,7 +687,8 @@ synth_status_t serialize_icl_profile(const HParams &    hparams,
 // true, and range-checking them is exactly the class of check the old comment
 // named as absent. It still needs no `Model`: every bound is a plain scalar
 // on `HParams` (`speaker_encoder.enc_dim`, `codec.decoder.codebook_size`,
-// `codec.decoder.quantizer_count`, `talker.text_vocab_size`), so taking the
+// `codec.decoder.quantizer_count`, `talker.text_vocab_size`, and -- since
+// PR #15 -- the design path's `profile_sources`), so taking the
 // struct rather than the Model keeps this function reachable from a `unit`
 // test with a synthetic package, which is the same substitution
 // create_x_vector_profile and create_icl_profile above already make and
@@ -600,8 +759,10 @@ synth_status_t serialize_icl_profile(const HParams &    hparams,
 //     not equal `enc_dim`, the content digest does not match, or a
 //     payload-value invariant above is violated) -> SYNTH_ERR_INVALID_ARG;
 //   * a structurally well-formed envelope for a DIFFERENT model_family,
-//     schema, schema_version, or exact compatibility_id -> SYNTH_ERR_UNSUPPORTED_VOICE
-//     (this loader understands the envelope, just not for this Model);
+//     schema, schema_version, or exact compatibility_id, or a DESIGN envelope
+//     handed to a package whose `profile_sources` does not name
+//     description-text -> SYNTH_ERR_UNSUPPORTED_VOICE (this loader
+//     understands the envelope, just not for this Model);
 //   * an unrecognized `kind` value (anything other than "x-vector" or "icl")
 //     -> SYNTH_ERR_INVALID_ARG: unlike the three mismatches above, `kind` is
 //     this ONE schema's own internal tag, not a different schema/version/

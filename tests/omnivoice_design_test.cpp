@@ -269,7 +269,8 @@ int check_dispatch(const char * scratch_dir) {
     }
 
     // --- A random (non-concrete) preparation seed -> INVALID_ARG, named
-    // diagnostic (docs/voice-conditioning.md:57, docs/c-interface.md:570).
+    // diagnostic (docs/voice-conditioning.md:57, and docs/c-interface.md's
+    // v1 Description Text Profile Preparation section).
     {
         SeenDiagnostic                         diagnostic;
         const synth_diagnostic_sink_t          sink    = make_sink(diagnostic);
@@ -294,7 +295,8 @@ int check_dispatch(const char * scratch_dir) {
     // --- A well-formed but unsupported description language ("ja" is a
     // real BCP-47 tag but not one of this package's en/zh description
     // languages) -> SYNTH_ERR_UNSUPPORTED_INPUT, not UNSUPPORTED_LANGUAGE
-    // (docs/c-interface.md:568: validated against description-language
+    // (docs/c-interface.md's v1 Description Text Profile Preparation
+    // section: validated against description-language
     // support, not the synthesis Language Capability Catalog).
     {
         SeenDiagnostic                         diagnostic;

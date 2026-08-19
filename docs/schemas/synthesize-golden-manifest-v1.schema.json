@@ -50,7 +50,7 @@
       "$ref": "#/$defs/relativePath"
     },
     "suite_status": {
-      "description": "Additive, optional. The only thing that reads this field is the top-level if/then below: set to \"incremental\" it relaxes cases.minItems from 12 to 0, and every previously-committed manifest omits it and stays at the 12-case floor docs/port-validation.md's `cases` row describes. Exists because qwen3-tts-12hz-1-7b-voicedesign is the first Reference Model Variant committed before its case suite exists -- its cases arrive in Plan 2, in one commit, not staged case-by-case across the tasks that came before -- and the floor is a Confirmed contract that a manifest must opt INTO relaxing, not one a manifest-wide default can quietly drop.",
+      "description": "Additive, optional. TWO things read this field: the top-level if/then below, where \"incremental\" relaxes cases.minItems from 12 to 0; and tests/python/test_golden_manifests.py's suite_status guard, which asserts the set of manifests carrying it equals a named allowlist AND that carrying it means zero cases while omitting it means at least twelve. That guard was added 2026-08-19 because the schema and the Python checks previously waived the floor on different conditions and neither knew about the other. Existed because qwen3-tts-12hz-1-7b-voicedesign was the first Reference Model Variant committed before its case suite existed. That interval is CLOSED: its 13 cases landed 2026-08-19 and the field was removed from it, so the allowlist is now empty and NO committed manifest carries this field. Kept in the schema because the floor is a Confirmed contract that a future manifest must opt INTO relaxing, not one a manifest-wide default can quietly drop -- and any manifest that opts in must also be added to that allowlist, or the guard fails.",
       "const": "incremental"
     },
     "cases": {
@@ -264,10 +264,10 @@
       }
     },
     "profileContract": {
-      "description": "Declares that this package's Voices are constructed from a Voice Profile (reference audio and/or a serialized profile blob) rather than only a preset catalog. Additive, optional widening: present only on a packageContract whose voices.mode is profile-sources; every previously-committed manifest omits it and stays valid.",
+      "description": "Declares that this package's Voices are constructed from a Voice Profile (reference audio, description text, and/or a serialized profile blob) rather than only a preset catalog. Additive, optional widening: present only on a packageContract whose voices.mode is profile-sources; every previously-committed manifest omits it and stays valid. `reference` is required only when `reference_audio` is among `sources` -- a package whose only declared source is `description_text` builds no Voice Profile from a recording, so it has no reference-audio limits to pin (weights.cpp's read_profile_and_speaker_encoder reads the synthesize.reference.* block only when the package carries a speaker encoder, which it cross-checks against exactly the same condition). Widened 2026-08-19, Stage 3 Plan 2 Task 7, to admit `description_text` and this conditional requirement: until then every profileContract in the tree happened to declare reference_audio, so `reference` being unconditionally required was indistinguishable from being required only for that source.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "schema_version", "sources", "reference"],
+      "required": ["schema", "schema_version", "sources"],
       "properties": {
         "schema": {
           "$ref": "#/$defs/key"
@@ -282,7 +282,7 @@
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "enum": ["reference_audio", "serialized_profile"]
+            "enum": ["reference_audio", "description_text", "serialized_profile"]
           }
         },
         "reference": {
@@ -324,6 +324,17 @@
             }
           }
         }
+      },
+      "if": {
+        "properties": {
+          "sources": {
+            "contains": { "const": "reference_audio" }
+          }
+        },
+        "required": ["sources"]
+      },
+      "then": {
+        "required": ["reference"]
       }
     },
     "packageContract": {
@@ -574,8 +585,8 @@
           "type": ["integer", "string"]
         },
         "description": {
-          "type": "string",
-          "minLength": 1
+          "description": "An empty string is legal for a description_text Voice whose family treats it as a meaningful, no-instruction request -- qwen3-tts's design decision D3, exercised by this variant's own empty-instruct Port Validation Case. Widened from `minLength: 1` on 2026-08-19, Stage 3 Plan 2 Task 7, when that case needed to be expressible; every previously-committed description_text case (omnivoice's own two) carries a non-empty string regardless, so this widening changes nothing already committed.",
+          "type": "string"
         }
       },
       "oneOf": [

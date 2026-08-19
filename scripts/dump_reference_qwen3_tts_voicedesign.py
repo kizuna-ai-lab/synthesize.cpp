@@ -52,6 +52,22 @@ cases yet, so unlike the Base dumper there is no ``--manifest`` form to add):
       --checkpoint models/qwen3-tts-12hz-1-7b-voicedesign-src \\
       --text "Qwen3-TTS is awesome!" --instruct "" --language English \\
       --out reports/porting/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign/oracle/
+
+STAGE 3 PLAN 2 TASK 4: --instruct already took an arbitrary string from Plan
+1 on (the module docstring above and --instruct's own help text never
+special-cased "" beyond documenting what upstream does with it), so this
+file needed no code change to serve as Task 4's own dumper -- only a second
+invocation, into a SEPARATE --out directory so the empty-instruct dump above
+is never overwritten (this file always writes the same four fixed
+filenames):
+
+    uv run --project scripts/envs/qwen3-tts --locked python \\
+      scripts/dump_reference_qwen3_tts_voicedesign.py \\
+      --checkpoint models/qwen3-tts-12hz-1-7b-voicedesign-src \\
+      --text "Qwen3-TTS is awesome!" \\
+      --instruct "A cheerful, bright female voice speaking with fast pacing and high energy." \\
+      --language English \\
+      --out reports/porting/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign/oracle-instruct/
 """
 
 from __future__ import annotations

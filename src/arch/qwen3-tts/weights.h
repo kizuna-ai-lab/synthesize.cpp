@@ -353,6 +353,25 @@ inline bool has_preset_voice_catalog(const HParams & hparams) {
 // and its cross-checks are untouched, and the split is the same one the ICL
 // precedent used. Random Seed stays unadvertised at every stage of this
 // family's ladder; nothing here implements it.
+//
+// **Second erratum, 2026-08-18 -- Stage 3 Plan 2's Task 5, superseding the
+// withholding above without touching the paragraph it corrected.** The
+// erratum immediately above is a true account of a decision that held for a
+// real interval, not a mistake to paper over, so it stays; but read on its
+// own past this point it would mislead a reader about what the function
+// currently does. Both reasons it gave for withholding
+// SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT are now closed: Task 2 gave
+// `synth_voice_profile_create_from_description` a Qwen3-TTS arm, so the seam
+// no longer routes every request to the generic unsupported fallback, and
+// Task 3 made `load_profile_from_memory` route on a design envelope's own
+// declared kind before the x-vector size check runs, so a design envelope
+// loads without ever reaching the check this erratum cited. With both gaps
+// closed, `fill_voice_profile_capability` publishes `hparams.profile_sources`
+// directly again -- DESCRIPTION_TEXT for VoiceDesign, REFERENCE_AUDIO for
+// Base, SERIALIZED_PROFILE alongside either -- exactly the shape the
+// paragraph above this erratum described before the withholding, and exactly
+// what the function's own body now reads as. See that function's own comment
+// (weights.cpp) for the full sequencing.
 void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & info);
 
 }  // namespace synth::qwen3tts

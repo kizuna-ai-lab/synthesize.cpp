@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -866,6 +867,154 @@ class ProfileSourceDeclarationTests(unittest.TestCase):
         profile = convert.variant_profile({"tts_model_type": "custom_voice", "tts_model_size": "0b6"})
         self.assertEqual(convert.profile_source_names(profile), [])
         self.assertIsNone(convert.profile_schema_name(profile))
+
+
+class VariantKindAgreementTests(unittest.TestCase):
+    """The variant string and the checkpoint's `tts_model_type` have to agree.
+
+    They are two independent statements about one package, and they reach the
+    writer from two different origins: `synthesize.model_variant` is copied from
+    the intake manifest, `synthesize.voice.profile_sources` is derived from
+    `tts_model_type`. Nothing made them agree, so a manifest naming the wrong
+    variant produced a package that called itself one thing and declared the
+    Voice Profile sources of another. What that is is a MISLABELLED package, not
+    an unimplemented one -- neither statement is the implementation, and
+    Description Text has no tensor footprint that could corroborate either.
+    """
+
+    # `custom_voice` and `voice_design` both carry neither encoder; only `base`
+    # carries a speaker encoder. Matching the real `variant_profile` output
+    # matters because the profile is what the check reads `model_type` off.
+    @staticmethod
+    def _profile(model_type: str) -> "convert.VariantProfile":
+        carries = model_type == "base"
+        return convert.VariantProfile(model_type, carries, carries, "Display Name", "0.0B")
+
+    COMMITTED = (
+        ("qwen3-tts-12hz-0-6b-base", "base"),
+        ("qwen3-tts-12hz-0-6b-customvoice", "custom_voice"),
+        ("qwen3-tts-12hz-1-7b-voicedesign", "voice_design"),
+    )
+
+    def test_each_committed_variant_agrees_with_its_own_model_type(self) -> None:
+        for variant, model_type in self.COMMITTED:
+            with self.subTest(variant=variant):
+                convert.check_variant_kind(variant, self._profile(model_type))
+
+    def test_a_variant_naming_another_kind_is_refused(self) -> None:
+        """Every cross pair among the three real kinds, both directions."""
+        for variant, own_type in self.COMMITTED:
+            for _, other_type in self.COMMITTED:
+                if other_type == own_type:
+                    continue
+                with self.subTest(variant=variant, model_type=other_type):
+                    with self.assertRaises(convert.ConverterError):
+                        convert.check_variant_kind(variant, self._profile(other_type))
+
+    def test_a_future_size_under_a_known_kind_is_accepted(self) -> None:
+        """Reading the kind SEGMENT, not the whole string, is what buys this.
+
+        A table of whole variant strings would refuse all three of these for no
+        reason other than not having been updated to name them.
+        """
+        for variant, model_type in (
+            ("qwen3-tts-24hz-3b-base", "base"),
+            ("qwen3-tts-24hz-3b-customvoice", "custom_voice"),
+            ("qwen3-tts-24hz-3b-voicedesign", "voice_design"),
+        ):
+            with self.subTest(variant=variant):
+                convert.check_variant_kind(variant, self._profile(model_type))
+
+    def test_an_unrecognized_kind_is_governed_by_nothing(self) -> None:
+        """Known-value, not an enumeration lock: a kind this build has never
+        heard of passes whatever `model_type` it arrives with. A new kind is a
+        Voice Mode plus a source, so it has to be added here deliberately."""
+        for variant in ("qwen3-tts-24hz-3b-dialogue", "qwen3-tts-test-variant", "synthetic"):
+            for model_type in ("base", "custom_voice", "voice_design"):
+                with self.subTest(variant=variant, model_type=model_type):
+                    convert.check_variant_kind(variant, self._profile(model_type))
+
+    # The two below drive `add_metadata` against a real GGUFWriter rather than
+    # calling the check directly: the point of putting the guard at the top of
+    # `add_metadata` is that the one path to a written package cannot route
+    # around it, and only exercising that path proves it.
+    @staticmethod
+    def _args_with_variant(variant: str, model_type: str) -> tuple:
+        args = ProfileMetadataEmissionTests._minimal_add_metadata_args(
+            carries_speaker_encoder=(model_type == "base"), model_type=model_type)
+        args[0]["variant"] = variant
+        return args
+
+    def test_the_write_path_refuses_a_mismatched_variant(self) -> None:
+        args = self._args_with_variant("qwen3-tts-12hz-1-7b-voicedesign", "custom_voice")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "meta.gguf"
+            writer = convert.GGUFWriter(str(path), convert.ARCH_KEY)
+            with self.assertRaises(convert.ConverterError):
+                convert.add_metadata(writer, *args)
+            # Refused before anything reached the file, not after.
+            self.assertFalse(path.exists())
+
+    def test_the_write_path_carries_an_agreeing_variant_through(self) -> None:
+        args = self._args_with_variant("qwen3-tts-12hz-0-6b-customvoice", "custom_voice")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "meta.gguf"
+            writer = convert.GGUFWriter(str(path), convert.ARCH_KEY)
+            convert.add_metadata(writer, *args)
+            writer.write_header_to_file()
+            writer.write_kv_data_to_file()
+            writer.write_tensors_to_file()
+            writer.close()
+            reader = convert.GGUFReader(str(path))
+            # Materialized inside the block: the reader memory-maps the file,
+            # which the TemporaryDirectory removes on exit.
+            metadata = {name: field.contents() for name, field in reader.fields.items()}
+        self.assertEqual(metadata["synthesize.model_variant"], "qwen3-tts-12hz-0-6b-customvoice")
+        self.assertNotIn("synthesize.voice.profile_sources", metadata)
+
+
+class VariantKindTableAgreementTests(unittest.TestCase):
+    """The loader's kind table and the converter's must name the same kinds.
+
+    They are independent literals in two languages -- `kVariantKinds` in
+    `src/arch/qwen3-tts/weights.cpp` and `MODEL_TYPE_BY_VARIANT_KIND` here --
+    and both sides' comments say they must agree, which until 2026-08-20 was
+    the only thing making them. Drift is not symmetric: a kind added to the
+    CONVERTER alone just means packages this project writes go ungoverned by
+    the loader, but a kind added to the LOADER alone makes it refuse packages
+    the converter happily writes. That direction is an over-refusal on real
+    output, which is the failure this whole rule was shaped to avoid, so it
+    gets a test rather than a comment.
+    """
+
+    def _loader_kinds(self) -> list[str]:
+        """The loader table's entries IN ORDER, duplicates preserved.
+
+        Returning a list rather than a set is deliberate: a duplicated entry
+        collapses in a set and would satisfy both assertions below while the
+        C++ table carried two rows for one kind -- the parse would agree with
+        the converter and the count would still read three.
+        """
+        source = (REPO_ROOT / "src" / "arch" / "qwen3-tts" / "weights.cpp").read_text()
+        start = source.index("constexpr VariantKind kVariantKinds[]")
+        end = source.index("};", start)
+        # Each entry's first field is the kind string; nothing else in the
+        # block is a quoted literal, so this stays a parse of the table rather
+        # than a grep over the file.
+        return re.findall(r'\{\s*"([^"]+)"', source[start:end])
+
+    def test_the_two_kind_tables_name_the_same_kinds(self) -> None:
+        self.assertEqual(set(self._loader_kinds()), set(convert.MODEL_TYPE_BY_VARIANT_KIND))
+
+    def test_the_loader_table_has_no_duplicate_entries(self) -> None:
+        kinds = self._loader_kinds()
+        self.assertEqual(len(kinds), len(set(kinds)), kinds)
+
+    def test_the_table_this_test_parses_is_not_empty(self) -> None:
+        """Guards the parse itself: a renamed table would silently yield an
+        empty list and make the comparison above pass against an empty
+        converter table, which is exactly the drift it exists to catch."""
+        self.assertEqual(len(self._loader_kinds()), 3)
 
 
 if __name__ == "__main__":

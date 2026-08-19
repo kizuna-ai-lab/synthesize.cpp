@@ -95,6 +95,97 @@ synth_status_t create_x_vector_profile(const HParams &                         h
     return SYNTH_OK;
 }
 
+namespace {
+
+// Strict UTF-8, structurally. Rejects over-long encodings, surrogates and
+// out-of-range code points as well as truncated sequences, because a validator
+// that only checked continuation-byte counts would pass bytes the tokenizer
+// then has to guess about.
+bool is_well_formed_utf8(const std::string & text) {
+    size_t index = 0;
+    while (index < text.size()) {
+        const unsigned char lead  = static_cast<unsigned char>(text[index]);
+        size_t              extra = 0;
+        uint32_t            code  = 0;
+        if (lead < 0x80) {
+            index += 1;
+            continue;
+        } else if ((lead & 0xE0) == 0xC0) {
+            extra = 1;
+            code  = lead & 0x1Fu;
+        } else if ((lead & 0xF0) == 0xE0) {
+            extra = 2;
+            code  = lead & 0x0Fu;
+        } else if ((lead & 0xF8) == 0xF0) {
+            extra = 3;
+            code  = lead & 0x07u;
+        } else {
+            return false;
+        }
+        if (index + extra >= text.size()) {
+            return false;
+        }
+        for (size_t step = 1; step <= extra; ++step) {
+            const unsigned char continuation = static_cast<unsigned char>(text[index + step]);
+            if ((continuation & 0xC0) != 0x80) {
+                return false;
+            }
+            code = (code << 6) | (continuation & 0x3Fu);
+        }
+        const bool overlong =
+            (extra == 1 && code < 0x80) || (extra == 2 && code < 0x800) || (extra == 3 && code < 0x10000);
+        if (overlong || code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF)) {
+            return false;
+        }
+        index += extra + 1;
+    }
+    return true;
+}
+
+// A SEPARATE predicate from is_well_formed_utf8 above, not a missing case in
+// it: U+0000 is a structurally valid code point encoded as a single 0x00 byte,
+// so the `lead < 0x80` arm accepts it and is right to. What refuses it is a
+// SERIALIZATION constraint, not an encoding one -- gguf's KV API is
+// null-terminated in both directions (see serialize_design_profile's own
+// comment on gguf_set_val_str), so an instruct carrying a 0x00 anywhere in
+// `[0, size())` cannot survive a round trip through an envelope: it would come
+// back as the prefix before that byte, a DIFFERENT Voice that still loads
+// cleanly. This project refuses such input rather than accepting and
+// corrupting it, which is the same posture the envelope loader takes towards
+// every other malformed shape.
+//
+// Any position counts, including the last: a std::string of size N whose byte
+// N-1 is 0x00 still hands `c_str()` an N-1-character string.
+bool contains_embedded_nul(const std::string & text) {
+    return text.find('\0') != std::string::npos;
+}
+
+}  // namespace
+
+synth_status_t create_design_profile(const HParams & hparams, const std::string & instruct, DesignInstruct & output) {
+    (void) hparams;  // The payload does not depend on the package; the CALLER
+                     // checks the variant, in voice-profile.cpp's dispatch,
+                     // which is the one site holding the Model.
+    if (instruct.size() > kMaxDesignInstructBytes) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if (!is_well_formed_utf8(instruct)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    // Reviewer finding (PR #15): the ENTRY is where the serializer's
+    // null-terminated-KV truncation is closed. Refusing here is what makes
+    // "a Voice Profile serializes and loads back as the same Voice" true for
+    // every DesignInstruct the public seam can produce -- see
+    // contains_embedded_nul's own comment above for why this is not something
+    // is_well_formed_utf8 should have caught, and serialize_design_profile's
+    // for what the writer would otherwise have done with such a string.
+    if (contains_embedded_nul(instruct)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    output.instruct = instruct;
+    return SYNTH_OK;
+}
+
 synth_status_t create_icl_profile(const HParams &                     hparams,
                                   const SpeakerEncoderWeights &       speaker_encoder,
                                   const CodecEncoderWeights &         codec_encoder,
@@ -272,6 +363,22 @@ constexpr const char * kEnvelopeModelFamily    = "qwen3-tts";
 // profile.h's header comment on why this is one schema for both clone modes
 // rather than two schemas.
 constexpr const char * kEnvelopeSchema         = "qwen3-tts-voice-clone";
+// The design envelope's OWN schema -- deliberately a DIFFERENT string from
+// kEnvelopeSchema above, not a third `kind` value under it. The same two
+// names weights.cpp's own read_profile_contract already requires of a Loaded
+// Model's package metadata (`expected_schema`), reused here for the
+// Serialized Voice Profile envelope rather than invented a third time. A
+// design envelope carries no `kind` key at all: this string is the ONE
+// metadata field a design envelope and a clone envelope both carry under the
+// same name. It does NOT decide which load path a buffer takes -- routing is
+// the whitelisted key SET/COUNT plus the zero-tensor shape
+// (prescan_design_buffer never inspects this value at all), and reachable
+// before gguf_init_from_buffer has run, let alone before this field's
+// content is decoded. This string is compared only AFTER routing has
+// already picked the design branch, to CONFIRM the envelope rather than to
+// decide which branch runs (see load_profile_from_memory's own routing
+// comment, profile.h).
+constexpr const char * kEnvelopeSchemaDesign   = "qwen3-tts-voice-design";
 constexpr uint32_t     kEnvelopeSchemaVersion  = 1;
 constexpr const char * kKindXVector            = "x-vector";
 // Plan 3 Task 9's whole addition to the envelope: a second value of the SAME
@@ -287,6 +394,9 @@ constexpr const char * kKeyReferenceFrames     = "synthesize.voice_profile.refer
 constexpr const char * kTensorXVector          = "profile.x_vector";
 constexpr const char * kTensorCodes            = "profile.codes";
 constexpr const char * kTensorReferenceTextIds = "profile.reference_text_ids";
+// The design envelope's own one payload key -- the instruct TEXT verbatim
+// (design D6), no tensor.
+constexpr const char * kKeyInstruct            = "synthesize.voice_profile.instruct";
 
 struct GgufContextDeleter {
     void operator()(gguf_context * context) const {
@@ -761,6 +871,34 @@ bool prescan_skip_value(const uint8_t * data, size_t size, size_t & offset, gguf
             if (!prescan_read(data, size, offset, length) || length > kPrescanMaxStringLength) {
                 return false;
             }
+            // An EMBEDDED NUL is refused here, before the value is skipped.
+            // gguf stores a string length-prefixed, but every reader this
+            // family uses to get one back out -- gguf_get_val_str,
+            // GgufMetadata::string -- hands back a null-terminated
+            // `const char *`. So a digest-valid buffer whose instruct is
+            // "warm,\0 low, unmistakable" declares 24 bytes on disk and
+            // yields a 5-byte Voice, with SYNTH_OK: two readers of the same
+            // bytes disagreeing about which Voice they encode.
+            //
+            // create_design_profile refuses a NUL at the ENTRY, which stops
+            // this project ever writing such an envelope. That is not the
+            // same as refusing to load one, and the load side is the side
+            // facing untrusted bytes. This check is the load side.
+            //
+            // It belongs HERE, in the shared prescan, rather than after the
+            // KV parse: the prescan already reads each string's on-disk
+            // length from the raw bytes, so the length-aware reader that
+            // detecting this was once thought to require already exists --
+            // it is the code this comment sits in. Being shared, it also
+            // closes the identical truncation on `language_tag`, which
+            // valid_bcp47_shape never sees because it runs on the already
+            // truncated value.
+            if (!prescan_has_remaining(offset, size, size_t(length))) {
+                return false;
+            }
+            if (length > 0 && std::memchr(data + offset, 0, size_t(length)) != nullptr) {
+                return false;
+            }
             if (!prescan_skip(offset, size, size_t(length))) {
                 return false;
             }
@@ -1126,6 +1264,147 @@ bool prescan_buffer(const uint8_t * data, size_t size) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Task 3: the design envelope's own pre-scan. A SEPARATE, self-contained
+// walk rather than a third scope grafted onto PrescanKeyScope/
+// kPrescanKnownKeys above, for a concrete reason: tests/qwen3_tts_profile_test.cpp
+// already computes the CLONE kinds' own exact key sets by filtering that
+// table on `scope == PrescanKeyScope::kCommon` (x-vector) and `kCommon ||
+// kIclOnly` (icl) -- moving `kind`/`ref_rms`/`language_tag` out of kCommon to
+// make room for a design-only scope would silently shrink what those filters
+// compute and break an existing, passing assertion outside this task's own
+// file list. A design envelope shares only the seven truly generic header
+// keys with a clone one (architecture/format_version/model_family/schema/
+// schema_version/compatibility_id/content_sha256) and carries NEITHER `kind`
+// nor any clone-only field. Its whitelisted key SET/COUNT/zero-tensor shape
+// -- not the `schema` VALUE -- is what routes a buffer here in the first
+// place (see load_profile_from_memory's own routing comment below); `schema`
+// is read and compared only AFTER routing already picked this branch,
+// confirming rather than deciding. `DesignPrescanKeySpec`/
+// `kPrescanDesignKnownKeys`/`kPrescanDesignKnownKeyCount`/`kPrescanKvCountDesign`
+// live in profile.h beside their clone counterparts, for the same reason
+// those do: tests/qwen3_tts_profile_test.cpp's own writer-agreement tests
+// drive the REAL serialize_design_profile and check its real output's key
+// set against this SAME table, not a second hand-transcription of it. This
+// walk reuses every low-level, already-fuzzed-hardened primitive prescan_buffer
+// itself uses (prescan_read/prescan_read_bytes/prescan_has_remaining/
+// prescan_skip_value/kPrescanMaxKeyLength/kPrescanMaxStringLength) -- only the
+// per-kind shape it validates against differs.
+// ---------------------------------------------------------------------------
+
+// Positive validation for a design envelope's raw bytes, the identical
+// defensive reason prescan_buffer exists for a clone one (see that function's
+// own header comment for the ggml eager-read defect this guards against, and
+// load_profile_from_memory's own routing comment in profile.h for how this
+// function and prescan_buffer divide the untrusted buffer between them): this
+// walk accepts ONLY the eight-key, zero-tensor shape serialize_design_profile
+// ever emits, before gguf_init_from_buffer is ever called on these bytes.
+//
+// `n_tensors` MUST be exactly 0: a design payload has no x-vector (this
+// package carries no speaker encoder at all) and nothing else to carry as a
+// tensor -- this is the one structural fact that makes a design envelope and
+// a clone envelope (always 1 or 3 tensors) unambiguous from the header alone.
+bool prescan_design_buffer(const uint8_t * data, size_t size) {
+    size_t offset = 0;
+
+    char magic[4];
+    if (!prescan_read_bytes(data, size, offset, magic, sizeof(magic)) ||
+        std::memcmp(magic, GGUF_MAGIC, sizeof(magic)) != 0) {
+        return false;
+    }
+
+    uint32_t version = 0;
+    if (!prescan_read(data, size, offset, version) || version != GGUF_VERSION) {
+        return false;
+    }
+
+    int64_t n_tensors = 0;
+    if (!prescan_read(data, size, offset, n_tensors) || n_tensors != 0) {
+        return false;
+    }
+    int64_t n_kv = 0;
+    if (!prescan_read(data, size, offset, n_kv) || n_kv != kPrescanKvCountDesign) {
+        return false;
+    }
+
+    bool seen[kPrescanDesignKnownKeyCount] = {};
+
+    for (int64_t index = 0; index < n_kv; ++index) {
+        uint64_t key_length = 0;
+        if (!prescan_read(data, size, offset, key_length) || key_length > kPrescanMaxKeyLength) {
+            return false;
+        }
+        if (!prescan_has_remaining(offset, size, size_t(key_length))) {
+            return false;
+        }
+        const std::string key(reinterpret_cast<const char *>(data + offset), size_t(key_length));
+        offset += size_t(key_length);
+
+        // Same rationale as prescan_buffer's own identical comment: the
+        // declared type tag stays an int32_t for the whole walk and is only
+        // ever COMPARED against a known enumerator, never converted to
+        // `gguf_type` (which has no fixed underlying type, so converting an
+        // out-of-range caller-supplied value would be undefined behaviour).
+        int32_t type_raw = 0;
+        if (!prescan_read(data, size, offset, type_raw)) {
+            return false;
+        }
+        bool     is_array = false;
+        uint64_t count    = 1;
+        if (type_raw == int32_t(GGUF_TYPE_ARRAY)) {
+            is_array                 = true;
+            int32_t element_type_raw = 0;
+            if (!prescan_read(data, size, offset, element_type_raw)) {
+                return false;
+            }
+            type_raw = element_type_raw;
+            if (!prescan_read(data, size, offset, count)) {
+                return false;
+            }
+        }
+
+        size_t spec_index = kPrescanDesignKnownKeyCount;
+        for (size_t candidate = 0; candidate < kPrescanDesignKnownKeyCount; ++candidate) {
+            if (key == kPrescanDesignKnownKeys[candidate].key) {
+                spec_index = candidate;
+                break;
+            }
+        }
+        if (spec_index == kPrescanDesignKnownKeyCount) {
+            return false;  // unknown key
+        }
+        if (seen[spec_index]) {
+            return false;  // duplicate key
+        }
+        seen[spec_index] = true;
+
+        const DesignPrescanKeySpec & spec = kPrescanDesignKnownKeys[spec_index];
+        if (type_raw != int32_t(spec.type) || is_array != spec.is_array || (is_array && count != spec.count)) {
+            return false;
+        }
+
+        if (!prescan_skip_value(data, size, offset, spec.type, count)) {
+            return false;
+        }
+    }
+
+    // Redundant with the n_kv == kPrescanKvCountDesign check above BY
+    // PIGEONHOLE (eight KV entries, no duplicates, every key drawn from an
+    // eight-entry whitelist -- there is only one possible fully-covered set),
+    // unlike prescan_buffer's own version of this loop, which resolves a real
+    // ambiguity between two per-kind scoped sets of the SAME size class.
+    // Kept anyway, the same "labelled rather than dropped" convention this
+    // file already uses for defence-in-depth checks that cannot fire for any
+    // input this function's own earlier gates have already accepted.
+    for (bool key_seen : seen) {
+        if (!key_seen) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 }  // namespace
 
 synth_status_t serialize_x_vector_profile(const XVectorProfile & profile,
@@ -1259,6 +1538,80 @@ synth_status_t serialize_icl_profile(const HParams &    hparams,
     return write_envelope(ctx.get(), tensors, out_bytes);
 }
 
+synth_status_t serialize_design_profile(const HParams &        hparams,
+                                        const DesignInstruct & profile,
+                                        const uint8_t (&compatibility_id)[32],
+                                        std::vector<uint8_t> & out_bytes) {
+    // Nothing here range-checks against a package width -- mirrors
+    // create_design_profile's own `(void) hparams;` and its header comment's
+    // reasoning: the payload does not depend on the package.
+    (void) hparams;
+
+    // Defensive, independent of whatever create_design_profile already
+    // checked (the same reason serialize_x_vector_profile re-checks
+    // `language_tag` against kMaxLanguageTagLength): this writer has no way
+    // to know whether `profile` reached it through that path or was built by
+    // hand, so it re-asserts create_design_profile's own three invariants
+    // itself. `is_well_formed_utf8` and `contains_embedded_nul` are the same
+    // validators defined above, beside create_design_profile.
+    if (profile.instruct.size() > kMaxDesignInstructBytes || !is_well_formed_utf8(profile.instruct) ||
+        contains_embedded_nul(profile.instruct)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    OwnedGgufContext ctx(gguf_init_empty());
+    if (ctx == nullptr) {
+        return SYNTH_ERR_OOM;
+    }
+    gguf_set_val_str(ctx.get(), "general.architecture", kEnvelopeArchitecture);
+    gguf_set_val_u32(ctx.get(), "synthesize.voice_profile.format_version", kEnvelopeFormatVersion);
+    gguf_set_val_str(ctx.get(), "synthesize.voice_profile.model_family", kEnvelopeModelFamily);
+    gguf_set_val_str(ctx.get(), "synthesize.voice_profile.schema", kEnvelopeSchemaDesign);
+    gguf_set_val_u32(ctx.get(), "synthesize.voice_profile.schema_version", kEnvelopeSchemaVersion);
+    gguf_set_arr_data(ctx.get(), kKeyCompatibilityId, GGUF_TYPE_UINT8, compatibility_id, 32);
+    static constexpr uint8_t kZeroDigest[32] = {};
+    gguf_set_arr_data(ctx.get(), kKeyContentSha256, GGUF_TYPE_UINT8, kZeroDigest, 32);
+    // WHY THIS LINE IS SAFE, given what it cannot express. gguf's KV API has
+    // no length-aware string setter OR getter (ggml/include/gguf.h), only a
+    // null-terminated `const char *` pair -- the same limitation
+    // set_common_metadata's own comment records for `language_tag`, and
+    // symmetric at BOTH ends: an EMBEDDED NUL in `instruct` would truncate on
+    // the way OUT here (gguf_set_val_str) and again on the way IN at load
+    // (GgufMetadata::string, which resolves to the same API), so a 16-byte
+    // instruct with a NUL at index 4 would round-trip as a 4-byte one -- a
+    // different Voice, returned with SYNTH_OK.
+    //
+    // That cannot happen, because no such `instruct` reaches this line: NUL
+    // is refused at the ENTRY, by create_design_profile, and again by this
+    // function's own defensive re-check above (contains_embedded_nul), so the
+    // truncation has no input to act on rather than being merely named. That
+    // is the third option a reviewer named on PR #15, and it is the cheap
+    // correct one: the other two on the table were bypassing gguf's KV
+    // setter/getter API for this one field -- whose cost set_common_metadata's
+    // own comment explains -- and leaving the gap open. Refusing the input is
+    // also this loader's standing posture everywhere else, so it needs no
+    // separate justification here.
+    //
+    // The gguf limitation itself has NOT gone away and this paragraph stays
+    // for the next reader: anyone adding a second string-valued key to this
+    // envelope inherits the same truncation and needs the same entry-side
+    // refusal, and anyone loosening create_design_profile reopens this line.
+    // A HAND-BUILT envelope carrying a 0x00 inside its on-disk instruct
+    // string is refused by prescan_skip_value, on the LOAD side, where the
+    // untrusted bytes actually arrive. Until 2026-08-19 this comment claimed
+    // that case was "self-consistent" and therefore harmless. It was not:
+    // measured on a resealed envelope, a 24-byte on-disk instruct loaded as
+    // SYNTH_OK with a 5-byte Voice, so two readers of one digest-valid
+    // buffer disagreed about which Voice it encoded. The entry-side refusal
+    // below stops THIS PROJECT writing such bytes; it never governed what
+    // the loader would accept.
+    gguf_set_val_str(ctx.get(), kKeyInstruct, profile.instruct.c_str());
+
+    // No tensor: see this function's own header comment (profile.h) for why
+    // write_envelope handles an empty tensor list correctly.
+    return write_envelope(ctx.get(), {}, out_bytes);
+}
+
 synth_status_t load_profile_from_memory(const HParams & hparams,
                                         const uint8_t * data,
                                         size_t          data_size,
@@ -1275,6 +1628,171 @@ synth_status_t load_profile_from_memory(const HParams & hparams,
     if (data == nullptr || data_size == 0) {
         return SYNTH_ERR_INVALID_ARG;
     }
+
+    // ------------------------------------------------------------------
+    // Task 3's own subtlety: route on the envelope's own declared shape
+    // BEFORE either kind's size branches run, so a design envelope never
+    // reaches the x-vector tensor lookup, the `tensor_bytes == 0` refusal,
+    // or the `element_count == enc_dim` comparison below -- and so that
+    // comparison stays reachable, unmodified, on every path that DOES carry
+    // an x-vector. prescan_design_buffer only accepts the exact eight-key,
+    // zero-tensor shape serialize_design_profile ever emits; a buffer that
+    // does not match it (every clone envelope, and every malformed buffer)
+    // falls through to the ORIGINAL clone path below completely unchanged.
+    //
+    // This is safe as a router because neither branch TRUSTS the routing
+    // decision for anything beyond which one runs: each performs its own
+    // complete, independent positive validation (its own prescan, its own
+    // gguf_init_from_buffer, its own schema/compatibility_id/digest checks)
+    // regardless of which one a given buffer happened to match first. A
+    // buffer shaped like neither (for instance one hand-built with
+    // `n_tensors == 0` but missing `instruct`) is refused by
+    // prescan_design_buffer and then refused AGAIN by prescan_buffer's own
+    // `n_tensors != 1 && n_tensors != 3` gate -- it cannot reach either
+    // kind's payload-construction code, only SYNTH_ERR_INVALID_ARG.
+    if (prescan_design_buffer(data, data_size)) {
+        gguf_init_params design_init_params{};
+        design_init_params.no_alloc = true;
+        design_init_params.ctx      = nullptr;
+        OwnedGgufContext design_ctx(gguf_init_from_buffer(data, data_size, design_init_params));
+        if (design_ctx == nullptr) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        gguf_context * g = design_ctx.get();
+
+        if (gguf_get_alignment(g) != GGUF_DEFAULT_ALIGNMENT) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+
+        GgufMetadata meta(g, "qwen3-tts");
+        if (!meta.require_string("general.architecture", kEnvelopeArchitecture)) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        uint32_t format_version = 0;
+        if (!meta.u32("synthesize.voice_profile.format_version", format_version) ||
+            format_version != kEnvelopeFormatVersion) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        std::string model_family;
+        if (!meta.string("synthesize.voice_profile.model_family", model_family)) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        if (model_family != kEnvelopeModelFamily) {
+            // A structurally sound envelope for a DIFFERENT family -- the
+            // same status the clone path returns for the identical case.
+            return SYNTH_ERR_UNSUPPORTED_VOICE;
+        }
+        std::string schema;
+        uint32_t    schema_version = 0;
+        if (!meta.string("synthesize.voice_profile.schema", schema) ||
+            !meta.u32("synthesize.voice_profile.schema_version", schema_version)) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        if (schema != kEnvelopeSchemaDesign || schema_version != kEnvelopeSchemaVersion) {
+            return SYNTH_ERR_UNSUPPORTED_VOICE;
+        }
+        uint8_t file_compatibility_id[32];
+        if (!read_u8_32_array(g, kKeyCompatibilityId, file_compatibility_id)) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        if (std::memcmp(file_compatibility_id, compatibility_id, sizeof(file_compatibility_id)) != 0) {
+            return SYNTH_ERR_UNSUPPORTED_VOICE;
+        }
+        // Reviewer finding (PR #15): the last clause of "is this envelope for
+        // THIS Model", and the one the three checks above cannot express.
+        // They ask whether the envelope was built for this family, this
+        // schema, and this exact package -- and `compatibility_id` is a
+        // digest of the package, derivable by anyone holding it, not a
+        // secret. None of them asks whether the package declares the
+        // CONDITIONING PATH this envelope needs. Without this check a
+        // hand-built design envelope stamped with a BASE package's own
+        // compatibility_id loaded as `Qwen3TtsDesign` against a Model that
+        // declares the clone schema and no Description Text source at all,
+        // because the branch was selected from the BUFFER's shape
+        // (prescan_design_buffer) and then validated only against constants.
+        //
+        // `hparams` is what settles it, and this is the one place in the
+        // design path that has a reason to read it (create_design_profile and
+        // serialize_design_profile still do not -- their `(void) hparams;`
+        // stands, because a PAYLOAD really does not depend on the package;
+        // what depends on it is whether this Model accepts the payload at
+        // all, and only a LOAD from untrusted bytes asks that without a
+        // caller who already knows).
+        //
+        // SYNTH_ERR_UNSUPPORTED_VOICE, matching the three refusals above it:
+        // the bytes are structurally sound and this loader understands them,
+        // just not for this Model. Placed here, with them, rather than after
+        // the digest check below, so the whole "for this Model" question is
+        // answered in one contiguous block.
+        //
+        // The CLONE branch below needs no mirror of this: a VoiceDesign
+        // package carries no speaker encoder, so its
+        // `speaker_encoder.enc_dim` is 0 and every clone envelope already
+        // fails there (an envelope declaring 0 elements dies earlier still,
+        // on the `tensor_bytes == 0` refusal). The only shape that would
+        // reach it is a package declaring `description-text` WHILE carrying
+        // a speaker encoder -- and that is not a structural accident but a
+        // STATED rule: read_profile_and_speaker_encoder (weights.cpp) refuses
+        // exactly that on `wants_reference != carries_encoder`, and the
+        // `names.size() != 1` rule beside it forbids declaring both sources.
+        // So no loadable package can reach the clone branch's gap. Reviewed
+        // 2026-08-19 by trying to reach it: a clone envelope against
+        // description-text hparams with a fabricated enc_dim of 11 does load,
+        // which is why the rule above -- not enc_dim -- is what to cite if a
+        // fourth kind is ever added.
+        if ((hparams.profile_sources & SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT) == 0) {
+            return SYNTH_ERR_UNSUPPORTED_VOICE;
+        }
+        uint8_t stored_digest[32];
+        if (!read_u8_32_array(g, kKeyContentSha256, stored_digest)) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        // Masked by prescan_design_buffer's own `n_tensors == 0` header
+        // check, the same relationship prescan_buffer's identical comment
+        // describes for the clone path below: this one runs after ggml has
+        // parsed the tensor-info section, on a context this function has
+        // itself agreed to.
+        if (gguf_get_n_tensors(g) != 0) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+
+        // Digest verification, identical rule and identical reasoning to the
+        // clone path's own copy below (docs/c-interface.md's exact rule;
+        // metadata-bounded search per PR #6 triage FIX 6).
+        const size_t metadata_size = std::min(data_size, gguf_get_data_offset(g));
+        size_t       sha_offset    = 0;
+        if (!find_u8_32_value_offset(data, metadata_size, kKeyContentSha256, sha_offset)) {
+            return SYNTH_ERR_INTERNAL;
+        }
+        std::vector<uint8_t> scratch(data, data + data_size);
+        std::memset(scratch.data() + sha_offset, 0, 32);
+        uint8_t computed_digest[32];
+        synth::sha256(scratch.data(), scratch.size(), computed_digest);
+        if (std::memcmp(computed_digest, stored_digest, sizeof(computed_digest)) != 0) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+
+        std::string instruct;
+        if (!meta.string(kKeyInstruct, instruct)) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        // Payload-value parity, the same principle the clone path's ref_rms/
+        // x_vector checks apply below: a loaded DesignInstruct must satisfy
+        // the same two invariants create_design_profile itself enforces at
+        // creation -- length and well-formed UTF-8 -- re-checked here
+        // against untrusted bytes rather than trusted from the envelope's
+        // structural validity alone.
+        if (instruct.size() > kMaxDesignInstructBytes || !is_well_formed_utf8(instruct)) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+
+        auto design_profile      = std::make_shared<DesignInstruct>();
+        design_profile->instruct = std::move(instruct);
+        out_payload              = std::move(design_profile);
+        out_family_tag           = synth::ProfileFamilyTag::Qwen3TtsDesign;
+        return SYNTH_OK;
+    }
+    // ------------------------------------------------------------------
 
     // Independent raw-byte hardening BEFORE gguf_init_from_buffer ever
     // touches these bytes -- see prescan_buffer's own header comment for

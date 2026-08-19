@@ -245,37 +245,71 @@ int test_a_declared_reference_count_is_published_unnarrowed() {
 }
 
 // A VoiceDesign package DECLARES Description Text (its package-level
-// profile_sources) but the RUNTIME publishes nothing for it: withheld by
-// jiangzhuo's 2026-08-18 ruling, because src/voice-profile.cpp's
-// create_from_description dispatch still routes every family but OmniVoice
-// -- this one included -- to the generic unsupported fallback regardless of
-// source_flags, and advertising a source with no implementation behind it
-// invites a caller to pass a description and receive an error they were told
-// would not happen. This is the same restriction the transcript-assisted
-// (ICL) mode carried for the whole of Plan 2, applied here in turn. Not just
-// the DESCRIPTION_TEXT bit either: SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE
-// would be dishonest alone too, since this package has no speaker encoder and
-// load_qwen3_tts_profile_from_memory can therefore never accept a Profile
-// against it (src/arch/qwen3-tts/weights.cpp's fill_voice_profile_capability,
-// the comment on its early-return branch) -- so the published shape is the
-// SAME all-zero shape check_reports_no_voice_profile_support pins for
-// CustomVoice, reused here to prove the two shapes really are identical field
-// for field.
+// profile_sources) and, since Stage 3 Plan 2's Task 5, the RUNTIME publishes
+// it too: `source_flags` follows `hparams.profile_sources` directly, the same
+// way Base's REFERENCE_AUDIO already did below. This was NOT true for the
+// interval between the final whole-branch review and Task 5 -- jiangzhuo's
+// ruling withheld the bit for that interval because
+// src/voice-profile.cpp's create_from_description dispatch had no Qwen3-TTS
+// arm yet, so publishing DESCRIPTION_TEXT would have advertised a source with
+// no implementation behind it (the same restriction the transcript-assisted
+// (ICL) mode carried for the whole of Stage 2 Plan 2, applied here in turn),
+// and SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE could not stand alone either,
+// since no design envelope could load until Task 3 wired one. Task 2 closed
+// the first gap and Task 3 closed the second, so Task 5 republishes both bits
+// together -- see fill_voice_profile_capability's own erratum
+// (src/arch/qwen3-tts/weights.cpp) for the full sequencing. This test used to
+// pin the withheld, all-zero shape; it now pins its replacement.
 int test_capability_follows_the_declared_sources() {
     {
         synth::qwen3tts::HParams h;
-        h.voice_mode      = synth::qwen3tts::VoiceMode::ProfileSources;
-        h.profile_sources = SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT;
+        h.voice_mode                   = synth::qwen3tts::VoiceMode::ProfileSources;
+        h.profile_sources              = SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT;
+        h.profile.schema               = "qwen3-tts-voice-design";
+        h.profile.schema_version       = 1;
+        h.profile.compatibility_id_hex = std::string(64, 'b');
         synth::VoiceProfileInfo info{};
         synth::qwen3tts::fill_voice_profile_capability(h, info);
-        // The package's own declared sources still name description-text --
-        // Task 3's loader is untouched by this rule -- while the RUNTIME's
-        // published snapshot is the all-zero "no support" shape. Re-publishing
-        // SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT (or SERIALIZED_PROFILE alone)
-        // here is exactly the regression this assertion exists to catch.
+        // The package's own declared sources name description-text -- Task
+        // 3's loader is untouched by this rule -- and the RUNTIME's published
+        // snapshot now names it too, alongside SERIALIZED_PROFILE. Equality,
+        // not membership: exactly these two bits, the same standard
+        // test_base_capability_publishes_both_sources_together below already
+        // holds Base's own snapshot to. Reporting the withheld all-zero shape
+        // (or DESCRIPTION_TEXT without SERIALIZED_PROFILE, or the reverse) is
+        // exactly the regression this assertion exists to catch.
         SYNTH_TEST_CHECK(h.profile_sources == SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT);
-        const int check_status = check_reports_no_voice_profile_support(info);
-        SYNTH_TEST_CHECK(check_status == 0);
+        SYNTH_TEST_CHECK(info.source_flags ==
+                         (SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE));
+        // No recording is ever taken on this path, so the six reference
+        // limits and the transcript/language requirements describe nothing
+        // and stay at their zeroed/UNSUPPORTED defaults -- checked field by
+        // field here rather than through check_reports_no_voice_profile_support,
+        // which asserts source_flags == 0 and no longer applies once this
+        // package publishes two bits.
+        SYNTH_TEST_CHECK(info.reference_transcript == SYNTH_REQUIREMENT_UNSUPPORTED);
+        SYNTH_TEST_CHECK(info.reference_language == SYNTH_REQUIREMENT_UNSUPPORTED);
+        // D5 (docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md):
+        // language never enters this family's Profile, unlike OmniVoice's own
+        // Description Text arm, so there is nothing to publish here either.
+        SYNTH_TEST_CHECK(info.description_language == SYNTH_REQUIREMENT_UNSUPPORTED);
+        SYNTH_TEST_CHECK(info.reference_target_sample_rate == 0);
+        SYNTH_TEST_CHECK(info.reference_target_channels == 0);
+        SYNTH_TEST_CHECK(info.min_frames_per_clip == 0);
+        SYNTH_TEST_CHECK(info.max_frames_per_clip == 0);
+        SYNTH_TEST_CHECK(info.max_total_frames == 0);
+        SYNTH_TEST_CHECK(info.max_reference_count == 0);
+        // The schema identity and compatibility id DO reach the snapshot even
+        // on this early-return branch: a VoiceDesign package carries a real
+        // ProfileContract (schema "qwen3-tts-voice-design", version 1), read
+        // and validated in full at load time the same as Base's.
+        SYNTH_TEST_CHECK(info.schema == "qwen3-tts-voice-design");
+        SYNTH_TEST_CHECK(info.schema_version == 1);
+        bool any_nonzero = false;
+        for (uint8_t byte : info.compatibility_id) {
+            any_nonzero = any_nonzero || byte != 0;
+        }
+        SYNTH_TEST_CHECK(any_nonzero);
     }
     // Base is unchanged.
     {

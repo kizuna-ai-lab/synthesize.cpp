@@ -738,8 +738,14 @@ synth_status_t create_omnivoice_profile_from_description(const synth_model_t *  
         return SYNTH_ERR_INVALID_ARG;
     }
 
-    // Step 1: description required, non-empty (docs/c-interface.md:566:
-    // "description is required, non-empty, length-delimited UTF-8").
+    // Step 1: this variant requires a non-empty description. That is the
+    // DEFAULT the contract states rather than a rule every variant must
+    // follow -- docs/c-interface.md's v1 Description Text section was
+    // amended on 2026-08-19 to say a Model Variant MAY accept an empty
+    // description as a distinct legal input (Qwen3-TTS VoiceDesign does,
+    // below). OmniVoice takes the default: upstream conditions on a closed
+    // attribute vocabulary and has no unconditioned path, so an empty
+    // instruct has nothing to mean here.
     if (description == nullptr || description_size == 0) {
         emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.description_required",
                         "a Description Text Voice Profile requires a non-empty description");
@@ -747,7 +753,8 @@ synth_status_t create_omnivoice_profile_from_description(const synth_model_t *  
     }
     const std::string description_text(description, static_cast<size_t>(description_size));
 
-    // Step 2: the preparation seed must be concrete (docs/c-interface.md:570,
+    // Step 2: the preparation seed must be concrete
+    // (docs/c-interface.md's v1 Description Text Profile Preparation section,
     // "v1 profile preparation rejects SYNTH_SEED_RANDOM"; docs/voice-conditioning.md:57,
     // "a concrete preparation seed"). This family's Description Text
     // preparation is itself deterministic -- pure vocabulary resolution, no
@@ -767,7 +774,8 @@ synth_status_t create_omnivoice_profile_from_description(const synth_model_t *  
 
     // Step 3: description_language, validated against this family's own
     // description-language support (en/zh -- upstream's trained set) rather
-    // than the synthesis Language Capability Catalog (docs/c-interface.md:568:
+    // than the synthesis Language Capability Catalog
+    // (docs/c-interface.md's v1 Description Text Profile Preparation section:
     // "validated against the Model Variant's description-language support
     // rather than its synthesis Language Capability Catalog"). A null tag
     // selects the Model Package's declared default, a FIXED "en" -- NEVER
@@ -815,6 +823,179 @@ synth_status_t create_omnivoice_profile_from_description(const synth_model_t *  
     profile->family_tag = synth::ProfileFamilyTag::OmnivoiceDesign;
     profile->payload    = std::move(design);
     *out_profile        = profile.release();
+    return SYNTH_OK;
+}
+
+// ---------------------------------------------------------------------------
+// Qwen3-TTS's create_from_description handler (Stage 3 Plan 2 Task 2, moved
+// onto the published capability bit by Task 5): the Description Text arm.
+// `model`/`params` are already known non-null with a params struct_size of at
+// least sizeof(uint64_t) by the caller below, the same guarantee
+// create_omnivoice_profile_from_description's own header comment states.
+//
+// THE GATE LIVES IN THE CALLER (synth_voice_profile_create_from_description's
+// own dispatcher below), not here -- the same altitude
+// create_qwen3_tts_profile_from_reference's own gate lives at, and for the
+// same reason (see that dispatcher's own comment on
+// `qwen3_tts_supports_reference` for the shared rationale: this family's
+// three variants share one `ModelFamily::Qwen3Tts` tag, so a family check
+// alone is not enough). This function therefore does not re-verify
+// SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT itself, matching
+// create_qwen3_tts_profile_from_reference's own body, which does not
+// re-verify SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO either.
+//
+// UNTIL TASK 5 the check lived HERE instead, reading
+// `model->qwen3_tts->hparams().profile_sources` -- the package's DECLARED
+// sources, off a live Model -- because SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT
+// was withheld from the published capability at the time (see
+// fill_voice_profile_capability's own erratum, weights.cpp, for the ruling
+// and the two reasons it has since closed), and the callee was the only site
+// that could read the live Model's declared sources. Round 1 review (I2):
+// once Task 5 moved the check onto the published bit, nothing about staying
+// in the callee remained necessary, so the check moved to the caller too,
+// matching create_from_reference's shape exactly rather than leaving a
+// structural difference whose only stated reason had expired.
+// `model->qwen3_tts` is still never dereferenced anywhere in this function,
+// which is also why testing::make_model_for_testing (qwen3-tts.h) -- the
+// test-only friend that existed solely to give this arm a live Model to read
+// hparams() from -- had no reason left to exist and was removed in the same
+// change. A hand-built `synth_model` with `qwen3_tts` left null, the pattern
+// tests/qwen3_tts_voice_required_test.cpp's own cross-family guard already
+// uses for create_from_reference/load_from_memory, now exercises this arm
+// too (tests/qwen3_tts_design_profile_test.cpp).
+synth_status_t create_qwen3_tts_profile_from_description(const synth_model_t *                    model,
+                                                         const synth_voice_description_params_t * params,
+                                                         synth_voice_profile_t **                 out_profile) {
+    const synth_diagnostic_sink_t * diagnostics =
+        read_visible(params, offsetof(synth_voice_description_params_t, diagnostics),
+                     static_cast<const synth_diagnostic_sink_t *>(nullptr));
+    if (!valid_diagnostic_sink(diagnostics)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    const char *   description = read_visible(params, offsetof(synth_voice_description_params_t, description),
+                                              static_cast<const char *>(nullptr));
+    const uint64_t description_size =
+        read_visible(params, offsetof(synth_voice_description_params_t, description_size), uint64_t(0));
+    const char *   language_tag = read_visible(params, offsetof(synth_voice_description_params_t, language_tag),
+                                               static_cast<const char *>(nullptr));
+    const uint64_t language_tag_size =
+        read_visible(params, offsetof(synth_voice_description_params_t, language_tag_size), uint64_t(0));
+    const uint64_t seed = read_visible(params, offsetof(synth_voice_description_params_t, seed), uint64_t(0));
+
+    // D3 ("An empty instruct is a legal input, not an error") must be
+    // reachable through BOTH of its natural spellings -- a null description
+    // pointer with a zero size, and a NON-null pointer to a zero-length
+    // buffer, which is what bindings/python/src/native_loader.c's
+    // `PyBytes_AsString(b"")` hands this entry point (non-null even for an
+    // empty bytes object). OmniVoice's own pairing check, `(x == nullptr) !=
+    // (size == 0)`, refuses the second spelling -- correct for OmniVoice,
+    // which requires a non-empty description regardless, but copying it here
+    // verbatim (an earlier draft of this arm did) made D3's legal input
+    // reachable through only one of its two spellings and rejected the other
+    // one with SYNTH_ERR_INVALID_ARG. So only the genuinely malformed shape --
+    // a null pointer claiming a nonzero size, which has nothing to read -- is
+    // refused for `description`. `language_tag` keeps OmniVoice's exact
+    // pairing rule below: there is no equivalent design decision making an
+    // explicitly-empty language tag legal, so its two spellings are not both
+    // meant to mean the same thing the way description's are.
+    if (description == nullptr && description_size != 0) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if ((language_tag == nullptr) != (language_tag_size == 0)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    if (description_size > std::numeric_limits<size_t>::max() ||
+        language_tag_size > std::numeric_limits<size_t>::max()) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // docs/c-interface.md's v1 Description Text Profile Preparation section,
+    // "v1 profile preparation rejects
+    // SYNTH_SEED_RANDOM" -- an ABI-wide Confirmed contract, not a per-family
+    // option; OmniVoice's own arm enforces it above. This family's
+    // Description Text preparation has nothing seed-dependent to fix (unlike
+    // OmniVoice's own arm, whose comment explains why it accepts the
+    // sentinel for its own reason), but that is a fact about what the seed is
+    // FOR, not licence to skip a contract this file's sibling arm already
+    // enforces.
+    if (seed == SYNTH_SEED_RANDOM) {
+        emit_diagnostic(diagnostics, SYNTH_ERR_INVALID_ARG, "voice_profile.seed_must_be_concrete",
+                        "Voice Profile preparation does not accept SYNTH_SEED_RANDOM; generate a concrete seed first");
+        return SYNTH_ERR_INVALID_ARG;
+    }
+
+    // D5 ("Language is a per-synthesis field and does not enter the Profile")
+    // is why this value is never USED below it -- it selects nothing and is
+    // not stored in the payload -- but D5 does not license skipping
+    // validation: a malformed tag is still a malformed request, whichever
+    // field of this struct it arrived in.
+    //
+    // Round 1 review finding (I3): a WELL-FORMED tag is not silently accepted
+    // either. This family's own capability snapshot reports
+    // description_language == SYNTH_REQUIREMENT_UNSUPPORTED
+    // (fill_voice_profile_capability, weights.cpp) -- D5 keeps language out
+    // of the Profile entirely, so there is no vocabulary for it to validate
+    // against the way OmniVoice's own arm above validates "en"/"zh". Once
+    // Task 5 published this bit, docs/c-interface.md:478's "Supplying a
+    // field declared unsupported ... fails explicitly rather than being
+    // silently ignored or inferred" started binding on this arm: before that,
+    // VoiceDesign's capability snapshot was the all-zero shape and nothing
+    // here was reachable through the public seam at all, so the rule had
+    // nothing to bind to. Mirrors OmniVoice's own refusal shape
+    // (SYNTH_ERR_UNSUPPORTED_INPUT, same diagnostic code) rather than
+    // inventing a second one for the same condition.
+    if (language_tag != nullptr) {
+        if (!valid_bcp47_shape(language_tag, static_cast<size_t>(language_tag_size))) {
+            return SYNTH_ERR_INVALID_ARG;
+        }
+        emit_diagnostic(diagnostics, SYNTH_ERR_UNSUPPORTED_INPUT, "voice_profile.description_language_unsupported",
+                        "this package's Description Text does not support a description language tag");
+        return SYNTH_ERR_UNSUPPORTED_INPUT;
+    }
+
+    // D3: an empty description is a legal, unconditioned request, not an
+    // error -- unlike OmniVoice's own arm above, this family's
+    // create_design_profile accepts it, so there is no "required, non-empty"
+    // refusal to mirror here. A params struct too short to carry a
+    // description at all (struct_size == sizeof(uint64_t), so `description`
+    // and `description_size` both read back at their read_visible defaults,
+    // {nullptr, 0}) resolves the same way as an explicit empty description:
+    // SYNTH_OK with an unconditioned Profile -- where OmniVoice's own arm
+    // refuses that identical truncated struct, because IT requires a
+    // non-empty description regardless of which spelling produced the empty
+    // one.
+    // `create_design_profile` (profile.cpp) never reads `hparams` -- its own
+    // `(void) hparams;` and header comment say the payload does not depend on
+    // the package, because the variant was already checked before this
+    // function was reached. NOT "here": Task 5 moved that check out to
+    // synth_voice_profile_create_from_description, the outer dispatcher,
+    // where it reads the published SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT bit
+    // under the name `qwen3_tts_supports_description` -- see this function's
+    // own header comment and the dispatcher's. This comment still named the
+    // pre-Task-5 in-function check `declares_description_text` until
+    // 2026-08-19. A default-constructed HParams is
+    // passed rather than `model->qwen3_tts->hparams()` so this function never
+    // dereferences `model->qwen3_tts` at all -- see this function's own
+    // header comment for why that matters now.
+    const std::string    instruct(description != nullptr ? description : "", static_cast<size_t>(description_size));
+    auto                 payload = std::make_shared<synth::qwen3tts::DesignInstruct>();
+    const synth_status_t status =
+        synth::qwen3tts::create_design_profile(synth::qwen3tts::HParams{}, instruct, *payload);
+    if (status != SYNTH_OK) {
+        // create_design_profile's only refusal is SYNTH_ERR_INVALID_ARG for
+        // invalid UTF-8 or an over-long instruct -- both malformed-input
+        // shapes rather than package defects, so there is no diagnostic code
+        // to name here the way emit_diagnostic's other call sites in this file
+        // do; the status itself is specific enough.
+        return status;
+    }
+
+    auto handle        = std::make_unique<synth_voice_profile>();
+    handle->model      = model;
+    handle->family_tag = synth::ProfileFamilyTag::Qwen3TtsDesign;
+    handle->payload    = std::move(payload);
+    *out_profile       = handle.release();
     return SYNTH_OK;
 }
 
@@ -925,23 +1106,46 @@ synth_status_t serialize_qwen3_tts_profile(const synth_voice_profile *          
     }
 
     const uint8_t (&compatibility_id)[32] = profile->model->info.voice_profile.compatibility_id;
-    // ONE ProfileFamilyTag covers both of this family's clone modes, and the
-    // payload's own CloneMode discriminates (voice-profile-handle.h). Reading
-    // it back through an `XVectorProfile *` is well-defined for an ICL
-    // payload too -- IclProfile is standard-layout with an XVectorProfile as
-    // its first member, and profile.h holds that property with static_asserts
-    // -- which is what lets this one read decide which writer to call. Both
-    // writers refuse a payload whose mode names the other kind, so a wrong
-    // branch here is an error rather than a silent downgrade.
-    const auto & speaker = *static_cast<const synth::qwen3tts::XVectorProfile *>(profile->payload.get());
 
     std::vector<uint8_t> bytes;
-    const synth_status_t status =
-        speaker.mode == synth::qwen3tts::CloneMode::Icl ?
-            synth::qwen3tts::serialize_icl_profile(
-                profile->model->qwen3_tts->hparams(),
-                *static_cast<const synth::qwen3tts::IclProfile *>(profile->payload.get()), compatibility_id, bytes) :
-            synth::qwen3tts::serialize_x_vector_profile(speaker, compatibility_id, bytes);
+    synth_status_t       status;
+    if (profile->family_tag == synth::ProfileFamilyTag::Qwen3TtsDesign) {
+        // Task 3's own payload shape: a DesignInstruct, not an XVectorProfile
+        // -- the switch below on `family_tag` (rather than unconditionally
+        // reading `.mode` through an XVectorProfile pointer the way the else
+        // branch does) is what keeps this cast from reading a DesignInstruct
+        // through the wrong type; the two payloads share no layout at all,
+        // unlike XVectorProfile/IclProfile's own deliberate first-member
+        // relationship.
+        // `serialize_design_profile` (profile.cpp) never reads `hparams`
+        // either -- its own `(void) hparams;` mirrors create_design_profile's
+        // -- so a default-constructed HParams is passed here too rather than
+        // `profile->model->qwen3_tts->hparams()`. This is what lets a design
+        // Profile built against a hand-built `synth_model` (`qwen3_tts` left
+        // null -- create_qwen3_tts_profile_from_description's own header
+        // comment explains why that is now possible) serialize without a
+        // crash; the clone branch below still needs a real Model, and always
+        // did.
+        const auto & design = *static_cast<const synth::qwen3tts::DesignInstruct *>(profile->payload.get());
+        status = synth::qwen3tts::serialize_design_profile(synth::qwen3tts::HParams{}, design, compatibility_id, bytes);
+    } else {
+        // ONE ProfileFamilyTag (Qwen3TtsClone) covers both of this family's
+        // clone modes, and the payload's own CloneMode discriminates
+        // (voice-profile-handle.h). Reading it back through an
+        // `XVectorProfile *` is well-defined for an ICL payload too --
+        // IclProfile is standard-layout with an XVectorProfile as its first
+        // member, and profile.h holds that property with static_asserts --
+        // which is what lets this one read decide which writer to call. Both
+        // writers refuse a payload whose mode names the other kind, so a
+        // wrong branch here is an error rather than a silent downgrade.
+        const auto & speaker = *static_cast<const synth::qwen3tts::XVectorProfile *>(profile->payload.get());
+        status               = speaker.mode == synth::qwen3tts::CloneMode::Icl ?
+                                   synth::qwen3tts::serialize_icl_profile(
+                                       profile->model->qwen3_tts->hparams(),
+                                       *static_cast<const synth::qwen3tts::IclProfile *>(profile->payload.get()), compatibility_id,
+                                       bytes) :
+                                   synth::qwen3tts::serialize_x_vector_profile(speaker, compatibility_id, bytes);
+    }
     if (status != SYNTH_OK) {
         return status;
     }
@@ -980,13 +1184,90 @@ synth_status_t load_qwen3_tts_profile_from_memory(const synth_model_t *         
         return SYNTH_ERR_INVALID_ARG;
     }
 
+    // `load_profile_from_memory` (profile.cpp) routes on the buffer's OWN
+    // declared envelope kind (Task 3's prescan) before either payload's own
+    // size checks run: the x-vector/ICL branch needs the package's real
+    // enc_dim, codec width and frame ceilings, and the design branch needs
+    // exactly one field, `profile_sources`.
+    //
+    // THAT LAST CLAUSE IS NEW, AND THIS COMMENT USED TO SAY THE OPPOSITE --
+    // that the design branch "never reads `hparams` at all (mirrors
+    // serialize/create_design_profile's own `(void) hparams;`)". PR #15's
+    // reviewer measured what that analogy was hiding. The two CREATE-side
+    // functions are safe ignoring `hparams` because their caller holds the
+    // Model and has already checked the variant: this file's own
+    // create_from_description dispatcher gates on
+    // SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT before the family ever sees the
+    // string. The LOAD-side caller -- the dispatcher below -- gates on
+    // SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE, which a BASE package publishes
+    // too, so nothing in the chain asked whether the Model supports
+    // Description Text at all. A hand-built design envelope stamped with a
+    // Base package's compatibility_id therefore loaded as `Qwen3TtsDesign`
+    // against a Base Model. The design branch now asks `hparams` itself; the
+    // analogy to the create path does not transfer and is not made here.
+    //
+    // Round 1 review (M2): `model->qwen3_tts` is null only for a hand-built
+    // test handle, never in production -- the dispatcher above already
+    // requires SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE, which only a real
+    // Loaded Model ever publishes -- so this guard's only current exerciser
+    // is a test, which is worth being honest about rather than dressing up as
+    // a production concern. It is kept anyway, deliberately, and is NOT the
+    // shape item 4 removed: `testing::make_model_for_testing` was a `friend`
+    // granting access to `Model`'s private constructor, documented as
+    // reachable from nowhere but a test; this is an ordinary null-coalesce
+    // over a pointer the function already receives, grants no special access,
+    // and degrades safely rather than silently -- a clone envelope loaded
+    // against the fallback still fails its enc_dim check rather than
+    // succeeding on wrong data (`fallback_hparams.speaker_encoder.enc_dim ==
+    // 0`, and no real x-vector envelope declares zero elements).
+    //
+    // WHY THE FALLBACK IS NO LONGER DEFAULT-CONSTRUCTED (PR #15). A
+    // default-constructed `HParams` has `profile_sources == 0`, which names
+    // NO conditioning path, so the design branch's new check would refuse
+    // every envelope loaded through a hand-built handle -- including
+    // test_serialize_and_load_round_trip_through_the_public_seam's
+    // (qwen3_tts_design_profile_test.cpp) legitimate one. The fix is not to
+    // weaken that check; it is that a fallback standing in for a Model must
+    // carry what the handle actually declares in the ONE field the check
+    // reads. `model->info.voice_profile.source_flags` is exactly that field,
+    // already on this handle: fill_voice_profile_capability (weights.cpp)
+    // computes it as `hparams.profile_sources | SERIALIZED_PROFILE`, and
+    // read_profile_sources can set no bits but the two masked back out here,
+    // so this reconstructs a real Model's `profile_sources` EXACTLY rather
+    // than approximating it. Every other field stays at its zero default, so
+    // the safe-degradation property above is untouched.
+    //
+    // That derivation is PINNED, not merely mirrored: qwen3_tts_voice_required_test.cpp's
+    // test_capability_follows_the_declared_sources asserts `source_flags ==
+    // (DESCRIPTION_TEXT | SERIALIZED_PROFILE)` by equality, and its Base twin
+    // does the same for REFERENCE_AUDIO -- so re-introducing a mask into
+    // fill_voice_profile_capability breaks those tests rather than silently
+    // desynchronising this reconstruction. Verified 2026-08-19 by injecting
+    // exactly that mask and watching them fail. The one direction that would
+    // slip past is a THIRD source bit added to read_profile_sources, which
+    // narrows this fallback rather than widening it, and so fails safe.
+    //
+    // The alternative -- giving that test a Model with real VoiceDesign
+    // hparams -- is not available at the `unit` tier: `qwen3tts::Model`'s
+    // constructor is private and its only factories (`load`/`load_cpu`) read
+    // a real package off disk, which is what puts a live-Model version of
+    // this coverage in tests/qwen3_tts_voicedesign_synthesis_real.cpp's
+    // integration case, outside synthesize-check-unit. Reinstating a
+    // `friend` factory to get one back is the shape item 4 deliberately
+    // removed.
+    synth::qwen3tts::HParams fallback_hparams;
+    fallback_hparams.profile_sources = model->info.voice_profile.source_flags &
+                                       (SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT);
+    const synth::qwen3tts::HParams & load_hparams =
+        model->qwen3_tts != nullptr ? model->qwen3_tts->hparams() : fallback_hparams;
+
     synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
     std::shared_ptr<const void> payload;
     const char *                diagnostic_code    = nullptr;
     const char *                diagnostic_message = nullptr;
     const synth_status_t        status             = synth::qwen3tts::load_profile_from_memory(
-        model->qwen3_tts->hparams(), data, static_cast<size_t>(data_size), model->info.voice_profile.compatibility_id,
-        family_tag, payload, diagnostic_code, diagnostic_message);
+        load_hparams, data, static_cast<size_t>(data_size), model->info.voice_profile.compatibility_id, family_tag,
+        payload, diagnostic_code, diagnostic_message);
     if (status != SYNTH_OK) {
         emit_diagnostic(diagnostics, status, diagnostic_code, diagnostic_message);
         return status;
@@ -1143,10 +1424,37 @@ synth_status_t synth_voice_profile_create_from_description(const synth_model_t *
     if (model == nullptr) {
         return SYNTH_ERR_INVALID_ARG;
     }
+    // Qwen3-TTS carries three variants under one `ModelFamily::Qwen3Tts` tag,
+    // and only VoiceDesign -- ProfileSources with DESCRIPTION_TEXT -- can
+    // prepare anything HERE (this function is create_from_DESCRIPTION);
+    // CustomVoice has no speaker encoder and its capability snapshot is the
+    // all-zero shape fill_voice_profile_capability produces for it, and Base
+    // is ProfileSources too but declares REFERENCE_AUDIO rather than
+    // DESCRIPTION_TEXT, so this path doesn't reach it either. So the family
+    // check alone is not enough here the way it is for OmniVoice (which has
+    // no such split): a Base or CustomVoice Loaded Model must take the SAME
+    // generic "unsupported" fallback every non-participating family already
+    // does, which is exactly what checking this Model's own published
+    // SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT bit (rather than just
+    // `family == Qwen3Tts`) preserves -- the same shape
+    // create_from_reference's own dispatcher above uses for
+    // `qwen3_tts_supports_reference`.
+    //
+    // Round 1 review (I2): UNTIL TASK 5 this check lived inside
+    // create_qwen3_tts_profile_from_description itself, because that was the
+    // only site that could read the package's DECLARED sources off a live
+    // Model (VoiceDesign's own declared source had no published-bit twin on
+    // model->info yet). Task 5 moved the check here, matching
+    // create_from_reference's altitude exactly, once reading the PUBLISHED
+    // bit -- available right here on `model->info`, no live Model needed --
+    // stopped requiring that detour.
+    const bool qwen3_tts_supports_description =
+        model->info.family == synth::ModelFamily::Qwen3Tts &&
+        (model->info.voice_profile.source_flags & SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT) != 0;
     // Every other family still takes the generic "unsupported" fallback,
-    // unchanged from before Task 15 -- the same split
-    // create_from_reference's own dispatcher above uses.
-    if (model->info.family != synth::ModelFamily::Omnivoice) {
+    // unchanged from before Task 15 -- the same split create_from_reference's
+    // own dispatcher above uses.
+    if (model->info.family != synth::ModelFamily::Omnivoice && !qwen3_tts_supports_description) {
         return validate_unsupported_params(params, offsetof(synth_voice_description_params_t, diagnostics));
     }
     if (params == nullptr) {
@@ -1156,6 +1464,9 @@ synth_status_t synth_voice_profile_create_from_description(const synth_model_t *
         return SYNTH_ERR_BAD_STRUCT_SIZE;
     }
     try {
+        if (qwen3_tts_supports_description) {
+            return create_qwen3_tts_profile_from_description(model, params, out_profile);
+        }
         return create_omnivoice_profile_from_description(model, params, out_profile);
     } catch (const std::bad_alloc &) {
         return SYNTH_ERR_OOM;
@@ -1270,12 +1581,17 @@ synth_status_t synth_voice_profile_serialize(const synth_voice_profile_t *      
         }
     }
     // Branches on the PROFILE's own family_tag, not the model's family --
-    // the same reason the two conditions above do. A profile carrying this
-    // tag can only have been produced by create_qwen3_tts_profile_from_reference
-    // or load_qwen3_tts_profile_from_memory, both of which already required a
-    // Loaded Model that supports this family's Reference Audio / Serialized
-    // Profile sources, so no further per-model gate belongs here.
-    if (profile->family_tag == synth::ProfileFamilyTag::Qwen3TtsClone) {
+    // the same reason the two conditions above do. A profile carrying either
+    // tag can only have been produced by create_qwen3_tts_profile_from_reference,
+    // create_qwen3_tts_profile_from_description, or
+    // load_qwen3_tts_profile_from_memory, all of which already required a
+    // Loaded Model that supports this family's Reference Audio / Description
+    // Text / Serialized Profile sources, so no further per-model gate
+    // belongs here. Qwen3TtsDesign joins Qwen3TtsClone here (Task 3):
+    // serialize_qwen3_tts_profile's own dispatch on `family_tag`, just above,
+    // is what picks the right writer for each.
+    if (profile->family_tag == synth::ProfileFamilyTag::Qwen3TtsClone ||
+        profile->family_tag == synth::ProfileFamilyTag::Qwen3TtsDesign) {
         try {
             return serialize_qwen3_tts_profile(profile, params, out_data);
         } catch (const std::bad_alloc &) {

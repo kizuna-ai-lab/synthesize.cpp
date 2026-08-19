@@ -53,6 +53,20 @@
 // package's weights and compare the resulting floats to a real oracle.
 // model.cpp itself is not touched here: teaching it this third case is
 // Plan 2's job, once a Description Text Voice Profile exists to select it.
+//
+// STAGE 3 PLAN 2 TASK 4 EXTENSION. model.cpp now IS touched (has_speaker is
+// conditional, instruct_tokens are threaded in), so this driver gained a
+// fourth positional argument, `<instruct>`, tokenized through
+// Model::tokenize_instruct -- the same wrap-and-tokenize step
+// SynthesisRequest::instruct now drives at synthesis -- and threaded into
+// TalkerPromptRequest::instruct_tokens before build_talker_prompt runs.
+// Passing "" reproduces Plan 1's own empty-instruct, no-block case exactly
+// (tokenize_instruct's own D3 rule: an empty instruct tokenizes to an EMPTY
+// vector, so request.instruct_tokens stays empty and this driver's behaviour
+// is unchanged from before this task for that one input) -- which is why
+// tests/CMakeLists.txt keeps registering Plan 1's empty-instruct case against
+// this same binary rather than replacing it: it is the CONTROL that shows a
+// non-empty instruct is what moves the number, not a vestige to prune.
 
 #include "arch/qwen3-tts/bpe.h"
 #include "arch/qwen3-tts/qwen3-tts.h"
@@ -151,10 +165,12 @@ bool fetch(ggml_tensor * tensor, std::vector<float> & out) {
 }  // namespace
 
 int main(int argc, char ** argv) {
-    if (argc < 5 || argc > 7) {
+    if (argc < 6 || argc > 8) {
         std::fprintf(stderr,
-                     "usage: %s <model.gguf> <text> <language> <out-prefill.f32> [oracle-prefill.f32] "
-                     "[max-relative]\n"
+                     "usage: %s <model.gguf> <text> <instruct> <language> <out-prefill.f32> "
+                     "[oracle-prefill.f32] [max-relative]\n"
+                     "  instruct may be \"\" -- design D3's legal, unconditioned path; matches Plan\n"
+                     "  1's own case exactly, since an empty instruct tokenizes to no block at all.\n"
                      "  oracle-prefill.f32 is optional -- when given, this driver also prints the\n"
                      "  p95-relative distance between its own prefill and the oracle's.\n"
                      "  max-relative is optional and requires oracle-prefill.f32 -- when given, this\n"
@@ -166,23 +182,24 @@ int main(int argc, char ** argv) {
     }
     const std::string model_path(argv[1]);
     const std::string text(argv[2]);
-    const std::string language(argv[3]);
-    const std::string out_path(argv[4]);
-    const bool        have_oracle  = argc >= 6;
-    const std::string oracle_path  = have_oracle ? argv[5] : std::string();
-    // Requires argc == 7, which is only reachable once argc >= 6 already
+    const std::string instruct(argv[3]);
+    const std::string language(argv[4]);
+    const std::string out_path(argv[5]);
+    const bool        have_oracle  = argc >= 7;
+    const std::string oracle_path  = have_oracle ? argv[6] : std::string();
+    // Requires argc == 8, which is only reachable once argc >= 7 already
     // held, so a bound is never accepted without an oracle to score it
     // against.
-    const bool        have_bound   = argc == 7;
+    const bool        have_bound   = argc == 8;
     double            max_relative = 0.0;
     if (have_bound) {
-        max_relative = std::strtod(argv[6], nullptr);
+        max_relative = std::strtod(argv[7], nullptr);
         // A missing or malformed bound must not silently become 0 (every
         // comparison fails) or a huge number (every comparison passes) --
         // the same guard tests/qwen3_tts_icl_prompt_real.cpp applies to the
         // bound it reads.
         if (!(max_relative > 0.0 && max_relative < 1.0)) {
-            std::fprintf(stderr, "max-relative must be in (0, 1), got '%s'\n", argv[6]);
+            std::fprintf(stderr, "max-relative must be in (0, 1), got '%s'\n", argv[7]);
             return 2;
         }
     }
@@ -214,21 +231,41 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    // The same wrap-and-tokenize step Model::run_synthesis now calls when a
+    // request carries a design Profile -- see this file's own Task 4
+    // extension note above. Design D3: an empty `instruct` returns an EMPTY
+    // vector, so `request.instruct_tokens` below stays empty and this
+    // driver's prefill is byte-identical to Plan 1's own, unmodified case.
+    std::vector<int32_t> instruct_ids;
+    status = model->tokenize_instruct(instruct, instruct_ids);
+    if (status != SYNTH_OK) {
+        std::fprintf(stderr, "tokenize_instruct -> %d\n", int(status));
+        return 1;
+    }
+
     // The split model.cpp:972-975 already applies to a real request's token
     // ids: the first kAssistantRolePrefixTokens are the role prefix, the last
     // kAssistantSuffixTokens are the turn's closing markers, and everything
     // between is the text to speak.
     synth::qwen3tts::TalkerPromptRequest request;
+    // The narrowing is safe for the same reason model.cpp's own is: this
+    // family's BPE frontend only ever produces ids in
+    // `[0, talker.text_vocab_size)`.
+    request.instruct_tokens.reserve(instruct_ids.size());
+    for (int32_t id : instruct_ids) {
+        request.instruct_tokens.push_back(uint32_t(id));
+    }
     request.role_tokens.assign(token_ids.begin(),
                                token_ids.begin() + std::ptrdiff_t(synth::qwen3tts::kAssistantRolePrefixTokens));
     request.text_tokens.assign(token_ids.begin() + std::ptrdiff_t(synth::qwen3tts::kAssistantRolePrefixTokens),
                                token_ids.end() - std::ptrdiff_t(synth::qwen3tts::kAssistantSuffixTokens));
     request.has_language   = true;
     request.language_token = language_token;
-    // has_speaker left at its default (false): no codec-vocabulary slot and
-    // no instruct block at all, matching upstream's own empty-instruct,
-    // no-speaker path (design decisions D3 and section 5.3's third row).
-    // request.has_reference also stays at its default (false): no ICL block.
+    // has_speaker left at its default (false): no codec-vocabulary slot,
+    // matching upstream's own no-speaker path for this variant (design
+    // section 5.3's third row) regardless of whether an instruct block is
+    // present. request.has_reference also stays at its default (false): no
+    // ICL block.
 
     synth::qwen3tts::TalkerPrompt prompt;
     status = synth::qwen3tts::build_talker_prompt(hparams, request, prompt);
@@ -334,10 +371,11 @@ int main(int argc, char ** argv) {
 
     std::printf(
         "{\"variant\": \"%s\", \"positions\": %zu, \"hidden_size\": %zu, \"codec_offset\": %lld, "
-        "\"external_speaker_index\": %lld, \"has_speaker\": %s, \"has_reference\": %s",
+        "\"external_speaker_index\": %lld, \"has_speaker\": %s, \"has_reference\": %s, "
+        "\"instruct_tokens\": %zu",
         hparams.model_variant.c_str(), positions, hidden_size, (long long) codec_offset,
         (long long) prompt.external_speaker_index, request.has_speaker ? "true" : "false",
-        request.has_reference ? "true" : "false");
+        request.has_reference ? "true" : "false", request.instruct_tokens.size());
 
     // Set only inside the have_oracle branch below; used after the closing
     // brace is printed to decide the exit code, which is why it is declared

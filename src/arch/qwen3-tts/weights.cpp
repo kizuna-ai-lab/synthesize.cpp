@@ -766,6 +766,38 @@ bool read_profile_sources(const GgufMetadata & meta, HParams & hparams) {
             return false;
         }
     }
+    // Every variant this runtime can load implements exactly one Voice Profile
+    // source today: the loop above ORs the declared names' bits together
+    // rather than refusing a combination, so a package declaring BOTH
+    // ["reference-audio", "description-text"] would set both bits, pass the
+    // `wants_reference == carries_encoder` cross-check below cleanly (with a
+    // speaker encoder attached), and load -- a malformed shape no real
+    // converter emits (scripts/convert-qwen3-tts.py's profile_source_names
+    // always returns exactly one name), but exactly the kind of thing a
+    // positively-declaring loader exists to refuse rather than silently
+    // accept. Found by an external review of Stage 3 Plan 2's sibling PR,
+    // 2026-08-19; closed here rather than in the cross-check below because
+    // this is where the combination is first knowable, before either source's
+    // own downstream fields are even considered.
+    //
+    // COUNTED ON THE ENTRIES, NOT ON THE BITS, and the difference is a real
+    // hole rather than a stylistic one. The first form of this check compared
+    // the ORed `hparams.profile_sources` against each single flag, which asks
+    // "how many DISTINCT sources" -- so ["description-text", "description-text"]
+    // ORed back to one bit, passed, and loaded, while the message printed on
+    // the neighbouring path said "declares more than one profile source". A
+    // duplicate is the same class of malformed declaration as a mixture: the
+    // converter emits a one-element array, and anything else is a package
+    // disagreeing with the shape this runtime validates against. `names.size()`
+    // answers the question the message actually asks. Found by the final
+    // whole-branch review of Stage 3 Plan 2, 2026-08-19.
+    if (names.size() != 1) {
+        std::fprintf(stderr,
+                     "qwen3-tts: profile-sources mode declares %zu profile sources, but this runtime "
+                     "supports exactly one per package\n",
+                     names.size());
+        return false;
+    }
     return true;
 }
 
@@ -814,7 +846,116 @@ bool read_profile_and_speaker_encoder(const GgufMetadata & meta, HParams & hpara
         hparams.has_speaker_encoder = true;
         return read_speaker_encoder(meta, hparams) && read_profile_contract(meta, hparams);
     }
+    // A package that does not declare reference-audio (a Description Text
+    // package, the only other case this runtime accepts once the
+    // exactly-one-source refusal above has run) must not carry the
+    // synthesize.reference.* block either. The cross-check above already
+    // refuses a stray speaker encoder
+    // (its `enc_dim` anchor), but read_profile_contract's own
+    // has_speaker_encoder-gated early return never inspects these six keys at
+    // all -- so before this check, a converter regression (or hand-edited
+    // metadata) that left them on a converted VoiceDesign-shaped package would
+    // load silently rather than being refused for declaring reference-audio
+    // limits it does not implement. Found alongside the exactly-one-source
+    // defect above, by the same external review, 2026-08-19.
+    static const char * const kReferenceOnlyKeys[] = {
+        "synthesize.reference.target_sample_rate",  "synthesize.reference.target_channels",
+        "synthesize.reference.min_frames_per_clip", "synthesize.reference.max_frames_per_clip",
+        "synthesize.reference.max_total_frames",    "synthesize.reference.max_reference_count",
+    };
+    for (const char * key : kReferenceOnlyKeys) {
+        if (meta.has(key)) {
+            std::fprintf(stderr, "qwen3-tts: package does not declare reference-audio but carries %s\n", key);
+            return false;
+        }
+    }
     return read_profile_contract(meta, hparams);
+}
+
+// The three Model Variant kinds this runtime knows, and what each one's Voice
+// declarations have to say. `profile_sources` is meaningful only on the
+// ProfileSources rows: a preset-catalog package declares no sources at all
+// (read_voices refuses the key outright), so `hparams.profile_sources` stays
+// zero there and is not compared.
+struct VariantKind {
+    const char * name;
+    VoiceMode    voice_mode;
+    uint32_t     profile_sources;
+};
+
+constexpr VariantKind kVariantKinds[] = {
+    { "base",        VoiceMode::ProfileSources, SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO  },
+    { "voicedesign", VoiceMode::ProfileSources, SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT },
+    { "customvoice", VoiceMode::PresetCatalog,  0                                     },
+};
+
+// `synthesize.model_variant` and the Voice Mode / `synthesize.voice.profile_sources`
+// pair are two independent statements about the same package, and until this
+// check nothing made them agree. They do not even share an origin in the
+// converter: the variant string is copied from the intake manifest's `variant`
+// field, while the sources come from the checkpoint's own `tts_model_type`
+// (scripts/convert-qwen3-tts.py's `profile_source_names`). So a package could
+// call itself CustomVoice while declaring `description-text` and load clean,
+// leaving `ModelInfo::variant` -- which a caller may route on -- saying
+// something the rest of the package contradicts. Raised by an external review
+// of Stage 3 Plan 2's PR, 2026-08-19; closed at both ends, here and in the
+// converter.
+//
+// WHAT THIS CATCHES IS A MISLABELLED PACKAGE, NOT AN UNIMPLEMENTED ONE, and
+// the difference matters enough to state rather than leave to inference. The
+// variant string is not the implementation. Description Text has no tensor
+// footprint of its own -- the instruct it conditions on is tokenized and fed
+// to the Talker exactly like request text -- so nothing here, and nothing any
+// string comparison could do, establishes that an implementation is present.
+// Two of the package's own declarations agreeing is the whole claim.
+//
+// KNOWN-VALUE, NOT AN ENUMERATION LOCK, and that is the point of reading a
+// SEGMENT rather than the string. The variant string carries frame rate and
+// parameter count alongside the kind (`qwen3-tts-12hz-0-6b-base`,
+// `qwen3-tts-12hz-1-7b-voicedesign`), so a table of whole strings would refuse
+// a legitimate future `qwen3-tts-24hz-3b-voicedesign` purely for not having
+// been updated to name it -- which is what src/arch/vits/weights.cpp's
+// `model_variant` handling does, deliberately, for a family whose two variants
+// are both already published and closed. This family is not closed. A future
+// variant KIND has to come here anyway, because a kind is exactly a Voice Mode
+// plus a source and neither can be guessed; a future variant SIZE must not.
+// An unrecognized kind is therefore governed by nothing and passes through
+// untouched.
+//
+// A variant string with NO separator is its own final segment, so it is read
+// as a kind like any other: `base` names the base kind exactly as
+// `qwen3-tts-12hz-0-6b-base` does. This function returned early on that shape
+// until 2026-08-20, which made it disagree with the converter's own
+// `check_variant_kind` -- `rsplit("-", 1)[-1]` yields the whole string there
+// -- so one end governed `base` and the other did not. The rule as written is
+// "the kind is the final hyphen-separated segment", and the early return was
+// a special case that rule never implied; the converter had it right. Nothing
+// real is newly refused: every published package carries a full slug, and the
+// only strings this newly reaches are ones equal to a kind name outright,
+// which are claiming that kind.
+bool check_variant_kind(const HParams & hparams) {
+    const size_t      separator = hparams.model_variant.rfind('-');
+    const std::string kind =
+        separator == std::string::npos ? hparams.model_variant : hparams.model_variant.substr(separator + 1);
+    for (const VariantKind & known : kVariantKinds) {
+        if (kind != known.name) {
+            continue;
+        }
+        if (hparams.voice_mode != known.voice_mode) {
+            std::fprintf(stderr, "qwen3-tts: package calls itself %s but declares a voice mode no %s variant uses\n",
+                         hparams.model_variant.c_str(), known.name);
+            return false;
+        }
+        if (known.voice_mode == VoiceMode::ProfileSources && hparams.profile_sources != known.profile_sources) {
+            std::fprintf(stderr,
+                         "qwen3-tts: package calls itself %s but declares profile sources 0x%x; "
+                         "a %s variant declares 0x%x\n",
+                         hparams.model_variant.c_str(), hparams.profile_sources, known.name, known.profile_sources);
+            return false;
+        }
+        return true;
+    }
+    return true;
 }
 
 }  // namespace
@@ -830,7 +971,11 @@ synth_status_t read_hparams(const gguf_context * gguf, HParams & hparams) {
         read_talker(meta, hparams) && read_code_predictor(meta, hparams) && read_codec(meta, hparams) &&
         read_tokens(meta, hparams) && read_voices(meta, hparams) &&
         (hparams.voice_mode != VoiceMode::ProfileSources || read_profile_and_speaker_encoder(meta, hparams)) &&
-        read_languages(meta, hparams) && read_frontend(meta, hparams);
+        // After both, and only after both: this compares what read_voices put
+        // in `voice_mode` and what read_profile_sources put in
+        // `profile_sources` against the kind read_identity read off the
+        // variant string, so all three have to be populated first.
+        check_variant_kind(hparams) && read_languages(meta, hparams) && read_frontend(meta, hparams);
     return ok ? SYNTH_OK : SYNTH_ERR_GGUF;
 }
 
@@ -877,63 +1022,86 @@ void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & i
         return;
     }
 
-    // jiangzhuo's ruling, 2026-08-18, after the final whole-branch review of
-    // Stage 3 Plan 1: SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT is withheld from
-    // the RUNTIME's published capability until a later plan wires
-    // synth_voice_profile_create_from_description for this family.
-    // src/voice-profile.cpp's create_from_description dispatch still routes
-    // every family but OmniVoice -- Qwen3-TTS included, VoiceDesign included
-    // -- to the generic "unsupported" fallback regardless of source_flags, so
-    // publishing the bit here would repeat exactly the mistake this family's
-    // own transcript-assisted (ICL) mode was built around avoiding: a mode
-    // advertised with no implementation behind it invites a caller to ask for
-    // it and receive SYNTH_ERR_UNSUPPORTED_VOICE instead of the Profile the
-    // advertisement promised. ICL carried exactly this restriction for the
-    // whole of Plan 2, lifted only once Plan 3 wired the handler -- see the
-    // comment on `info.reference_transcript` below for that precedent.
-    //
-    // This is a statement about the RUNTIME, not about the PACKAGE:
-    // `hparams.profile_sources` -- what read_profile_sources read and
+    // `source_flags` follows what the package DECLARED, directly:
+    // `hparams.profile_sources` is what read_profile_sources read and
     // read_profile_and_speaker_encoder already cross-checked against what the
-    // package actually carries -- keeps naming description-text for a
-    // VoiceDesign package regardless of what this function publishes. Task
-    // 3's loader and its refusals are untouched by this rule.
-    const uint32_t publishable_sources = hparams.profile_sources & ~SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT;
+    // package actually carries, so Base's REFERENCE_AUDIO and VoiceDesign's
+    // DESCRIPTION_TEXT each reach the published snapshot unmasked.
+    // SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE accompanies either, because
+    // every v1 Profile this family can create can be serialized
+    // (docs/c-interface.md).
+    //
+    // THIS WAS NOT TRUE BETWEEN 2026-08-18's WHOLE-BRANCH REVIEW AND STAGE 3
+    // PLAN 2'S TASK 5, and a reader relying on this comment during that
+    // interval would have been misled about a decision that was live at the
+    // time, so the history is recorded rather than erased. This function used
+    // to mask SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT out of what it published
+    // and return the all-zero "no runtime Voice Profile support" shape for a
+    // VoiceDesign package regardless of what `hparams.profile_sources` named,
+    // by jiangzhuo's ruling after that review. The ruling was correct at the
+    // time: publishing the bit would have advertised a capability the public
+    // seam then refused, which is exactly the mistake this family's own
+    // transcript-assisted (ICL) mode was built to avoid (`reference_transcript`/
+    // `reference_language` stayed SYNTH_REQUIREMENT_UNSUPPORTED for the whole
+    // of Stage 2 Plan 2 for the identical reason, lifted only once Plan 3
+    // wired the handler -- see the comment on `info.reference_transcript`
+    // below). Specifically, BOTH of the following were true, and either one
+    // alone would have made publishing DESCRIPTION_TEXT a capability lie:
+    //   1. `synth_voice_profile_create_from_description`'s Qwen3-TTS arm
+    //      (src/voice-profile.cpp) did not exist -- every request for this
+    //      family routed to the generic "unsupported" fallback regardless of
+    //      source_flags, so a caller reading DESCRIPTION_TEXT here and acting
+    //      on it would have received SYNTH_ERR_UNSUPPORTED_VOICE instead of
+    //      the Profile the advertisement promised.
+    //   2. Even SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE alone was not honest:
+    //      load_profile_from_memory (profile.cpp) unconditionally required an
+    //      x-vector tensor sized to `hparams.speaker_encoder.enc_dim`, zero
+    //      for a package with no speaker encoder, and its own
+    //      `tensor_bytes == 0` check refused every nonempty envelope before
+    //      that size was ever compared -- so no serialized Profile, forged or
+    //      genuine, could load against a VoiceDesign Model.
+    // Stage 3 Plan 2's Task 2 closed #1 by wiring that arm; Task 3 closed #2
+    // by routing load_profile_from_memory on the envelope's OWN declared kind
+    // ahead of the x-vector size check, so a design envelope loads without
+    // ever reaching it. This function's own masking was the last piece: it is
+    // what Task 5 removes, restoring the direct declared-sources publication
+    // this section now describes. The PACKAGE side of the story never moved --
+    // `hparams.profile_sources` named description-text for a VoiceDesign
+    // package throughout, and Task 3's loader and its refusals were untouched
+    // by any of this -- only the RUNTIME's published snapshot changed, twice.
+    //
+    // This is the CANONICAL account of the withholding and its close (Round 1
+    // review, M3): the same narrative, at varying length, is also told in
+    // this function's own declaration (weights.h), src/voice-profile.cpp's
+    // create_qwen3_tts_profile_from_description and its outer dispatcher
+    // synth_voice_profile_create_from_description, tests/qwen3_tts_voice_required_test.cpp's
+    // test_capability_follows_the_declared_sources, README.md's VoiceDesign
+    // row, and as dated errata in docs/porting/families/qwen3-tts.md and the
+    // two Stage 3 Plan 1 / design documents under docs/superpowers/. Not
+    // consolidated -- each copy is scoped to what its own file needs to say
+    // and several are historical records that must stay put -- but noted
+    // here once so an editor updating this account knows how many places
+    // would need the same update to stay consistent.
+    info.source_flags = hparams.profile_sources | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE;
 
-    if ((publishable_sources & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) == 0) {
-        // A VoiceDesign package's only declared source is description-text,
-        // so once that bit is withheld above, this runtime has nothing left
-        // to advertise for it: `create_from_reference` needs the (absent)
-        // speaker encoder, `create_from_description` is not wired yet (the
-        // reason the bit is withheld in the first place), and Random Seed is
-        // unimplemented by every variant of this family.
-        //
-        // SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE alone is not the honest
-        // fallback either. docs/c-interface.md permits it only for "a Model
-        // [that] can consume prebuilt profiles but cannot prepare them from
-        // another public source" -- and this one cannot consume one either:
-        // load_profile_from_memory (profile.cpp) unconditionally requires an
-        // x-vector tensor sized to `hparams.speaker_encoder.enc_dim`, the
-        // zero-initialized default for a package with no speaker encoder
-        // (`has_speaker_encoder` is false here), and that same function's own
-        // `tensor_bytes == 0` check refuses every nonempty envelope before
-        // the declared element count is ever compared against it -- so no
-        // serialized Profile, forged or genuine, can ever load against this
-        // Model. `info` is left at its all-zero default: the same "no
-        // runtime Voice Profile support" shape docs/c-interface.md requires
-        // and CustomVoice already reports, though for a different reason --
-        // CustomVoice carries no ProfileContract at all, while VoiceDesign
-        // carries one (schema "qwen3-tts-voice-design", version 1) with
-        // nothing yet wired to act on it.
+    if ((hparams.profile_sources & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) == 0) {
+        // A VoiceDesign package's only declared source is description-text:
+        // no recording is ever taken on this path, so the six reference
+        // limits and the transcript/language requirements describe nothing.
+        // Left at their zeroed/UNSUPPORTED defaults (`info = VoiceProfileInfo{}`
+        // above) -- a zero here means "not applicable", and copying Base's
+        // numbers would state a contract this package cannot honour.
+        // `description_language` stays SYNTH_REQUIREMENT_UNSUPPORTED too:
+        // design decision D5 (docs/superpowers/specs/
+        // 2026-08-18-qwen3-tts-stage-3-design.md) makes language a
+        // per-synthesis field that never enters this family's Profile, unlike
+        // OmniVoice's own Description Text arm, so there is no requirement to
+        // publish here.
+        info.schema         = hparams.profile.schema;
+        info.schema_version = hparams.profile.schema_version;
+        decode_profile_compatibility_id(hparams.profile.compatibility_id_hex, info.compatibility_id);
         return;
     }
-
-    // The bits follow what the package DECLARED, minus Description Text
-    // above, and read_profile_sources already checked the declaration
-    // against what the package carries. Serialized Profile accompanies
-    // Reference Audio, because every v1 Profile this family can create from
-    // it can be serialized (docs/c-interface.md).
-    info.source_flags = publishable_sources | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE;
 
     // OPTIONAL, both of them, since Plan 3 landed the transcript-assisted
     // (ICL) mode next to the x-vector one. BOTH MODES NOW EXIST, and D4 fixes

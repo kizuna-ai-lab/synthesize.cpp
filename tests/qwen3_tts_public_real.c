@@ -7,6 +7,28 @@
  *
  * An adapter, not a test: it asserts nothing and prints what it observed. The
  * relations and their meaning live in scripts/validate-qwen3-tts-public.py.
+ *
+ * Stage 3 Plan 2 Task 6 added two more things this adapter can be asked to do,
+ * both still adapters rather than tests:
+ *
+ *   - A `desc:TEXT` voice creates a Voice Profile from a Description Text
+ *     instruct through synth_voice_profile_create_from_description, the
+ *     VoiceDesign counterpart to `ref:`'s reference-audio path. `TEXT` may be
+ *     empty (`desc:` alone), which is design decision D3's legal unconditioned
+ *     instruct, not a malformed request.
+ *   - A `probe:KIND` voice does not synthesize at all: it attempts exactly one
+ *     Voice Profile creation call -- `probe:reference` calls
+ *     create_from_reference with zero references, `probe:description` calls
+ *     create_from_description with an empty instruct, and
+ *     `probe:description-language` calls create_from_description with a
+ *     language tag attached -- and prints the synth_status_t it observed on
+ *     stdout, succeeding (exit 0) whichever way that call went. Both calls'
+ *     own package-support gate runs before either would need real content
+ *     (see src/voice-profile.cpp's dispatchers), so an empty/zero-count params
+ *     struct reaches that gate exactly as a populated one would. This adapter
+ *     still asserts nothing; scripts/validate-qwen3-tts-public.py is what
+ *     decides whether a given status means the refusal design section 6.4
+ *     promises actually held.
  */
 
 /* This driver reaches outside ISO C for two things -- `clock_gettime` for the
@@ -85,11 +107,18 @@ static float * read_f32(const char * path, uint64_t * out_count) {
 int main(int argc, char ** argv) {
     if (argc < 6) {
         fprintf(stderr,
-                "usage: %s <model.gguf> <out.pcm> <voice-id|ref:PATH.f32[:TRANSCRIPT]> <language-tag|-> "
+                "usage: %s <model.gguf> <out.pcm> "
+                "<voice-id|ref:PATH.f32[:TRANSCRIPT]|desc:TEXT|probe:KIND> <language-tag|-> "
                 "<seed|random> [max-frames] [cpu|cuda] [threads]\n"
                 "  a `ref:` voice creates a Voice Profile from reference audio instead of naming a\n"
                 "  Preset Voice, which is the only way to synthesize from a package that catalogues\n"
-                "  none -- qwen3-tts-12hz-0-6b-base declares preset_ids: []\n",
+                "  none -- qwen3-tts-12hz-0-6b-base declares preset_ids: []\n"
+                "  a `desc:` voice creates a Voice Profile from a Description Text instruct (which\n"
+                "  may be empty) -- the only way to synthesize from a package whose declared Voice\n"
+                "  Profile source is description_text, qwen3-tts-12hz-1-7b-voicedesign\n"
+                "  a `probe:KIND` voice attempts one Voice Profile creation call (KIND is `reference`,\n"
+                "  `description` or `description-language`) and reports its status instead of\n"
+                "  synthesizing; see this file's own header comment\n",
                 argv[0]);
         return 2;
     }
@@ -151,11 +180,68 @@ int main(int argc, char ** argv) {
     int32_t threads_used = 0;
     synth_context_get_threads(context, &threads_used);
 
+    /* `probe:KIND` short-circuits before any request is built: it exists only
+     * to observe the status one Voice Profile creation call returns against
+     * *this* loaded package, refusal included, and has nothing to synthesize
+     * either way. Checked first so it never falls through into the `ref:`/
+     * `desc:` handling below, whose job is to prepare a Profile that then
+     * feeds a real synthesis. */
+    if (strncmp(voice_id, "probe:", 6) == 0) {
+        const char *            probe_kind    = voice_id + 6;
+        synth_status_t          probe_status  = SYNTH_ERR_INVALID_ARG;
+        synth_voice_profile_t * probe_profile = NULL;
+        if (strcmp(probe_kind, "reference") == 0) {
+            /* Zero references, not an omitted or malformed params struct: the
+             * package-support gate in synth_voice_profile_create_from_reference
+             * runs BEFORE reference_count is ever consulted (src/voice-
+             * profile.cpp), so a package that does not support reference audio
+             * at all is refused here without this adapter needing to read any
+             * actual recording from disk. */
+            synth_voice_reference_params_t reference_params;
+            synth_voice_reference_params_init(&reference_params, sizeof reference_params);
+            reference_params.references      = NULL;
+            reference_params.reference_count = 0;
+            probe_status = synth_voice_profile_create_from_reference(model, &reference_params, &probe_profile);
+        } else if (strcmp(probe_kind, "description") == 0 || strcmp(probe_kind, "description-language") == 0) {
+            /* Same reasoning as the reference arm above, mirrored: an empty
+             * instruct is itself a legal request (D3), so this is not a
+             * degenerate params struct being abused for the probe -- it is the
+             * same shape a real empty-instruct request already legitimately
+             * takes, with a language tag attached only for the second kind,
+             * which docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-
+             * design.md's D5 and Task 5's `voice_profile.
+             * description_language_unsupported` refuse regardless of package. */
+            synth_voice_description_params_t description_params;
+            synth_voice_description_params_init(&description_params, sizeof description_params);
+            description_params.seed = 0;
+            if (strcmp(probe_kind, "description-language") == 0) {
+                description_params.language_tag      = "en";
+                description_params.language_tag_size = 2;
+            }
+            probe_status = synth_voice_profile_create_from_description(model, &description_params, &probe_profile);
+        } else {
+            fprintf(stderr, "unknown probe kind %s\n", probe_kind);
+            synth_context_free(context);
+            synth_model_free(model);
+            return 2;
+        }
+        /* Whatever came back -- SYNTH_OK or a refusal -- is reported, not
+         * judged: scripts/validate-qwen3-tts-public.py decides what a given
+         * status means for a given package. A successful probe still frees the
+         * Profile it made rather than leaking it. */
+        printf("{\"probe\": \"%s\", \"status\": %d}\n", probe_kind, (int) probe_status);
+        synth_voice_profile_free(probe_profile);
+        synth_context_free(context);
+        synth_model_free(model);
+        return 0;
+    }
+
     /* A `ref:` voice becomes a Voice Profile prepared through the public seam,
-     * which is the path a Base-package caller actually has. Everything after
-     * this point is identical for both kinds of Voice -- the request carries
-     * either a voice_id or a voice_profile and nothing else changes -- so the
-     * checks the validator runs are the same checks. */
+     * which is the path a Base-package caller actually has; a `desc:` voice
+     * does the same for a VoiceDesign package's Description Text source.
+     * Everything after this point is identical for every kind of Voice -- the
+     * request carries either a voice_id or a voice_profile and nothing else
+     * changes -- so the checks the validator runs are the same checks. */
     synth_voice_profile_t * profile          = NULL;
     float *                 reference_pcm    = NULL;
     uint64_t                reference_frames = 0;
@@ -209,6 +295,32 @@ int main(int argc, char ** argv) {
         if (status != SYNTH_OK) {
             fprintf(stderr, "voice_profile_create_from_reference -> %d\n", (int) status);
             free(reference_pcm);
+            synth_context_free(context);
+            synth_model_free(model);
+            return 1;
+        }
+    } else if (strncmp(voice_id, "desc:", 5) == 0) {
+        const char * description = voice_id + 5;
+
+        synth_voice_description_params_t description_params;
+        synth_voice_description_params_init(&description_params, sizeof description_params);
+        description_params.description      = description;
+        description_params.description_size = strlen(description);
+        /* This family's Description Text preparation has nothing seed-
+         * dependent to fix -- unlike OmniVoice's own arm, whose params.seed
+         * selects something at preparation time, Qwen3-TTS's payload does not
+         * depend on it at all (design D-series decisions; src/voice-
+         * profile.cpp's create_qwen3_tts_profile_from_description says so
+         * directly). The ABI-wide contract still refuses SYNTH_SEED_RANDOM
+         * regardless of family, though, so a fixed concrete placeholder is
+         * passed here rather than threading the *synthesis* seed (`seed_text`
+         * below, which may legitimately BE the random sentinel) into a field
+         * this family never reads. */
+        description_params.seed             = 0;
+
+        status = synth_voice_profile_create_from_description(model, &description_params, &profile);
+        if (status != SYNTH_OK) {
+            fprintf(stderr, "voice_profile_create_from_description -> %d\n", (int) status);
             synth_context_free(context);
             synth_model_free(model);
             return 1;

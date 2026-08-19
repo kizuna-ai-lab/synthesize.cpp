@@ -269,6 +269,58 @@ def profile_source_names(profile: VariantProfile) -> list[str]:
     return []
 
 
+# The Model Variant kind each `tts_model_type` is published under. Kept as a
+# kind-to-type map rather than the reverse so that the lookup below is keyed on
+# what the variant string says, which is what makes it known-value.
+MODEL_TYPE_BY_VARIANT_KIND = {
+    "base": "base",
+    "customvoice": "custom_voice",
+    "voicedesign": "voice_design",
+}
+
+
+def check_variant_kind(variant: str, profile: VariantProfile) -> None:
+    """Refuse a manifest whose variant string names a kind the checkpoint is not.
+
+    These are the package's two independent statements about what it is, and
+    they reach the writer from two different origins: `synthesize.model_variant`
+    is copied straight from the intake manifest, while
+    `synthesize.voice.profile_sources` is derived from the checkpoint's own
+    `tts_model_type` (`profile_source_names` above). Until this check nothing
+    made them agree, so a manifest naming the CustomVoice variant over a
+    VoiceDesign checkpoint produced a package that called itself one thing and
+    declared the Voice Profile sources of another -- and the runtime, which
+    surfaces the variant string as `ModelInfo::variant` for callers to route on,
+    had no way to tell. Raised by an external review of Stage 3 Plan 2's PR,
+    2026-08-19. The loader closes the same gap from the other side
+    (`check_variant_kind` in src/arch/qwen3-tts/weights.cpp); this end is the
+    root cause, so that this project can never write the mismatch in the first
+    place.
+
+    What it catches is a MISLABELLED package, not an unimplemented one. Neither
+    statement is the implementation, and Description Text has no tensor
+    footprint that could corroborate either.
+
+    Known-value, matching the loader exactly: only the final hyphen-separated
+    segment is read, so a future `qwen3-tts-24hz-3b-voicedesign` -- a new size
+    under a kind that already exists -- passes, while an unrecognized kind is
+    governed by nothing and passes untouched. A new KIND has to be added here
+    and in the loader anyway, since a kind is a Voice Mode plus a source and
+    neither is derivable from the name.
+
+    Placed at the top of `add_metadata` rather than earlier in `main`: that is
+    the one path to a written package, so no future caller can route around it.
+    """
+    kind = variant.rsplit("-", 1)[-1]
+    expected = MODEL_TYPE_BY_VARIANT_KIND.get(kind)
+    if expected is not None and profile.model_type != expected:
+        raise ConverterError(
+            f"manifest names variant {variant!r}, whose {kind!r} kind belongs to "
+            f"tts_model_type={expected!r}, but the checkpoint declares "
+            f"tts_model_type={profile.model_type!r}"
+        )
+
+
 def profile_schema_name(profile: VariantProfile) -> str | None:
     """The Profile Schema this variant serializes under, or None if it prepares nothing."""
     if profile.carries_speaker_encoder:
@@ -541,6 +593,8 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
                  generation_config: dict[str, Any],
                  vocab: dict[str, int], merges: list[str], digests: dict[str, str],
                  profile: VariantProfile) -> None:
+    check_variant_kind(manifest["variant"], profile)
+
     talker = config["talker_config"]
     predictor = talker["code_predictor_config"]
 
@@ -868,6 +922,14 @@ def main() -> int:
         raise ConverterError("neither checkpoint matches the manifest's pinned digest")
 
     profile = variant_profile(config)
+    # Both inputs to the variant/sources agreement check exist HERE, before any
+    # tensor is read. add_metadata calls it too, and that call stays: it is the
+    # backstop on the single write path, so no future caller can reach the
+    # writer around it. But leaving it ONLY there means a mismatch knowable
+    # from the manifest alone is reported after a multi-minute conversion has
+    # already run. `check_variant_kind` is pure and idempotent, so calling it
+    # twice costs nothing and turns that wait into an immediate refusal.
+    check_variant_kind(manifest["variant"], profile)
     conversion = Conversion()
     convert_file(talker_path, "", conversion, reconstruct=False)
     convert_file(codec_path, "codec.", conversion, reconstruct=True,

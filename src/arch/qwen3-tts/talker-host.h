@@ -61,6 +61,28 @@ struct TalkerPrompt {
 // What the caller asks for. The text is already tokenized: the chat template and
 // the byte-pair merges belong to the text frontend, not here.
 struct TalkerPromptRequest {
+    // Description Text (VoiceDesign) conditioning: the instruct's own projected
+    // embeddings, prepended AHEAD OF EVERYTHING ELSE -- modeling_qwen3_tts.py:
+    // 2076-2080 appends them to talker_input_embeds before the tts text prompt
+    // is built at all, ahead of even the role prefix below. Every entry is
+    // TEXT-ONLY (Text::Token, has_codec == false): there is no codec stream to
+    // pair an instruct token with, the same reason role_tokens carries none.
+    //
+    // The wrapping `<|im_start|>user\n{instruct}<|im_end|>\n`
+    // (qwen3_tts_model.py:275-276, `_build_instruct_text`) and the tokenizing
+    // both happen on the TEXT FRONTEND side, not here -- see this struct's own
+    // header comment. Unlike reference_text_tokens below, upstream applies NO
+    // slice to this one (`_tokenize_texts([self._build_instruct_text(ins)])[0]`,
+    // qwen3_tts_model.py:715), so the wrapper's own role-marker tokens are
+    // themselves part of this vector.
+    //
+    // Empty selects design decision D3's unconditioned path -- upstream's
+    // `instruct_ids.append(None)` for `instruct is None or instruct == ""` --
+    // which is why an empty vector here means NO instruct block, not a
+    // zero-length one: a genuinely empty instruct never reaches the wrapper,
+    // and tokenizing the wrapped empty string would still emit the role
+    // markers' own (non-empty) tokens.
+    std::vector<uint32_t> instruct_tokens;
     // The chat-template prefix that opens the assistant turn. The reference's is
     // three tokens, `<|im_start|>assistant\n`, but the count is the template's
     // business and this takes whatever it is given.
@@ -109,6 +131,15 @@ struct TalkerPromptRequest {
 // token pairs with the first text token rather than with a pad, and the text
 // stream's single tts_bos sits at the position before that. A prompt off by one
 // still synthesizes speech, in the wrong voice or the wrong language.
+//
+// `request.instruct_tokens`, when non-empty, is prepended ahead of EVERYTHING
+// below -- ahead even of `role_tokens` -- as plain text-only positions. This is
+// the one piece of the layout that is not part of the two-track arithmetic that
+// follows: it changes nothing about how the codec stream and the text stream
+// beside it are built, only where that whole assembly starts. `codec_offset`
+// (flatten_talker_prompt) shifts by exactly `instruct_tokens.size()` and the
+// graph's `codec_offset + codec_tokens->ne[0] == text->ne[1]` invariant holds
+// unchanged, because every position the instruct block adds carries no codec.
 //
 // With `request.has_reference`, the tail after the shared prefix is instead the
 // two-track ICL block (modeling_qwen3_tts.py:1968-2019 `generate_icl_prompt`,

@@ -79,6 +79,13 @@
       "default_id": null,
       "preset_ids": []
     },
+    "profile": {
+      "schema": "qwen3-tts-voice-design",
+      "schema_version": 1,
+      "sources": [
+        "description_text"
+      ]
+    },
     "stochastic": true,
     "speaking_rate_range": [
       1.0,
@@ -89,7 +96,1032 @@
   },
   "tolerance_file": "tests/tolerances/qwen3-tts.json",
   "case_artifact_root": "build/goldens/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign",
-  "suite_status": "incremental",
-  "cases": [],
-  "relations": []
+  "cases": [
+    {
+      "id": "voicedesign-upstream-zh",
+      "origin": {
+        "kind": "upstream_example",
+        "locator": "https://github.com/QwenLM/Qwen3-TTS/blob/022e286b98fbec7e1e916cb940cdf532cd9f488e/README.md#voice-design"
+      },
+      "coverage": [
+        "upstream-example",
+        "baseline",
+        "non-latin-script",
+        "long-instruct"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "chinese",
+        "text": "哥哥，你回来啦，人家等了你好久好久了，要抱抱！"
+      },
+      "voice": {
+        "kind": "description_text",
+        "description": "体现撒娇稚嫩的萝莉女声，音调偏高且起伏明显，营造出黏人、做作又刻意卖萌的听觉效果。"
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "Chinese",
+          "instruct": "体现撒娇稚嫩的萝莉女声，音调偏高且起伏明显，营造出黏人、做作又刻意卖萌的听觉效果。",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "prompt.prefill",
+            "path": "prefill.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "waveform.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "voicedesign-upstream-en",
+      "origin": {
+        "kind": "upstream_example",
+        "locator": "https://github.com/QwenLM/Qwen3-TTS/blob/022e286b98fbec7e1e916cb940cdf532cd9f488e/README.md#voice-design"
+      },
+      "coverage": [
+        "upstream-example",
+        "punctuation",
+        "emotional-instruct"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "It's in the top drawer... wait, it's empty? No way, that's impossible! I'm sure I put it there!"
+      },
+      "voice": {
+        "kind": "description_text",
+        "description": "Speak in an incredulous tone, but with a hint of panic beginning to creep into your voice."
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "instruct": "Speak in an incredulous tone, but with a hint of panic beginning to creep into your voice.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "prompt.prefill",
+            "path": "prefill.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "waveform.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "voicedesign-empty-instruct-en",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#the-manifests-thirteen-cases-plan-2-task-7"
+      },
+      "coverage": [
+        "minimal-instruct",
+        "no-speaker-slot",
+        "design-decision-d3",
+        "plan-2-task-4"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Qwen3-TTS is awesome!"
+      },
+      "voice": {
+        "kind": "description_text",
+        "description": ""
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "instruct": "",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "prompt.prefill",
+            "path": "prefill.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "waveform.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "voicedesign-nonempty-instruct-en",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#the-manifests-thirteen-cases-plan-2-task-7"
+      },
+      "coverage": [
+        "instruct-block",
+        "prefill-shape",
+        "plan-2-task-4"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Qwen3-TTS is awesome!"
+      },
+      "voice": {
+        "kind": "description_text",
+        "description": "A cheerful, bright female voice speaking with fast pacing and high energy."
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "instruct": "A cheerful, bright female voice speaking with fast pacing and high energy.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "prompt.prefill",
+            "path": "prefill.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "waveform.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "voicedesign-description-cheerful-en",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#the-manifests-thirteen-cases-plan-2-task-7"
+      },
+      "coverage": [
+        "public-seam",
+        "relation-voice-differs",
+        "plan-2-task-6"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Qwen3-TTS is awesome!"
+      },
+      "voice": {
+        "kind": "description_text",
+        "description": "A cheerful, bright female voice speaking with fast pacing and high energy."
+      },
+      "request": {
+        "seed_u64": "7",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "instruct": "A cheerful, bright female voice speaking with fast pacing and high energy.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "prompt.prefill",
+            "path": "prefill.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "waveform.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "voicedesign-description-calm-en",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#the-manifests-thirteen-cases-plan-2-task-7"
+      },
+      "coverage": [
+        "public-seam",
+        "relation-voice-differs",
+        "plan-2-task-6"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Qwen3-TTS is awesome!"
+      },
+      "voice": {
+        "kind": "description_text",
+        "description": "A deep, calm male voice speaking slowly and quietly."
+      },
+      "request": {
+        "seed_u64": "7",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "instruct": "A deep, calm male voice speaking slowly and quietly.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "prompt.prefill",
+            "path": "prefill.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "waveform.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "voicedesign-short",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#the-manifests-thirteen-cases-plan-2-task-7"
+      },
+      "coverage": [
+        "minimal-sequence",
+        "short-utterance"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Hi."
+      },
+      "voice": {
+        "kind": "description_text",
+        "description": "A calm, quiet voice speaking softly."
+      },
+      "request": {
+        "seed_u64": "1",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "instruct": "A calm, quiet voice speaking softly.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "prompt.prefill",
+            "path": "prefill.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "waveform.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "voicedesign-punctuation",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#the-manifests-thirteen-cases-plan-2-task-7"
+      },
+      "coverage": [
+        "punctuation"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Wait... really? Yes!"
+      },
+      "voice": {
+        "kind": "description_text",
+        "description": "An excited, high-energy voice with rising intonation on each question."
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "instruct": "An excited, high-energy voice with rising intonation on each question.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "prompt.prefill",
+            "path": "prefill.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "waveform.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "voicedesign-normalization",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#the-manifests-thirteen-cases-plan-2-task-7"
+      },
+      "coverage": [
+        "normalization-shaped"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Dr. Smith paid $12.50 on January 3rd."
+      },
+      "voice": {
+        "kind": "description_text",
+        "description": "A neutral, professional voice reading clearly and precisely."
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "instruct": "A neutral, professional voice reading clearly and precisely.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "prompt.prefill",
+            "path": "prefill.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "waveform.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "voicedesign-medium",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#the-manifests-thirteen-cases-plan-2-task-7"
+      },
+      "coverage": [
+        "medium-sequence",
+        "broad-symbol-use"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "The quick brown fox jumps over the lazy dog."
+      },
+      "voice": {
+        "kind": "description_text",
+        "description": "A warm, friendly voice with a relaxed, unhurried pace."
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "instruct": "A warm, friendly voice with a relaxed, unhurried pace.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "prompt.prefill",
+            "path": "prefill.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "waveform.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "voicedesign-lang-japanese",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#the-manifests-thirteen-cases-plan-2-task-7"
+      },
+      "coverage": [
+        "non-latin-script",
+        "language-token"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "japanese",
+        "text": "こんにちは、世界。"
+      },
+      "voice": {
+        "kind": "description_text",
+        "description": "A soft, gentle female voice with a slightly cheerful tone."
+      },
+      "request": {
+        "seed_u64": "0",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "Japanese",
+          "instruct": "A soft, gentle female voice with a slightly cheerful tone.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "prompt.prefill",
+            "path": "prefill.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "waveform.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "voicedesign-seed-one",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#the-manifests-thirteen-cases-plan-2-task-7"
+      },
+      "coverage": [
+        "seed-variation"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Qwen3-TTS is awesome!"
+      },
+      "voice": {
+        "kind": "description_text",
+        "description": "A cheerful, bright female voice speaking with fast pacing and high energy."
+      },
+      "request": {
+        "seed_u64": "1",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "instruct": "A cheerful, bright female voice speaking with fast pacing and high energy.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "prompt.prefill",
+            "path": "prefill.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "waveform.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          }
+        ]
+      }
+    },
+    {
+      "id": "voicedesign-seed-forty-two",
+      "origin": {
+        "kind": "project_coverage",
+        "locator": "docs/porting/families/qwen3-tts.md#the-manifests-thirteen-cases-plan-2-task-7"
+      },
+      "coverage": [
+        "seed-variation"
+      ],
+      "input": {
+        "kind": "text_utf8",
+        "language_tag": "english",
+        "text": "Qwen3-TTS is awesome!"
+      },
+      "voice": {
+        "kind": "description_text",
+        "description": "A cheerful, bright female voice speaking with fast pacing and high energy."
+      },
+      "request": {
+        "seed_u64": "42",
+        "speaking_rate": 1.0,
+        "max_output_frames": 0
+      },
+      "oracle": {
+        "parameters": {
+          "do_sample": true,
+          "subtalker_dosample": true,
+          "max_new_tokens": 2048,
+          "language": "English",
+          "instruct": "A cheerful, bright female voice speaking with fast pacing and high energy.",
+          "seeded_by": "request.seed_u64"
+        },
+        "stochastic_inputs": [
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          }
+        ]
+      },
+      "checks": [
+        "tensor_parity",
+        "structural_exactness",
+        "waveform_regression",
+        "finite_pcm",
+        "request_repeatability",
+        "result_metadata",
+        "backend_placement",
+        "resource_cleanup"
+      ],
+      "expected": {
+        "status": "ok",
+        "artifacts": [
+          {
+            "name": "prompt.prefill",
+            "path": "prefill.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "codes.generated",
+            "path": "codes.i32",
+            "format": "i32le"
+          },
+          {
+            "name": "audio.pcm",
+            "path": "waveform.f32",
+            "format": "f32le"
+          },
+          {
+            "name": "result",
+            "path": "result.json",
+            "format": "json"
+          }
+        ]
+      }
+    }
+  ],
+  "relations": [
+    {
+      "kind": "artifact_differs",
+      "phase": "public_request",
+      "cases": [
+        "voicedesign-description-cheerful-en",
+        "voicedesign-description-calm-en"
+      ],
+      "artifact": "audio.pcm"
+    },
+    {
+      "kind": "artifact_differs",
+      "phase": "public_request",
+      "cases": [
+        "voicedesign-nonempty-instruct-en",
+        "voicedesign-seed-one",
+        "voicedesign-seed-forty-two"
+      ],
+      "artifact": "audio.pcm"
+    }
+  ]
 }

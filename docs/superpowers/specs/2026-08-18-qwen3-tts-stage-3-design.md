@@ -1,8 +1,10 @@
 # Qwen3-TTS Stage 3 — Description Text Voice Design — Design
 
-Status: Approved in discussion with jiangzhuo on 2026-08-18. This is the design
-record for the third and final rung of the Qwen3-TTS Reference Model Variant
-Ladder (`docs/porting/families/qwen3-tts.md`, "Reference Model Variant Ladder").
+Status: Approved in discussion with jiangzhuo on 2026-08-18; two errata added
+2026-08-19 from PR #15's review (D2 and D6), recording corrections execution
+found rather than a new approval. This is the design record for the third and
+final rung of the Qwen3-TTS Reference Model Variant Ladder
+(`docs/porting/families/qwen3-tts.md`, "Reference Model Variant Ladder").
 The family record itself is extended at intake, per `docs/model-porting.md`.
 
 Plans 1–3 are written from this document, so where execution contradicts it the
@@ -117,6 +119,26 @@ turns a port into a redesign. The consequence is that `create_from_description`
 does very little on this family, and the model card must say so rather than
 imply a validation that does not happen.
 
+**Erratum, 2026-08-19 — a third invariant, from PR #15's review: an embedded
+NUL is refused. D2's principle is unchanged.** "Nothing else" was written
+against *semantic* rules — an invented attribute vocabulary — and that
+prohibition stands: nothing about the meaning of a description is judged.
+What the wording did not anticipate is a rule about whether a description can
+be *stored*. `U+0000` is structurally valid UTF-8, so `is_well_formed_utf8`
+accepts it, but gguf's KV API is null-terminated in both directions
+(`ggml/include/gguf.h` offers no length-aware string setter or getter), so an
+instruct carrying a `0x00` serializes and loads back as the prefix before that
+byte: a 16-byte description round-tripping as a 4-byte one, a *different*
+Voice, with `SYNTH_OK` returned at every step. Three options were on the table
+— bypass gguf's KV API for this one field, leave the gap named in a comment,
+or refuse the input. The third is taken: `create_design_profile` (and, for a
+hand-built payload, `serialize_design_profile`) returns
+`SYNTH_ERR_INVALID_ARG`. Upstream is not contradicted, because upstream never
+serializes a Voice Profile at all — this is a constraint of the envelope this
+port adds, not a judgement about the string. The sibling OmniVoice design path
+needs no equivalent: its closed vocabulary already refuses any item containing
+a NUL, measured rather than assumed.
+
 **D3. An empty instruct is a legal input, not an error.** It maps to upstream's
 `instruct_ids.append(None)` — no instruct block — which with no speaker embedding
 is an unconditioned generation whose voice is the seed's. This is the path Plan 1
@@ -156,6 +178,20 @@ embedding dimension. The published shape is therefore the same all-zero "no
 runtime Voice Profile support" shape CustomVoice already reports, for a
 different reason.
 
+**Second erratum, 2026-08-18 — Plan 2's Task 5 republishes what the erratum
+above withheld.** The narrowing above held for a real interval and stands as
+written; it does not describe the runtime as of Plan 2's close. Plan 2's
+Task 2 gave `create_from_description` its Qwen3-TTS arm, closing the reason
+`source_flags == 0` was ruled correct, and Task 3 made
+`load_profile_from_memory` route on a design envelope's own declared kind
+ahead of the x-vector size check this erratum cites, so a serialized design
+Profile loads and `SERIALIZED_PROFILE` stops being dishonest too. With both
+premises gone, `fill_voice_profile_capability` publishes
+`hparams.profile_sources` directly again — D4's own original rule, applied
+without the narrower withholding this erratum layered on top of it — and a
+VoiceDesign package's `source_flags` reads
+`DESCRIPTION_TEXT | SERIALIZED_PROFILE` once more.
+
 **D5. Language is a per-synthesis field and does not enter the Profile.**
 Upstream takes `text`, `instruct` and `language` as three separate arguments to
 `generate_voice_design`; the request already carries language.
@@ -164,6 +200,29 @@ Upstream takes `text`, `instruct` and `language` as three separate arguments to
 OmniVoice's `ClonePrompt` already applies to `transcript_ids`: determinism comes
 from the frozen BPE vocabulary, so storing ids costs nothing and risks
 everything across a package upgrade.
+
+**Erratum, 2026-08-19 — from PR #15's review: loading a design envelope
+requires the Model to declare description-text. D6 is unchanged; this is a
+rule D6 never stated.** D6 settles what the envelope *carries*. It does not
+say which Models may consume one, and neither did the loader:
+`load_profile_from_memory` picked its branch from the buffer's own shape and
+then validated the design envelope against hard-coded constants plus a
+`compatibility_id` match. `compatibility_id` is a digest of the package,
+derivable by anyone holding it — it proves the bytes were not tampered with,
+never that they belong to a conditioning path the package supports. Because
+the public load dispatcher gates only on
+`SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`, which a **Base** package publishes
+too, a hand-built design envelope stamped with a Base package's own
+`compatibility_id` loaded as `ProfileFamilyTag::Qwen3TtsDesign` against a
+Model declaring the clone schema and no Description Text source. The design
+branch now requires `hparams.profile_sources &
+SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT` and otherwise returns
+`SYNTH_ERR_UNSUPPORTED_VOICE` — the status the model_family / schema /
+compatibility_id refusals beside it already return, and what
+`docs/c-interface.md` already promised for "incompatible Model data". Note
+that the CREATE path's `(void) hparams;` is *not* the same situation and
+stands: its caller holds the Model and has checked the variant, whereas a
+load from untrusted bytes has no such caller.
 
 **D7. Speed is not this rung's claim.** Talker parameters per layer go from
 15.73 M to 50.33 M — attention 6.29 M → 12.58 M, MLP 9.44 M → 37.75 M — a factor
@@ -228,6 +287,14 @@ its Qwen3-TTS arm by Stage 2 Plan 2), so its `REF | SER` cell stands; the
 once `create_from_description` is wired for this family — a later plan — and
 until then the cell the RUNTIME's own capability query reports is `(none)`,
 matching `CustomVoice`'s, for a different reason.
+
+**Second erratum, 2026-08-18 — Plan 2's Task 5 closes the "until then" above.**
+`create_from_description` was wired for this family by Plan 2's Task 2, and
+Task 3 made a serialized design Profile loadable, closing the second reason
+the RUNTIME's own query reported `(none)` for VoiceDesign. As of Task 5 the
+`VoiceDesign` column's `Source flags` cell is `DESC | SER` for BOTH readings —
+the PACKAGE's declaration and the RUNTIME's published capability agree again,
+exactly as the un-erratumed table above this row already shows.
 
 ## 4. Package and Conversion
 
@@ -392,6 +459,63 @@ rather than something inferred from tensor shapes. A `model_variant`-string
 cross-check would catch this one case but is a weaker contract than the
 tensor-shape checks the other two bullets rest on, and is not built here.
 
+**Second erratum, 2026-08-19 — Plan 2 Task 6 inherits the gap rather than
+closing it.** Task 6 implemented §6.3's three relations and as much of this
+section's refusals as `scripts/validate-qwen3-tts-public.py` can exercise:
+bullets one and two (probing `create_from_reference` / `create_from_description`
+against a loaded package's own declared sources) and bullet four (the prefill
+probe's own fault injection, §6.5). The third bullet is not checked there
+either, and for a reason that compounds rather than merely restates the erratum
+above: closing it would need either the `weights.cpp` cross-check this erratum
+already declines to build, or a malformed package — metadata claiming
+`DESCRIPTION_TEXT` over a CustomVoice-shaped tensor set — for the validator to
+load and confirm refused. Task 6's own scope is three files
+(`scripts/validate-qwen3-tts-public.py`, `tests/qwen3_tts_public_real.c`,
+`tests/tolerances/qwen3-tts.json`) and none of them can manufacture that
+package: the validator drives real converted packages on disk, and the C
+runner has no GGUF-writing path to forge one with. So the bullet stays open,
+now on record against two tasks rather than one, and closing it — if it is
+ever closed — will need either the weaker `model_variant`-string cross-check
+this file already named and declined, built in `weights.cpp`, or a synthetic
+GGUF fixture built specifically to carry the mismatch.
+
+That fixture does not need to be built from scratch, though, and whoever
+closes this bullet should start from what already exists rather than assuming
+none does: `tests/qwen3_tts_metadata_test.cpp`'s `voice_design_metadata()`
+already builds, in memory, exactly a "profile-sources package declaring
+`description-text`" — the shape this bullet is about. It differs from the
+adversarial case only in `synthesize.model_variant`, which it sets to
+`"qwen3-tts-12hz-1-7b-voicedesign"` (matching a real VoiceDesign package).
+Changing that one `gguf_set_val_str` call to a different variant string —
+`"qwen3-tts-12hz-0-6b-customvoice"`, say — while leaving
+`synthesize.voice.profile_sources` at `{"description-text"}` produces the
+mismatch directly: a package whose declared variant disagrees with its
+declared source. Confirmed by reading (not yet by a committed test) that
+`read_hparams` would accept it unchanged: `read_identity`
+(`src/arch/qwen3-tts/weights.cpp:29`) reads `model_variant` into
+`hparams.model_variant` and only checks it non-empty (line 40); nothing
+downstream ever compares that string against `hparams.profile_sources`, which
+is exactly what this erratum's own first paragraph already says in words. A
+test built from this mutation would be a same-shape sibling of this file's
+own `expect_rejected` adversarial cases (`tests/qwen3_tts_metadata_test.cpp`)
+— except it would need to assert `read_hparams` currently **succeeds**, to
+pin the gap rather than a rejection that doesn't happen.
+
+**Ordering note, 2026-08-19.** The erratum immediately below was written on
+the branch that merged first and lands after the one above it, which is the
+chronological order. It does NOT overtake the erratum above: that erratum's
+closing suggestion -- take `voice_design_metadata()`, change
+`synthesize.model_variant` to a CustomVoice string, leave the mode at
+`profile-sources`, and assert `read_hparams` SUCCEEDS to pin the gap -- is
+entirely a `profile-sources`-mode recipe and remains writable exactly as
+written. Measured 2026-08-19: that recipe still returns `SYNTH_OK`, while a
+Preset Voice Catalog package carrying the key returns `SYNTH_ERR_GGUF`. The
+erratum below closes the Preset Voice Catalog instance, which the erratum
+above described but gave no recipe for; the `profile-sources`-mode case it
+did give a recipe for stays uncorroborated, for the reason both errata give.
+(An earlier draft of this note claimed the suggestion was overtaken. It was
+not -- the two errata address different instances of the same gap.)
+
 **Erratum, 2026-08-19 — the CustomVoice case above is now refused, by a
 narrower rule than the one this erratum declined to build.** An external PR
 review raised the same gap, phrased for `docs/model-packages.md`'s claim that
@@ -414,6 +538,55 @@ on nothing but its own say-so, because there is no tensor block to check it
 against. See `tests/qwen3_tts_metadata_test.cpp`'s two new
 `run_rejections()` cases and `docs/model-packages.md`'s revised Voice Profile
 Compatibility section.
+
+**Erratum, 2026-08-20 — the third bullet is now implemented, and the "Second
+erratum, 2026-08-19" above named the wrong obstacle for why it could not be.**
+That erratum offered two routes -- "either the weaker `model_variant`-string
+cross-check ... or a synthetic GGUF fixture built specifically to carry the
+mismatch" -- and what was built is the first of them, so the disjunction
+itself was sound and is not what this note corrects. What it corrects is the
+reason attached to the second route: that Task 6's three files could not
+manufacture such a fixture, stated broadly enough to read as though nothing
+in the tree could. The fixture requirement
+was the VALIDATOR's alone: `scripts/validate-qwen3-tts-public.py` drives real
+converted packages on disk and `tests/qwen3_tts_public_real.c` has no
+GGUF-writing path, so neither could forge a malformed one. But
+`tests/qwen3_tts_metadata_test.cpp` has built synthetic packages in memory
+since Stage 1 and needed nothing new to build this one -- as that same
+erratum's own next paragraph then said, giving the exact `voice_design_metadata()`
+recipe. The claim and its correction sat two paragraphs apart; this note
+supersedes the claim rather than the recipe, which was right and was followed.
+
+The bullet is closed at both ends. `check_variant_kind`
+(`src/arch/qwen3-tts/weights.cpp`, called from `read_hparams` after
+`read_voices` and the profile block) compares the Model Variant string's final
+segment -- its KIND -- against the declared Voice Mode and, under
+`profile-sources`, the declared source. `check_variant_kind`
+(`scripts/convert-qwen3-tts.py`, at the top of `add_metadata`) refuses the same
+disagreement between the manifest's `variant` and the checkpoint's
+`tts_model_type` before anything is written, which is the root cause: the two
+values reach the package from two different origins and nothing had made them
+agree. Both are KNOWN-VALUE rather than the whole-string table this file
+twice declined to build -- an unrecognized kind is enforced against nothing and
+passes through, so a future `qwen3-tts-24hz-3b-voicedesign` loads on the kind
+it shares with the published one, and a future *kind* needs a code change
+anyway because a kind is a Voice Mode plus a source and neither is derivable
+from the name.
+
+**The bullet's own wording overstates what this or any such check can do, and
+the wording is not corrected by implementing it.** The bullet says a package
+claiming `DESCRIPTION_TEXT` "without the variant behind it" is refused; what is
+actually refused is a package claiming `DESCRIPTION_TEXT` under a variant kind
+that names a different source. That is a MISLABELLED package, not an
+unimplemented one. The variant string is not the implementation, and the first
+erratum above already gave the reason no string comparison can reach further:
+Description Text has no distinguishing tensor of its own. Nothing here changes
+that, and no later reading of this section should take the closed bullet as
+evidence that a declared Description Text implementation is present. See
+`tests/qwen3_tts_metadata_test.cpp`'s
+`test_a_variant_kind_that_contradicts_the_package_is_refused` and
+`test_variant_strings_this_rule_does_not_govern_still_load`, and
+`tests/python/test_convert_qwen3_tts.py`'s `VariantKindAgreementTests`.
 
 ### 6.5 Fault injection
 

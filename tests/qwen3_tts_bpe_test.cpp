@@ -17,6 +17,7 @@
 #include "arch/qwen3-tts/bpe.h"
 #include "test-assert.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -701,6 +702,113 @@ int check_reference_transcript_ids() {
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// The instruct turn (Stage 3 Plan 2 Task 4). A Description Text instruct is
+// wrapped in a USER turn -- not an assistant one, and a third turn distinct
+// from both qwen_assistant_turn and qwen_reference_turn -- and tokenized
+// WHOLE. Upstream:
+//
+//     _build_instruct_text   <|im_start|>user\n{text}<|im_end|>\n
+//                            qwen3_tts_model.py:275-276
+//     instruct_ids           self._tokenize_texts([self._build_instruct_text(ins)])[0]
+//                            qwen3_tts_model.py:712-715 -- NO slice, unlike
+//                            ref_id/text_id's [:, 3:-2] / [:, 3:-5]
+//                            (modeling_qwen3_tts.py:2190-2191).
+//
+// Getting the turn wrong, or slicing it when upstream does not, produces no
+// error anywhere -- the same silent-wrong-prompt hazard qwen_reference_turn's
+// own header comment names.
+// ---------------------------------------------------------------------------
+
+// A vocabulary with just enough pieces to round-trip the instruct turn: the
+// four letters of "user" (its role word is not merged into one token here,
+// unlike reference_turn_vocabulary's "assistant" chain -- qwen_instruct_ids
+// applies no slice, so nothing here depends on the role word costing an exact
+// token count the way kAssistantRolePrefixTokens does for the sliced turns),
+// a newline, and the same "a"/"b"/"ab" trio the other fixtures in this file
+// use for their own transcript payload.
+synth::qwen3tts::BpeFrontendConfig instruct_turn_vocabulary() {
+    synth::qwen3tts::BpeFrontendConfig config;
+    config.provider_id      = "synthesize.qwen_bpe";
+    config.contract_version = 1;
+    config.vocab            = {
+        "a",       // 0
+        "b",       // 1
+        "ab",      // 2
+        "u",       // 3
+        "s",       // 4
+        "e",       // 5
+        "r",       // 6
+        kNewline,  // 7  "\n"
+    };
+    config.merges         = { "a b" };
+    config.special_tokens = {
+        { "<|im_start|>", 100 },
+        { "<|im_end|>",   101 }
+    };
+    // No turn of its own: qwen_instruct_ids applies the instruct turn itself,
+    // the same reasoning reference_turn_vocabulary states for its own use.
+    config.prefix = "";
+    config.suffix = "";
+    return config;
+}
+
+int check_instruct_turn() {
+    // 1. The exact wrapping string, pinned so nothing downstream can be
+    //    silently wrong about which turn this is. A USER turn -- distinct
+    //    from both the assistant turn and the reference turn, which share a
+    //    role word this one does not.
+    SYNTH_TEST_CHECK(synth::qwen3tts::qwen_instruct_turn("hi") == "<|im_start|>user\nhi<|im_end|>\n");
+
+    std::unique_ptr<synth::TextFrontend> frontend;
+    SYNTH_TEST_CHECK(synth::qwen3tts::make_bpe_frontend(instruct_turn_vocabulary(), frontend) == SYNTH_OK);
+
+    std::vector<int32_t> ids;
+    const auto           instruct = [&](const std::string & text, uint64_t max_tokens = 0) {
+        return synth::qwen3tts::qwen_instruct_ids(*frontend, text, max_tokens, ids);
+    };
+
+    // 2. Round trip, UNSLICED -- the property that distinguishes this
+    //    function from qwen_reference_transcript_ids, which strips the role
+    //    prefix and the closing markers back off. qwen_instruct_ids's own ids
+    //    must be EXACTLY what tokenizing the wrapped turn whole gives, not a
+    //    subset of it.
+    SYNTH_TEST_CHECK(instruct("ab") == SYNTH_OK);
+    std::vector<int32_t> whole;
+    const std::string    turn = synth::qwen3tts::qwen_instruct_turn("ab");
+    SYNTH_TEST_CHECK(frontend->prepare(SYNTH_INPUT_TEXT_UTF8, turn.data(), turn.size(), 0, whole) == SYNTH_OK);
+    SYNTH_TEST_CHECK(ids == whole);
+    // Not merely the markers -- the instruct's own id (2, "ab") is in there.
+    SYNTH_TEST_CHECK(std::find(ids.begin(), ids.end(), 2) != ids.end());
+
+    // 3. Design D3: an empty instruct produces an EMPTY vector and SYNTH_OK --
+    //    no instruct block at all, not a wrapped-empty-string block.
+    //    Tokenizing the wrapped EMPTY string is NOT empty (it is the
+    //    markers' and the role word's own tokens), which is exactly the
+    //    block this rule exists to avoid producing -- the check has to run
+    //    before wrapping, and this is what proves it does.
+    SYNTH_TEST_CHECK(instruct("") == SYNTH_OK);
+    SYNTH_TEST_CHECK(ids.empty());
+    std::vector<int32_t> empty_wrapped;
+    const std::string    empty_turn = synth::qwen3tts::qwen_instruct_turn("");
+    SYNTH_TEST_CHECK(frontend->prepare(SYNTH_INPUT_TEXT_UTF8, empty_turn.data(), empty_turn.size(), 0, empty_wrapped) ==
+                     SYNTH_OK);
+    SYNTH_TEST_CHECK(!empty_wrapped.empty());
+    SYNTH_TEST_CHECK(ids != empty_wrapped);
+
+    // 4. The declared limit counts the WHOLE wrapped turn -- there is no
+    //    slice to discount here, unlike qwen_reference_transcript_ids.
+    SYNTH_TEST_CHECK(instruct("ab", uint64_t(whole.size())) == SYNTH_OK);
+    SYNTH_TEST_CHECK(instruct("ab", uint64_t(whole.size()) - 1) == SYNTH_ERR_INPUT_TOO_LONG);
+    SYNTH_TEST_CHECK(ids.empty());
+
+    // 5. A byte the vocabulary cannot name is refused rather than dropped,
+    //    the same rule the request and reference-transcript paths follow.
+    SYNTH_TEST_CHECK(instruct("z") == SYNTH_ERR_INVALID_ARG);
+
+    return 0;
+}
+
 }  // namespace
 
 // The merge order, and that a long run terminates in reasonable time.
@@ -789,5 +897,6 @@ int main() {
     SYNTH_TEST_CHECK(check_assistant_turn() == 0);
     SYNTH_TEST_CHECK(check_reference_turn() == 0);
     SYNTH_TEST_CHECK(check_reference_transcript_ids() == 0);
+    SYNTH_TEST_CHECK(check_instruct_turn() == 0);
     return 0;
 }

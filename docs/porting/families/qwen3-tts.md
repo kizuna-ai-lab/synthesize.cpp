@@ -1,6 +1,6 @@
 # Qwen3-TTS Family Selection and Port Plan
 
-Status: Confirmed 2026-08-18. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
+Status: Confirmed 2026-08-19. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
 complete and published. Intake, the oracle and conversion are done; stages 4
 through 7 have their measured work done: oracle replay and the public seam
 pass, and the codec runs on CUDA while the autoregressive half stays on the CPU
@@ -66,6 +66,25 @@ own declared `synthesize.voice.profile_sources` still names
 `description-text`, and Task 3's loader and its cross-checks are untouched.
 See "Stage 3: VoiceDesign Package, Task 6", "Load result" below for the
 corrected measurement table.
+
+**Second correction, 2026-08-18, Stage 3 Plan 2's Task 5: the withholding above
+is no longer current.** It was a true account of a real interval, so it stands
+rather than being rewritten, but a reader stopping at the paragraph above today
+would be misled about what the runtime currently publishes. Both reasons for
+the withholding are closed: Plan 2's Task 2 gave
+`synth_voice_profile_create_from_description` a Qwen3-TTS arm, so the seam no
+longer routes every request to the generic unsupported fallback, and Task 3
+made `load_profile_from_memory` route on a design envelope's own declared kind
+before the x-vector size check that used to refuse every serialized Profile
+against this package. With both gaps closed, Task 5 republished the capability:
+the VoiceDesign package now reports **zero Preset Voices and
+`SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`
+with Reference Audio absent** -- exactly what Task 6 originally measured and
+the design originally predicted, before the interval this section records.
+See "Stage 3: VoiceDesign Package, Task 6", "Load result" below for Task 5's
+own re-measurement against the real package (`0xa`, `qwen3-tts-voice-design`
+version 1) -- the all-zero table the first correction above points to is
+itself superseded there, in turn.
 
 **Packages converted before `synthesize.voice.profile_sources` existed do not
 load under this runtime any more.** Stage 3's loader change
@@ -1647,6 +1666,16 @@ Byte-identical rather than close, because the sampler is the only stochastic par
 and it is seeded. Reporting a seed that does not reproduce would be worse than
 reporting none, so the random-seed path is replayed rather than merely observed.
 
+**This table is stale and pre-dates this document's own later corrections.**
+The eight checks and their results above are a historical snapshot; the
+CustomVoice BF16/CPU `public` cell in `tests/tolerances/qwen3-tts.json`
+already records 10 checks (2026-08-17, a second kind of Voice) and then 11
+(2026-08-19, Stage 3 Plan 2 Task 6's `create_from_description` refusal check).
+Not rewritten here — the authoritative, dated count lives in that file, with a
+note explaining each move; this table is left as the record of what phase 3
+looked like when this section was first written, per this document's own
+practice of superseding rather than silently editing history.
+
 ### Not done in this stage
 
 Phases 4 and 5 of the contract -- the quantization profiles and the Execution
@@ -3205,7 +3234,18 @@ Voice Profile:
 
 - **7 checks pass, 3 skipped**, the same seven and the same three structural
   skips as every CPU cell -- the Voice kind is a property of the package's
-  catalogue, not of the backend.
+  catalogue, not of the backend. **Stale as of 2026-08-19, not re-measured
+  here:** Stage 3 Plan 2 Task 6 added a `create_from_description` refusal
+  check that runs for every non-`description_text` package, CPU or CUDA alike
+  -- it probes `synth_voice_profile_create_from_description` directly and
+  never reaches a backend-specific graph, so nothing about the reasoning above
+  changes between backends. The CPU sibling of this exact cell moved 7 -> 8 in
+  `tests/tolerances/qwen3-tts.json` the same day. This CUDA figure almost
+  certainly moves the same way but was not re-run under CUDA to confirm it --
+  this environment had no CUDA-preset build tree at the time -- so 7 is left
+  standing here as what was actually measured rather than silently bumped to
+  an unverified 8. Whoever next runs this cell under CUDA should expect 8, not
+  be surprised by it.
 - The audio differs from CPU, which is what says the request reached the
   device: seed 7 through reference A gives `ed32bb3b13800fe1` on CUDA against
   `9eef2beaf63cb60e` on CPU. That is the codec decoder's TF32 arithmetic, the
@@ -4051,8 +4091,14 @@ carries all five digests, none of `qwen3-tts-12hz-0-6b-base`'s two
 -- this task's own step removes every case the copied Base manifest carried.
 The manifest stays at zero cases through Task 7 too: that task gates the
 empty-instruct rung with an integration driver and a tolerance cell outside
-the manifest rather than adding a case to it. The manifest's own cases arrive
-in Plan 2.
+the manifest rather than adding a case to it.
+
+**Superseded, 2026-08-19, Stage 3 Plan 2 Task 7:** the manifest no longer
+carries zero cases -- see "The manifest's thirteen cases, Plan 2 Task 7" far
+below, where it landed thirteen and lost `suite_status: "incremental"`
+entirely. Left standing rather than rewritten, per this file's own
+convention: a reader relying on this paragraph during Stage 3 Plan 1 or Plan
+2's first six tasks was correctly informed at the time.
 
 ### Measured package size against the design's estimate
 
@@ -4198,12 +4244,35 @@ the widened schema, which the unwidened schema had rejected. Replaced with a
 narrow opt-in instead: a top-level `if`/`then`/`else` keyed on a new optional
 `suite_status` field relaxes `cases.minItems` to 0 only when a manifest
 declares `suite_status: "incremental"` -- which only
-`qwen3-tts-12hz-1-7b-voicedesign` does. Every other manifest omits the field
-and stays at the 12-case floor, re-validated against the same truncated VITS
-copy, which is rejected again. Both Python checks still `continue`
-specifically for a manifest whose `cases` array is empty -- narrowly enough
-that the moment this manifest gains its first case (Plan 2), both checks
-re-engage on it exactly as they do on every other manifest.
+`qwen3-tts-12hz-1-7b-voicedesign` did, at the time. Every other manifest omits
+the field and stays at the 12-case floor, re-validated against the same
+truncated VITS copy, which is rejected again. Both Python checks still
+`continue` specifically for a manifest whose `cases` array is empty -- narrowly
+enough that the moment this manifest gains its first case (Plan 2), both
+checks re-engage on it exactly as they do on every other manifest.
+
+**Superseded, 2026-08-19, Stage 3 Plan 2 Task 7.** Two things in the paragraph
+above changed, both covered in full under "The manifest's thirteen cases, Plan
+2 Task 7" far below: first, `qwen3-tts-12hz-1-7b-voicedesign` gained its
+thirteen cases and lost `suite_status` entirely, so as of this task NO
+manifest carries the flag -- the set of manifests permitted to is empty, named
+explicitly as `SUITE_STATUS_ALLOWLIST` in
+`tests/python/test_golden_manifests.py`. Second, "both Python checks still
+`continue` ... for a manifest whose `cases` array is empty" was itself a
+latent defect this task closed, not merely a description that stopped
+applying: those two `continue` guards read `if not manifest["cases"]`, never
+`suite_status` itself, so nothing before this task actually tied the schema's
+own waiver to these two exemptions -- a manifest could have carried the flag
+WITH cases, or had zero cases WITHOUT the flag, and neither shape would have
+been caught. Found twice independently: while drafting this plan, and again by
+an external review of the sibling Stage 3 Plan 2 PR that demonstrated it live
+against a 3-case copy of `vits-ljspeech`'s own manifest carrying
+`suite_status: "incremental"` and validating clean. Closed by a new guard,
+`test_suite_status_matches_an_incrementally_built_manifest_exactly`, that
+binds both directions at once (the carrying set equals the named allowlist;
+a manifest carrying the flag has zero cases, one without it has at least
+twelve), and by rewriting both `continue` guards to key on `suite_status`'s
+own value instead of `cases` being empty as a proxy for it.
 
 Task 6's own commit made no change to `tests/tolerances/qwen3-tts.json` or to
 `tests/python/test_tolerance_coverage.py`; Task 7 is what later added this
@@ -4280,6 +4349,25 @@ public capability query until a later plan wires `create_from_description`.
 The PACKAGE's own declared `synthesize.voice.profile_sources` is unaffected by
 this correction and still names `description-text`; Task 3's loader and its
 cross-checks are untouched.
+
+**Second correction, 2026-08-19, Stage 3 Plan 2's Task 5 -- the table
+immediately above is itself superseded.** Round 1 of that task's own review
+re-ran the same probe against the same real package after Task 5 landed and
+measured the table this section originally reported, unchanged from Task 6:
+
+| Field | VoiceDesign (Task 5 re-measurement) |
+| --- | --- |
+| `preset_voice_count` | 0 |
+| `profile_source_flags` | `0xa` = `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT \| SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` |
+| `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO` | absent |
+| six `reference_*` limits | all 0 |
+| `profile_schema` | `qwen3-tts-voice-design`, version 1 |
+
+Both reasons the first correction gave are closed: Task 2 gave
+`create_from_description` a Qwen3-TTS arm, and Task 3 made a serialized design
+Profile loadable. The all-zero "corrected" table above held only for the
+interval between the final whole-branch review and Task 5's own close, and is
+not rewritten; a reader today wants this table, not that one.
 
 ## Stage 3: VoiceDesign Package, Task 7
 
@@ -4400,6 +4488,240 @@ in full). Not delivered here, and not a gap against Plan 1's own scope:
 `create_from_description`, the `DesignInstruct` payload, the instruct prompt
 block, the public-seam validator, quantization, backends, and the listening
 audit -- Plans 2 and 3.
+
+**This is Plan 1's own gate as it stood at Plan 1's close, and is left as
+history.** Plan 2's Task 5 republished the capability once Task 2 wired
+`create_from_description` and Task 3 made a serialized design Profile
+loadable -- see "Load result" above's own second correction for the
+re-measurement (`0xa`, `DESCRIPTION_TEXT | SERIALIZED_PROFILE`, matching this
+paragraph's original, pre-correction claim).
+
+## Stage 3: VoiceDesign Package, Plan 2 Task 7
+
+Executed 2026-08-19, the last task of Stage 3 Plan 2. Three things: the
+manifest's cases, the schema's profile-contract widening, and a policy guard
+binding `suite_status` to the two Python checks that used to waive themselves
+independently of it. Plus two malformed-package holes an external review of
+the sibling PR found in `src/arch/qwen3-tts/weights.cpp`, routed to this task
+because they are the same class of defect as the guard above.
+
+### The manifest's thirteen cases, Plan 2 Task 7
+
+`tests/golden/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign.manifest.json` carried
+`cases: []` and `suite_status: "incremental"` from Stage 3 Plan 1's Task 6
+through Plan 2's Task 6 (six tasks). This task fills it to thirteen cases and
+removes `suite_status` -- the twelve-case floor re-engages for this manifest
+exactly as it always has for every other one.
+
+Four of the thirteen are the measurements Tasks 4 and 6 already made, reused
+verbatim rather than re-invented, with case ids chosen to match the ids those
+tasks' own tolerance entries already use:
+
+- `voicedesign-empty-instruct-en` and `voicedesign-nonempty-instruct-en` are
+  Task 4's own prefill pair -- text "Qwen3-TTS is awesome!", instruct `""`
+  and "A cheerful, bright female voice speaking with fast pacing and high
+  energy.", both English, both seed 0. The ids are copied character for
+  character from `tests/tolerances/qwen3-tts.json`'s
+  `replay.probes.prefill.case_ids`, so a reader who already knows those two
+  measurements recognizes them here directly.
+- `voicedesign-description-cheerful-en` and `voicedesign-description-calm-en`
+  reuse Task 6's own two `--description` instructs verbatim -- "A cheerful,
+  bright female voice speaking with fast pacing and high energy." and "A
+  deep, calm male voice speaking slowly and quietly." -- at seed 7, Task 6's
+  own seed, over the same benchmark text. A `relations` entry
+  (`artifact_differs`, `public_request`, `audio.pcm`) ties the pair together,
+  the manifest-level expression of design section 6.3's relation 1 ("a
+  different Voice changes the audio") that Task 6 already measured through
+  the public seam.
+
+Two more are genuine upstream examples, not project-authored coverage: the
+GitHub README's own "Voice Design" section (`README.md#voice-design` at the
+pinned revision `022e286b98fbec7e1e916cb940cdf532cd9f488e`) is the only place
+in either the GitHub repository or the HuggingFace model card that actually
+calls `generate_voice_design` with a real instruct -- the HuggingFace card's
+own Quickstart section, checked directly, shows the *CustomVoice* example
+instead (`generate_custom_voice` against `Qwen3-TTS-12Hz-1.7B-CustomVoice`),
+copied across every variant's card rather than written per-variant.
+`voicedesign-upstream-zh` and `voicedesign-upstream-en` are that README
+section's own single-inference and first batch-inference example
+respectively, text and instruct both copied verbatim (including the
+batch-inference English text's own ellipsis and internal punctuation).
+`test_upstream_examples_are_present` needs only one; this manifest carries
+two, both real.
+
+The remaining seven (`voicedesign-short`, `voicedesign-punctuation`,
+`voicedesign-normalization`, `voicedesign-medium`, `voicedesign-lang-japanese`,
+`voicedesign-seed-one`, `voicedesign-seed-forty-two`) extend coverage to the
+floor the same way `qwen3-tts-12hz-0-6b-base` and
+`qwen3-tts-12hz-0-6b-customvoice`'s own non-upstream cases were built:
+short/medium/punctuation/normalization text shapes reused verbatim from those
+two manifests' own cases, a non-Latin-script language (Japanese), and a
+seed-variation trio (`voicedesign-nonempty-instruct-en` at seed 0, plus the
+two new ones at seed 1 and 42, tied by a second `relations` entry) proving
+design section 6.3's relation 2 in reverse -- a DIFFERENT seed, same
+everything else, changes the audio. Their instruct strings are new,
+project-authored voice descriptions (there is no third measured description
+this task could have reused without duplicating one of the four above), and
+their oracle data is COMMITTED CONTRACT, not yet committed MEASUREMENT --
+consistent with every other qwen3-tts and VITS manifest's own cases at the
+moment they first landed, and with CLAUDE.md's own rule that a Golden
+Manifest pins provenance, cases, and tolerances while the payloads that would
+prove each case (models, reference tensors, generated reports) stay
+gitignored and are generated on demand. `tests/tolerances/qwen3-tts.json`'s
+`variants.qwen3-tts-12hz-1-7b-voicedesign.case_count` moves from 2 to 13 in
+the same task, this time meaning what that field means for every other
+variant (the manifest's own case count) rather than the prefill probe's own
+case count it had been coopted to describe since Task 4; `replay.probes.
+prefill.cases` (still 2) and `public.checks` (still 11) are unchanged, still
+naming exactly what Tasks 4 and 6 actually measured.
+
+Each case's `expected.artifacts` and `oracle.stochastic_inputs` follow this
+variant's own real oracle dumper
+(`scripts/dump_reference_qwen3_tts_voicedesign.py`), not Base's or
+CustomVoice's per-layer artifact shape: that dumper captures one combined
+`prefill.f32` (not per-layer `talker.hidden_l*` tensors -- only the ONE place
+upstream exposes the whole assembled prefill, its own module docstring says,
+so there is no per-layer hook to capture), one combined `codes.i32` (not a
+`codes.semantic`/`codes.acoustic` split -- `generate_voice_design`'s own
+sixteen code groups come back as a single `[frames, 16]` array), and
+`waveform.f32` -- because that is what genuinely exists today, driven by hand
+per case, with no `--manifest` form yet (the dumper's own module docstring
+says so explicitly, dated from Plan 1 when the manifest had no cases at all
+to drive it from). Wiring a `--manifest` form for it, and a per-case
+oracle-replay validator that actually executes `tensor_parity` and
+`waveform_regression` against these thirteen cases, is infrastructure this
+task's file list does not cover and is not claimed as delivered.
+
+### The schema could not express this variant's own profile contract
+
+`docs/schemas/synthesize-golden-manifest-v1.schema.json`'s
+`$defs.profileContract` had `sources: {enum: [reference_audio,
+serialized_profile]}` and unconditionally required `reference` -- a shape
+that fit every profile-sources package that existed when it was written
+(`qwen3-tts-12hz-0-6b-base`, the only manifest that had ever declared a
+`profile` block), all of which happen to carry `reference_audio`. VoiceDesign
+declares only `description_text`, so `package_contract.profile` was
+inexpressible for it until now: this variant's declared sources lived only in
+a doc table ("Load result", above, this same file) and an uncommitted local
+probe, never in the manifest itself.
+
+Widened: `description_text` added to the `sources` enum, and `reference` made
+conditional (`if`/`then` on `sources` containing `reference_audio`) rather
+than unconditionally required. `qwen3-tts-12hz-0-6b-base`'s own
+`package_contract.profile` is untouched by this and still validates --
+`reference_audio` is among its sources, so the `then` branch still requires
+`reference` for it, exactly as the unconditional requirement used to. The
+VoiceDesign manifest now carries its own `package_contract.profile`:
+`{schema: "qwen3-tts-voice-design", schema_version: 1, sources:
+["description_text"]}`, no `reference` block, matching
+`fill_voice_profile_capability`'s own published shape for this variant (six
+`reference_*` limits at zero, "Load result" above).
+
+A second, smaller gap surfaced while writing the empty-instruct case:
+`$defs.voice`'s `description` property carried `minLength: 1`, which made D3's
+own legal empty instruct inexpressible as a `description_text` Voice.
+Widened by dropping the floor (every previously-committed `description_text`
+case -- omnivoice's own two -- carries a non-empty string regardless, so
+nothing already committed is affected).
+
+### `suite_status` had no policy guard, and closing that closed two independent findings
+
+Verified while this plan was being written, and independently by an external
+review of the sibling Stage 3 Plan 2 PR: `suite_status` appeared only in the
+schema. `tests/python/test_golden_manifests.py` never read it -- its two
+exemptions (`test_upstream_examples_are_present`,
+`test_tolerance_case_count_matches_manifest`) were both keyed on `if not
+manifest["cases"]`, never on the flag's own value. The schema waived the
+twelve-case floor for whoever set the flag; the Python checks waived
+themselves for whoever had zero cases; nothing tied the two together. A
+manifest could carry the flag WITH cases (the schema's floor waived for a
+manifest that did not need it waived), or have zero cases WITHOUT the flag
+(the Python exemptions would silently skip it even though the schema itself
+would reject it as too short) -- and either shape passed everything that
+existed before this task. The external review demonstrated the first shape
+live, against a 3-case copy of `vits-ljspeech`'s own committed manifest.
+
+Closed with a new test,
+`test_suite_status_matches_an_incrementally_built_manifest_exactly`, binding
+both directions against a named, module-level `SUITE_STATUS_ALLOWLIST`: the
+set of manifests carrying `suite_status` must equal the allowlist exactly,
+and a manifest carrying it must have zero cases while a manifest without it
+must have at least twelve. The allowlist is `frozenset()` -- empty, the
+strongest form it can take, now that this task's own thirteen cases removed
+the one manifest that ever needed the flag. The two existing exemptions were
+also rewritten to key on `suite_status`'s own value (`manifest.get(
+"suite_status") == "incremental"`) rather than on `cases` being empty as a
+proxy for it, closing the same defect the new guard proves does not
+otherwise recur.
+
+Proved live, not merely by argument: adding `suite_status: "incremental"` to
+a copy of `vits-ljspeech`'s own manifest (13 cases, well above the floor)
+passes the schema unchanged (the schema alone does not enforce the
+allowlist) and fails the new guard immediately, naming the offending
+manifest. Truncating a copy of the VoiceDesign manifest to 3 cases, with no
+`suite_status`, is rejected by the schema itself (`cases` too short) before
+the guard is ever consulted.
+
+### Two malformed-package holes in `weights.cpp`, found by the same external review
+
+Unrelated to the manifest/schema/guard work above except in kind -- both are
+the loader accepting a package shape no real converter would ever emit,
+found the same way the `suite_status` gap above was: read closely against
+what the code actually checks rather than what its comments claim.
+
+**Mixed profile sources were accepted.** `read_profile_sources` ORs each
+declared name's bit into `hparams.profile_sources` rather than refusing a
+combination, so a package declaring BOTH `"reference-audio"` and
+`"description-text"` -- with a speaker encoder attached, satisfying the
+existing `wants_reference == carries_encoder` cross-check -- loaded clean.
+No real converter emits this (`scripts/convert-qwen3-tts.py`'s
+`profile_source_names` always returns exactly one name), but a loader that
+exists to positively declare a package's shape must refuse the shapes it
+cannot express, not merely the ones a well-behaved converter happens to
+avoid. Closed with a check at the end of `read_profile_sources` itself:
+`hparams.profile_sources` must equal exactly one of the two known bits, not
+both (and, since the loop already refuses an empty or unrecognized name,
+not neither either).
+
+**A Description Text package could still carry surplus
+`synthesize.reference.*` metadata.** `read_profile_contract`'s own
+`has_speaker_encoder`-gated early return never inspects the six
+`synthesize.reference.*` keys when the package carries no speaker encoder --
+it just returns `true` before reaching them. A converter regression (or
+hand-edited metadata) that left one or more of those keys on a converted
+VoiceDesign-shaped package would load silently rather than being refused for
+declaring a reference-audio contract it does not implement. Closed with an
+explicit refusal in `read_profile_and_speaker_encoder`, checked one key at a
+time (`GgufMetadata::has`) rather than by re-reading the whole block, for a
+package that does not declare `reference-audio`.
+
+Both proved by construction in `tests/qwen3_tts_metadata_test.cpp`
+(`test_mixed_profile_sources_are_refused`,
+`test_description_text_package_with_surplus_reference_keys_is_refused`), and
+both proved by mutation: temporarily disabling each new check individually,
+rebuilding, and confirming the corresponding new test is what catches the
+regression (`check failed: synth::qwen3tts::read_hparams(...) != SYNTH_OK`),
+then reverting and confirming clean (`git status --porcelain`, `git diff
+--stat` showing only the intended lines) before committing.
+
+### Gates
+
+- `synthesize-qwen3-tts-metadata-test` (unit, the two new cases plus the
+  rest of the file's existing package-metadata coverage): passes clean under
+  the plain `build` tree and under `build-sanitize`
+  (`-DSYNTH_SANITIZE=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo`).
+- `synthesize-golden-manifest-contract` / `tests.python.test_golden_manifests`
+  (25 tests, one new -- `test_suite_status_matches_an_incrementally_built_manifest_exactly`
+  -- plus the manifest and schema widenings above exercised through the
+  existing 24): all pass.
+- `tests.python.test_tolerance_coverage`: unchanged, 3/3.
+- Full unit gate, plain `build` tree: 104/106, the same two pre-existing,
+  not-ours failures (`synthesize-python-api-wheel-test`,
+  `synthesize-vits-python-unit`, both wanting gitignored VITS artifacts).
+- Full unit gate, `build-sanitize`: 103/105, the identical two failures, no
+  third.
+- `scripts/ci/clang-format.sh --fix` after `git add`, then `--check-diff`:
+  clean.
 
 ## Open Questions for Intake
 

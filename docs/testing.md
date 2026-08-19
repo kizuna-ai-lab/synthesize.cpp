@@ -1,6 +1,6 @@
 # Testing Policy
 
-Status: Confirmed, last updated on 2026-08-18.
+Status: Confirmed, last updated on 2026-08-19.
 
 Testing is a per-slice completion gate. A new converter rule, graph stage,
 runtime control, backend path, or public Interface is not complete merely because
@@ -191,8 +191,12 @@ Stage 3 Plan 1's Reference Model Variant is a third package with its own
 cache variable, `SYNTH_QWEN3_TTS_VOICEDESIGN_TEST_MODEL`
 (`CMakeLists.txt`), defaulting to
 `models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-BF16.gguf`
--- BF16 for the same source-profile reason as the two variables above. One
-integration test registers from it, `synthesize-qwen3-tts-voicedesign-prefill-real`
+-- BF16 for the same source-profile reason as the two variables above.
+
+**Round 1 review (M4): this section's own name undersells what registers from
+this variable now.** Two integration tests register from it, not one, and
+have since Stage 3 Plan 2's Task 4 -- this section only ever documented the
+first. `synthesize-qwen3-tts-voicedesign-prefill-real`
 (Plan 1's completion gate: the talker's assembled prefill at an empty
 instruct, with the speaker slot correctly absent, against the real package):
 
@@ -213,6 +217,19 @@ following the dumper's own usage example and Task 7's brief rather than the
 `build/goldens/` layout the family's other oracle dumps use. `.gitignore`
 carries a dedicated `/reports/porting/**/oracle` rule for it rather than
 relying on the already-ignored `build/` tree.
+
+The second test, `synthesize-qwen3-tts-voicedesign-synthesis-real` (Stage 3
+Plan 2's Task 4), needs no oracle artifact -- it drives
+`synth_voice_profile_create_from_description` then `synth_synthesize_to_buffer`
+entirely through the public C seam and asserts non-silent audio, not agreement
+with a reference dump. It carries two cases from Task 4 (an empty instruct and
+a non-empty one, the shapes that first exposed `t_hidden`'s width defect) and a
+third from Task 5: create a Description Text Profile, serialize it, load the
+bytes back through `synth_voice_profile_load_from_memory`, and confirm the
+loaded-back Profile synthesizes too -- the real-package half of Task 5's
+public-seam round trip, needed because
+`tests/qwen3_tts_design_profile_test.cpp`'s own `unit`-tier round trip proves
+the dispatch decision but has no talker or codec weights to synthesize with.
 
 `synthesize-golden-manifest-contract` (`unit`) is the structural test over every
 committed Golden Manifest against its schema

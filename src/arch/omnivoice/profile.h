@@ -155,9 +155,13 @@ struct DesignInstruct {
 // against the pinned source in the vocabulary's favor.
 //
 // `description` is the caller's raw, non-empty string -- voice-profile.cpp's
-// dispatcher has already checked presence per docs/c-interface.md
-// ("description is required, non-empty"), but has not touched its content
-// otherwise.
+// OmniVoice arm has already checked presence, but has not touched its
+// content otherwise. A non-empty description is the DEFAULT stated by
+// docs/c-interface.md's v1 Description Text section, not a rule binding
+// every variant: that section was amended on 2026-08-19 so a Model Variant
+// MAY accept an empty description. OmniVoice takes the default, for the
+// reason the vocabulary paragraph above gives -- a closed attribute set has
+// no unconditioned member.
 //
 // `use_zh` is the language-unification baseline BEFORE this function's own
 // dialect/accent overrides (a dialect item present forces Chinese, an accent

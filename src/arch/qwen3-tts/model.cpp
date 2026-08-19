@@ -437,6 +437,19 @@ synth_status_t Model::tokenize_reference_transcript(const std::string & text, st
                                          implementation_->hparams.max_input_tokens, token_ids);
 }
 
+synth_status_t Model::tokenize_instruct(const std::string & instruct, std::vector<int32_t> & token_ids) const {
+    token_ids.clear();
+    if (implementation_->reference_frontend == nullptr) {
+        return SYNTH_ERR_TEXT_FRONTEND;
+    }
+    // Reused rather than a fourth frontend built for this: reference_frontend
+    // wraps nothing of its own (see its construction site's own comment), so
+    // it is exactly what applying a DIFFERENT turn -- the instruct turn here,
+    // the reference turn above -- needs.
+    return qwen_instruct_ids(*implementation_->reference_frontend, instruct, implementation_->hparams.max_input_tokens,
+                             token_ids);
+}
+
 synth_status_t Model::resolve_voice(const std::string & voice_id,
                                     const std::string & language,
                                     uint32_t &          speaker_token,
@@ -924,6 +937,31 @@ synth_status_t validate_speaker_sources(const HParams & hparams, const Synthesis
     if (has_codes && !external) {
         return SYNTH_ERR_INVALID_ARG;
     }
+    // Description Text conditioning is mutually exclusive with every other
+    // speaker source IN THIS PORT -- a rule about the packages this family can
+    // actually load today, not a claim about what upstream's own architecture
+    // permits. Upstream's own generate_custom_voice builds instruct_ids
+    // ALONGSIDE a resolved `speaker` for any CustomVoice checkpoint except the
+    // 0.6B one (`if self.model.tts_model_size in "0b6": instruct = None`,
+    // qwen3_tts_model.py:799-800) -- a larger CustomVoice model could combine
+    // the two. It is unreachable here because the two packages this rule
+    // could ever fire against don't overlap: VoiceDesign (the only variant
+    // that can produce a non-null `instruct`) declares no Preset Voice
+    // Catalog and has no speaker encoder, so `external`/`!voice_id.empty()`/
+    // `has_codes` are already impossible for a request built through the
+    // public seam by the time `instruct` could be set. Checked anyway, the
+    // same defensive-set discipline this function's other rules already
+    // follow, and correct for every package this port can load -- if a future
+    // rung ever ships a CustomVoice-shaped checkpoint that ALSO declares
+    // DESCRIPTION_TEXT, this line is what would need to change, not silently
+    // stay wrong.
+    //
+    // `has_codes` alone stands in for the whole ICL set here: the
+    // all-or-nothing check above already refused any HALF-present ICL state,
+    // so by this point `has_codes` true means the request is a complete one.
+    if (request.instruct != nullptr && (external || !request.voice_id.empty() || has_codes)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
     return SYNTH_OK;
 }
 
@@ -949,6 +987,13 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     const bool external = request.x_vector != nullptr;
     // Checked as a set above, so one field decides for all four.
     const bool icl      = request.reference_codes != nullptr;
+    // Description Text (VoiceDesign): the Voice arrives as conditioning
+    // through `instruct`, the same way it does through `x_vector` for the
+    // clone modes -- and validate_speaker_sources above has already refused
+    // any request combining this with a preset Voice, an x-vector or an ICL
+    // reference, so `design` here can never be true alongside `external` or
+    // `icl`.
+    const bool design   = request.instruct != nullptr;
 
     uint32_t       speaker_token  = 0;
     bool           has_language   = false;
@@ -958,23 +1003,79 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     // is correct when no Profile was supplied and wrong when one was: the
     // Voice arrived as conditioning rather than as a name. Language
     // resolution still has to happen, so this splits the two rather than
-    // skipping the call.
+    // skipping the call. A design request is the same case as an external
+    // one here -- VoiceDesign's own Preset Voice Catalog is empty too, and
+    // there is no preset Voice name to resolve either way.
     synth_status_t status =
-        external ? resolve_language_only(request.language, has_language, language_token) :
-                   resolve_voice(request.voice_id, request.language, speaker_token, has_language, language_token);
+        (external || design) ?
+            resolve_language_only(request.language, has_language, language_token) :
+            resolve_voice(request.voice_id, request.language, speaker_token, has_language, language_token);
     if (status != SYNTH_OK) {
         return status;
     }
 
     TalkerPromptRequest prompt_request;
+    if (design) {
+        // Wrap-and-tokenize happens here, at synthesis, per design D1 -- the
+        // Profile stores only the string.
+        //
+        // BUDGET NOTE: tokenize_instruct enforces hparams.max_input_tokens
+        // against the instruct's OWN wrapped turn, independently of the
+        // target text's own tokenize_request call further up this pipeline
+        // (prepare_synthesis_request) enforcing the SAME max_input_tokens
+        // against ITS OWN turn -- so a prefill can reach roughly twice the
+        // package's declared input bound rather than the two sharing one
+        // budget. Not a new shape: tokenize_reference_transcript's own ICL
+        // path (Plan 3) already applies max_input_tokens to the reference
+        // transcript's own turn independently of the target text's budget,
+        // for the identical reason -- neither call site knows about the
+        // other's consumption. Not unbounded either -- create_design_profile
+        // refuses an instruct over kMaxDesignInstructBytes (4096 bytes,
+        // arch/qwen3-tts/profile.h) before it can ever reach here, which
+        // caps how far past the declared bound the instruct half can push.
+        std::vector<int32_t> instruct_ids;
+        status = tokenize_instruct(*request.instruct, instruct_ids);
+        if (status != SYNTH_OK) {
+            return status;
+        }
+        // The narrowing is safe for the same reason the ICL reference ids'
+        // own narrowing below is: this family's BPE frontend only ever
+        // produces ids in `[0, talker.text_vocab_size)`.
+        prompt_request.instruct_tokens.reserve(instruct_ids.size());
+        for (int32_t id : instruct_ids) {
+            prompt_request.instruct_tokens.push_back(uint32_t(id));
+        }
+    }
     prompt_request.role_tokens.assign(request.token_ids.begin(),
                                       request.token_ids.begin() + kAssistantRolePrefixTokens);
     prompt_request.text_tokens.assign(request.token_ids.begin() + kAssistantRolePrefixTokens,
                                       request.token_ids.end() - kAssistantSuffixTokens);
-    // The slot exists either way -- upstream substitutes the embedding, it
-    // does not remove the position -- so has_speaker stays true regardless of
-    // which source fills it.
-    prompt_request.has_speaker         = true;
+    // The slot exists for a preset Voice and for both clone modes -- upstream
+    // substitutes the embedding, it does not remove the position -- but
+    // Description Text carries no speaker at all: modeling_qwen3_tts.py:
+    // 2088-2089 leaves `speaker_embed` as `None` and the codec prefill at
+    // 2166-2172 omits the slot entirely rather than substituting into it
+    // (design section 5.3). `speaker_token`/`speaker_is_external` are left at
+    // their resolved values regardless -- build_talker_prompt reads neither
+    // when `has_speaker` is false.
+    //
+    // `!design` IS AN ASSUMPTION, NOT UPSTREAM'S OWN CONDITION, and it is
+    // worth being honest about the gap: upstream's `speaker_embed is None`
+    // test is `speaker == "" or speaker == None` (:2088), which depends on
+    // the SPEAKER being absent, not on the INSTRUCT being present --
+    // generate_voice_design (the only caller that ever populates
+    // instruct_ids) simply never passes a `speakers` argument either
+    // (:717-724), so `speaker` defaults to `None` for every design request
+    // and the two conditions coincide there. They coincide here for the same
+    // reason at the package level: the sole DESCRIPTION_TEXT-capable variant
+    // (VoiceDesign) declares no Preset Voice Catalog and carries no speaker
+    // encoder, so `design` true implies "no speaker was ever resolvable"
+    // for every package this port can load today (validate_speaker_sources
+    // above is what keeps it that way, by refusing `instruct` combined with
+    // any speaker source). A future package that combined the two -- see
+    // that function's own comment on this same gap -- would need
+    // `has_speaker` computed from the SPEAKER, not from `design`.
+    prompt_request.has_speaker         = !design;
     prompt_request.speaker_token       = speaker_token;
     prompt_request.speaker_is_external = external;
     prompt_request.has_language        = has_language;
@@ -1077,7 +1178,26 @@ synth_status_t Model::run_synthesis(const SynthesisRequest & request, SynthesisO
     ggml_tensor *  t_acoustic     = ggml_new_tensor_2d(ictx, GGML_TYPE_I32, 1, int64_t(groups) - 1);
     ggml_tensor *  t_semantic     = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, 1);
     ggml_tensor *  t_previous     = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, 1);
-    ggml_tensor *  t_hidden       = ggml_new_tensor_2d(ictx, GGML_TYPE_F32, hparams.code_predictor.hidden_size, 1);
+    // TALKER width, not the predictor's own -- t_hidden holds the talker's
+    // per-step hidden state verbatim (read_floats(hidden, hidden_state) below
+    // reads it at talker width, and ggml_backend_tensor_set copies
+    // ggml_nbytes(t_hidden) bytes, so an undersized allocation here silently
+    // truncates rather than erroring). It is then concatenated with `embedded`
+    // -- a row of impl.weights.talker.codec_embedding, ALSO talker-width -- and
+    // the result is what build_code_predictor's own input_projection
+    // (small_to_mtp_projection, catalog.cpp) expects to receive: that
+    // projection's weight is shaped [talker.hidden_size, code_predictor.hidden_size]
+    // (catalog.cpp's resolve_code_predictor), so its input has to already be
+    // at the talker's width, which is what it silently is NOT when this read
+    // hparams.code_predictor.hidden_size instead -- invisible on every package
+    // through Base, where the two widths coincide (docs/porting/families/
+    // qwen3-tts.md), and a GGML_ASSERT(a->ne[d] == b->ne[d]) abort in
+    // ggml_concat on the first package where they do not (the 1.7B
+    // VoiceDesign talker at 2048 against its predictor's unchanged 1024).
+    // Found by Stage 3 Plan 2's Task 4 review, fixed here rather than gated
+    // behind a refusal -- a Description Text Profile that could not actually
+    // synthesize would make Task 5's capability-bit republication a lie.
+    ggml_tensor *  t_hidden       = ggml_new_tensor_2d(ictx, GGML_TYPE_F32, hparams.talker.hidden_size, 1);
     ggml_tensor *  t_pair_pos     = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, 2);
     ggml_tensor *  t_pair_mask    = ggml_new_tensor_2d(ictx, GGML_TYPE_F32, 2, 2);
     ggml_tensor *  t_one_pos      = ggml_new_tensor_1d(ictx, GGML_TYPE_I32, 1);

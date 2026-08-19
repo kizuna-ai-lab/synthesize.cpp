@@ -24,6 +24,13 @@ enum class ProfileFamilyTag : uint32_t {
     // Profiles reuse this tag rather than adding a second one that every
     // switch would have to learn.
     Qwen3TtsClone,
+    // Description Text: wraps a synth::qwen3tts::DesignInstruct payload
+    // (arch/qwen3-tts/profile.h). Its OWN tag rather than a third CloneMode
+    // under Qwen3TtsClone, because the reasoning that let one tag cover both
+    // clone modes does not reach here: those two share the x-vector and are
+    // discriminated by a field inside a common struct, while a design payload
+    // has no x-vector and no field in common with either.
+    Qwen3TtsDesign,
 };
 
 }  // namespace synth

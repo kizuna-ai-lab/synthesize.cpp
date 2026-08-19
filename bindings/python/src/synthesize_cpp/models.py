@@ -161,8 +161,18 @@ class Model:
     ) -> VoiceProfile:
         if not isinstance(description, str):
             raise TypeError("description must be str")
-        if not description:
-            raise ValueError("description must not be empty")
+        # No emptiness check here, deliberately. Whether an empty description
+        # is legal is a per-Model-Variant semantic rule (docs/c-interface.md's
+        # v1 Description Text section: a non-empty description is the default,
+        # and a variant may accept an empty one as a distinct legal input --
+        # Qwen3-TTS VoiceDesign does, as its unconditioned path). An Adapter
+        # is a pass-through over the C interface (CLAUDE.md) and cannot know
+        # which variant it is holding, so it lets the C layer decide and
+        # report: a variant that refuses returns SYNTH_ERR_INVALID_ARG, which
+        # arrives below as a RuntimeError from the extension and is re-raised
+        # as SynthesizeError. Until 2026-08-19 this raised ValueError on an
+        # empty string, which made the C layer's own answer unreachable from
+        # this wheel for every variant, refusing and accepting alike.
         if language is not None and not isinstance(language, str):
             raise TypeError("language must be str or None")
         native_seed = _concrete_profile_seed(seed)

@@ -5185,7 +5185,7 @@ Q5_K_MIXED's worst case (0.031029) is **3.10x OVER** the bound, giving a
 number reads below 1. Scale check against the family's own progression:
 Q8_MIXED's residual was already ~2.2-2.3x BF16's/F16's own (Task 3's finding,
 attributed to Q8_0's 8-bit matrix half being coarser than the oracle's bf16
-storage); Q5_K_MIXED's residual here is a further ~5.05x/4.99x on top of
+storage); Q5_K_MIXED's residual here is a further ~5.06x/4.99x on top of
 Q8_MIXED's own (empty/nonempty respectively), and ~11.5x/10.5x BF16's --
 consistent in DIRECTION with a coarser matrix quantization (5-bit K-quant
 blocks against Q8_0's 8-bit ones) but a much larger jump than the F16 ->
@@ -5231,13 +5231,64 @@ precedent's direction but is the stronger of the two: CustomVoice's number was
 a lower cosine on a probe with no committed pass/fail bound, while this is an
 explicit breach of a committed `max_relative` gate, on both of this variant's
 two measured `replay` cases. The size side of the question this task was
-written to answer -- whether a further ~29 % shrink over `Q8_MIXED` matters
+written to answer -- whether a further 28.75 % shrink over `Q8_MIXED` matters
 more at 4.3 GB than an equivalent shrink did at Base's/CustomVoice's 2.4 GB --
 is answered "yes, noticeably more" (718.7 MB against a package that is itself
 larger to begin with), but that answer is moot once the accuracy side has
 moved even further than the size side did. Task 8's card should record
 `Q5_K_MIXED` as buildable and load-checked for this variant but not shipped,
-on accuracy.
+on accuracy -- but the CustomVoice card Task 8 might otherwise use as a
+template does not do this at all: `scripts/hf_cards/
+qwen3-tts-12hz-0-6b-customvoice.yaml:84` reads `profiles: [F16, Q8_MIXED]`,
+omitting `Q5_K_MIXED` entirely rather than naming it measured-and-not-shipped.
+Task 8 has to establish this shape, not copy it. See "Open item: CustomVoice's
+card omits Q5_K_MIXED" below for the tracked gap.
+
+**Nothing mechanical currently enforces this recommendation.** No registered
+test reads any of `tests/tolerances/qwen3-tts.json`'s `headroom`,
+`observed_max_relative`, `all_passed`, `failed_checks` or `gate_passed`
+fields for this or any profile -- `tests/CMakeLists.txt:1347-1361` hardcodes
+`profiles BF16 stages replay probes "prefill" max_relative` for the prefill
+CTest gate, and the public-request CTest gate (`tests/CMakeLists.txt:2070-
+2081`) runs `--profile BF16 --backend cpu` against `SYNTH_QWEN3_TTS_TEST_MODEL`
+(`CMakeLists.txt:128-130`, the CustomVoice package). F16's and Q8_MIXED's
+cells for this variant are equally unread, so this is not a regression this
+task introduced -- but it does mean a future cut-and-ship of `Q5_K_MIXED`
+would not be caught by CTest; only this document, the porting record and the
+tolerance file's own prose stand between the measurement and a mistaken
+publication.
+
+**Recording the failing cell at all is a departure from both of this
+family's own precedents, made deliberately.** CustomVoice's `Q5_K_MIXED`
+negative lives only in prose (`docs/quantization.md`, this document) with no
+tolerance cell behind it; the Base variant's declined-CUDA negative (see "The
+Base variant carries no CUDA sub-grid" above) is a deliberate *absence* of a
+cell rather than a committed one that reads false. This task commits the
+cell anyway -- `gate_passed: false`, `all_passed: false`, `failed_checks`
+populated -- because an absent or prose-only record of a failure is strictly
+weaker evidence than a reproducible, machine-readable one sitting in the
+same grid a passing profile would occupy: a future reader, or a script
+written later that DOES check these fields, can find this result by looking
+at the grid rather than needing to already know to look for it in prose.
+
+### Open item: CustomVoice's card omits Q5_K_MIXED instead of naming it measured-and-not-shipped
+
+Found while writing this task's recommendation, not fixed here (out of this
+task's file list). This plan's own Global Constraints state that a profile
+which fails its own test belongs in the card "as measured-and-not-shipped
+... rather than omitted." CustomVoice's published card,
+`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml:84`, reads `profiles:
+[F16, Q8_MIXED]` -- `Q5_K_MIXED` (talker-logits cosine 0.9648, withheld on
+accuracy, recorded in `docs/quantization.md`'s "What each profile is for")
+is silently absent rather than named. A case-insensitive `grep -rn q5` across
+all of `scripts/hf_cards/` and `docs/models/` confirms no card anywhere in
+the tree names a withheld `Q5_K_MIXED`. This is a real, pre-existing gap
+against the plan's own rule -- not introduced by this task, and not
+something this task's file list (`tests/tolerances/qwen3-tts.json`,
+`docs/quantization.md`, `docs/porting/families/qwen3-tts.md`) authorizes
+fixing, since CustomVoice's card is already published and re-publishing it
+is a separate outward act requiring its own confirmation. Left for whoever
+next touches CustomVoice's card or Task 8's own card-writing work to close.
 
 ### Verification
 

@@ -370,8 +370,9 @@ evidence that OmniVoice packs convolutions.
 Added 2026-08-17 by Stage 2 Plan 4. This family shipped `F16`, `Q8_MIXED` and a
 buildable-but-unpublished `Q5_K_MIXED` from Stage 1 onward with **no section in
 this document at all** — every profile fact lived only in
-`docs/porting/families/qwen3-tts.md`. What follows covers both Reference Model
-Variants and says which claims are measured on which.
+`docs/porting/families/qwen3-tts.md`. What follows covers all three Reference
+Model Variants (Base, CustomVoice and, since 2026-08-20, VoiceDesign) and says
+which claims are measured on which.
 
 ### The half that quantizes, and the half that never does
 
@@ -446,6 +447,10 @@ it gave — the speaker encoder does not shrink under any profile this family ha
 | F16 | Base | 2,516,706,912 B | not measured | — | **clears every gate and does not pay** |
 | Q8_MIXED | Base | 1,667,606,112 B | **0.863** | 2.23 GiB | **pays on both size and speed** |
 | Q5_K_MIXED | CustomVoice | 1035 MiB | 0.82 | — | buildable, deliberately unpublished |
+| BF16 | VoiceDesign | 4,295,891,904 B | not measured | — | the source |
+| F16 | VoiceDesign | 4,296,175,040 B | not measured (Task 5) | — | larger than source; publication not yet decided |
+| Q8_MIXED | VoiceDesign | 2,499,423,680 B | not measured (Task 5) | — | replay/public tolerance cells agree; no publication conclusion drawn (Task 3) |
+| Q5_K_MIXED | VoiceDesign | 1,780,723,136 B | not measured (forbidden to this task) | — | **fails replay tolerance — not published, see below** |
 
 **F16 is 184,448 bytes LARGER than the package it was cut from.** Both BF16 and
 F16 are two-byte types, so the matrix weights do not shrink while the sensitive
@@ -509,8 +514,10 @@ here reuses) measures p95_relative **0.031029** (empty-instruct) and
 respectively, not under it with room to spare. This is a real gate failure, not
 merely a thinner margin: the variant's own headroom progression across its
 other three profiles is BF16 3.44×, F16 3.45×, Q8_MIXED 1.63× — all
-comfortably positive, each successive profile thinner than the last but never
-crossing 1.0. `Q5_K_MIXED` breaks that progression outright at **0.32×**
+comfortably above 1.0 (BF16 and F16 are within measurement noise of each
+other, not a monotonic sequence; Q8_MIXED is the one visibly thinner of the
+three, for the reason given above). `Q5_K_MIXED` breaks that progression
+outright at **0.32×**
 (0.01 / 0.031029), roughly a further 5.06× jump in residual over Q8_MIXED's
 own 0.00613 (itself already the thinnest of the three), and about 11.5× BF16's
 own 0.00269 — a much larger jump than the F16 → Q8_MIXED step was, not a
@@ -525,19 +532,56 @@ explicit breach of a committed `max_relative` gate, on both of this variant's tw
 measured `replay` cases, reproduced identically on a repeat run. Task 8's card
 should record `Q5_K_MIXED` as buildable and load-checked (`synth_model_load` and
 `synth_voice_profile_create_from_description` both succeed against the cut
-package) but not shipped for this variant, on accuracy — exactly as CustomVoice's
-own card already does, on weaker evidence than this. The size question this task
-was written to answer — whether a further ~29 % shrink over `Q8_MIXED` matters
-more at 4.3 GB than an equivalent shrink did at 2.4 GB — is answered "yes,
-noticeably more," but that answer is moot once the accuracy side has moved even
-further than the size side did.
+package) but not shipped for this variant, on accuracy. **This is NOT
+"exactly as CustomVoice's own card already does"** — `scripts/hf_cards/
+qwen3-tts-12hz-0-6b-customvoice.yaml:84` reads `profiles: [F16, Q8_MIXED]`;
+CustomVoice's `Q5_K_MIXED` is **omitted** from its card, not named as
+measured-and-not-shipped, which is itself a departure from this plan's own
+rule that a profile failing its own test "belongs in the card as
+measured-and-not-shipped ... rather than omitted." Task 8 has no existing
+template to copy for this shape and must establish it, for both packages;
+CustomVoice's card gap is a separate, pre-existing item, not something this
+task fixes (see `docs/porting/families/qwen3-tts.md`'s "Open item:
+CustomVoice's card omits Q5_K_MIXED" for the tracked gap). The size question
+this task was written to answer — whether a further 28.75 % shrink over
+`Q8_MIXED` matters more at 4.3 GB than an equivalent shrink did at 2.4 GB —
+is answered "yes, noticeably more," but that answer is moot once the
+accuracy side has moved even further than the size side did.
+
+**Nothing mechanical currently enforces this recommendation.** No registered
+test reads `tests/tolerances/qwen3-tts.json`'s `headroom`,
+`observed_max_relative`, `all_passed`, `failed_checks` or `gate_passed`
+fields — `tests/CMakeLists.txt`'s prefill CTest gates hardcode `profiles
+BF16` and the public-seam CTest gate runs `--profile BF16` against the
+CustomVoice model, neither reads this cell at all. F16's and Q8_MIXED's
+cells for this variant are equally unread, so this is not new to
+`Q5_K_MIXED` — but it does mean a future cut-and-ship of this profile would
+not be caught by CTest; only this document and the tolerance file's own
+prose stand between the measurement and a mistaken publication.
+
+**Recording the failing cell at all is a departure from both of this
+family's own precedents, made deliberately.** CustomVoice's `Q5_K_MIXED`
+negative lives only in prose (this document, `docs/porting/families/
+qwen3-tts.md`) with no tolerance cell behind it at all; the Base variant's
+declined-CUDA negative (see "The Base variant carries no CUDA sub-grid"
+in `docs/porting/families/qwen3-tts.md`) is a deliberate *absence* of a
+cell, not a committed one that reads false. This task commits the cell
+anyway, `gate_passed: false` and all, because an absent or prose-only
+record of a failure is strictly weaker evidence than a reproducible,
+machine-readable one sitting in the same grid a passing profile would
+occupy — a future reader (or a script written later) can find this result
+by looking at the grid rather than needing to already know to look for it
+in prose.
 
 ### Publication
 
 CustomVoice's `BF16`, `F16` and `Q8_MIXED` are published. **No Base package is
-published**, and `qwen3-tts-12hz-1-7b-voicedesign`'s `Q5_K_MIXED` is not
-published either, per the recommendation directly above. Publication is a
-separate act requiring confirmation at the time.
+published.** **No `qwen3-tts-12hz-1-7b-voicedesign` package is published
+either** — Task 3 drew no publication conclusion for `Q8_MIXED`, `F16`'s
+publication question belongs to Task 5 (speed), and `Q5_K_MIXED` is not
+published specifically because it fails its own `replay`-stage tolerance,
+per the recommendation directly above. Publication is a separate act
+requiring confirmation at the time.
 
 ## Validation
 

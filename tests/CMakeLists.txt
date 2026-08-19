@@ -1365,11 +1365,17 @@ if(SYNTH_BUILD_INTEGRATION_TESTS)
         target_link_libraries(synthesize-qwen3-tts-voicedesign-prefill-real PRIVATE synthesize ggml)
         synth_register_integration_target(synthesize-qwen3-tts-voicedesign-prefill-real)
         # Text, instruct and language are literals, not read from a manifest
-        # case: this variant's Golden Manifest still carries `cases: []`
-        # (Task 6, `suite_status: "incremental"`), so there is no case to
-        # read them from yet -- the same reason the oracle dump was driven by
-        # explicit arguments rather than --manifest in Step 2. Matches the
-        # oracle dump exactly, which is what makes the comparison meaningful.
+        # case. The stated reason was that the Golden Manifest still carried
+        # `cases: []` under `suite_status: "incremental"`; that stopped being
+        # true in Plan 2's Task 7, which landed thirteen cases and removed the
+        # field. The literals stay, for a reason that outlived the first one:
+        # this driver has no manifest reader, and the oracle dump it compares
+        # against was itself driven by explicit arguments rather than
+        # `--manifest` (Step 2), so reading a case here would compare against
+        # a dump that no case produced. Matches the oracle dump exactly, which
+        # is what makes the comparison meaningful. Wiring both ends to the
+        # manifest is the change that would retire these literals, and it is
+        # not made here.
         # Task 4 added the empty string as this driver's own third argument
         # (its own module comment explains why "" reproduces this exact case
         # byte for byte); the test itself is otherwise unchanged from Plan 1.

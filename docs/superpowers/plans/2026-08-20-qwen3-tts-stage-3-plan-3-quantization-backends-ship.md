@@ -208,7 +208,7 @@ BF16 is 4,295,891,904 bytes. Write the F16 figure and the **signed** difference 
 ```bash
 build/bin/synthesize-qwen3-tts-public-real \
   models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-F16.gguf \
-  probe:description en
+  /dev/null probe:description en 0
 ```
 Expected: loads, reports zero Preset Voices. A load failure here is a Task 2 defect, not a later one — stop and report rather than proceeding to fill cells for a package that does not load.
 
@@ -293,7 +293,7 @@ For scale: Base went 2,516,522,624 → 1,667,606,112, a ratio of 0.663. Record t
 ```bash
 build/bin/synthesize-qwen3-tts-public-real \
   models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-Q8_MIXED.gguf \
-  probe:description en
+  /dev/null probe:description en 0
 ```
 
 - [ ] **Step 4: Fill the `public` cell**
@@ -365,7 +365,7 @@ build/bin/synthesize-quantize \
 ```bash
 build/bin/synthesize-qwen3-tts-public-real \
   models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-Q5_K_MIXED.gguf \
-  probe:description en
+  /dev/null probe:description en 0
 ```
 `src/arch/qwen3-tts/weights.cpp`'s `read_quantization` accepts `Q5_K_MIXED` and `catalog.cpp`'s `expected_type` folds `Q5KMixed` into the shared F16/Q8Mixed/Q5KMixed branch, so this should load. If it does not, the failure is a real contradiction between the tool and the runtime and must be reported rather than worked around.
 

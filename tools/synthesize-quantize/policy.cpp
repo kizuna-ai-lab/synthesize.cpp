@@ -344,6 +344,18 @@ CatalogRole classify_qwen3_talker(const std::vector<std::string_view> & tokens) 
     // The code predictor sits under the talker and repeats the same block, plus
     // one private embedding table and one private head per acoustic group.
     if (tokens.size() > 2 && tokens[1] == "code_predictor") {
+        // talker.code_predictor.small_to_mtp_projection.{weight,bias} -- the
+        // width bridge a package carries only when the predictor's hidden size
+        // differs from the talker's (an nn.Identity, and so no tensor at all,
+        // when the two agree); first measured on the 1.7B VoiceDesign
+        // checkpoint, whose predictor stays at 1024 against the talker's 2048
+        // (src/arch/qwen3-tts/catalog.cpp's own resolution of this pair). Same
+        // shape as text_projection.linear_fcN above: a two-dimensional Linear
+        // weight and its one-dimensional bias, classified the same way for the
+        // same reason.
+        if (tokens.size() == 4 && tokens[2] == "small_to_mtp_projection" && one_of(tokens[3], { "weight", "bias" })) {
+            return tokens[3] == "weight" ? CatalogRole::MatrixWeight : CatalogRole::Sensitive;
+        }
         if (tokens.size() == 5 && tokens[2] == "lm_head" && is_index(tokens[3]) && tokens[4] == "weight") {
             return CatalogRole::MatrixWeight;
         }

@@ -336,6 +336,16 @@ int main() {
              "talker.code_predictor.model.layers.0.mlp.gate_proj.weight",
              "talker.code_predictor.lm_head.7.weight",
              "talker.code_predictor.model.codec_embedding.3.weight",
+             // The width bridge a package carries only when the predictor's
+             // hidden size differs from the talker's -- absent from every
+             // 0.6B package (Base, CustomVoice), present on the 1.7B
+             // VoiceDesign checkpoint this task's own quantization run first
+             // met. Real name, from src/arch/qwen3-tts/catalog.cpp's own
+             // resolution of it (Role::Matrix) and confirmed against a live
+             // `--quant F16` run of the VoiceDesign package, which refused
+             // with "unknown qwen3-tts tensor" on this exact name before this
+             // classifier arm existed.
+             "talker.code_predictor.small_to_mtp_projection.weight",
          }) {
         SYNTH_TEST_CHECK(resolve(*q8, name).type == GGML_TYPE_Q8_0);
         SYNTH_TEST_CHECK(resolve(*q5, name).type == GGML_TYPE_Q5_K);
@@ -349,6 +359,9 @@ int main() {
              "talker.model.layers.5.input_layernorm.weight",
              "talker.model.layers.5.self_attn.q_norm.weight",
              "talker.code_predictor.model.layers.1.post_attn_norm.weight",
+             // small_to_mtp_projection's own bias, the Sensitive half of the
+             // pair added above.
+             "talker.code_predictor.small_to_mtp_projection.bias",
          }) {
         SYNTH_TEST_CHECK(resolve(*q8, name).type == GGML_TYPE_F32);
         SYNTH_TEST_CHECK(resolve(*q5, name).type == GGML_TYPE_F32);

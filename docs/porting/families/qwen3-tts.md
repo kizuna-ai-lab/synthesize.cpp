@@ -1,6 +1,6 @@
 # Qwen3-TTS Family Selection and Port Plan
 
-Status: Confirmed 2026-08-19. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
+Status: Confirmed 2026-08-20. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
 complete and published. Intake, the oracle and conversion are done; stages 4
 through 7 have their measured work done: oracle replay and the public seam
 pass, and the codec runs on CUDA while the autoregressive half stays on the CPU
@@ -4722,6 +4722,148 @@ then reverting and confirming clean (`git status --porcelain`, `git diff
   third.
 - `scripts/ci/clang-format.sh --fix` after `git add`, then `--check-diff`:
   clean.
+
+## Stage 3: VoiceDesign Package, Plan 3 Task 2
+
+Cuts `qwen3-tts-12hz-1-7b-voicedesign-F16.gguf` from the 4,295,891,904-byte BF16
+source and measures it. **F16 does NOT pay** -- it is 283,136 bytes *larger*
+than the package it was cut from, the same direction as Base's own +184,448
+and, as the design anticipated, a smaller relative penalty (0.0066% of the
+source here against Base's 0.0073%) because the matrix half this variant halves
+is a larger share of a package whose sensitive half does not also grow. This is
+measured and absent, not omitted: F16 is not published for this variant on
+this finding, exactly as `Q5_K_MIXED` is buildable and deliberately unpublished
+for Base.
+
+**All figures below are from the `build` tree, `CMAKE_BUILD_TYPE=Release`,
+reconfigured mid-task from CLAUDE.md's default unit-gate settings
+(`-DSYNTH_BUILD_INTEGRATION_TESTS=OFF`) to `ON` -- the only way to obtain
+`synthesize-qwen3-tts-voicedesign-prefill-real`, which is registered behind
+that flag. No timing figure is taken from this build or claimed anywhere in
+this section; the global no-performance-figure rule for this task is
+unaffected by the reconfigure.**
+
+### Cutting it required a quantizer fix, not just a run
+
+The first `--quant F16` attempt refused outright:
+`synthesize-quantize: unknown qwen3-tts tensor:
+talker.code_predictor.small_to_mtp_projection.bias`. This is not a converted
+oracle gap -- `src/arch/qwen3-tts/catalog.cpp` has resolved this exact tensor
+pair since Stage 3 Task 6 ("A genuine architecture gap, found and closed, not
+converted around", above) -- it is `tools/synthesize-quantize/policy.cpp`
+never having been taught the name, because no prior task had ever run the
+quantizer against a package that carries it: `small_to_mtp_projection` is the
+width bridge a package needs only when the code predictor's hidden size
+differs from the talker's, which is true of no 0.6B package (Base,
+CustomVoice) and only of this 1.7B one (predictor 1024 against talker 2048).
+Fixed by adding one classifier arm to `classify_qwen3_talker`'s
+`code_predictor` branch, shaped identically to the already-existing
+`text_projection.linear_fcN` arm three lines above it in the same function:
+the weight (a two-dimensional `Linear(talker.hidden_size, hidden_size)`,
+`Role::Matrix` at the runtime catalog) classifies `MatrixWeight`, the bias
+(one-dimensional) classifies `Sensitive`. Covered by two new cases in
+`tests/qwen3_tts_quantization_policy_test.cpp`'s existing by-name loops (one
+per role) and proved load-bearing by mutation: commenting out the new
+classifier arm and rebuilding reproduced the exact pre-fix failure shape
+(`check failed: resolve(*q8, name).type == GGML_TYPE_Q8_0` on the weight
+case), reverted and confirmed clean before the F16 cut below ran. This fix
+touches production code outside this task's own file list
+(`tools/synthesize-quantize/policy.cpp`,
+`tests/qwen3_tts_quantization_policy_test.cpp`) and is committed separately
+from the tolerance/doc commit this task otherwise produces, for the same
+reason Stage 3 Task 6's catalog fix stands on its own: cutting F16 at all had
+no other path.
+
+### Size and tensor census
+
+| | BF16 (source) | F16 |
+|---|---|---|
+| bytes | 4,295,891,904 | 4,296,175,040 |
+| tensor count | 659 | 659 |
+| by type | 404 BF16 + 255 F32 | 267 F16 + 392 F32 |
+
+Delta: **+283,136 bytes**, F16 larger than its source. 137 tensors (404 - 267)
+moved from a two-byte type to F32 -- the Sensitive half widening from bf16 to
+f32 storage, the same mechanism Base's own F16 cell already documents, applied
+to a package whose matrix half (the talker + code predictor, halved) is a
+correspondingly larger share of the 4.30 GB total than Base's 2.5 GB package's
+own matrix half was.
+
+### Load, confirmed before any cell was filled
+
+The brief's own `synthesize-cli --list-voices` does not exist -- no such flag
+is defined anywhere in `examples/cli/` (`--help` lists `--text`, `--phonemes`,
+`--token-ids`, `--language`, `--voice`, `--seed`, `--rate`,
+`--max-output-frames`, `--backend`, `--device`, nothing that lists Voices).
+Confirmed instead with the already-built `synthesize-qwen3-tts-public-real`
+runner in `probe:description` mode, which calls `synth_model_load` before
+anything else and, since VoiceDesign supports `create_from_description`,
+completed the probe cleanly: `{"probe": "description", "status": 0}`, exit 0.
+The package loads.
+
+### The `replay` cell: the ordinary case loop has no reading for this variant
+
+`scripts/validate-qwen3-tts-replay.py --stage replay` (the brief's literal
+Step 5) fails for this variant at **every** profile, BF16 included -- run
+against the already-published, already-validated BF16 package it prints
+"no case produced a comparison: 13 selected, 13 skipped for missing oracle
+artifacts under build/goldens/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign" and
+exits 1. This is not an F16 defect: `run_case`'s oracle-artifact check
+(`oracle_root/<case-id>/codes/semantic.i32`) has nothing to find, because no
+prior task ever dumped per-case codes/waveform oracle payloads for this
+variant's thirteen manifest cases -- only the two explicit prefill cases
+(design section 6.2's stage grid for this rung: no codes, no waveform measured
+for this variant at any profile, stated already on this variant's BF16 `replay`
+cell). The BF16 `replay.prefill` probe was filled by invoking
+`tests/qwen3_tts_voicedesign_prefill_real.cpp` directly against
+`reports/porting/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign/oracle{,-instruct}/prefill.f32`,
+not through this script's ordinary case loop; F16's cell is filled the same
+way, for the same reason, reusing BF16's 0.01 bound rather than re-deriving one
+a profile change gave no reason to move:
+
+| case | BF16 p95_relative | F16 p95_relative |
+|---|---|---|
+| voicedesign-empty-instruct-en | 0.00269 | 0.002689 |
+| voicedesign-nonempty-instruct-en | 0.002903 | 0.002902 |
+
+Both F16 figures are within half a bf16 unit-roundoff of BF16's own, headroom
+3.72x and 3.45x against the unchanged 0.01 bound -- essentially identical to
+BF16's 3.72x/3.44x. Same reasoning as Base's own F16 `speaker.x_vector` cell:
+the residual is the *oracle's* bf16 storage, not the port's, so an F16 port
+weight (finer than bf16) costs nothing measurable here either.
+
+### The `public` cell: all eleven checks pass
+
+`scripts/validate-qwen3-tts-public.py --profile F16 --backend cpu` (the
+brief's Step 4 command, run as written -- both flag spellings checked out)
+against the two description instructs, after the `replay` cell above was
+filled first so relation 3's own citation ("an empty instruct reproduces the
+oracle within the replay stage's recorded tolerance") had a real F16 record to
+read rather than reporting unmeasured. All 11 checks passed, identical
+verdicts to BF16, same 3 skips (no Preset Voice catalogue, no dialect speaker):
+seed reporting and reproduction, a different seed and a different Voice both
+change the audio, the resolved language is reported, the empty-instruct
+public-seam smoke run (40320 frames), relation 3 above (p95_relative 0.002689
+against 0.01), and both package-support refusals
+(`SYNTH_ERR_UNSUPPORTED_VOICE` for `create_from_reference`,
+`SYNTH_ERR_UNSUPPORTED_INPUT` for a supplied description language tag). Report:
+`reports/validate/qwen3-tts/public-voicedesign-F16.json` (gitignored).
+
+### Verification
+
+- `synthesize-qwen3-tts-quantization-policy-test`: passes with the new
+  classifier arm; mutation (comment out the arm, rebuild) reproduces the exact
+  pre-fix refusal shape, reverted and confirmed clean before proceeding.
+- `synthesize-golden-manifest-contract` / `synthesize-tolerance-coverage`: both
+  pass -- the new F16 profile carries the same stage set as BF16
+  (`replay`, `public`), and `case_count` (13) is untouched by this task.
+- `synthesize-qwen3-tts-voicedesign-prefill-real` /
+  `-prefill-instruct-real` (the BF16-driven CTest golden gates): still pass,
+  unaffected by the quantizer-only fix.
+- Full unit gate, `build` tree (`SYNTH_BUILD_INTEGRATION_TESTS=ON` per the
+  reconfigure above): 104/106, the same two pre-existing, not-ours failures
+  (`synthesize-python-api-wheel-test`, `synthesize-vits-python-unit`'s sole
+  error `test_quantization_reports_match_current_artifacts`). No third.
 
 ## Open Questions for Intake
 

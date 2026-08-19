@@ -4726,14 +4726,37 @@ then reverting and confirming clean (`git status --porcelain`, `git diff
 ## Stage 3: VoiceDesign Package, Plan 3 Task 2
 
 Cuts `qwen3-tts-12hz-1-7b-voicedesign-F16.gguf` from the 4,295,891,904-byte BF16
-source and measures it. **F16 does NOT pay** -- it is 283,136 bytes *larger*
-than the package it was cut from, the same direction as Base's own +184,448
-and, as the design anticipated, a smaller relative penalty (0.0066% of the
-source here against Base's 0.0073%) because the matrix half this variant halves
-is a larger share of a package whose sensitive half does not also grow. This is
-measured and absent, not omitted: F16 is not published for this variant on
-this finding, exactly as `Q5_K_MIXED` is buildable and deliberately unpublished
-for Base.
+source and measures its size. **F16 is 283,136 bytes larger than the package it
+was cut from** -- the same direction as Base's own F16, whose reproducible
+current delta is **+184,288 bytes** (2,516,522,624 -> 2,516,706,912, both
+measured directly off the packages on disk today), not the +184,448 this
+document (`:22`, `:3356`) and `docs/quantization.md` still quote elsewhere.
+Both are real: Base's BF16 was re-converted on 2026-08-18 after the
+`code_predictor.intermediate_size` metadata key landed, moving the source by
++160 bytes, while Base's F16 was never re-cut against the new source -- so the
+two historical figures describe two different BF16 files with the same name,
+and 184,448 no longer reproduces against what is on disk now. 184,288 is what
+a fresh `stat` gives and is the figure a later task should anchor against.
+As the design anticipated, VoiceDesign's relative penalty is smaller than
+Base's either way (0.0066% of the source here against Base's 0.0073%), because
+the matrix half this variant halves is a larger share of a package whose
+sensitive half does not also grow.
+
+**This is a size result only, and it does not decide publication.** Whether
+F16 ships for this family is a **speed** question, not a size one --
+`docs/quantization.md:449-453` states the rule directly ("F16 is a speed
+profile for this family rather than a size one"), and Base's own F16, also
+larger than its source, **was published** on 2026-08-17 on exactly that
+reasoning (see the Status paragraph above). The precedent this section
+originally cited was wrong on two counts: `Q5_K_MIXED` is withheld for
+CustomVoice, not Base ("Q5_K_MIXED is buildable and is not recommended",
+above), and for an **accuracy** reason -- talker logits cosine 0.9648 -- not a
+size one. Neither precedent supports a no-publish verdict from the size result
+above. **Whether F16 ships for VoiceDesign is left open here**: this task is
+forbidden from taking a timing figure (the global no-performance-figure rule),
+so it cannot answer the question that actually decides publication for this
+profile family-wide. Task 5 measures RTF on a `Release`-typed tree and settles
+it.
 
 **All figures below are from the `build` tree, `CMAKE_BUILD_TYPE=Release`,
 reconfigured mid-task from CLAUDE.md's default unit-gate settings
@@ -4758,7 +4781,9 @@ differs from the talker's, which is true of no 0.6B package (Base,
 CustomVoice) and only of this 1.7B one (predictor 1024 against talker 2048).
 Fixed by adding one classifier arm to `classify_qwen3_talker`'s
 `code_predictor` branch, shaped identically to the already-existing
-`text_projection.linear_fcN` arm three lines above it in the same function:
+`text_projection.linear_fcN` arm 27 lines above it in the same function --
+three other classifier arms apart (text_embedding/codec_embedding,
+model.norm, the model.layers dispatch), not three lines apart:
 the weight (a two-dimensional `Linear(talker.hidden_size, hidden_size)`,
 `Role::Matrix` at the runtime catalog) classifies `MatrixWeight`, the bias
 (one-dimensional) classifies `Sensitive`. Covered by two new cases in
@@ -4774,7 +4799,41 @@ from the tolerance/doc commit this task otherwise produces, for the same
 reason Stage 3 Task 6's catalog fix stands on its own: cutting F16 at all had
 no other path.
 
-### Size and tensor census
+### Open item: the quantizer classifier and the runtime catalog have no shared pin
+
+`tools/synthesize-quantize/policy.cpp`'s classifier (`classify_qwen3_tts_tensor`
+and its family) and `src/arch/qwen3-tts/catalog.cpp`'s resolver are two
+independent, hand-maintained descriptions of the same tensor set. Both carry a
+comment saying the two "must not drift apart"
+(`src/arch/qwen3-tts/catalog.cpp:35,179`, `tools/synthesize-quantize/policy.cpp:701-702`)
+and neither has a mechanism enforcing it. This task's own
+`small_to_mtp_projection` gap above is exactly what happens when they do: the
+runtime has resolved that tensor pair since Stage 3 Task 6; the tool did not,
+until this task, because no earlier task had ever run the quantizer against a
+package that carries it. No CTest target loads a cut (non-BF16) package
+through `synth_model_load` for this family, so a classifier gap or a
+classifier/resolver shape disagreement is caught only by hand-running the
+quantizer against a real, multi-GB package -- as this task did, by accident of
+being the first to try it on VoiceDesign.
+
+A cheap partial pin exists and is not implemented here, because it touches
+`tests/qwen3_tts_catalog_test.cpp`, outside this task's file list: that file
+already builds synthetic F16/Q8_MIXED fixtures and types each tensor with its
+own local heuristic
+(`tests/qwen3_tts_catalog_test.cpp:579-583`: `matrix = entry.ne.size() >= 2 &&
+...`) rather than through the real classifier, and its own assertion is
+deliberately loose --
+`SYNTH_TEST_CHECK(status == SYNTH_OK || status == SYNTH_ERR_GGUF)`
+(`:590`) -- specifically because "this synthetic package's role split is a
+coarse approximation of the catalog's" (the file's own comment, `:586-588`).
+Compiling `policy.cpp` into `synthesize-qwen3-tts-catalog-test` and typing
+those same fixtures through the classifier instead of the local heuristic,
+then tightening the assertion to `SYNTH_OK` alone, would catch a classifier
+tensor the resolver accepts and the classifier doesn't (or the reverse) at
+unit-test speed, with no real package on disk required. It would not replace
+running the quantizer against a real package -- no synthetic fixture stands in
+for a genuine checkpoint's actual tensor names -- but it would have caught
+this exact class of gap earlier than this task did.
 
 | | BF16 (source) | F16 |
 |---|---|---|
@@ -4864,6 +4923,23 @@ against 0.01), and both package-support refusals
   reconfigure above): 104/106, the same two pre-existing, not-ours failures
   (`synthesize-python-api-wheel-test`, `synthesize-vits-python-unit`'s sole
   error `test_quantization_reports_match_current_artifacts`). No third.
+
+### Fix round 1, review of this task
+
+Code review found this section carrying a fabricated measurement and a wrong
+publication conclusion; both are corrected above rather than left with a note
+here, per this document's practice of superseding stale prose in place when
+the stale text is short-lived and never described a real interval (contrast
+the Status paragraph's own longer-lived corrections, which are kept as
+history). For the record: `tests/tolerances/qwen3-tts.json`'s F16 `replay`
+cell carried a `fault_injection_by_case` block copied verbatim from BF16's,
+dated 2026-08-18 -- two days before the F16 package existed -- and has been
+removed; no fault injection was run against F16, and BF16's own cell already
+carries the record for the port source this variant shares. The F16 stage
+`description` field, also BF16's verbatim and asserting "no instruct block
+exists in the port yet," has been rewritten -- Plan 2 shipped the instruct
+block before this task ran, and this cell's own `instruct_tokens: 19` already
+contradicted the old text.
 
 ## Open Questions for Intake
 

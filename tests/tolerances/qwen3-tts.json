@@ -1174,7 +1174,7 @@
           "stages": {
             "replay": {
               "phase": "oracle_replay",
-              "description": "The talker's assembled prefill at an empty instruct, with the speaker slot correctly ABSENT -- Plan 1's completion gate (docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md section 5.3, section 8's plan table). No instruct block exists in the port yet (Plan 2's job) and none is needed: upstream's own empty-instruct path (design decision D3) builds no instruct block either, so the comparison is exact for what it covers. The autoregressive codes and the decoded waveform are dumped by the oracle script for the record but are not yet compared here -- this stage measures the deterministic prefill only.",
+              "description": "The talker's assembled prefill at an empty instruct and at a non-empty one, with the speaker slot correctly ABSENT -- the same two cases and the same driver as the BF16 cell (see that cell's own description for the Plan 1/Plan 2 history of what each case covers). The autoregressive codes and the decoded waveform are not compared at this profile either, matching BF16's own stage shape.",
               "cases": 2,
               "probes": {
                 "prefill": {
@@ -1210,29 +1210,7 @@
                       "p95_relative": 0.002902
                     }
                   },
-                  "note": "TASK 2 (Stage 3 Plan 3), 2026-08-20: first F16 measurement of this probe, same bound as BF16 (0.01), same two cases (voicedesign-empty-instruct-en, voicedesign-nonempty-instruct-en), same driver (tests/qwen3_tts_voicedesign_prefill_real.cpp, invoked directly against reports/porting/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign/oracle{,-instruct}/prefill.f32 -- scripts/validate-qwen3-tts-replay.py's ordinary --stage replay case loop has no meaningful reading for this variant, see this profile's own top-level note). Measured: 0.002689 (empty-instruct) and 0.002902 (nonempty-instruct), both within half a bf16 ulp of BF16's own 0.00269 / 0.002903 -- the residual is the ORACLE's bf16 storage, not the port's, the same reasoning qwen3-tts-12hz-0-6b-base's F16 speaker.x_vector cell already carries: an F16 port weight is finer than the oracle's bf16 rounding, so the comparison stays bounded by the oracle at both profiles and an F16 cut costs nothing measurable here either. Bound left at the BF16-derived 0.01 rather than tightened, matching Base's own precedent for reusing rather than re-deriving a bound a profile change did not need to move. observed_max_relative is the larger of the two (0.002902), giving 3.45x headroom -- essentially identical to BF16's own 3.44x.",
-                  "fault_injection_by_case": {
-                    "voicedesign-empty-instruct-en": {
-                      "fault": "src/arch/qwen3-tts/talker-host.cpp:159 -- `if (request.has_speaker)` changed to `if (true)`, so build_talker_prompt retains a codec-vocabulary speaker slot (the `else` branch, `codec.push_back(request.speaker_token)`, with `speaker_token` at this driver's default of 0) even though `request.has_speaker` is false. Task 5's exact branch, inverted, per this task's Step 4 and design section 5.3's warning that this is 'a branch that has never run'.",
-                      "measured": "2026-08-18",
-                      "observed_clean_p95_relative": 0.00269,
-                      "observed_faulted_p95_relative": 0.983659,
-                      "ratio": 365.7,
-                      "shape_effect": "the fault does not only perturb values at a fixed shape -- it changes the POSITION COUNT. The extra codec-vocabulary slot pushes the codec-prefix loop from 5 iterations to 6, so the faulted port prefill has 19 positions against the oracle's 18 (and the clean port's own 18), shifting every position from index 7 onward by one relative to the clean, correct layout. reconstruction_p95_relative has no notion of alignment, so the faulted figure above is computed over only the first 18 (of 19) faulted positions against the oracle's 18, aligned from the front -- printed by the driver itself as `compared_positions: 18` beside `shapes_match: false`. The shape mismatch is at least as strong a failure signal as the number: a caller does not need a tolerance to notice 19 != 18.",
-                      "reverted": true,
-                      "reverted_verified_by": "git status --porcelain (clean) and grep -n \"if (request.has_speaker)\" src/arch/qwen3-tts/talker-host.cpp (line 159, unchanged) after the measurement"
-                    },
-                    "voicedesign-nonempty-instruct-en": {
-                      "fault": "src/arch/qwen3-tts/talker-host.cpp's instruct-block loop in build_talker_prompt, changed from `out.positions.push_back(text_only(TalkerInputPosition::Text::Token, token));` to a no-op `(void) token;` -- the instruct block is tokenized (instruct_tokens holds 19 ids) but never reaches the prefill. Task 4's own required fault-injection check (design section 6.5's first bullet, 'drop the instruct block'): if this does not breach, the instruct never reached the prefill and every empty-instruct smoke test still passes, which is exactly the silent failure design section 6 is built around.",
-                      "measured": "2026-08-18",
-                      "observed_clean_p95_relative": 0.002903,
-                      "observed_faulted_p95_relative": 1.314358,
-                      "ratio": 452.8,
-                      "shape_effect": "the fault changes the POSITION COUNT, not merely the values at a fixed shape -- with no instruct block the port's own prefill is 18 positions (byte-identical to the empty-instruct case) against the oracle's 37, so `shapes_match` is false and the driver refuses the comparison outright before any tolerance is consulted (see tests/qwen3_tts_voicedesign_prefill_real.cpp's own shape-mismatch guard). The p95_relative figure above is computed over the driver's own best-effort overlap -- the first 18 (of 37) oracle positions against the port's 18 -- purely for the record; the gate itself already failed on the shape check alone, the same two-signal discipline the empty-instruct case's own fault_injection (this probe's other case, above) established.",
-                      "reverted": true,
-                      "reverted_verified_by": "git status --porcelain (clean of this edit) and grep -n \"FAULT INJECTION\" src/arch/qwen3-tts/talker-host.cpp (no match) after the measurement"
-                    }
-                  }
+                  "note": "TASK 2 (Stage 3 Plan 3), 2026-08-20: first F16 measurement of this probe, same bound as BF16 (0.01), same two cases (voicedesign-empty-instruct-en, voicedesign-nonempty-instruct-en), same driver (tests/qwen3_tts_voicedesign_prefill_real.cpp, invoked directly against reports/porting/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign/oracle{,-instruct}/prefill.f32 -- scripts/validate-qwen3-tts-replay.py's ordinary --stage replay case loop has no meaningful reading for this variant, see this profile's own top-level note). Measured: 0.002689 (empty-instruct) and 0.002902 (nonempty-instruct), both within half a bf16 ulp of BF16's own 0.00269 / 0.002903 -- the residual is the ORACLE's bf16 storage, not the port's, the same reasoning qwen3-tts-12hz-0-6b-base's F16 speaker.x_vector cell already carries: an F16 port weight is finer than the oracle's bf16 rounding, so the comparison stays bounded by the oracle at both profiles and an F16 cut costs nothing measurable here either. Bound left at the BF16-derived 0.01 rather than tightened, matching Base's own precedent for reusing rather than re-deriving a bound a profile change did not need to move. observed_max_relative is the larger of the two (0.002902), giving 3.45x headroom -- essentially identical to BF16's own 3.44x."
                 }
               },
               "backend": "CPU",

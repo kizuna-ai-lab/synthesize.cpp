@@ -534,7 +534,9 @@ There is no tooling for this. All three prior audits were done by hand, with art
 
 - [ ] **Step 1: Generate the clips from the Release tree**
 
-One sentence, one seed, generated from `build/rel-dgx-spark`. Cover BF16 against F16 and against Q8_MIXED (and Q5_K_MIXED if Task 4 recommended it), plus CPU against CUDA if Task 6 found CUDA reaches anything.
+One sentence, one seed, generated from `build/rel-dgx-spark`. Cover BF16 against F16, against Q8_MIXED, **and against Q5_K_MIXED**, plus CPU against CUDA if Task 6 found CUDA reaches anything.
+
+Q5_K_MIXED's inclusion is jiangzhuo's ruling of 2026-08-20, overriding this plan's original "if Task 4 recommended it" condition. Task 4 did not recommend it — it fails its replay gate at 0.32x headroom, ~3x over the bound — and that recommendation stands on the numbers. The model file stays on disk and its clips go into the audit anyway, because the question a tolerance breach cannot answer is exactly the one this audit exists to ask: does a 3x numerical breach audibly manifest? Either answer is informative — an audible artefact confirms the gate is calibrated to something real; a clean-sounding clip says the gate is conservative at this margin, which is worth knowing even for an unshipped profile. Label its pairs like every other pair in the blind half; the listener must not know which pairs carry the failed profile. Whether the listening outcome changes the publication decision is jiangzhuo's call at Task 8, not something this audit records on its own.
 
 - [ ] **Step 2: Verify the pairs actually differ in bytes before anyone listens**
 

@@ -1,6 +1,6 @@
 # Quantization Policy
 
-Status: Confirmed 2026-08-17.
+Status: Confirmed 2026-08-20.
 VITS F16 and Q8_MIXED version 1 functionally validated on 2026-07-23;
 both profiles re-cut on 2026-07-27 with transpose-convolution weights held at F32.
 Kokoro F16 and Q8_MIXED version 1 functionally validated on 2026-07-26.
@@ -476,10 +476,68 @@ codes. **That is a measured answer, not an inheritance of the existing rule.** I
 does not say a quantized codec encoder would be safe here; nothing measured one,
 because none exists.
 
+### VoiceDesign's Q5_K_MIXED — the first real evaluation this profile has had, and it fails
+
+Measured 2026-08-20, Stage 3 Plan 3 Task 4. Neither this section nor
+`qwen3-tts-12hz-1-7b-voicedesign`'s F16/Q8_MIXED cuts have been documented here
+before this paragraph — those numbers live in
+`docs/porting/families/qwen3-tts.md` and `tests/tolerances/qwen3-tts.json`
+instead. What follows is scoped to the question this task exists to answer:
+whether `Q5_K_MIXED`'s extra shrink over `Q8_MIXED` changes the
+buildable-but-unpublished verdict `Q5_K_MIXED` already carries elsewhere in
+this family, now that the source package is roughly twice CustomVoice's size.
+
+| profile | size (bytes) | vs BF16 | vs Q8_MIXED |
+| --- | ---: | ---: | ---: |
+| BF16 (source) | 4,295,891,904 | — | — |
+| Q8_MIXED | 2,499,423,680 | 58.18 % (41.82 % smaller) | — |
+| Q5_K_MIXED | 1,780,723,136 | 41.45 % (58.55 % smaller) | **71.25 % (28.75 % smaller)** |
+
+**The number to lead with is the last column.** `Q5_K_MIXED` saves a further
+718,700,544 bytes over `Q8_MIXED` — 28.75 %, close to but not exactly the
+design spec's own "~25 %" estimate. At Base's/CustomVoice's ~2.4 GB source this
+same extra shrink did not change the recommendation to leave `Q5_K_MIXED`
+unpublished; at this variant's 4.3 GB source, 718.7 MB is a much larger
+absolute number, and the open question this task was written to close was
+whether that changes the answer.
+
+**It does not, but not for the reason the size column would suggest.** The
+`replay` stage's talker-prefill probe (`tests/qwen3_tts_voicedesign_prefill_real.cpp`,
+the same two cases and the same 0.01 `max_relative` bound every other profile
+here reuses) measures p95_relative **0.031029** (empty-instruct) and
+**0.030366** (non-empty-instruct) — both OVER the bound, by 3.10× and 3.04×
+respectively, not under it with room to spare. This is a real gate failure, not
+merely a thinner margin: the variant's own headroom progression across its
+other three profiles is BF16 3.44×, F16 3.45×, Q8_MIXED 1.63× — all
+comfortably positive, each successive profile thinner than the last but never
+crossing 1.0. `Q5_K_MIXED` breaks that progression outright at **0.32×**
+(0.01 / 0.031029), roughly a further 5.06× jump in residual over Q8_MIXED's
+own 0.00613 (itself already the thinnest of the three), and about 11.5× BF16's
+own 0.00269 — a much larger jump than the F16 → Q8_MIXED step was, not a
+continuation of the same slope.
+
+**Recommendation: do not publish `Q5_K_MIXED` for `qwen3-tts-12hz-1-7b-voicedesign`.**
+The precedent this result matches is CustomVoice's own `Q5_K_MIXED` (talker-logits
+cosine 0.9648, deliberately unpublished on accuracy, see "What each profile is
+for" above) — but this is the stronger of the two findings: CustomVoice's number
+was a lower cosine on a probe with no committed pass/fail bound; this is an
+explicit breach of a committed `max_relative` gate, on both of this variant's two
+measured `replay` cases, reproduced identically on a repeat run. Task 8's card
+should record `Q5_K_MIXED` as buildable and load-checked (`synth_model_load` and
+`synth_voice_profile_create_from_description` both succeed against the cut
+package) but not shipped for this variant, on accuracy — exactly as CustomVoice's
+own card already does, on weaker evidence than this. The size question this task
+was written to answer — whether a further ~29 % shrink over `Q8_MIXED` matters
+more at 4.3 GB than an equivalent shrink did at 2.4 GB — is answered "yes,
+noticeably more," but that answer is moot once the accuracy side has moved even
+further than the size side did.
+
 ### Publication
 
 CustomVoice's `BF16`, `F16` and `Q8_MIXED` are published. **No Base package is
-published**, and publication is a separate act requiring confirmation at the time.
+published**, and `qwen3-tts-12hz-1-7b-voicedesign`'s `Q5_K_MIXED` is not
+published either, per the recommendation directly above. Publication is a
+separate act requiring confirmation at the time.
 
 ## Validation
 

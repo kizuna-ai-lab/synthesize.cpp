@@ -3463,10 +3463,13 @@ median of the stable runs is reported, which is why the run counts are stated
 above.
 
 **What is not claimed.** These are one machine, one workload and one utterance
-length. `docs/testing.md` records that generated length is build-dependent, so
-an RTF computed from a frame count taken on another tree would be wrong; every
-figure here is same-tree. No listening judgement is implied -- Task 15 owns
-that, and a tolerance table is not audible evidence.
+length. This document's own build-dependent-length finding
+(`qwen3-tts.md:2932-2942`) is why -- not `docs/testing.md`, cited here until
+Task 5's fix round corrected it; that file documents a different claim, the
+Release/RelWithDebInfo speed gap -- so an RTF computed from a frame count
+taken on another tree would be wrong; every figure here is same-tree. No
+listening judgement is implied -- Task 15 owns that, and a tolerance table is
+not audible evidence.
 
 ### Does quantizing the speaker encoder pay? Measured 2026-08-17
 
@@ -4744,7 +4747,7 @@ sensitive half does not also grow.
 
 **This is a size result only, and it does not decide publication.** Whether
 F16 ships for this family is a **speed** question, not a size one --
-`docs/quantization.md:450-454` states the rule directly ("F16 is a speed
+`docs/quantization.md:455-459` states the rule directly ("F16 is a speed
 profile for this family rather than a size one"), and Base's own F16, also
 larger than its source, **was published** on 2026-08-17 on exactly that
 reasoning (see the Status paragraph above). The precedent this section
@@ -5323,14 +5326,9 @@ Measures latency, RTF, load time and peak memory for the three profiles Tasks
 forbidden to answer: whether `F16`, which is *larger* than its `BF16` source
 (+283,136 bytes, Task 2), is fast enough on this variant to justify shipping
 it anyway. `docs/quantization.md:455-459` already records F16 as this
-family's speed profile rather than its size one (the plan's own brief and
-Global Constraints cite this paragraph as `:449-453`, which was correct before
-Task 4's edit inserted six lines above it and pushed the paragraph down --
-verified against the tree rather than transcribed, per this plan's own
-standing instruction after four prior tasks hit a stale literal); this task
-supplies the speed number. `Q5_K_MIXED` already failed its own accuracy gate
-in Task 4 (headroom 0.32x) and is measured here for context only, not as a
-candidate.
+family's speed profile rather than its size one; this task supplies the speed
+number. `Q5_K_MIXED` already failed its own accuracy gate in Task 4 (headroom
+0.32x) and is measured here for context only, not as a candidate.
 
 ### The measurement tree
 
@@ -5404,7 +5402,10 @@ compiling or synthesizing on the host; medians are reported.
 Medians of three runs per profile. RTF is each row's own synthesis time over
 its own audio length, never across rows -- the three profiles stop at
 different frame counts (97,920 / 103,680 / 120,960), which is a property of
-their weights, not an error, matching Base's own precedent that BF16 and
+their weights, not an error: the autoregressive stop decision is what moves
+here too, the same one-clause mechanism `qwen3-tts.md:2937` names for why it
+moves between builds, just triggered by weight precision rather than a
+compiler's floating-point choices. Matches Base's own precedent that BF16 and
 Q8_MIXED need not agree on where they stop.
 
 **Two known contaminants, named beside the table rather than in a footnote.**
@@ -5413,9 +5414,11 @@ figure above -- carried forward from Base's own Task 14 measurement
 (carry-over §3.4: 5,594,676 to 5,639,716 KB), not independently
 re-measured against this package in this task, since isolating it would need
 a build variant this task does not have. And generated length is
-build-dependent (`docs/testing.md`): none of the frame counts above may be
-read against any other tree, including `build`'s own tolerance-cell runs,
-which use different requests and a different tree entirely.
+build-dependent (`qwen3-tts.md:2932-2942`, not `docs/testing.md`, which
+documents a different claim -- the Release/RelWithDebInfo speed gap): none of
+the frame counts above may be read against any other tree, including
+`build`'s own tolerance-cell runs, which use different requests and a
+different tree entirely.
 
 **Gate 6, repeated runs and cleanup.** Every repetition at the fixed seed
 produced byte-identical frame counts within its own profile -- 97,920 (BF16),
@@ -5447,14 +5450,18 @@ not its size one -- Base's own F16 published despite the same larger-than-
 source shape. The question left for this task: **is F16 fast enough on this
 variant to justify a profile that saves no disk?**
 
-**Yes, decisively.** F16's median synthesis time (7.12 s) is 2.71x shorter
-than BF16's (19.30 s) for the same request. Because the two profiles stop at
-different frame counts (103,680 vs 97,920), the fair, audio-length-normalized
-comparison is RTF, not raw wall time: **4.73 -> 1.65, a 2.87x improvement**
-(4.7305 / 1.6482 = 2.870). That crosses real time with headroom to spare --
-about 64% of this same table's own Q8_MIXED improvement (RTF 4.73 -> 1.05,
-4.49x, 2.870 / 4.4926 = 0.639) -- so F16 alone recovers roughly two-thirds of
-what quantizing all the way to Q8_0 buys, while changing nothing about the
+**Yes, decisively, on `build/rel-dgx-spark`.** F16 synthesizes 2.71x faster
+than BF16 for the same request -- 7.12 s median against 19.30 s. Because the
+two profiles stop at different frame counts (103,680 vs 97,920, the same
+autoregressive-stop-decision mechanism named above), the fair,
+audio-length-normalized comparison is RTF, not raw wall time: **4.73 -> 1.65,
+a 2.87x improvement** (4.7305 / 1.6482 = 2.870). That crosses real time with
+headroom to spare. Scored against this same table's own Q8_MIXED result (RTF
+4.73 -> 1.05, 4.49x), F16 alone captures **87% of Q8_MIXED's wall-clock time
+saved** (12.18 s of 13.99 s: `19.3006 - 7.1204` over `19.3006 - 5.3069`) and
+**84% of its RTF-point improvement** (3.08 of 3.68 points:
+`4.7305 - 1.6482` over `4.7305 - 1.0530`) -- F16 alone recovers most of what
+quantizing all the way to Q8_0 buys, while changing nothing about the
 package's on-disk footprint.
 
 **Why, mechanically -- a source-confirmed explanation, not asserted.** ggml's
@@ -5476,13 +5483,43 @@ this host, not a numerical-precision claim: Task 2 already showed F16 costs
 nothing measurable on accuracy either (replay headroom 3.45x, essentially
 identical to BF16's own 3.44x).
 
-**Verdict: ship F16.** Recommend Task 8 carry it in the card as a speed
-profile, matching how Base's own F16 is already characterized in
-`docs/quantization.md`, on the evidence this task measured rather than by
-inheriting Base's characterization: **2.87x RTF improvement on this variant,
-for a package 0.0066% larger than its source.** That is the arithmetic that
-answers the question Task 2 could not -- F16 is faster by more than enough to
-justify shipping a profile that saves no disk.
+**Verdict: recommend ship, subject to two gates this task does not clear.**
+This task's own measurement supports it on the evidence: **2.87x RTF
+improvement on this variant, for a package 0.0066% larger than its source.**
+That is the arithmetic that answers the question Task 2 could not -- F16 is
+faster by more than enough to justify shipping a profile that saves no disk.
+But two things stand between this recommendation and a shipped package, and
+neither is this task's to close: **Task 7's blind A/B listening audit
+explicitly covers BF16-vs-F16 and has not run yet**, and **publication itself
+needs jiangzhuo's per-act confirmation naming the target repository** (this
+plan's own Global Constraints). Task 8 should carry F16 in the card as a
+speed profile on this evidence once both gates clear -- not before.
+
+### Open item: Base's own F16 verdict rests on size alone, and was never speed-measured
+
+`docs/quantization.md:447`'s table row for Base's F16 reads "**clears every
+gate and does not pay**", RTF "not measured" -- and this file's own Status
+paragraph (line 21) repeats it verbatim: "F16 clears every gate and does NOT
+pay -- it is 184,448 bytes *larger* than its source." Only the speed-profile
+*paragraph* just below that table (`docs/quantization.md:455-459`, "F16 is a
+speed profile for this family rather than a size one") supports this task's
+own framing that F16 should be judged on speed; Base's recorded *verdict* is
+the opposite, and it was reached without an RTF number at all. This task does
+**not** claim VoiceDesign's result matches how Base's F16 is characterized --
+only the paragraph agrees; the verdict does not.
+
+This task's own mechanism finding makes the gap bigger than a wording
+mismatch. The ARM-vectorized-GEMM-for-F16-but-not-BF16 fact traced above
+(`ggml/src/ggml-cpu/llamafile/sgemm.cpp`, `ggml/src/ggml-cpu/vec.cpp`) is
+**host-wide**: it is a property of this ggml commit's CPU backend dispatch on
+this aarch64/GB10 host, not of VoiceDesign's weights specifically, so it
+would apply identically to Base's own BF16 and F16 packages on the same tree.
+That makes it likely -- **not measured here, and out of this task's scope to
+measure** -- that Base's committed "does not pay" verdict is itself
+wrong-and-unmeasured, in the same class of gap as CustomVoice's card silently
+omitting `Q5_K_MIXED` (Task 4's own "Open item," above): a real, pre-existing
+inconsistency this task found but does not fix. Left for whoever next touches
+Base's own quantization record or re-runs Task 14's measurement tree.
 
 ### Q5_K_MIXED, measured for context only -- not a shipping candidate
 
@@ -5506,9 +5543,10 @@ question on its own.
 ### What is not claimed
 
 One machine, one workload, one utterance length, one Description Text
-instruct. `docs/testing.md` records that generated length is build-dependent,
-so an RTF computed from a frame count taken on another tree would be wrong;
-every figure above is same-tree. This section does not re-open Task 4's
+instruct. This document's own build-dependent-length finding
+(`qwen3-tts.md:2932-2942`), not `docs/testing.md`, is why an RTF computed
+from a frame count taken on another tree would be wrong; every figure above
+is same-tree. This section does not re-open Task 4's
 Q5_K_MIXED recommendation, does not claim CUDA placement (VoiceDesign has no
 new graphs to place -- see this plan's own "What This Variant Does NOT Have"),
 and implies no listening judgement -- a tolerance table and an RTF number are
@@ -5530,6 +5568,96 @@ task.
 - `git status --porcelain` checked before staging; no `.gguf`, `.pcm` or
   `/usr/bin/time` log staged. `models/` is a symlink outside the worktree,
   gitignored via `/models`.
+
+### Fix round 1, review of this task
+
+Spec passed; code quality review found four Important and four Minor
+findings, all in prose -- the reviewer independently re-ran all three
+profiles (largest delta -3.7% on BF16, well inside the review's own 15%
+trigger), confirmed frame counts byte-identical, and verified the ggml
+mechanism down to the preprocessor level (`__ARM_NEON` defined,
+`__ARM_FEATURE_FP16_VECTOR_ARITHMETIC` not, no `-march` flags -- the
+`#elif defined(__ARM_NEON)` arm at `sgemm.cpp:3872` really is the one this
+build takes). None of the four measured figures moved.
+
+**Important -- the stale-citation narrative was itself wrong, in the
+paragraph that claimed to have verified it.** The original text said the
+plan's own `docs/quantization.md:449-453` citation "was correct before Task
+4's edit inserted six lines above it." Re-verified with the reviewer's own
+named command (`git show b5046c8:docs/quantization.md`): line 449 there is
+**blank**, and the "F16 is a speed profile" paragraph has lived at **450-454**
+since the section was introduced (`b5046c8`, "Qwen3-TTS Stage 2 Plan 4 --
+quantization, backends and ship prep", PR #13) -- `:449-453` was never
+correct on this branch. The paragraph did not move in Task 4's own main
+commit (`6edf4b1`, confirmed still at 450-454 there); Task 4's *fix round*
+(`a5f6be4`) is what moved it, five lines down to 455-459 -- +1 from turning a
+two-sentence roster line into three, +4 from the four new VoiceDesign rows
+that commit added to the "What each profile is for" table (verified via
+`git diff 6edf4b1 a5f6be4 -- docs/quantization.md`). The false narrative is
+removed rather than corrected in place, since -- unlike the Status
+paragraph's own longer-lived corrections -- it never described a real
+interval, only a wrong derivation. A second, independent citation to the same
+paragraph, in this file's own Task 2 section, read `docs/quantization.md
+:450-454` -- correct when Task 2 wrote it, stale for the same reason -- and
+is now `:455-459` too, so this file no longer carries two different ranges
+for one paragraph.
+
+**Important -- `docs/testing.md` was cited for a claim it does not contain,
+in three places, one of them pre-existing.** Grepped: `docs/testing.md` never
+says "build-dependent" anywhere; its Release-preset section documents a
+different claim, the -O2/-O3 *speed* gap. The real source is this same file,
+`qwen3-tts.md:2932-2942` ("Generated length is build-dependent, and no frame
+count may be quoted without naming its build"). Fixed at both of this task's
+own citations and, since the reviewer traced the error to its origin, at
+Base's own Task 14 text too (`qwen3-tts.md:3466` as originally written) --
+that citation was already wrong before this task copied its shape into new
+prose.
+
+**Important -- the SHIP verdict read as settled; it is not, yet.** Two gates
+were absent from the verdict paragraph itself: Task 7's blind A/B audit
+explicitly covers BF16-vs-F16 and has not run, and publication needs
+jiangzhuo's own per-act confirmation naming the target repository (this
+plan's own Global Constraints). Task 3's and Task 4's own verdicts already
+got this right ("no publication conclusion drawn"; "do not publish") --
+Task 5's verdict now reads "recommend ship, subject to two gates this task
+does not clear," both gates named in the same paragraph rather than in a
+subsection thirty lines later.
+
+**Important -- claimed agreement with Base's own F16 characterization where
+none exists; recorded as a named tension instead.** The verdict originally
+said VoiceDesign's F16 result "match[es] how Base's own F16 is already
+characterized in `docs/quantization.md`." True only of the speed-profile
+*paragraph*; false of the table's own *verdict cell* for Base's F16
+("clears every gate and does not pay," RTF never measured) and of this
+file's own Status paragraph, which repeats that verdict verbatim. Removed
+the agreement claim and added "Open item: Base's own F16 verdict rests on
+size alone, and was never speed-measured," which states the tension plainly
+and goes further than a wording note: this task's own mechanism finding is
+host-wide, not VoiceDesign-specific, so it would very likely apply to Base's
+own BF16/F16 packages on the same tree -- making Base's committed "does not
+pay" verdict probably wrong-and-unmeasured, a gap in the same class as
+CustomVoice's card silently omitting `Q5_K_MIXED` (Task 4's own Open Item).
+Base is explicitly **not** re-measured here -- out of this task's scope --
+and the item is left for whoever next touches Base's own record.
+
+**Minors, all fixed.** The frame-count-divergence sentence now cross-references
+`qwen3-tts.md:2937`'s one-clause mechanism ("the autoregressive stop decision
+is what moves") instead of asserting the divergence is non-alarming without
+saying why. The "Does F16 pay here?" subsection now names its build
+(`build/rel-dgx-spark`) in the sentence that first quotes frame counts,
+matching the Q5_K_MIXED subsection's own "same workload, same tree" framing.
+"2.71x shorter" (a duration) is now "2.71x faster" (a rate). And "F16 alone
+recovers roughly two-thirds of what Q8_0 buys" -- a ratio of speedup
+multipliers (2.870 / 4.4926 = 0.639) that understates F16's own contribution
+-- is replaced with the two framings that measure it directly: **87%** of
+Q8_MIXED's wall-clock time saved (12.18 s of 13.99 s) and **84%** of its
+RTF-point improvement (3.08 of 3.68 points), both with the subtraction shown.
+
+Re-ran `scripts/ci/clang-format.sh --check-diff` (clean) and confirmed
+`git status --porcelain` clean after this round. No measurement, table
+value, or arithmetic result changed -- every fix is in what the numbers were
+cited from or said to mean, matching the class of finding Tasks 2 and 3 each
+hit in their own fix rounds.
 
 ## Open Questions for Intake
 

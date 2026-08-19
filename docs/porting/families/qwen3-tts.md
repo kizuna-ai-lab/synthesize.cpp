@@ -5790,7 +5790,7 @@ tensors and 209,480,452 of these 457,161,476 bytes, a nested
 weight-normalized-conv submodule rather than the whole decoder; the reported
 counts were always the full-prefix ones, only the selector's own name was
 wrong). `codec.decoder.` (14 characters) is also the exact prefix
-`src/arch/qwen3-tts/model.cpp:585` mirrors onto the device, so this is the
+`src/arch/qwen3-tts/model.cpp:584` mirrors onto the device, so this is the
 same tensor set the runtime twin actually moves. Re-hashed for this fix
 round rather than trusted from shape/size agreement alone: sha256 over
 tensor name and data for every `codec.decoder.*` tensor is
@@ -5921,7 +5921,7 @@ addressed:
 2. **The tensor-identity selector's own name didn't match its own numbers.**
    The reported 255 tensors / 457,161,476 bytes are correct for
    `codec.decoder.*` (the exact 14-character prefix
-   `src/arch/qwen3-tts/model.cpp:585` mirrors) but the prose named the
+   `src/arch/qwen3-tts/model.cpp:584` mirrors) but the prose named the
    selector `codec.decoder.decoder.*`, a nested submodule that is only 118
    of those tensors and 209,480,452 of those bytes -- confirmed by re-running
    both selectors. The selector's name is fixed; the numbers were already

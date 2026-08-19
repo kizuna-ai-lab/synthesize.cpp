@@ -12,7 +12,7 @@
 
 - **Every performance figure comes from a `Release`-typed build.** Use `rel-dgx-spark` (`CMakePresets.json:73-81`, `CMAKE_BUILD_TYPE=Release`). Never `dev-dgx-spark` or any other `development-base` preset: they inherit `RelWithDebInfo`, which compiles ggml-cpu at `-O2` and measured **2.19× slower** than `-O3` on this workload. A figure whose build is not named is not a figure.
 - **No frame count may be pinned or quoted without naming its build.** Release and RelWithDebInfo produce different generated-frame counts for the same run (24,960 vs 48,000 observed elsewhere in this family).
-- **A profile that fails to pay is a result.** If F16 comes out no smaller, or Q5_K_MIXED comes out worse than Q8_MIXED at a size that does not justify it, the deliverable is the recorded measurement and a profile absent from the card — not a published profile. Stage 2 Plan 4 established this; CustomVoice's Q5_K_MIXED (buildable, measured, deliberately unpublished, talker-logits cosine 0.9648) is the standing precedent.
+- **A profile that fails to pay is a result** — but *what counts as paying differs by profile, and this constraint got it wrong for F16 until 2026-08-20.* `docs/quantization.md:449-453` records that **F16 is a SPEED profile for this family, not a size one**: Base's F16 came out larger than its source and **was published anyway**. So a larger-than-source F16 settles nothing about publication, and Task 2 — which is forbidden to measure timing — cannot decide it. **Task 5 decides F16.** The genuine not-paying precedent is CustomVoice's Q5_K_MIXED: buildable, measured, deliberately unpublished, and withheld on **accuracy** (talker-logits cosine 0.9648), not size. Q5_K_MIXED is therefore judged on the shrink-versus-agreement trade in Task 4, and F16 on speed in Task 5. Where a profile does fail its own test, the deliverable is the recorded measurement and a profile absent from the card, named as measured-and-not-shipped rather than omitted.
 - **If the listening audit finds that descriptions do not control the voice in any recognizable way, the honest output is a recorded negative, not a published package.** Design spec section 7.
 - **Publication is out of scope.** This plan prepares artifacts. Uploading them is a separate act requiring jiangzhuo's confirmation at the time, naming the target repository. Do not upload, do not `hf upload`, do not open a PR against any model repo.
 - **`quality_evaluation` stays `not_run`.** Deferred per ADR 0017. A listening audit does not move the Validation Level; the card carries the two as separate fields and says why.
@@ -442,11 +442,17 @@ Fix the seed, fix the thread count at 10, take medians of at least 3 runs per pr
 
 Both carry into every figure and both must appear beside the table, not in a footnote someone can miss: the second BPE frontend costs about +45 MB peak RSS, and generated frame counts are build-dependent, so no frame count may be quoted without naming its build.
 
-- [ ] **Step 4: Sanity-check the shape against Base**
+- [ ] **Step 4: Decide F16, which Task 2 could not**
+
+Task 2 measured F16 at +283,136 bytes — **larger** than its BF16 source — and correctly declined to draw a publication conclusion from that. `docs/quantization.md:449-453` records that **F16 is a speed profile for this family rather than a size one**, and Base's F16 was published despite also coming out larger than its source. So the question F16 actually has to answer is the one only this task can measure: **is it faster than BF16 on this variant, by enough to justify shipping a profile that saves no disk?**
+
+Answer it in those terms. If F16 is not measurably faster here, it fails its own test and belongs in the card as measured-and-not-shipped — and that is a different verdict from Task 2's size figure, reached on different evidence. Say which evidence carried it.
+
+- [ ] **Step 5: Sanity-check the shape against Base**
 
 Base measured RTF 3.15 on CPU at 0.6B. This variant's talker is 3.2× larger. An RTF that comes out *better* than Base's is not automatically wrong, but it is surprising enough to re-measure before recording. Say in the report which way it went.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add docs/porting/families/qwen3-tts.md

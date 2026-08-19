@@ -215,7 +215,7 @@ Expected: loads, reports zero Preset Voices. A load failure here is a Task 2 def
 ```bash
 uv run --project scripts/envs/qwen3-tts --locked python scripts/validate-qwen3-tts-public.py \
   --model models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-F16.gguf \
-  --runner build/unit/bin/synthesize-qwen3-tts-public-real \
+  --runner build/bin/synthesize-qwen3-tts-public-real \
   --description "A cheerful, bright female voice speaking with fast pacing and high energy." \
   --description "A deep, calm male voice speaking slowly and quietly." \
   --profile F16 --backend cpu \
@@ -229,7 +229,7 @@ uv run --project scripts/envs/qwen3-tts --locked python scripts/validate-qwen3-t
 uv run --project scripts/envs/qwen3-tts --locked python scripts/validate-qwen3-tts-replay.py \
   --manifest tests/golden/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign.manifest.json \
   --model models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-F16.gguf \
-  --runner build/unit/bin/synthesize-qwen3-tts-replay-real \
+  --runner build/bin/synthesize-qwen3-tts-replay-real \
   --check --profile F16 --backend CPU --stage replay
 ```
 
@@ -294,7 +294,7 @@ build/bin/synthesize-cli --model models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tt
 ```bash
 uv run --project scripts/envs/qwen3-tts --locked python scripts/validate-qwen3-tts-public.py \
   --model models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-Q8_MIXED.gguf \
-  --runner build/unit/bin/synthesize-qwen3-tts-public-real \
+  --runner build/bin/synthesize-qwen3-tts-public-real \
   --description "A cheerful, bright female voice speaking with fast pacing and high energy." \
   --description "A deep, calm male voice speaking slowly and quietly." \
   --profile Q8_MIXED --backend cpu \
@@ -307,7 +307,7 @@ uv run --project scripts/envs/qwen3-tts --locked python scripts/validate-qwen3-t
 uv run --project scripts/envs/qwen3-tts --locked python scripts/validate-qwen3-tts-replay.py \
   --manifest tests/golden/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign.manifest.json \
   --model models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-Q8_MIXED.gguf \
-  --runner build/unit/bin/synthesize-qwen3-tts-replay-real \
+  --runner build/bin/synthesize-qwen3-tts-replay-real \
   --check --profile Q8_MIXED --backend CPU --stage replay
 ```
 
@@ -369,7 +369,7 @@ The question this task exists to answer is *the extra shrink over Q8_MIXED*, so 
 ```bash
 uv run --project scripts/envs/qwen3-tts --locked python scripts/validate-qwen3-tts-public.py \
   --model models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-Q5_K_MIXED.gguf \
-  --runner build/unit/bin/synthesize-qwen3-tts-public-real \
+  --runner build/bin/synthesize-qwen3-tts-public-real \
   --description "A cheerful, bright female voice speaking with fast pacing and high energy." \
   --description "A deep, calm male voice speaking slowly and quietly." \
   --profile Q5_K_MIXED --backend cpu \
@@ -378,7 +378,7 @@ uv run --project scripts/envs/qwen3-tts --locked python scripts/validate-qwen3-t
 uv run --project scripts/envs/qwen3-tts --locked python scripts/validate-qwen3-tts-replay.py \
   --manifest tests/golden/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign.manifest.json \
   --model models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-Q5_K_MIXED.gguf \
-  --runner build/unit/bin/synthesize-qwen3-tts-replay-real \
+  --runner build/bin/synthesize-qwen3-tts-replay-real \
   --check --profile Q5_K_MIXED --backend CPU --stage replay
 ```
 
@@ -464,7 +464,7 @@ Unlike Base, this variant introduces no new graphs — it is Stage 1's graph set
 ```bash
 uv run --project scripts/envs/qwen3-tts --locked python scripts/validate-qwen3-tts-public.py \
   --model models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-BF16.gguf \
-  --runner build/rel-dgx-spark/unit/bin/synthesize-qwen3-tts-public-real \
+  --runner build/rel-dgx-spark/bin/synthesize-qwen3-tts-public-real \
   --description "A cheerful, bright female voice speaking with fast pacing and high energy." \
   --description "A deep, calm male voice speaking slowly and quietly." \
   --profile BF16 --backend cuda \

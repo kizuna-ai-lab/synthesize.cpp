@@ -1,6 +1,6 @@
 # Port Validation Contract
 
-Status: Confirmed, last updated on 2026-07-31.
+Status: Confirmed, last updated on 2026-08-18.
 
 ## Purpose and Boundary
 
@@ -29,7 +29,7 @@ The top-level fields have these responsibilities:
 | `package_contract` | Input, audio, language, Voice, randomness, speaking-rate, and hard input/output safety limits being validated. `frontend` is explicitly `null` when the package claims resolved token IDs only. |
 | `tolerance_file` | Version-controlled numerical tolerances selected by stage and probe. |
 | `case_artifact_root` | Ignored build-tree root for generated oracle material. |
-| `cases` | Twelve to thirty-two deterministic Port Validation Cases. |
+| `cases` | Twelve to thirty-two deterministic Port Validation Cases. **Exemption, added 2026-08-18:** a manifest may instead declare `suite_status: "incremental"` and commit with as few as zero cases, provided it grows toward the twelve-case floor across the tasks named in its own plan rather than staying there. `qwen3-tts-12hz-1-7b-voicedesign` is the first: its Golden Manifest is committed at 0 cases in Stage 3 Plan 1's Task 6 and stays at 0 through Task 7, which gates the same empty-instruct rung with an integration driver outside the manifest (a `replay`-stage tolerance cell and fault-injection figure, not a case) rather than adding one; the manifest's own cases arrive in Plan 2, building toward the same floor every other manifest already meets in one commit. The schema enforces this as an `if`/`then`/`else` keyed on `suite_status` (`docs/schemas/synthesize-golden-manifest-v1.schema.json`), not as a lowered floor: omitting the field is the default and still means twelve to thirty-two, exactly as it always has, so a manifest cannot go below the floor by neglecting to set anything. |
 | `relations` | Phase-qualified cross-case assertions such as seed-dependent change or speaking-rate frame ordering. |
 
 JSON stores every `uint64_t` seed as a decimal string. This avoids precision loss

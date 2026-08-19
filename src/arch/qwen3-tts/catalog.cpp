@@ -284,35 +284,59 @@ bool resolve_talker(Resolver & resolver, const HParams & hparams, TalkerWeights 
 
 bool resolve_code_predictor(Resolver & resolver, const HParams & hparams, CodePredictorWeights & predictor) {
     const CodePredictorParams & p = hparams.code_predictor;
-    // The predictor shares the talker's feed-forward width; the package does not
-    // declare a separate one, so it is checked against the talker's.
+    // The predictor's own feed-forward width, which read_code_predictor falls
+    // back to the talker's for a package converted before the field existed --
+    // see CodePredictorParams::intermediate_size.
     resolve_decoder_layers(resolver, "talker.code_predictor.model.layers.", p.layer_count, p.hidden_size,
-                           hparams.talker.intermediate_size, p.head_dim, p.attention_head_count, p.key_value_head_count,
+                           p.intermediate_size, p.head_dim, p.attention_head_count, p.key_value_head_count,
                            predictor.layers);
     predictor.norm = resolver.find("talker.code_predictor.model.norm.weight", { p.hidden_size });
 
     // One private table and one private head per acoustic group. Group 0 is the
     // talker's, which is why both lists are one shorter than the group count.
+    //
+    // The two are at DIFFERENT widths, which is easy to miss because they read
+    // like a matched embedding/head pair. `lm_head` sits after the predictor's
+    // own layers and is a Linear(p.hidden_size, vocab_size) -- the reference's
+    // `nn.Linear(config.hidden_size, config.vocab_size, ...)`
+    // (Qwen3TTSTalkerCodePredictorModelForConditionalGeneration.__init__).
+    // `codec_embedding` feeds INTO input_projection alongside the talker's own
+    // hidden state (model.cpp's per-step `step_input`, concatenated or summed
+    // before build_code_predictor applies the projection), so it is built at
+    // the TALKER's width: the reference constructs it as
+    // `Qwen3TTSTalkerCodePredictorModel(config, embedding_dim=talker_config.hidden_size)`,
+    // an `embedding_dim` the predictor's OWN `__init__` receives as a second,
+    // separate argument rather than reading off its own config. A package
+    // whose talker and predictor widths agree (every one before VoiceDesign)
+    // could not distinguish these two rules from one.
     const uint32_t acoustic = p.code_group_count - 1;
     predictor.codec_embedding.assign(acoustic, nullptr);
     predictor.lm_head.assign(acoustic, nullptr);
     for (uint32_t group = 0; group < acoustic; ++group) {
         predictor.codec_embedding[group] =
             resolver.find(index_of("talker.code_predictor.model.codec_embedding.", group, ".weight"),
-                          { p.hidden_size, p.vocab_size }, Role::Matrix);
+                          { hparams.talker.hidden_size, p.vocab_size }, Role::Matrix);
         predictor.lm_head[group] = resolver.find(index_of("talker.code_predictor.lm_head.", group, ".weight"),
                                                  { p.hidden_size, p.vocab_size }, Role::Matrix);
     }
 
     // The reference projects the talker's hidden state into the predictor's
-    // width and drops the projection entirely when the widths agree. A package
-    // whose widths differ would need one, and this variant's do not.
+    // width and drops the projection entirely when the widths agree
+    // (`torch.nn.Identity()`, modeling_qwen3_tts.py's
+    // Qwen3TTSTalkerCodePredictorModelForConditionalGeneration.__init__). A
+    // package whose widths differ carries the projection as
+    // small_to_mtp_projection -- first measured on the 1.7B VoiceDesign
+    // checkpoint, whose predictor stays at the 0.6B rung's 1024 while the
+    // talker widens to 2048 -- and CodePredictorWeights has carried the two
+    // pointers for it since before any package needed them
+    // (code-predictor.cpp's build_code_predictor already applies them
+    // whenever they are non-null). Left both null when the widths agree, so a
+    // 0.6B package's resolution and its built graph are unchanged.
     if (p.hidden_size != hparams.talker.hidden_size) {
-        std::fprintf(stderr,
-                     "qwen3-tts: the code predictor is %u wide against the talker's %u, which needs an input "
-                     "projection this package does not carry\n",
-                     p.hidden_size, hparams.talker.hidden_size);
-        return false;
+        predictor.input_projection = resolver.find("talker.code_predictor.small_to_mtp_projection.weight",
+                                                   { hparams.talker.hidden_size, p.hidden_size }, Role::Matrix);
+        predictor.input_projection_bias =
+            resolver.find("talker.code_predictor.small_to_mtp_projection.bias", { p.hidden_size });
     }
     return resolver.ok();
 }
@@ -629,6 +653,11 @@ uint64_t expected_tensor_count(const HParams & hparams) {
 
     uint64_t predictor = 1 + uint64_t(hparams.code_predictor.layer_count) * kPerDecoderLayer;
     predictor += 2ull * (hparams.code_predictor.code_group_count - 1);
+    // The input projection (weight + bias), present only when the predictor's
+    // width disagrees with the talker's -- see resolve_code_predictor.
+    if (hparams.code_predictor.hidden_size != hparams.talker.hidden_size) {
+        predictor += 2;
+    }
 
     uint64_t quantizers  = 2 * 2 + codec.quantizer_count;             // two projections each, plus codebooks
     uint64_t transformer = 4 + 1 + uint64_t(codec.layer_count) * 11;  // projections, norm, layers

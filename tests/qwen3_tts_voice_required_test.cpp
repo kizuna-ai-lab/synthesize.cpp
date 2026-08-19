@@ -68,6 +68,7 @@ synth::qwen3tts::HParams customvoice_hparams() {
 synth::qwen3tts::HParams base_hparams() {
     synth::qwen3tts::HParams h;
     h.voice_mode                    = synth::qwen3tts::VoiceMode::ProfileSources;
+    h.profile_sources               = SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO;
     h.has_speaker_encoder           = true;
     h.profile.schema                = "qwen3-tts-voice-clone";
     h.profile.schema_version        = 1;
@@ -243,6 +244,66 @@ int test_a_declared_reference_count_is_published_unnarrowed() {
     return 0;
 }
 
+// A VoiceDesign package DECLARES Description Text (its package-level
+// profile_sources) but the RUNTIME publishes nothing for it: withheld by
+// jiangzhuo's 2026-08-18 ruling, because src/voice-profile.cpp's
+// create_from_description dispatch still routes every family but OmniVoice
+// -- this one included -- to the generic unsupported fallback regardless of
+// source_flags, and advertising a source with no implementation behind it
+// invites a caller to pass a description and receive an error they were told
+// would not happen. This is the same restriction the transcript-assisted
+// (ICL) mode carried for the whole of Plan 2, applied here in turn. Not just
+// the DESCRIPTION_TEXT bit either: SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE
+// would be dishonest alone too, since this package has no speaker encoder and
+// load_qwen3_tts_profile_from_memory can therefore never accept a Profile
+// against it (src/arch/qwen3-tts/weights.cpp's fill_voice_profile_capability,
+// the comment on its early-return branch) -- so the published shape is the
+// SAME all-zero shape check_reports_no_voice_profile_support pins for
+// CustomVoice, reused here to prove the two shapes really are identical field
+// for field.
+int test_capability_follows_the_declared_sources() {
+    {
+        synth::qwen3tts::HParams h;
+        h.voice_mode      = synth::qwen3tts::VoiceMode::ProfileSources;
+        h.profile_sources = SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT;
+        synth::VoiceProfileInfo info{};
+        synth::qwen3tts::fill_voice_profile_capability(h, info);
+        // The package's own declared sources still name description-text --
+        // Task 3's loader is untouched by this rule -- while the RUNTIME's
+        // published snapshot is the all-zero "no support" shape. Re-publishing
+        // SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT (or SERIALIZED_PROFILE alone)
+        // here is exactly the regression this assertion exists to catch.
+        SYNTH_TEST_CHECK(h.profile_sources == SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT);
+        const int check_status = check_reports_no_voice_profile_support(info);
+        SYNTH_TEST_CHECK(check_status == 0);
+    }
+    // Base is unchanged.
+    {
+        synth::qwen3tts::HParams h;
+        h.voice_mode                    = synth::qwen3tts::VoiceMode::ProfileSources;
+        h.profile_sources               = SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO;
+        h.has_speaker_encoder           = true;
+        h.profile.reference_sample_rate = 24000;
+        h.profile.max_reference_count   = 1;
+        synth::VoiceProfileInfo info{};
+        synth::qwen3tts::fill_voice_profile_capability(h, info);
+        SYNTH_TEST_CHECK((info.source_flags & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) != 0);
+        SYNTH_TEST_CHECK((info.source_flags & SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT) == 0);
+        SYNTH_TEST_CHECK(info.reference_target_sample_rate == 24000);
+    }
+    // A preset-catalog package advertises nothing, whatever it declares --
+    // the adversarial case this file already makes for the catalog half.
+    {
+        synth::qwen3tts::HParams h;
+        h.voice_mode      = synth::qwen3tts::VoiceMode::PresetCatalog;
+        h.profile_sources = SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT;
+        synth::VoiceProfileInfo info{};
+        synth::qwen3tts::fill_voice_profile_capability(h, info);
+        SYNTH_TEST_CHECK(info.source_flags == 0);
+    }
+    return 0;
+}
+
 // The public-seam counterpart of the rule above: a `synth_model` whose family
 // is Qwen3Tts but whose capability snapshot is the CustomVoice all-zero shape
 // must take the SAME generic "unsupported" fallback every non-participating
@@ -288,6 +349,7 @@ int main() {
     SYNTH_TEST_CHECK(test_base_package_carries_no_preset_voice_catalog() == 0);
     SYNTH_TEST_CHECK(test_base_capability_publishes_both_sources_together() == 0);
     SYNTH_TEST_CHECK(test_a_declared_reference_count_is_published_unnarrowed() == 0);
+    SYNTH_TEST_CHECK(test_capability_follows_the_declared_sources() == 0);
     SYNTH_TEST_CHECK(test_customvoice_model_refuses_public_profile_calls() == 0);
     return 0;
 }

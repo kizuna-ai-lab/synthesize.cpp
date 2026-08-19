@@ -1,6 +1,6 @@
 # Model Package Format
 
-Status: Confirmed, last updated on 2026-08-07.
+Status: Confirmed, last updated on 2026-08-19.
 
 ## Package Boundary
 
@@ -46,7 +46,11 @@ A Model Package that accepts Serialized Profiles declares its Profile Schema, Pr
 
 The converter computes the identifier as SHA-256 over the Model Family's canonical compatibility manifest, including upstream checkpoint provenance and fingerprints of Voice-conditioning configuration and source weights. If compatibility cannot be demonstrated, the converter emits a distinct identifier. Model loading never infers profile compatibility from filenames, architecture labels, tensor dimensions, `general.uuid`, or approximate metadata.
 
-A package that supports Reference Audio also declares the Voice encoder's target sample rate and channel count, minimum and maximum Reference Frame Equivalents per clip, maximum total Reference Frame Equivalents, and maximum reference count. These are mandatory nonzero safety and capability values rather than advisory UI metadata. The runtime derives each equivalent from input duration with checked arithmetic before conversion; it does not treat the value as the exact number of frames that the private resampler must emit. Validation is identical for every Execution Backend.
+A Model Package that can prepare a Voice Profile at all declares which sources it implements positively, in `synthesize.voice.profile_sources`. This is a declared list, not an inference: a Model Family that offers more than one incompatible source under the same Voice Mode -- Reference Audio for one Model Variant, Description Text for another, both reported under `profile-sources` -- cannot be told apart by Voice Mode alone, so the declaration exists to say which one a given package means.
+
+Loading validates this declaration only as far as the package's structure lets it. A source with a distinguishing tensor block is cross-checked against that block's presence: Reference Audio requires the Voice encoder, so a package declaring it without carrying the encoder is refused, and a package carrying the encoder without declaring it is refused the same way. A source with no distinguishing tensor block cannot be corroborated and is taken at its word -- Description Text has no tensors of its own, since the instruct text it conditions on is tokenized and fed to the Talker the same way ordinary request text is, so nothing in the package's shape can confirm or contradict the claim. A Model Variant's identity string (`synthesize.model_variant`) is descriptive metadata surfaced to callers, not a validated input: loading does not compare it against the declared sources, and no fixed table of which Model Variant may declare which source is maintained, which is deliberate -- the Model Variant string encodes size and frame rate as well as identity (`qwen3-tts-12hz-1-7b-voicedesign`), so a hardcoded table would refuse a legitimate future variant the table had not been updated to name. A package with a Preset Voice Catalog and no Voice Profile contract at all has nothing to declare a source for; loading refuses `synthesize.voice.profile_sources` outright if such a package carries the key, rather than reading a declaration that has no contract behind it and silently ignoring it.
+
+A package that declares Reference Audio also declares the Voice encoder's target sample rate and channel count, minimum and maximum Reference Frame Equivalents per clip, maximum total Reference Frame Equivalents, and maximum reference count. These are mandatory nonzero safety and capability values rather than advisory UI metadata. The runtime derives each equivalent from input duration with checked arithmetic before conversion; it does not treat the value as the exact number of frames that the private resampler must emit. Validation is identical for every Execution Backend.
 
 ## Sidecar Rules
 

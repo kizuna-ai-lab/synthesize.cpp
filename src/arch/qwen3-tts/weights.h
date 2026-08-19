@@ -83,6 +83,16 @@ struct CodePredictorParams {
     uint32_t head_dim             = 0;
     uint32_t vocab_size           = 0;
     uint32_t code_group_count     = 0;
+    // Independent of the talker's own intermediate_size. Every package
+    // converted before this field existed happened to declare the same value
+    // for both (3072/3072 at the 0.6B rung), which let the catalog get away
+    // with reading the talker's; the 1.7B rung's talker widens to 6144 while
+    // the predictor's MLP stays at 3072, and reusing the talker's value there
+    // resolves the predictor's own layers against the wrong shape. Optional at
+    // read time -- see read_code_predictor -- so a package converted before
+    // this field existed still loads, falling back to the talker's value,
+    // which is exactly what it always implicitly assumed.
+    uint32_t intermediate_size    = 0;
 };
 
 // The codec decoder's geometry. The speech tokenizer's encoder half is
@@ -193,7 +203,13 @@ struct HParams {
     bool                     has_package_default = false;
     std::vector<PresetVoice> preset_voices;
 
-    // Only present for a variant with a speaker encoder (currently just Base).
+    // Which Voice Profile sources this package DECLARES, as
+    // SYNTH_PROFILE_SOURCE_* bits. Declared rather than inferred: before Stage
+    // 3, `profile-sources` mode meant Base and therefore meant reference
+    // audio, and that stopped being true when VoiceDesign arrived with a
+    // disjoint source set and the same mode.
+    uint32_t             profile_sources     = 0;
+    // Only present for a variant with a speaker encoder (Base).
     bool                 has_speaker_encoder = false;
     SpeakerEncoderParams speaker_encoder;
     ProfileContract      profile;
@@ -223,10 +239,11 @@ bool resolve_language_token(const HParams &     hparams,
                             std::string &       resolved_name);
 
 // Whether this package carries a Preset Voice Catalog at all. False for a
-// profile-sources package (this family's Base variant): read_voices refuses
-// such a package unless its preset_count is zero and clears `preset_voices`,
-// so there is no catalog to resolve a Voice id against and
-// Model::resolve_voice's lookup refuses every request, named or not.
+// profile-sources package (this family's Base and VoiceDesign variants):
+// read_voices refuses such a package unless its preset_count is zero and
+// clears `preset_voices`, so there is no catalog to resolve a Voice id
+// against and Model::resolve_voice's lookup refuses every request, named or
+// not.
 //
 // Deliberately answered from `voice_mode` rather than from
 // `preset_voices.empty()`: the mode is what the package DECLARES, and a
@@ -269,8 +286,8 @@ inline bool has_preset_voice_catalog(const HParams & hparams) {
 // §1.4) records the correction made before this function was written this
 // way.
 //
-// A ProfileSources package (Base) publishes
-// SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO with
+// A ProfileSources package whose declared sources include REFERENCE_AUDIO
+// (Base) publishes SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO with
 // SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE alongside it -- docs/c-interface.md
 // requires the second bit on any Model that can create a v1 Profile, because
 // every successfully prepared v1 Profile can be serialized -- published from
@@ -301,8 +318,41 @@ inline bool has_preset_voice_catalog(const HParams & hparams) {
 // Base package's ProfileContract and speaker-encoder metadata are still read
 // and validated in full at load time regardless (read_hparams): the package
 // declaring a contract and the runtime advertising a capability are different
-// statements. Description Text and Random Seed stay unadvertised at every
-// stage of this family's ladder; neither has an implementation here.
+// statements.
+//
+// **Erratum, 2026-08-18 -- jiangzhuo's ruling after the final whole-branch
+// review, contradicting the paragraph this replaces.** Task 4 made
+// source_flags follow hparams.profile_sources itself rather than a hardcoded
+// pair, and the paragraph originally here said that was the whole story: a
+// VoiceDesign package (ProfileSources too, but with no speaker encoder)
+// advertises Description Text instead of Reference Audio, "not yet callable"
+// but published anyway, because create_from_description routes every family
+// but OmniVoice to the generic unsupported fallback regardless of
+// source_flags. That is exactly the shape this family's own ICL precedent
+// says not to ship: SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT stayed unadvertised
+// for the whole of Plan 2 precisely because advertising a mode with no
+// implementation behind it invites a caller to ask for it and receive
+// SYNTH_ERR_UNSUPPORTED_VOICE instead of the Profile the advertisement
+// promised -- and create_from_description was in exactly that state for
+// VoiceDesign when the paragraph above was written. The ruling: withhold
+// SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT from the RUNTIME's published
+// capability too, until a later plan wires the handler. And
+// SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE does not survive alone either --
+// docs/c-interface.md permits that only for a Model that can consume
+// prebuilt profiles even though it cannot prepare them, and this one cannot
+// consume one: load_profile_from_memory requires an x-vector tensor sized to
+// `hparams.speaker_encoder.enc_dim`, zero for a package with no speaker
+// encoder, and its own `tensor_bytes == 0` check refuses every nonempty
+// envelope before that size is ever compared. So a VoiceDesign package
+// publishes source_flags == 0 today, the same all-zero shape CustomVoice
+// reports, for a different reason: CustomVoice carries no ProfileContract at
+// all, VoiceDesign carries one (read and validated in full at load time,
+// same as Base's) with nothing yet wired to act on it. This is still a
+// statement about the RUNTIME and not about the PACKAGE -- the package's own
+// declared `profile_sources` keeps naming description-text, Task 3's loader
+// and its cross-checks are untouched, and the split is the same one the ICL
+// precedent used. Random Seed stays unadvertised at every stage of this
+// family's ladder; nothing here implements it.
 void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & info);
 
 }  // namespace synth::qwen3tts

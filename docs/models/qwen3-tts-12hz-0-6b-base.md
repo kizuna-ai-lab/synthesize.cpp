@@ -23,6 +23,27 @@ degraded**, CPU and CUDA were indistinguishable, and both clones were judged the
 Evaluation stays deferred per ADR 0017, and neither claim moves the Validation
 Level.
 
+## These three published files no longer load
+
+**Read this before downloading.** The BF16, F16 and Q8_MIXED GGUFs published
+above were converted 2026-08-17, before the package format gained a key that
+states positively which Voice Profile sources a package implements
+(`synthesize.voice.profile_sources`). Packages converted before that key
+existed are refused by `synth_model_load`, and the three files this page
+describes are in that category. This is a deliberate package-format break and
+not a defect in them: the project is pre-release with no dependent users, so
+no compatibility shim was written to infer the declaration from a package's
+other contents, which is exactly the inference this loader change exists to
+remove.
+
+What to do instead: convert from the upstream checkpoint with the current
+`scripts/convert-qwen3-tts.py`.
+
+What this does **not** affect: every measured figure below -- the digests, the
+tolerances, the validation counts, the x-vector cosines, the RTF figures, the
+Listening Audit -- was taken on these exact files and still describes what the
+package computes. Only loading changed.
+
 ## What this variant is for
 
 Stage 2 of the Reference Model Variant Ladder. It adds

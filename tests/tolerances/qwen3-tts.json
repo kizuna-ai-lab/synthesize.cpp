@@ -1063,6 +1063,59 @@
           }
         }
       }
+    },
+    "qwen3-tts-12hz-1-7b-voicedesign": {
+      "case_count": 1,
+      "suite_version": 1,
+      "status": "partial-measurement-prefill-only",
+      "note": "This variant's Golden Manifest (tests/golden/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign.manifest.json) still carries `cases: []` (`suite_status: \"incremental\"`, Task 6). This grid predates it: Plan 1's completion gate is a single explicit-argument case -- text \"Qwen3-TTS is awesome!\", instruct \"\" (the empty-instruct, no-speaker-slot path design section 5.3 names as the branch nothing has ever run before this), language English -- driven by scripts/dump_reference_qwen3_tts_voicedesign.py and compared by tests/qwen3_tts_voicedesign_prefill_real.cpp, neither wired to the manifest yet. Plan 2 is what gives this manifest its cases and widens this grid to cover them; only `replay`'s `prefill` probe is measured here, and there is no `public` stage, because create_from_description does not exist until Plan 2 either. `case_count` (1) describes this single case, not the manifest.",
+      "profiles": {
+        "BF16": {
+          "stages": {
+            "replay": {
+              "phase": "oracle_replay",
+              "description": "The talker's assembled prefill at an empty instruct, with the speaker slot correctly ABSENT -- Plan 1's completion gate (docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md section 5.3, section 8's plan table). No instruct block exists in the port yet (Plan 2's job) and none is needed: upstream's own empty-instruct path (design decision D3) builds no instruct block either, so the comparison is exact for what it covers. The autoregressive codes and the decoded waveform are dumped by the oracle script for the record but are not yet compared here -- this stage measures the deterministic prefill only.",
+              "cases": 1,
+              "probes": {
+                "prefill": {
+                  "max_relative": 0.01,
+                  "observed_max_relative": 0.00269,
+                  "cases": 1,
+                  "case_ids": [
+                    "voicedesign-empty-instruct-en"
+                  ],
+                  "headroom": 3.72,
+                  "normalizer": "relative deviation = reconstruction_p95_relative(port, oracle, positions, hidden_size) (tests/qwen3_tts_percentile.h) -- the p95 over positions of the per-position L2 deviation, each relative to that oracle POSITION's own L2 norm. Not a cosine and not the icl_embed probe's round-to-bfloat16-then-compare block statistic: this probe compares the port's raw float32 prefill directly against the oracle's own captured `inputs_embeds` (widened bf16 -> f32, no further rounding applied on either side), because the whole prefill here is a single tensor rather than two summed tracks under upstream's own bf16 addition. UNLIKE prompt.icl_embed, this probe does not replay oracle token ids -- tests/qwen3_tts_voicedesign_prefill_real.cpp tokenizes the case text itself through Model::tokenize_request, so the port's own BPE is inside this number. That coupling does not weaken the gate: a tokenizer disagreement either changes the token COUNT (caught by shapes_match: false, no tolerance needed) or changes an id (an O(1) jump in p95_relative, the same signature the fault injection below produced). What it costs is ATTRIBUTION, not detection -- a failure here would not by itself say whether the tokenizer or build_talker_prompt is at fault.",
+                  "observed_by_case": {
+                    "voicedesign-empty-instruct-en": {
+                      "text": "Qwen3-TTS is awesome!",
+                      "instruct": "",
+                      "language": "English",
+                      "positions": 18,
+                      "hidden_size": 2048,
+                      "codec_offset": 3,
+                      "external_speaker_index": -1,
+                      "p95_relative": 0.00269
+                    }
+                  },
+                  "fault_injection": {
+                    "fault": "src/arch/qwen3-tts/talker-host.cpp:159 -- `if (request.has_speaker)` changed to `if (true)`, so build_talker_prompt retains a codec-vocabulary speaker slot (the `else` branch, `codec.push_back(request.speaker_token)`, with `speaker_token` at this driver's default of 0) even though `request.has_speaker` is false. Task 5's exact branch, inverted, per this task's Step 4 and design section 5.3's warning that this is 'a branch that has never run'.",
+                    "measured": "2026-08-18",
+                    "observed_clean_p95_relative": 0.00269,
+                    "observed_faulted_p95_relative": 0.983659,
+                    "ratio": 365.7,
+                    "shape_effect": "the fault does not only perturb values at a fixed shape -- it changes the POSITION COUNT. The extra codec-vocabulary slot pushes the codec-prefix loop from 5 iterations to 6, so the faulted port prefill has 19 positions against the oracle's 18 (and the clean port's own 18), shifting every position from index 7 onward by one relative to the clean, correct layout. reconstruction_p95_relative has no notion of alignment, so the faulted figure above is computed over only the first 18 (of 19) faulted positions against the oracle's 18, aligned from the front -- printed by the driver itself as `compared_positions: 18` beside `shapes_match: false`. The shape mismatch is at least as strong a failure signal as the number: a caller does not need a tolerance to notice 19 != 18.",
+                    "reverted": true,
+                    "reverted_verified_by": "git status --porcelain (clean) and grep -n \"if (request.has_speaker)\" src/arch/qwen3-tts/talker-host.cpp (line 159, unchanged) after the measurement"
+                  },
+                  "note": "FIRST MEASUREMENT OF THIS PROBE. The family's own stated widening rule for a non-cosine probe of this shape is prompt.icl_embed's own normalizer field, one variant up in this same file: \"the analogous widening would be 5x the measured deviation.\" Applied here: 5 x 0.00269 = 0.01345. The committed bound is 0.01, TIGHTER than that rule would give, chosen deliberately rather than by omission: this is the probe's first and only measured case (contrast qwen3-tts-12hz-0-6b-base's speaker.x_vector/prompt.icl_embed, each swept across multiple cases before their bounds were judged settled), and there is no ICL two-track summing-and-padding step here to accumulate a second bf16 rounding on top of the weight tables' own quantization, unlike prompt.icl_embed's 0.02. 0.01 is also close to 2.5 bfloat16 unit-roundoffs (2**-8 = 3.90625e-3 per ulp, the same constant tests/qwen3_tts_icl_prompt_real.cpp's own tolerance cites), which is a consistent story rather than a competing one -- both arrive near the same figure from different directions. The measured worst (and only) case is 0.00269, under HALF of one bf16 ulp, giving 3.72x headroom against the committed bound -- comparable in shape to qwen3-tts-12hz-0-6b-base's own prompt.icl_embed headroom (2.29x) recorded the same way. Plan 2 is expected to widen `cases` here as the manifest gains real cases, on new evidence."
+                }
+              },
+              "backend": "CPU"
+            }
+          }
+        }
+      }
     }
   }
 }

@@ -43,6 +43,12 @@ class GgufMetadata {
     bool positive_i32_array(const std::string & key, std::vector<uint32_t> & value) const;
     bool string_array(const std::string & key, std::vector<std::string> & value) const;
 
+    // Whether a key is present at all, without reading it and without the
+    // error report the typed accessors emit on a miss. Used where a key's
+    // ABSENCE is the meaningful answer -- a package that declares it cannot
+    // clone must not carry a speaker encoder, and asking has to be quiet.
+    bool has(const std::string & key) const;
+
     // Reads a string and requires it to equal `expected`.
     bool require_string(const std::string & key, const char * expected) const;
 

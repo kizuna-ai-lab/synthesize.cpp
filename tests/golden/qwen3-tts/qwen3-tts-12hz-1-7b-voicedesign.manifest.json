@@ -1,0 +1,95 @@
+{
+  "$schema": "../../../docs/schemas/synthesize-golden-manifest-v1.schema.json",
+  "schema": "synthesize-golden-manifest-v1",
+  "suite_version": 1,
+  "family": "qwen3-tts",
+  "variant": "qwen3-tts-12hz-1-7b-voicedesign",
+  "source": {
+    "repository": "https://github.com/QwenLM/Qwen3-TTS",
+    "revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
+    "artifacts": [
+      {
+        "role": "checkpoint",
+        "locator": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign/resolve/5ecdb67327fd37bb2e042aab12ff7391903235d3/model.safetensors",
+        "sha256": "391e8db219f292c515297cdceeb43e4eae67cdde35fa57e79a6a8a532fca0522"
+      },
+      {
+        "role": "checkpoint",
+        "locator": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign/resolve/5ecdb67327fd37bb2e042aab12ff7391903235d3/speech_tokenizer/model.safetensors",
+        "sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
+      },
+      {
+        "role": "config",
+        "locator": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign/resolve/5ecdb67327fd37bb2e042aab12ff7391903235d3/config.json",
+        "sha256": "aecd2cc4c1fe9edef1cb7ca7c401685a43879ad43f3f9e883f1c6760b61731e0"
+      },
+      {
+        "role": "frontend-resource",
+        "locator": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign/resolve/5ecdb67327fd37bb2e042aab12ff7391903235d3/vocab.json",
+        "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+      },
+      {
+        "role": "frontend-resource",
+        "locator": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign/resolve/5ecdb67327fd37bb2e042aab12ff7391903235d3/merges.txt",
+        "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3"
+      },
+      {
+        "role": "license",
+        "locator": "https://github.com/QwenLM/Qwen3-TTS/blob/022e286b98fbec7e1e916cb940cdf532cd9f488e/LICENSE",
+        "sha256": "a44a6081c73ad75f0255bb2bb5cab74ef1829565a895a24e53a4f11290ab7655"
+      }
+    ]
+  },
+  "reference": {
+    "implementation": "QwenLM/Qwen3-TTS@022e286b98fbec7e1e916cb940cdf532cd9f488e",
+    "framework": "pytorch-2.13.0+cu130",
+    "runner": "scripts/dump_reference_qwen3_tts_voicedesign.py",
+    "environment_lock": "scripts/envs/qwen3-tts/uv.lock",
+    "dtype": "bfloat16",
+    "device": "cuda"
+  },
+  "package_contract": {
+    "native_audio": {
+      "sample_rate_hz": 24000,
+      "channels": 1,
+      "sample_format": "f32le"
+    },
+    "input_kinds": [
+      "text_utf8"
+    ],
+    "frontend": {
+      "provider": "synthesize.qwen_bpe",
+      "contract_version": 1
+    },
+    "language_tags": [
+      "auto",
+      "chinese",
+      "english",
+      "french",
+      "german",
+      "italian",
+      "japanese",
+      "korean",
+      "portuguese",
+      "russian",
+      "spanish"
+    ],
+    "voices": {
+      "mode": "profile-sources",
+      "default_id": null,
+      "preset_ids": []
+    },
+    "stochastic": true,
+    "speaking_rate_range": [
+      1.0,
+      1.0
+    ],
+    "max_input_tokens": 1024,
+    "max_output_frames": 15728640
+  },
+  "tolerance_file": "tests/tolerances/qwen3-tts.json",
+  "case_artifact_root": "build/goldens/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign",
+  "suite_status": "incremental",
+  "cases": [],
+  "relations": []
+}

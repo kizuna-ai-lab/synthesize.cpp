@@ -1,6 +1,6 @@
 # Testing Policy
 
-Status: Confirmed, last updated on 2026-08-12.
+Status: Confirmed, last updated on 2026-08-18.
 
 Testing is a per-slice completion gate. A new converter rule, graph stage,
 runtime control, backend path, or public Interface is not complete merely because
@@ -111,6 +111,16 @@ for the same source-profile reason as the CustomVoice variable above. Three
 integration tests register from it, and the last one needs two more local
 artifacts:
 
+**Since Stage 3 Task 6, that local BF16 file must be a package converted with
+the current `scripts/convert-qwen3-tts.py`, not merely re-downloaded.** A
+package converted before the loader required
+`synthesize.voice.profile_sources` is refused by `synth_model_load`, and every
+Base package converted before 2026-08-18 -- including the published Hugging
+Face artifacts -- predates that key. Re-cut the local package before
+configuring against it. Only the local **BF16** file has been re-cut in this
+tree; local F16 and Q8_MIXED copies (if present from earlier Stage 2 work) are
+still pre-key and will not load, though no target registered here uses either.
+
 ```bash
 cmake -S . -B build \
   -DSYNTH_BUILD_TESTS=ON \
@@ -174,6 +184,35 @@ is not a registered *test*):
   2026-08-12 this mode compared two flat float32 buffers, where "shape" meant
   total element count -- 128x757 and 64x1514 alike -- so the name overstated
   it.
+
+### The Qwen3-TTS VoiceDesign variant's prefill test
+
+Stage 3 Plan 1's Reference Model Variant is a third package with its own
+cache variable, `SYNTH_QWEN3_TTS_VOICEDESIGN_TEST_MODEL`
+(`CMakeLists.txt`), defaulting to
+`models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-BF16.gguf`
+-- BF16 for the same source-profile reason as the two variables above. One
+integration test registers from it, `synthesize-qwen3-tts-voicedesign-prefill-real`
+(Plan 1's completion gate: the talker's assembled prefill at an empty
+instruct, with the speaker slot correctly absent, against the real package):
+
+```bash
+cmake -S . -B build \
+  -DSYNTH_BUILD_TESTS=ON \
+  -DSYNTH_BUILD_INTEGRATION_TESTS=ON \
+  -DSYNTH_QWEN3_TTS_VOICEDESIGN_TEST_MODEL="$PWD/models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-BF16.gguf"
+cmake --build build --target synthesize-check-integration
+```
+
+It needs a second local artifact besides the package: the oracle prefill
+dump, produced by `scripts/dump_reference_qwen3_tts_voicedesign.py`. **That
+dump does not live under `build/goldens/qwen3-tts/<variant>/`**, against this
+section's own convention above -- it lives at
+`reports/porting/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign/oracle/prefill.f32`,
+following the dumper's own usage example and Task 7's brief rather than the
+`build/goldens/` layout the family's other oracle dumps use. `.gitignore`
+carries a dedicated `/reports/porting/**/oracle` rule for it rather than
+relying on the already-ignored `build/` tree.
 
 `synthesize-golden-manifest-contract` (`unit`) is the structural test over every
 committed Golden Manifest against its schema

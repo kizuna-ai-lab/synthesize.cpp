@@ -225,7 +225,7 @@ class ReportShapeTests(unittest.TestCase):
 
 
 class VariantDiscriminationTests(unittest.TestCase):
-    """The two variants differ by a whole subsystem, not by a label."""
+    """The three variants differ by a whole subsystem, not by a label."""
 
     def test_base_config_declares_the_speaker_encoder(self) -> None:
         profile = convert.variant_profile({
@@ -246,8 +246,30 @@ class VariantDiscriminationTests(unittest.TestCase):
             convert.variant_profile({"tts_model_type": "base", "tts_model_size": "0b6"})
 
     def test_an_unknown_model_type_is_refused(self) -> None:
+        # `voice_design` was this test's example until Stage 3 Plan 1 made it a
+        # supported variant. The guard is what matters, not the example, so it
+        # moved to a type upstream does not ship.
         with self.assertRaises(convert.ConverterError):
-            convert.variant_profile({"tts_model_type": "voice_design", "tts_model_size": "1b7"})
+            convert.variant_profile({"tts_model_type": "dialogue", "tts_model_size": "1b7"})
+
+    def test_voice_design_config_carries_neither_encoder(self) -> None:
+        profile = convert.variant_profile({"tts_model_type": "voice_design", "tts_model_size": "1b7"})
+        self.assertEqual(profile.model_type, "voice_design")
+        self.assertFalse(profile.carries_speaker_encoder)
+        self.assertFalse(profile.carries_codec_encoder)
+        self.assertEqual(profile.size_label, "1.7B")
+
+    def test_voice_design_config_with_a_speaker_encoder_is_refused(self) -> None:
+        # The check runs in the direction CustomVoice's does: a voice_design
+        # checkpoint that carried an encoder would be a different model than
+        # the one this arm was written against.
+        with self.assertRaises(convert.ConverterError) as caught:
+            convert.variant_profile({
+                "tts_model_type": "voice_design",
+                "tts_model_size": "1b7",
+                "speaker_encoder_config": {"enc_dim": 1024, "sample_rate": 24000},
+            })
+        self.assertIn("speaker_encoder_config", str(caught.exception))
 
 
 class EncoderCodebookMeasurementTests(unittest.TestCase):
@@ -523,11 +545,16 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
     """
 
     @staticmethod
-    def _minimal_add_metadata_args(carries_speaker_encoder: bool) -> tuple:
+    def _minimal_add_metadata_args(carries_speaker_encoder: bool, model_type: str = "test") -> tuple:
         """The smallest fixture `add_metadata` accepts without raising.
 
         Field values are arbitrary except where a converter rule constrains
         them (e.g. the codec hop/frame-rate/quantizer-count cross-checks).
+        `model_type` defaults to a value no real variant uses, matching the
+        pre-existing behaviour of every caller that does not pass it; tests
+        that need `profile_source_names`/`profile_schema_name` to resolve as
+        a real variant would (`base`, `voice_design`, `custom_voice`) pass it
+        explicitly, alongside the matching `carries_speaker_encoder`.
         """
         manifest = {
             "variant": "qwen3-tts-test-variant",
@@ -572,6 +599,13 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
             "code_predictor_config": {
                 "num_hidden_layers": 1, "hidden_size": 4, "num_attention_heads": 1,
                 "num_key_value_heads": 1, "head_dim": 4, "vocab_size": 10, "num_code_groups": 1,
+                # Deliberately DIFFERENT from talker_config["intermediate_size"]
+                # (4) above: this is the value the Task 6 architecture-gap fix
+                # is about (docs/porting/families/qwen3-tts.md, "A genuine
+                # architecture gap, found and closed, not converted around"),
+                # and equal fixture values would let a regression that quietly
+                # re-inherited the talker's own number pass unnoticed.
+                "intermediate_size": 8,
             },
             "spk_id": {} if carries_speaker_encoder else {"voice1": 0},
             "spk_is_dialect": {} if carries_speaker_encoder else {"voice1": ""},
@@ -609,17 +643,17 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
 
         digests = {"talker": "1" * 64, "codec": "2" * 64, "config": "3" * 64, "generation_config": "4" * 64}
         profile = convert.VariantProfile(
-            "test", carries_speaker_encoder, carries_speaker_encoder, "Test Display Name", "0.0B")
+            model_type, carries_speaker_encoder, carries_speaker_encoder, "Test Display Name", "0.0B")
         return (manifest, config, {}, codec_config, generation_config, {"a": 0, "b": 1}, [], digests, profile)
 
-    def _written_metadata(self, carries_speaker_encoder: bool) -> dict:
+    def _written_metadata(self, carries_speaker_encoder: bool, model_type: str = "test") -> dict:
         """Every KV of a real written-and-re-read GGUF, as plain Python values.
 
         Values, not just key names: an emission that writes the right keys
         with the wrong contents (a catalog ordered by token id against names
         ordered alphabetically, say) is silent everywhere else.
         """
-        args = self._minimal_add_metadata_args(carries_speaker_encoder)
+        args = self._minimal_add_metadata_args(carries_speaker_encoder, model_type)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "meta.gguf"
             writer = convert.GGUFWriter(str(path), convert.ARCH_KEY)
@@ -633,8 +667,8 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
             # which the TemporaryDirectory removes on exit.
             return {name: field.contents() for name, field in reader.fields.items()}
 
-    def _written_keys(self, carries_speaker_encoder: bool) -> set[str]:
-        return set(self._written_metadata(carries_speaker_encoder))
+    def _written_keys(self, carries_speaker_encoder: bool, model_type: str = "test") -> set[str]:
+        return set(self._written_metadata(carries_speaker_encoder, model_type))
 
     def test_a_variant_with_a_speaker_encoder_carries_the_profile_block(self) -> None:
         keys = self._written_keys(carries_speaker_encoder=True)
@@ -658,6 +692,52 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
             "synthesize.qwen3-tts.speaker_encoder.fmax",
         ):
             self.assertIn(key, keys, key)
+
+    # The check above pins only that the three `synthesize.profile.*` keys
+    # REACH the file. Their values went unasserted until 2026-08-19: a
+    # converter that wrote the wrong schema name, a schema_version of 0, or an
+    # id hashed over the generation_config digest instead of the config one
+    # passed every test in this file. The id is the load-bearing one --
+    # src/arch/qwen3-tts/profile.cpp:1361 refuses a serialized Profile whose
+    # stored id differs from the model's with SYNTH_ERR_UNSUPPORTED_VOICE, so
+    # a wrong id here is not a cosmetic mismatch: it is a Profile that stops
+    # loading against the very package it was produced for.
+    def test_the_profile_block_carries_the_variants_own_schema_and_id(self) -> None:
+        metadata = self._written_metadata(carries_speaker_encoder=True, model_type="base")
+        self.assertEqual(metadata["synthesize.profile.schema"], "qwen3-tts-voice-clone")
+        self.assertEqual(metadata["synthesize.profile.schema_version"], 1)
+        # A known value over the fixture's own digests ("1"*64, "2"*64, "3"*64),
+        # deliberately NOT a re-call of `compatibility_id`: recomputing with the
+        # same helper the emission uses would still pass if `add_metadata` fed
+        # it the wrong pieces, which is the regression this test exists for.
+        # `CompatibilityIdTests` pins the formula itself, against the id the
+        # shipped Base package really carries.
+        self.assertEqual(
+            metadata["synthesize.profile.compatibility_id"],
+            "bbeb77755504bcba298f656b3b8a221957e5f21e03a72d171689e7711a531741",
+        )
+
+    def test_the_schema_name_is_hashed_into_the_compatibility_id(self) -> None:
+        """Two variants sharing every digest must not share an id.
+
+        The schema name is one of the hashed pieces, so VoiceDesign and the
+        clone schema diverge here even though this fixture hands both the
+        identical talker/codec/config digests. Were the schema dropped from
+        the formula, a Description Text Profile would satisfy
+        profile.cpp:1361 against a clone package built from the same weights.
+        """
+        design = self._written_metadata(carries_speaker_encoder=False, model_type="voice_design")
+        self.assertEqual(design["synthesize.profile.schema"], "qwen3-tts-voice-design")
+        self.assertEqual(design["synthesize.profile.schema_version"], 1)
+        self.assertEqual(
+            design["synthesize.profile.compatibility_id"],
+            "49c4cf86b4794be7400ada07c5a3af876563319f6dbe597f15ae086b3c20fd38",
+        )
+        clone = self._written_metadata(carries_speaker_encoder=True, model_type="base")
+        self.assertNotEqual(
+            design["synthesize.profile.compatibility_id"],
+            clone["synthesize.profile.compatibility_id"],
+        )
 
     def test_a_variant_without_a_speaker_encoder_carries_none_of_it(self) -> None:
         keys = self._written_keys(carries_speaker_encoder=False)
@@ -703,6 +783,89 @@ class ProfileMetadataEmissionTests(unittest.TestCase):
             "synthesize.qwen3-tts.speakers.dialect_override",
         ):
             self.assertNotIn(key, metadata, key)
+
+    # `ProfileSourceDeclarationTests` below checks `profile_source_names` and
+    # `profile_schema_name` in isolation, against bare `VariantProfile`
+    # objects; it never calls `add_metadata`. Neither does anything else in
+    # this class check the `synthesize.voice.profile_sources` key specifically
+    # -- the two tests above assert only the `synthesize.profile.*`,
+    # `synthesize.reference.*` and `synthesize.qwen3-tts.speaker_encoder.*`
+    # prefixes, which is a different KV. So a regression that dropped the
+    # `writer.add_array("synthesize.voice.profile_sources", ...)` call, or
+    # misspelled the key, would pass every other test in this file. These
+    # three close that gap, one per real variant, checking the written VALUE
+    # and not just presence -- a key present with the wrong contents is the
+    # failure mode a presence-only check cannot see.
+    def test_base_writes_profile_sources_as_reference_audio(self) -> None:
+        metadata = self._written_metadata(carries_speaker_encoder=True, model_type="base")
+        self.assertEqual(metadata["synthesize.voice.profile_sources"], ["reference-audio"])
+
+    def test_voice_design_writes_profile_sources_as_description_text_and_no_reference_contract(self) -> None:
+        metadata = self._written_metadata(carries_speaker_encoder=False, model_type="voice_design")
+        self.assertEqual(metadata["synthesize.voice.profile_sources"], ["description-text"])
+        # VoiceDesign can serialize a Profile (the schema/compatibility_id
+        # keys are present) but takes no reference audio and carries no
+        # speaker encoder, so neither block belongs in its package.
+        leaked = [
+            key for key in metadata
+            if key.startswith("synthesize.reference.")
+            or key.startswith("synthesize.qwen3-tts.speaker_encoder.")
+        ]
+        self.assertEqual(leaked, [])
+
+    def test_custom_voice_writes_no_profile_sources_and_no_schema(self) -> None:
+        metadata = self._written_metadata(carries_speaker_encoder=False, model_type="custom_voice")
+        # A preset-catalog package prepares nothing, so it carries no
+        # contract at all -- not an empty one, which is a different claim.
+        self.assertNotIn("synthesize.voice.profile_sources", metadata)
+        self.assertNotIn("synthesize.profile.schema", metadata)
+
+    # The Task 6 architecture-gap fix (docs/porting/families/qwen3-tts.md, "A
+    # genuine architecture gap, found and closed, not converted around") rests
+    # on `synthesize.qwen3-tts.code_predictor.intermediate_size` reaching the
+    # package -- without it, weights.cpp falls back to the talker's own
+    # intermediate_size, which is silently wrong at 1.7B (2048-wide talker,
+    # 1024-wide code predictor). Nothing before this test asserted the KV
+    # reaches a real written-and-re-read GGUF at all: deleting the emitting
+    # tuple entry in `add_metadata` (scripts/convert-qwen3-tts.py) left all 55
+    # converter tests and all 342 Python tests green.
+    def test_code_predictor_intermediate_size_is_emitted_from_its_own_config(self) -> None:
+        metadata = self._written_metadata(carries_speaker_encoder=True)
+        self.assertIn("synthesize.qwen3-tts.code_predictor.intermediate_size", metadata)
+        # 8, not the talker's 4 (see the fixture comment above): proves the
+        # value is read from code_predictor_config, not inherited from
+        # talker_config the way the pre-Task-6 catalog did.
+        self.assertEqual(metadata["synthesize.qwen3-tts.code_predictor.intermediate_size"], 8)
+
+
+class ProfileSourceDeclarationTests(unittest.TestCase):
+    """A package declares which Profile sources it implements, positively.
+
+    Before Stage 3 the runtime inferred this from the Voice Mode, which worked
+    only while `profile-sources` meant exactly one variant. It now means two,
+    whose sources differ, so the package has to say.
+    """
+
+    def test_base_declares_reference_audio(self) -> None:
+        profile = convert.variant_profile({
+            "tts_model_type": "base",
+            "tts_model_size": "0b6",
+            "speaker_encoder_config": {"enc_dim": 1024, "sample_rate": 24000},
+        })
+        self.assertEqual(convert.profile_source_names(profile), ["reference-audio"])
+        self.assertEqual(convert.profile_schema_name(profile), "qwen3-tts-voice-clone")
+
+    def test_voice_design_declares_description_text(self) -> None:
+        profile = convert.variant_profile({"tts_model_type": "voice_design", "tts_model_size": "1b7"})
+        self.assertEqual(convert.profile_source_names(profile), ["description-text"])
+        self.assertEqual(convert.profile_schema_name(profile), "qwen3-tts-voice-design")
+
+    def test_custom_voice_declares_none(self) -> None:
+        # A preset-catalog package prepares nothing, so it carries no contract
+        # at all -- not an empty one, which is a different claim.
+        profile = convert.variant_profile({"tts_model_type": "custom_voice", "tts_model_size": "0b6"})
+        self.assertEqual(convert.profile_source_names(profile), [])
+        self.assertIsNone(convert.profile_schema_name(profile))
 
 
 if __name__ == "__main__":

@@ -49,9 +49,13 @@
     "case_artifact_root": {
       "$ref": "#/$defs/relativePath"
     },
+    "suite_status": {
+      "description": "Additive, optional. The only thing that reads this field is the top-level if/then below: set to \"incremental\" it relaxes cases.minItems from 12 to 0, and every previously-committed manifest omits it and stays at the 12-case floor docs/port-validation.md's `cases` row describes. Exists because qwen3-tts-12hz-1-7b-voicedesign is the first Reference Model Variant committed before its case suite exists -- its cases arrive in Plan 2, in one commit, not staged case-by-case across the tasks that came before -- and the floor is a Confirmed contract that a manifest must opt INTO relaxing, not one a manifest-wide default can quietly drop.",
+      "const": "incremental"
+    },
     "cases": {
+      "description": "Twelve to thirty-two deterministic Port Validation Cases (docs/port-validation.md) for a manifest with no suite_status. The floor is waived to zero only when suite_status is exactly \"incremental\" -- see the top-level if/then below -- for a manifest deliberately committed before its case suite exists.",
       "type": "array",
-      "minItems": 12,
       "maxItems": 32,
       "items": {
         "$ref": "#/$defs/case"
@@ -62,6 +66,22 @@
       "items": {
         "$ref": "#/$defs/relation"
       }
+    }
+  },
+  "if": {
+    "properties": {
+      "suite_status": { "const": "incremental" }
+    },
+    "required": ["suite_status"]
+  },
+  "then": {
+    "properties": {
+      "cases": { "minItems": 0 }
+    }
+  },
+  "else": {
+    "properties": {
+      "cases": { "minItems": 12 }
     }
   },
   "$defs": {

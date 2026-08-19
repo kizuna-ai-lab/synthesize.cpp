@@ -213,12 +213,17 @@ def load_json(path: Path) -> dict[str, Any]:
 def variant_profile(config: dict[str, Any]) -> VariantProfile:
     """Decide what this checkpoint carries from what it declares.
 
-    The two supported variants differ by a whole subsystem: Base ships a
+    The three supported variants differ by a whole subsystem: Base ships a
     76-tensor ECAPA-TDNN speaker encoder and needs the tokenizer's encoder half
-    to turn reference audio into codes; CustomVoice ships neither and resolves
-    speakers as codec-vocabulary token ids. Keying that on the declared type and
-    then checking the declaration against the config is what keeps a future
-    variant from silently converting as whichever branch it fell into.
+    to turn reference audio into codes; CustomVoice and VoiceDesign both ship
+    neither, but not for the same reason after that. CustomVoice resolves
+    speakers as codec-vocabulary token ids from its Preset Voice Catalog;
+    VoiceDesign has no speaker slot at all -- an empty spk_id table and,
+    unlike CustomVoice, no catalog either (profile-sources mode, the same
+    voice_mode Base uses, with zero presets rather than CustomVoice's nine).
+    Keying that on the declared type and then checking the declaration against
+    the config is what keeps a future variant from silently converting as
+    whichever branch it fell into.
     """
     model_type = str(config.get("tts_model_type", ""))
     has_encoder_config = "speaker_encoder_config" in config
@@ -235,7 +240,42 @@ def variant_profile(config: dict[str, Any]) -> VariantProfile:
                 "config declares tts_model_type=custom_voice but carries a speaker_encoder_config"
             )
         return VariantProfile("custom_voice", False, False, "Qwen3-TTS 12Hz 0.6B CustomVoice", "0.6B")
+    if model_type == "voice_design":
+        # No encoder of either kind: this checkpoint has no speaker_encoder_config
+        # and there is no reference audio on its path, so the tensor set is
+        # CustomVoice's shape rather than Base's. See the Stage 3 design, section 4.
+        if has_encoder_config:
+            raise ConverterError(
+                "config declares tts_model_type=voice_design but carries a speaker_encoder_config"
+            )
+        return VariantProfile("voice_design", False, False,
+                              "Qwen3-TTS 12Hz 1.7B VoiceDesign", "1.7B")
     raise ConverterError(f"unsupported tts_model_type {model_type!r}")
+
+
+def profile_source_names(profile: VariantProfile) -> list[str]:
+    """Which Voice Profile sources this variant implements.
+
+    Named rather than derived at the read side, because after Stage 3 the Voice
+    Mode no longer determines this: `profile-sources` covers both Base, which
+    clones from a recording, and VoiceDesign, which cannot clone at all. The
+    runtime refuses a package whose declared sources do not match the blocks it
+    carries, so this is a claim the package has to earn.
+    """
+    if profile.carries_speaker_encoder:
+        return ["reference-audio"]
+    if profile.model_type == "voice_design":
+        return ["description-text"]
+    return []
+
+
+def profile_schema_name(profile: VariantProfile) -> str | None:
+    """The Profile Schema this variant serializes under, or None if it prepares nothing."""
+    if profile.carries_speaker_encoder:
+        return "qwen3-tts-voice-clone"
+    if profile.model_type == "voice_design":
+        return "qwen3-tts-voice-design"
+    return None
 
 
 # modeling_qwen3_tts.py:1941 -- the speaker encoder consumes a 128-bin mel, not
@@ -281,7 +321,7 @@ def source_artifact(manifest: dict[str, Any], role: str, needle: str) -> dict[st
 def talker_checkpoint_locator(manifest: dict[str, Any]) -> str:
     """The manifest's talker checkpoint artifact, matched unambiguously.
 
-    Both variants' manifests carry two "checkpoint"-role artifacts -- the
+    All three variants' manifests carry two "checkpoint"-role artifacts -- the
     talker's `model.safetensors` and the codec's
     `speech_tokenizer/model.safetensors` -- and both locators contain the
     substring "model.safetensors", so a plain substring search (as
@@ -629,6 +669,14 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
         ("head_dim", predictor["head_dim"]),
         ("vocab_size", predictor["vocab_size"]),
         ("code_group_count", predictor["num_code_groups"]),
+        # The predictor's OWN feed-forward width, not the talker's. Every
+        # rung up to and including CustomVoice/Base declared the same value
+        # for both (3072), which is how a catalog that quietly reused the
+        # talker's got away with it; VoiceDesign's 1.7B talker widens to 6144
+        # while the predictor's config keeps 3072, so the two can no longer be
+        # assumed equal and this is read from the checkpoint's own
+        # code_predictor_config rather than inherited from talker_config.
+        ("intermediate_size", predictor["intermediate_size"]),
     ):
         writer.add_uint32(f"synthesize.qwen3-tts.code_predictor.{key}", int(value))
 
@@ -727,9 +775,20 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
         writer.add_array("synthesize.qwen3-tts.speakers.token_ids", speaker_token_ids)
         writer.add_array("synthesize.qwen3-tts.speakers.dialect_override", speaker_dialects)
 
-    if profile.carries_speaker_encoder:
-        writer.add_string("synthesize.profile.schema", "qwen3-tts-voice-clone")
+    sources = profile_source_names(profile)
+    schema = profile_schema_name(profile)
+    if sources:
+        writer.add_array("synthesize.voice.profile_sources", sources)
+        writer.add_string("synthesize.profile.schema", schema)
         writer.add_uint32("synthesize.profile.schema_version", 1)
+        writer.add_string(
+            "synthesize.profile.compatibility_id",
+            compatibility_id(schema, 1, (digests["talker"], digests["codec"], digests["config"])),
+        )
+    # The reference limits and the encoder's own front-end contract describe
+    # REFERENCE AUDIO. A package that cannot take a recording has nothing to
+    # say here, and writing zeros would be a claim rather than a silence.
+    if profile.carries_speaker_encoder:
         reference = package["profile"]["reference"]
         for key in ("target_sample_rate", "target_channels"):
             writer.add_uint32(f"synthesize.reference.{key}", int(reference[key]))
@@ -741,13 +800,6 @@ def add_metadata(writer: GGUFWriter, manifest: dict[str, Any], config: dict[str,
                 writer.add_float32(f"synthesize.qwen3-tts.speaker_encoder.{key}", value)
             else:
                 writer.add_uint32(f"synthesize.qwen3-tts.speaker_encoder.{key}", int(value))
-        writer.add_string(
-            "synthesize.profile.compatibility_id",
-            compatibility_id(
-                "qwen3-tts-voice-clone", 1,
-                (digests["talker"], digests["codec"], digests["config"]),
-            ),
-        )
 
     languages = sorted(talker["codec_language_id"], key=lambda n: talker["codec_language_id"][n])
     writer.add_array("synthesize.qwen3-tts.languages.names", languages)

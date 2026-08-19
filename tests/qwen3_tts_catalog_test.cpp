@@ -122,6 +122,10 @@ synth::qwen3tts::HParams small_hparams() {
     h.code_predictor.head_dim             = 4;
     h.code_predictor.vocab_size           = 12;
     h.code_predictor.code_group_count     = 4;
+    // Agrees with the talker's here, matching every package converted before
+    // this field existed (read_code_predictor's fallback). A test that needs
+    // its own value overrides this after calling small_hparams().
+    h.code_predictor.intermediate_size    = h.talker.intermediate_size;
 
     h.codec.sample_rate   = 24;
     h.codec.hop_length    = 12;
@@ -167,14 +171,24 @@ std::vector<Entry> expected_entries(const synth::qwen3tts::HParams & h) {
     const int64_t predictor_hidden = h.code_predictor.hidden_size;
     for (uint32_t layer = 0; layer < h.code_predictor.layer_count; ++layer) {
         add_decoder_layer(out, "talker.code_predictor.model.layers." + std::to_string(layer) + ".", predictor_hidden,
-                          h.talker.intermediate_size, h.code_predictor.head_dim, h.code_predictor.attention_head_count,
-                          h.code_predictor.key_value_head_count);
+                          h.code_predictor.intermediate_size, h.code_predictor.head_dim,
+                          h.code_predictor.attention_head_count, h.code_predictor.key_value_head_count);
     }
     add(out, "talker.code_predictor.model.norm.weight", { predictor_hidden });
+    // The reference drops this to Identity (no tensor) when the widths agree;
+    // small_hparams()'s default does, so most callers never emit it. A caller
+    // that diverges code_predictor.hidden_size from the talker's -- as
+    // VoiceDesign's real package does -- needs it present to resolve.
+    if (predictor_hidden != hidden) {
+        add_linear(out, "talker.code_predictor.small_to_mtp_projection", hidden, predictor_hidden);
+    }
     for (uint32_t group = 0; group + 1 < h.code_predictor.code_group_count; ++group) {
         const std::string index = std::to_string(group);
+        // Talker-width, not predictor-width: it feeds input_projection
+        // alongside the talker's own hidden state, before either reaches the
+        // predictor's own layers. See resolve_code_predictor's comment.
         add(out, "talker.code_predictor.model.codec_embedding." + index + ".weight",
-            { predictor_hidden, h.code_predictor.vocab_size });
+            { hidden, h.code_predictor.vocab_size });
         add(out, "talker.code_predictor.lm_head." + index + ".weight",
             { predictor_hidden, h.code_predictor.vocab_size });
     }
@@ -589,6 +603,45 @@ int check_rejections(const synth::qwen3tts::HParams & h, const std::vector<Entry
     return 0;
 }
 
+// The positive twin of the rejection above: a package that DOES carry
+// small_to_mtp_projection resolves, and the two pointers it binds are the
+// right shape rather than merely non-null. Diverges intermediate_size too --
+// not merely hidden_size -- because the real package that first needed this
+// (VoiceDesign's 1.7B rung) diverges both from the talker's at once, and a
+// catalog that only handled one divergence would still resolve the wrong
+// intermediate_size against this fixture's default (talker.intermediate_size)
+// happening to be right by construction.
+int check_narrower_code_predictor_resolves_with_projection() {
+    synth::qwen3tts::HParams h         = small_hparams();
+    h.code_predictor.hidden_size       = h.talker.hidden_size / 2;
+    h.code_predictor.intermediate_size = h.talker.intermediate_size + 4;
+    const std::vector<Entry> entries   = expected_entries(h);
+    Context                  context   = make_context();
+    populate(context.get(), entries, nullptr);
+
+    synth::qwen3tts::ModelWeights weights;
+    SYNTH_TEST_CHECK(synth::qwen3tts::build_model_weights(context.get(), nullptr, h, weights) == SYNTH_OK);
+    SYNTH_TEST_CHECK(weights.code_predictor.input_projection != nullptr);
+    SYNTH_TEST_CHECK(weights.code_predictor.input_projection_bias != nullptr);
+    // ne = [in, out] once GGML reverses the PyTorch Linear's [out, in]: the
+    // talker's width in, the predictor's own width out.
+    SYNTH_TEST_CHECK(weights.code_predictor.input_projection->ne[0] == h.talker.hidden_size);
+    SYNTH_TEST_CHECK(weights.code_predictor.input_projection->ne[1] == h.code_predictor.hidden_size);
+    SYNTH_TEST_CHECK(weights.code_predictor.input_projection_bias->ne[0] == h.code_predictor.hidden_size);
+    // The predictor's own layers resolved against ITS intermediate_size, not
+    // the talker's -- the second half of the same bug. down_proj is
+    // [intermediate, hidden] in PyTorch, so ne = [hidden, intermediate] once
+    // GGML reverses it.
+    SYNTH_TEST_CHECK(weights.code_predictor.layers[0].down_proj->ne[0] == h.code_predictor.intermediate_size);
+    // codec_embedding is at the TALKER's width, not the predictor's own --
+    // the one tensor in this family that reads that way. Getting this
+    // backwards is invisible whenever the two widths agree, which is every
+    // package before this one.
+    SYNTH_TEST_CHECK(weights.code_predictor.codec_embedding[0]->ne[0] == h.talker.hidden_size);
+    SYNTH_TEST_CHECK(weights.code_predictor.lm_head[0]->ne[0] == h.code_predictor.hidden_size);
+    return 0;
+}
+
 // The real package's shape, to catch an arithmetic change that the synthetic
 // package is too small to notice.
 int check_real_package_count() {
@@ -601,6 +654,25 @@ int check_real_package_count() {
     h.codec.decoder.upsample_rates    = { 8, 5, 4, 3 };
     h.codec.decoder.upsampling_ratios = { 2, 2 };
     SYNTH_TEST_CHECK(synth::qwen3tts::expected_tensor_count(h) == 657);
+    return 0;
+}
+
+// VoiceDesign's real shape: 1.7B talker (hidden 2048) paired with the 0.6B
+// rung's code predictor (hidden 1024) -- widths that disagree, so the input
+// projection's two tensors are part of the count. Measured 659 against the
+// real converted package on 2026-08-18.
+int check_real_voicedesign_package_count() {
+    synth::qwen3tts::HParams h;
+    h.talker.layer_count              = 28;
+    h.talker.hidden_size              = 2048;
+    h.code_predictor.layer_count      = 5;
+    h.code_predictor.hidden_size      = 1024;
+    h.code_predictor.code_group_count = 16;
+    h.codec.decoder.quantizer_count   = 16;
+    h.codec.decoder.layer_count       = 8;
+    h.codec.decoder.upsample_rates    = { 8, 5, 4, 3 };
+    h.codec.decoder.upsampling_ratios = { 2, 2 };
+    SYNTH_TEST_CHECK(synth::qwen3tts::expected_tensor_count(h) == 659);
     return 0;
 }
 
@@ -894,7 +966,9 @@ int main() {
 
     SYNTH_TEST_CHECK(check_resolution(h, entries) == 0);
     SYNTH_TEST_CHECK(check_rejections(h, entries) == 0);
+    SYNTH_TEST_CHECK(check_narrower_code_predictor_resolves_with_projection() == 0);
     SYNTH_TEST_CHECK(check_real_package_count() == 0);
+    SYNTH_TEST_CHECK(check_real_voicedesign_package_count() == 0);
 
     SYNTH_TEST_CHECK(check_base_package_resolves() == 0);
     SYNTH_TEST_CHECK(check_speaker_encoder_fc_shape_checked_against_enc_dim() == 0);

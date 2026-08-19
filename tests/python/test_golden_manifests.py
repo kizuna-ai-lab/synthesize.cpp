@@ -185,12 +185,29 @@ class GoldenManifestSchemaTest(unittest.TestCase):
         same skip-shaped hole one level down: the branch that introduced this
         form fixed "the flat key is missing" and left "this variant is
         missing" silently passing, which is exactly how a third variant added
-        to a shared file would arrive unchecked. All four committed
-        per-variant entries carry the key today, so nothing legitimately
-        needs the escape.
+        to a shared file would arrive unchecked. Five committed per-variant
+        entries carry the key today, not four: VITS's two plus qwen3-tts's
+        three, `qwen3-tts-12hz-1-7b-voicedesign` having landed its own
+        `variants.qwen3-tts-12hz-1-7b-voicedesign.case_count` entry since this
+        docstring's "four" was written. That landing is itself the shape this
+        docstring warns about, one level up: a third variant added to the
+        shared `qwen3-tts.json`, arriving with a new skip beneath --
+        the `if not manifest["cases"]: continue` a few lines down, which
+        exempts it here because its manifest is deliberately committed with
+        no cases yet (Stage 3 Plan 1). Deliberate and named, unlike the hole
+        this docstring is about, but the same shape, so it is worth saying
+        rather than assuming this method is immune to its own warning.
         """
         for path, manifest in self.manifests:
             with self.subTest(manifest=path.name):
+                if not manifest["cases"]:
+                    # Same incrementally-built-suite exemption as
+                    # test_upstream_examples_are_present: a manifest with no
+                    # cases yet has no case_count for any tolerance file --
+                    # shared or not -- to agree with. It does not need its own
+                    # entry in a shared per-variant file before it has a case
+                    # for that file to describe.
+                    continue
                 tolerance_path = REPO_ROOT / manifest["tolerance_file"]
                 tolerance = json.loads(tolerance_path.read_text(encoding="utf-8"))
                 if "variants" in tolerance:
@@ -289,6 +306,14 @@ class GoldenManifestSchemaTest(unittest.TestCase):
     def test_upstream_examples_are_present(self):
         for path, manifest in self.manifests:
             with self.subTest(manifest=path.name):
+                if not manifest["cases"]:
+                    # An incrementally-built suite -- see the schema's "cases"
+                    # description -- has no first case yet to check. This is
+                    # not a skip-shaped hole: a manifest with 1+ cases still
+                    # runs the assertion below, so the moment a case is added
+                    # without an upstream_example anywhere in the suite, this
+                    # starts failing for it.
+                    continue
                 origins = {case["origin"]["kind"] for case in manifest["cases"]}
                 self.assertIn(
                     "upstream_example",

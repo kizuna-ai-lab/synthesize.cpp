@@ -11,7 +11,7 @@ interface — no synthesis capability exists only in one of them.
 - Version `0.1.0`, ABI version `1` (`SYNTH_VERSION_*` and `SYNTH_ABI_VERSION` in
   the header are the single source of truth; CMake and `pyproject.toml` both
   parse it from there).
-- Four Model Families, six Reference Model Variants, four Published Model
+- Four Model Families, seven Reference Model Variants, five Published Model
   Packages and one Restricted Model Package.
 - Delivered Validation Level is `port_validated` throughout. This project has
   **not** run a corpus-scale Quality Evaluation and makes no quality,
@@ -73,12 +73,13 @@ the model by tokenization, not by G2P. See [docs/text-frontends.md](docs/text-fr
 | VITS | `vits-vctk` | 22.05 kHz | 109 preset | phonemes, token IDs | F32, F16, Q8_MIXED | `port_validated` |
 | Kokoro | `kokoro-v1-0` | 24 kHz | 54 preset | phonemes, token IDs | F32, F16, Q8_MIXED | `port_validated` |
 | Qwen3-TTS | `qwen3-tts-12hz-0.6b-customvoice` | 24 kHz | 9 preset | text, token IDs | BF16, F16, Q8_MIXED | `port_validated` |
-| Qwen3-TTS | `qwen3-tts-12hz-0.6b-base` | 24 kHz | no preset Voices; Reference Audio Voice Profiles in both modes — x-vector and transcript-assisted (ICL) | text | source dtype only | converted, loads and clones; both modes are measured against the oracle, and a 2026-08-13 Listening Audit of the x-vector path only recorded `no_obvious_regression`, but full port validation is not run; not published |
+| Qwen3-TTS | `qwen3-tts-12hz-0.6b-base` | 24 kHz | no preset Voices; Reference Audio Voice Profiles in both modes — x-vector and transcript-assisted (ICL) | text | BF16, F16, Q8_MIXED | `port_validated`; published 2026-08-17, but those three published files predate `synthesize.voice.profile_sources` and no longer load — see "Published packages" below |
+| Qwen3-TTS | `qwen3-tts-12hz-1.7b-voicedesign` | 24 kHz | no preset Voices; the PACKAGE declares Description Text, the runtime publishes no Voice Profile source at all — the bit is withheld until Plan 2 wires `create_from_description` | text (declared; no synthesis path exists until Plan 2) | BF16 only, local | Stage 3 Plan 1 done: converts, loads, and an empty-instruct prefill matches the oracle within tolerance; not port-validated, not published |
 | OmniVoice | `omnivoice-0-6b` | 24 kHz | no named Voices; an unnamed auto-voice default, plus Reference Audio and Description Text Voice Profiles | text | F32, F16, Q8 | `port_validated` |
 
 Declared Language Capability differs by family and is read out of the package,
 not inferred from the architecture. VITS and Kokoro declare `en`. OmniVoice
-declares `en`, `zh`, `ja`. Both Qwen3-TTS packages declare ten languages —
+declares `en`, `zh`, `ja`. All three Qwen3-TTS variants declare ten languages —
 `en`, `de`, `es`, `zh`, `ja`, `fr`, `ko`, `ru`, `it`, `pt` — published as BCP 47
 tags by the runtime, which is a claim about the upstream model rather than a
 statement that each has its own validation cases.
@@ -98,7 +99,7 @@ the payloads — are in [tests/golden/](tests/golden/).
 
 ## Published packages
 
-Four **Published Model Packages** and one **Restricted Model Package**, all under
+Five **Published Model Packages** and one **Restricted Model Package**, all under
 the `jiangzhuo9357` Hugging Face account. Repository names end in `-gguf`; other
 repositories on that account belong to unrelated work.
 
@@ -108,7 +109,17 @@ repositories on that account belong to unrelated work.
 | [`vits-vctk-gguf`](https://huggingface.co/jiangzhuo9357/vits-vctk-gguf) | 3 GGUF | 2026-07-28 | Published | MIT source; checkpoint terms unspecified |
 | [`kokoro-v1-0-gguf`](https://huggingface.co/jiangzhuo9357/kokoro-v1-0-gguf) | 3 GGUF | 2026-07-29 | Published | Apache-2.0 |
 | [`qwen3-tts-12hz-0-6b-customvoice-gguf`](https://huggingface.co/jiangzhuo9357/qwen3-tts-12hz-0-6b-customvoice-gguf) | 3 GGUF | 2026-07-29 | Published | Apache-2.0 |
+| [`qwen3-tts-12hz-0-6b-base-gguf`](https://huggingface.co/jiangzhuo9357/qwen3-tts-12hz-0-6b-base-gguf) | 3 GGUF | 2026-08-17 | Published | Apache-2.0 |
 | [`omnivoice-0-6b-gguf`](https://huggingface.co/jiangzhuo9357/omnivoice-0-6b-gguf) | 3 GGUF + 2 licence files | 2026-08-10 | **Restricted** | see below |
+
+**The three `qwen3-tts-12hz-0-6b-base-gguf` files no longer load.** They were
+converted 2026-08-17, before the package format gained a key
+(`synthesize.voice.profile_sources`) that `synth_model_load` now requires;
+packages converted before that key existed are refused. Deliberate, not a
+defect -- see [`docs/models/qwen3-tts-12hz-0-6b-base.md`](docs/models/qwen3-tts-12hz-0-6b-base.md).
+Convert from the upstream checkpoint with the current
+`scripts/convert-qwen3-tts.py` instead; every measured figure the card
+carries still describes what the package computes.
 
 **OmniVoice is a Restricted Model Package, not a Published Model Package**
 ([ADR 0018](docs/adr/0018-publish-nc-families-as-restricted-model-packages.md)).
@@ -185,8 +196,8 @@ a `[1024]` x-vector that displaces the speaker slot in the synthesis prompt.
 package, the resulting Profile serializes and reloads, and the Base variant
 advertises `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO |
 SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`. The CustomVoice variant is unchanged
-and still reports zero source flags — one Model Family, two variants, and only
-one of them carries a speaker encoder.
+and still reports zero source flags — one Model Family, three variants as of
+Stage 3, and only one of them carries a speaker encoder.
 
 What Plan 2 did **not** deliver, and what nothing here should be read to claim:
 
@@ -218,8 +229,12 @@ What Plan 2 did **not** deliver, and what nothing here should be read to claim:
 Details: [docs/porting/families/qwen3-tts.md](docs/porting/families/qwen3-tts.md)
 and [docs/superpowers/plans/2026-08-12-qwen3-tts-stage-2-plan-1-carryover.md](docs/superpowers/plans/2026-08-12-qwen3-tts-stage-2-plan-1-carryover.md).
 
-Stage 3 (`qwen3-tts-12hz-1.7b-voicedesign`, Description Text) is planned behind
-Stage 2. Metal and Vulkan follow CUDA in the backend sequence and have not begun.
+Stage 3 (`qwen3-tts-12hz-1.7b-voicedesign`, Description Text) Plan 1 is done:
+the checkpoint converts, loads, and an empty-instruct prefill matches the
+oracle within tolerance. `create_from_description`, the instruct prompt block,
+and the rest of the public seam are Plan 2's; quantization, backends and ship
+prep are Plan 3's. Metal and Vulkan follow CUDA in the backend sequence and
+have not begun.
 
 ## Adapters
 

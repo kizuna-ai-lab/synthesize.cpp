@@ -20,13 +20,20 @@ passes:
 - **A dialect speaker overrides the requested language**, because that is what
   the reference does.
 
-TWO VARIANTS, TWO KINDS OF VOICE, AND THE SECOND ARRIVED ON 2026-08-17. Every
-check above was written against Preset Voices, because qwen3-tts-12hz-0-6b-
+TWO KINDS OF VOICE THIS SCRIPT CHECKS, AND THE SECOND ARRIVED ON 2026-08-17.
+Every check above was written against Preset Voices, because qwen3-tts-12hz-0-6b-
 customvoice catalogues nine of them. qwen3-tts-12hz-0-6b-base catalogues NONE --
 its committed manifest declares `preset_ids: []` and its Voice Profile sources
 are `reference_audio` and `serialized_profile` -- so not one of these checks
 could run against it, and its `public` tolerance cell stayed an honest
 placeholder for that reason rather than for want of trying.
+
+A THIRD VARIANT, qwen3-tts-12hz-1-7b-voicedesign, EXISTS SINCE STAGE 3 PLAN 1
+BUT IS NOT REACHABLE HERE YET. It catalogues no Preset Voices either and takes
+no reference audio -- its declared Voice Profile source is `description_text`,
+a third kind this script has no `--description` flag for. `create_from_description`
+does not exist until Plan 2, which is also what adds this variant's own
+behavioural relations and refusals to this script.
 
 Passing `--reference` twice selects the reference-audio path: the runner
 prepares a Voice Profile through `synth_voice_profile_create_from_reference` and

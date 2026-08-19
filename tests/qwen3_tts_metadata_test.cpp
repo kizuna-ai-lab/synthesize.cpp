@@ -183,6 +183,7 @@ GgufContext base_metadata() {
     gguf_set_val_str(g, "synthesize.voice.mode", "profile-sources");
     gguf_set_val_u32(g, "synthesize.voice.preset_count", 0);
     set_string_array(g, "synthesize.qwen3-tts.speakers.names", {});
+    set_string_array(g, "synthesize.voice.profile_sources", { "reference-audio" });
     gguf_set_val_str(g, "synthesize.profile.schema", "qwen3-tts-voice-clone");
     gguf_set_val_u32(g, "synthesize.profile.schema_version", 1);
     gguf_set_val_str(g, "synthesize.profile.compatibility_id", std::string(64, 'a').c_str());
@@ -219,6 +220,38 @@ GgufContext truncated_base_metadata() {
     return c;
 }
 
+// A voice_design package: profile-sources mode, zero presets, doubled talker
+// dimensions, no speaker encoder, and a design Profile schema.
+GgufContext voice_design_metadata() {
+    GgufContext    c = valid_metadata();
+    gguf_context * g = c.get();
+    gguf_set_val_str(g, "synthesize.model_variant", "qwen3-tts-12hz-1-7b-voicedesign");
+    gguf_set_val_str(g, "synthesize.voice.mode", "profile-sources");
+    gguf_set_val_bool(g, "synthesize.voice.has_package_default", false);
+    gguf_set_val_u32(g, "synthesize.voice.preset_count", 0);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.talker.hidden_size", 2048);
+    gguf_set_val_u32(g, "synthesize.qwen3-tts.talker.intermediate_size", 6144);
+    // valid_metadata() writes a nine-entry Preset Voice catalog; a
+    // profile-sources package has none, and the converter cannot emit these
+    // keys for a variant with a zero preset_count. Removed rather than left
+    // in place, so the fixture describes a package the converter could
+    // actually produce.
+    gguf_remove_key(g, "synthesize.qwen3-tts.speakers.names");
+    gguf_remove_key(g, "synthesize.qwen3-tts.speakers.token_ids");
+    gguf_remove_key(g, "synthesize.qwen3-tts.speakers.dialect_override");
+    for (int index = 0; index < 9; ++index) {
+        const std::string prefix = "synthesize.voice." + std::to_string(index) + ".";
+        gguf_remove_key(g, (prefix + "id").c_str());
+        gguf_remove_key(g, (prefix + "flags").c_str());
+    }
+    set_string_array(g, "synthesize.voice.profile_sources", { "description-text" });
+    gguf_set_val_str(g, "synthesize.profile.schema", "qwen3-tts-voice-design");
+    gguf_set_val_u32(g, "synthesize.profile.schema_version", 1);
+    gguf_set_val_str(g, "synthesize.profile.compatibility_id",
+                     "0000000000000000000000000000000000000000000000000000000000000001");
+    return c;
+}
+
 int expect_rejected(const std::function<void(gguf_context *)> & mutate, const char * label) {
     GgufContext context = valid_metadata();
     SYNTH_TEST_CHECK(context != nullptr);
@@ -245,6 +278,47 @@ int expect_base_rejected(const std::function<void(gguf_context *)> & mutate, con
         std::fprintf(stderr, "expected rejection: %s\n", label);
         return 1;
     }
+    return 0;
+}
+
+// code_predictor.intermediate_size is the one code_predictor.* key
+// valid_metadata() deliberately does not set (see its own block above,
+// lines 96-102) -- every package converted before this key existed never
+// declared it either, and read_code_predictor falls back to the talker's
+// value for exactly that package. This asserts the fallback rather than
+// merely relying on read_hparams returning SYNTH_OK, which the fallback
+// value itself never gates: a wrong fallback (the talker's value plus one,
+// say) still loads a structurally sound synthetic package clean, and only a
+// real, gitignored package whose predictor and talker genuinely disagree
+// would notice -- which is exactly why this needs its own assertion rather
+// than trusting run_valid_package()'s existing SYNTH_OK check.
+int test_code_predictor_intermediate_size_falls_back_to_the_talkers_when_absent() {
+    GgufContext c = valid_metadata();
+    // gguf_find_key returns -1 for "not found", not a falsy 0/false -- a
+    // plain `!gguf_find_key(...)` would be true only when the key sits at
+    // index 0, which is nearly the opposite check.
+    SYNTH_TEST_CHECK(gguf_find_key(c.get(), "synthesize.qwen3-tts.code_predictor.intermediate_size") == -1);
+    synth::qwen3tts::HParams hparams;
+    SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) == SYNTH_OK);
+    SYNTH_TEST_CHECK(hparams.code_predictor.intermediate_size == hparams.talker.intermediate_size);
+    SYNTH_TEST_CHECK(hparams.code_predictor.intermediate_size == 3072);
+    return 0;
+}
+
+// The other half: a package that DOES declare the key is honoured even when
+// it disagrees with the talker's -- the case a rung with genuinely disjoint
+// talker/predictor widths (VoiceDesign's 1.7B) needs, and the one the
+// fallback above must NOT silently override.
+int test_code_predictor_intermediate_size_declared_is_honoured() {
+    GgufContext c = valid_metadata();
+    // valid_metadata()'s talker.intermediate_size is 3072; declare something
+    // different so "read the declared value" and "fell back to the talker's"
+    // are distinguishable outcomes rather than coincidentally equal.
+    gguf_set_val_u32(c.get(), "synthesize.qwen3-tts.code_predictor.intermediate_size", 6144);
+    synth::qwen3tts::HParams hparams;
+    SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) == SYNTH_OK);
+    SYNTH_TEST_CHECK(hparams.code_predictor.intermediate_size == 6144);
+    SYNTH_TEST_CHECK(hparams.code_predictor.intermediate_size != hparams.talker.intermediate_size);
     return 0;
 }
 
@@ -315,6 +389,72 @@ int test_truncated_profile_sources_package_is_refused() {
     GgufContext              c = truncated_base_metadata();
     synth::qwen3tts::HParams hparams;
     SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    return 0;
+}
+
+// Stage 3: a package declares which Profile sources it implements, and the
+// loader demands exactly the blocks that declaration implies. Before this,
+// `profile-sources` meant Base and therefore meant reference audio; it now
+// means two variants whose sources are disjoint.
+int test_profile_sources_are_declared_not_inferred() {
+    // A voice_design package: description-text, no encoder block, no reference
+    // limits. This must LOAD -- before Stage 3 it failed on the missing
+    // speaker-encoder keys.
+    {
+        GgufContext              c = voice_design_metadata();
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) == SYNTH_OK);
+        SYNTH_TEST_CHECK(hparams.voice_mode == synth::qwen3tts::VoiceMode::ProfileSources);
+        SYNTH_TEST_CHECK(!hparams.has_speaker_encoder);
+        SYNTH_TEST_CHECK(hparams.profile_sources == SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT);
+        SYNTH_TEST_CHECK(hparams.profile.schema == "qwen3-tts-voice-design");
+    }
+    // Declaring description-text while carrying a speaker encoder is a package
+    // that disagrees with itself. Refused, not reconciled.
+    {
+        GgufContext c = voice_design_metadata();
+        gguf_set_val_u32(c.get(), "synthesize.qwen3-tts.speaker_encoder.enc_dim", 2048);
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    }
+    // Declaring reference-audio without the encoder block is the same fault
+    // from the other side, and was already impossible; it must stay so.
+    //
+    // This is a regression guard, not a witness for the `wants_reference !=
+    // carries_encoder` check above it: delete that check and this case is
+    // still refused, because `wants_reference` is still true here and
+    // `read_speaker_encoder` still runs and still fails on the missing
+    // `enc_dim` -- the package carries none of the eight speaker-encoder
+    // keys, not just an inconsistent one. There is no way to construct "no
+    // encoder block at all" so that only the mismatch check catches it; the
+    // case above (description-text declared, `enc_dim` present) is the one
+    // that actually isolates that check, by the same reasoning
+    // read_speaker_encoder's own comments apply to their zero-checks.
+    {
+        GgufContext c = voice_design_metadata();
+        set_string_array(c.get(), "synthesize.voice.profile_sources", { "reference-audio" });
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    }
+    // An unknown source name is refused rather than ignored: a package from a
+    // future converter must not load with a silently narrower capability.
+    {
+        GgufContext c = voice_design_metadata();
+        set_string_array(c.get(), "synthesize.voice.profile_sources", { "telepathy" });
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    }
+    // A truncated package: profile-sources mode with the declaration missing
+    // entirely. It says every request must carry a Profile and offers no way
+    // to make one. Tested by REMOVING the key rather than writing an empty
+    // array, because a missing key is the shape a truncated package actually
+    // takes and `gguf_set_arr_str` with n = 0 passes a null data pointer.
+    {
+        GgufContext c = voice_design_metadata();
+        gguf_remove_key(c.get(), "synthesize.voice.profile_sources");
+        synth::qwen3tts::HParams hparams;
+        SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(c.get(), hparams) != SYNTH_OK);
+    }
     return 0;
 }
 
@@ -487,6 +627,25 @@ int run_rejections() {
     SYNTH_TEST_CHECK(
         expect_rejected([](gguf_context * g) { gguf_set_val_bool(g, "synthesize.voice.has_package_default", true); },
                         "this family names no package default voice") == 0);
+
+    // A preset-catalog package (valid_metadata()'s own shape) has no Voice
+    // Profile contract, so a `synthesize.voice.profile_sources` declaration on
+    // one is a surplus claim nothing downstream ever reads: read_hparams only
+    // calls read_profile_sources when the mode is ProfileSources, so this key
+    // would otherwise be silently ignored regardless of what it names -- a
+    // package could claim `description-text` with no speaker encoder, no
+    // codec encoder, and no ProfileContract to check the claim against, and
+    // still load clean. Adding the key at all is refused, independent of its
+    // contents: `description-text` and `reference-audio` both exercised, so
+    // this is not merely catching an unknown-source-name typo.
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { set_string_array(g, "synthesize.voice.profile_sources", { "description-text" }); },
+            "a preset-catalog package may not declare profile_sources at all") == 0);
+    SYNTH_TEST_CHECK(
+        expect_rejected(
+            [](gguf_context * g) { set_string_array(g, "synthesize.voice.profile_sources", { "reference-audio" }); },
+            "not even a source this package could plausibly carry structural evidence for") == 0);
     return 0;
 }
 
@@ -699,6 +858,8 @@ int main() {
     synth::qwen3tts::HParams hparams;
     SYNTH_TEST_CHECK(synth::qwen3tts::read_hparams(nullptr, hparams) == SYNTH_ERR_INVALID_ARG);
     SYNTH_TEST_CHECK(run_valid_package() == 0);
+    SYNTH_TEST_CHECK(test_code_predictor_intermediate_size_falls_back_to_the_talkers_when_absent() == 0);
+    SYNTH_TEST_CHECK(test_code_predictor_intermediate_size_declared_is_honoured() == 0);
     SYNTH_TEST_CHECK(run_voice_and_language_routing() == 0);
     SYNTH_TEST_CHECK(run_rejections() == 0);
     SYNTH_TEST_CHECK(run_base_package_rejections() == 0);
@@ -709,5 +870,6 @@ int main() {
     SYNTH_TEST_CHECK(test_zero_reference_bounds_are_refused() == 0);
     SYNTH_TEST_CHECK(test_profile_sources_names_a_package_default_is_refused() == 0);
     SYNTH_TEST_CHECK(test_truncated_profile_sources_package_is_refused() == 0);
+    SYNTH_TEST_CHECK(test_profile_sources_are_declared_not_inferred() == 0);
     return 0;
 }

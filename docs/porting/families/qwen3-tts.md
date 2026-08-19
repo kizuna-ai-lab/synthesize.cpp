@@ -32,8 +32,73 @@ See "Stage 2 Plan 4: what it measured, and what it refused to claim" below.
 **The Base variant was published on 2026-08-17** to
 `jiangzhuo9357/qwen3-tts-12hz-0-6b-base-gguf` (BF16, F16 and Q8_MIXED, 6.70 GB,
 commit `d4df99e8`), on jiangzhuo's per-act confirmation naming that target --
-which closes Stage 2 on the same terms Stage 1 closed on. Stage 3 (Description
-Text) is not started. See the three Stage 2 paragraphs below.
+which closes Stage 2 on the same terms Stage 1 closed on. **Stage 3
+(`qwen3-tts-12hz-1.7b-voicedesign`) Plan 1 is done as of 2026-08-18**: Task 6
+converts the checkpoint (659 tensors, 4.30 GB BF16) and, since a same-day fix
+to the tensor catalog described below, loads it through `synth_model_load` --
+and Task 7 closes the plan's completion gate: a prefill built at empty
+instruct matches the oracle within tolerance (p95_relative 0.00269 against a
+committed 0.01, 3.72x headroom), with a 365.7x fault-injection figure proving
+the comparison can fail. See "Stage 3: VoiceDesign Package, Task 6" and
+"...Task 7" below for the license check, the digests, a genuine architecture
+gap Task 6 found and closed rather than merely converting around, and Task
+7's oracle dumper, driver and fault injection. See the three Stage 2
+paragraphs below for Stage 2.
+
+**The capability snapshot Task 6 measured is corrected below, on jiangzhuo's
+ruling after the final whole-branch review (2026-08-18), and no longer matches
+the design's original prediction.** Task 6 measured exactly what the design
+predicted -- zero Preset Voices, `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT |
+SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`, Reference Audio absent, all six
+reference limits at zero -- but `synth_voice_profile_create_from_description`
+(`src/voice-profile.cpp`) still routed every family but OmniVoice to the
+generic unsupported fallback at that point, so the RUNTIME's own capability
+query was advertising a source it would then refuse: the same trap this
+family's own transcript-assisted (ICL) mode was withheld from advertisement
+for the whole of Stage 2 Plan 2 to avoid. Ruling: the RUNTIME withholds
+`SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT`, and `SERIALIZED_PROFILE` does not
+survive alone either (this package has no speaker encoder for
+`load_qwen3_tts_profile_from_memory` to ever accept a Profile against), so the
+capability snapshot as of this correction reports **zero Preset Voices and
+zero Profile source flags** -- the same all-zero shape a CustomVoice package
+reports, for a different reason. Only the RUNTIME half moved: the PACKAGE's
+own declared `synthesize.voice.profile_sources` still names
+`description-text`, and Task 3's loader and its cross-checks are untouched.
+See "Stage 3: VoiceDesign Package, Task 6", "Load result" below for the
+corrected measurement table.
+
+**Packages converted before `synthesize.voice.profile_sources` existed do not
+load under this runtime any more.** Stage 3's loader change
+(`src/arch/qwen3-tts/weights.cpp`) made a `profile-sources`-mode package
+declare which Voice Profile sources it implements, rather than the loader
+inferring "Base, therefore reference audio" from the mode alone -- inference
+the mode stopped supporting once VoiceDesign started using the same mode for
+Description Text. The three packages published above on 2026-08-17 (BF16, F16,
+Q8_MIXED, commit `d4df99e8`) predate that key and are refused by
+`synth_model_load`, so `tests/qwen3_tts_base_load_real.cpp` and the Base Golden
+targets (`synthesize-qwen3-tts-base-xvector-golden`,
+`synthesize-qwen3-tts-base-mel-shape`) will fail against them until the local
+copy is re-converted. This is deliberate, not an oversight: the project is
+pre-release with no users, so no compatibility shim was written to infer the
+declaration from a package's other contents -- that is exactly the inference
+this loader change exists to remove. Re-cut a local Base package with the
+current `scripts/convert-qwen3-tts.py` before turning on
+`-DSYNTH_BUILD_INTEGRATION_TESTS=ON` against it. **Done 2026-08-18**, as part of
+Stage 3 Task 6: the local BF16 package at
+`models/qwen3-tts-12hz-0-6b-base/qwen3-tts-12hz-0-6b-base-BF16.gguf` was
+re-converted from the same source weights and manifest already on disk (no
+re-download), producing a different sha256 (`76275beb...` against the
+`993f4cd1...` the pre-`profile_sources` file carried) and a package that loads
+with the capability snapshot Plan 2 recorded --
+`SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`,
+six populated reference limits, schema `qwen3-tts-voice-clone`. The already-published Hugging Face
+artifacts were NOT re-cut or re-uploaded -- their three digests are unchanged --
+but the CARD beside them was, on 2026-08-18 (HF commit `9802704d`), on
+jiangzhuo's per-act confirmation scoping it to the README alone. It now says
+first thing in its publication note that those three files no longer load and
+why, so the live artifact stops claiming a loadability it does not have. That
+correction also carried a second one: the CUDA end-to-end figure read "about
+8 %" against numbers that divide out to 6.5 %.
 
 **Until 2026-08-12 this line read "Q8_MIXED, the public backend control and
 stage 8 are not done. Port validation is not started."** All four clauses were
@@ -274,9 +339,9 @@ Variant-defined, as `docs/voice-conditioning.md` already requires.
 Stage 1 is a completion gate for Stage 2, and Stage 2 for Stage 3. Random Seed
 stays unadvertised across all three stages.
 
-**What each stage advertises, stated once (corrected 2026-08-12).** An earlier
-revision of this section said Serialized Profile stays unadvertised at every
-stage, while the Stage 2 Plan 1 record below claimed the Base package
+**What each stage advertises, stated once (corrected 2026-08-12, 2026-08-18).**
+An earlier revision of this section said Serialized Profile stays unadvertised
+at every stage, while the Stage 2 Plan 1 record below claimed the Base package
 "honestly advertises Reference Audio and Serialized Profile support". Both
 cannot be right, and neither described what shipped. The end position:
 
@@ -298,11 +363,22 @@ cannot be right, and neither described what shipped. The end position:
   decision: `docs/c-interface.md` requires that any Model which can create a
   v1 Profile also sets the Serialized Profile bit, because every successfully
   prepared v1 Profile can be serialized.
-- **Stage 3 adds `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT`** on the same terms.
+- **Stage 3 adds `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT`** on the same terms
+  as Plan 2 added Reference Audio -- on the day it can actually prepare a
+  Profile from a description, not merely the day a package that could supply
+  one loads. **Stage 3 Plan 1 is not that day.** Task 6 shipped this bullet's
+  own rule violated -- the RUNTIME briefly advertised the bit while
+  `create_from_description` still had no Qwen3-TTS arm -- and jiangzhuo's
+  2026-08-18 ruling corrected it before Plan 1 closed: the VoiceDesign package
+  reports zero source flags, same as CustomVoice, until the plan that wires
+  the handler. See "Stage 3: VoiceDesign Package, Task 6" below for the
+  corrected measurement.
 
 So Serialized Profile is not a source this family pursues on its own; it
 arrives as a consequence of being able to prepare one, and it is unadvertised
-until then.
+until then. The same is true of every OTHER source bit, Description Text
+included, which the paragraph above already stated for Reference Audio and
+Stage 3 Plan 1 is what made literally true of Description Text too.
 
 ## Port Validation Fit
 
@@ -3933,6 +4009,397 @@ quantization costs. Full method, the two invalidated attempts that preceded the
 second pass, and the duration observation the listener cleared are in
 `reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/_porting-log.md`
 under its 2026-07-29 entries.
+
+## Stage 3: VoiceDesign Package, Task 6
+
+Executed 2026-08-18. Intake, conversion, and a package that loads -- the first
+rung of Stage 3, and the first time this family's converter or loader ran
+against a checkpoint whose talker and code predictor disagree in width. The
+Reference Model Variant Ladder said VoiceDesign "necessarily moves to the 1.7B
+width" (see above); this task is where that stopped being a sentence about
+parameter count and started being a sentence about tensor shapes.
+
+### License, verified from the upstream model card
+
+```
+$ curl -sL "https://huggingface.co/api/models/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign" \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['id'], (d.get('cardData') or {}).get('license'), d['sha'])"
+Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign apache-2.0 5ecdb67327fd37bb2e042aab12ff7391903235d3
+```
+
+Matches the pinned revision exactly. The card's own prose (fetched at that
+revision) carries no additional restriction beyond the `license: apache-2.0`
+frontmatter -- confirming the "Why Qwen3-TTS" section's four-repository claim
+for the fourth repository specifically, rather than inheriting it from the
+other three.
+
+### Pinned digests
+
+| Artifact | sha256 |
+| --- | --- |
+| `config.json` | `aecd2cc4c1fe9edef1cb7ca7c401685a43879ad43f3f9e883f1c6760b61731e0` |
+| `model.safetensors` | `391e8db219f292c515297cdceeb43e4eae67cdde35fa57e79a6a8a532fca0522` |
+
+`speech_tokenizer/model.safetensors`, `vocab.json` and `merges.txt` are
+byte-identical to the digests the Base and CustomVoice manifests already
+record -- measured, not assumed, by hashing this checkpoint's own copies --
+which is expected: `Qwen3-TTS-Tokenizer-12Hz` and the BPE vocabulary are shared
+across the family's variants rather than re-shipped per rung. The Golden
+Manifest, `tests/golden/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign.manifest.json`,
+carries all five digests, none of `qwen3-tts-12hz-0-6b-base`'s two
+`reference-audio` artifacts (this variant takes no recording), and zero cases
+-- this task's own step removes every case the copied Base manifest carried.
+The manifest stays at zero cases through Task 7 too: that task gates the
+empty-instruct rung with an integration driver and a tolerance cell outside
+the manifest rather than adding a case to it. The manifest's own cases arrive
+in Plan 2.
+
+### Measured package size against the design's estimate
+
+**4,295,891,904 bytes (4.30 GB decimal, 4.00 GiB) against the design's ≈4.3 GB
+estimate** -- 659 tensors, 404 BF16 + 255 F32, converted in one pass with no
+manual intervention once the catalog gap below was closed. 659 is exactly
+CustomVoice's tensor-shape count (657, this family's other no-speaker-encoder
+variant) plus the two tensors the width mismatch below requires.
+
+### A genuine architecture gap, found and closed, not converted around
+
+The first conversion attempt succeeded -- the Python converter carries every
+tensor under a known prefix with no name-based filtering of its own, so
+`small_to_mtp_projection.weight`/`.bias` rode along without any converter
+change being needed. **Loading the result refused**, and the refusal was not a
+missing catalog entry for an unfamiliar name; it was a refusal
+`src/arch/qwen3-tts/catalog.cpp` had carried on purpose since before any
+package needed it:
+
+```
+qwen3-tts: the code predictor is 1024 wide against the talker's 2048, which
+needs an input projection this package does not carry
+```
+
+`CodePredictorWeights` (`code-predictor.h`) already declared
+`input_projection`/`input_projection_bias` pointers, and
+`code-predictor.cpp`'s `build_code_predictor` already applied them whenever
+non-null -- both written and comment-anticipated during Stage 1, before a
+1.7B rung existed to exercise them. The graph side of this family's autoregressive
+runtime needed **zero new code**. What was missing was entirely in the
+metadata/catalog layer, and it was three assumptions deep, each invisible for
+exactly the same reason: every package converted before this one (Base and
+CustomVoice, both 0.6B) happened to declare the same value for the talker and
+the code predictor on every axis that could have diverged, so a catalog that
+silently reused the talker's number for the predictor's own geometry was
+indistinguishable from a correct one.
+
+1. **`intermediate_size`.** `CodePredictorParams` had no field of its own; the
+   catalog sized the predictor's MLP from `hparams.talker.intermediate_size`
+   (3072 == 3072 at 0.6B, 3072 != 6144 at 1.7B). Fixed by giving
+   `CodePredictorParams` its own `intermediate_size`, read from a new
+   `synthesize.qwen3-tts.code_predictor.intermediate_size` metadata key that
+   `scripts/convert-qwen3-tts.py` now writes from the checkpoint's own
+   `code_predictor_config.intermediate_size` rather than inheriting
+   `talker_config`'s. **Optional at read time** (`GgufMetadata::has`), falling
+   back to the talker's value when the key is absent, so every package
+   converted before this key existed -- the published CustomVoice and Base
+   artifacts included -- still loads unchanged.
+2. **The width bridge.** `p.hidden_size != hparams.talker.hidden_size` used to
+   be an unconditional refusal. Now it resolves
+   `talker.code_predictor.small_to_mtp_projection.{weight,bias}` into the
+   pointers `build_code_predictor` already knew how to use --
+   `torch.nn.Linear(talker_config.hidden_size, config.hidden_size, bias=True)`
+   in the reference (`Identity()` when the widths agree, which is why no
+   0.6B package carries the tensor), confirmed by reading
+   `Qwen3TTSTalkerCodePredictorModelForConditionalGeneration.__init__` and
+   `.forward` in the pinned `qwen_tts` checkout rather than guessed from the
+   tensor's name.
+3. **`codec_embedding`'s width, which is not `lm_head`'s.** The two read like a
+   matched embedding/head pair and are not: `lm_head` is
+   `Linear(config.hidden_size, vocab_size)`, sized by the predictor's own
+   width, but `codec_embedding` is built by
+   `Qwen3TTSTalkerCodePredictorModel.__init__(self, config, embedding_dim)`
+   with `embedding_dim=talker_config.hidden_size` passed in from the
+   *outside* -- a second, separate constructor argument the predictor's own
+   `config.hidden_size` never enters. `model.cpp`'s per-step wiring confirms
+   why: a `codec_embedding` lookup is concatenated or summed with the
+   talker's own hidden state (`t_hidden`, talker-width) *before* that
+   combined value reaches `build_code_predictor`'s input-projection step, so
+   it has to already be at the talker's width to be summable. The catalog
+   sized it at `p.hidden_size` (predictor's own) and was wrong at 1.7B in the
+   same invisible way as the first two.
+
+Each of the three was measured against the pinned reference implementation,
+not inferred from the shape error's message, and each has synthetic coverage
+in `tests/qwen3_tts_catalog_test.cpp`
+(`check_narrower_code_predictor_resolves_with_projection`, plus
+`check_real_voicedesign_package_count` pinning the real package's 659 against
+`expected_tensor_count`) alongside the negative case that already existed
+(`check_rejections`' "no package carries one", which continues to refuse a
+narrower predictor whose package omits the projection tensor). Verified
+against three real local packages, not only against synthetic fixtures: the
+two 0.6B packages this project has published or locally converted --
+CustomVoice and Base (including its 2026-08-18 re-cut below) -- reload
+unchanged after every change in this section, confirming no regression on the
+coincident-width path both of them take; VoiceDesign itself loads for the
+first time, confirming the fix. All three checked through the public C API
+(`synth_model_load` and `synth_model_get_voice_profile_capabilities`), not
+merely inferred from the catalog test passing.
+
+### `generate_custom_voice` silently discards `instruct` for any 0.6B model
+
+Worth its own paragraph, because it will mislead someone who reads only the
+published CustomVoice package's card. `qwen_tts/inference/qwen3_tts_model.py:799-800`:
+
+```python
+if self.model.tts_model_size in "0b6": # for 0b6 model, instruct is not supported
+    instruct = None
+```
+
+`tts_model_size` is `"0b6"` for every 0.6B checkpoint and `"1b7"` for
+VoiceDesign (confirmed from both configs' own `tts_model_size` field), so this
+line is a **membership test that happens to work for the one string it was
+written against** rather than a documented size gate: `"0b6" in "0b6"` is
+`True`, `"1b7" in "0b6"` is `False`. The consequence is asymmetric and
+easy to miss: calling `generate_custom_voice` on the published
+`qwen3-tts-12hz-0-6b-customvoice` package with a non-empty `instruct` argument
+returns `SYNTH_OK` and audio, exactly as if the instruction had been honoured,
+because nothing downstream reports that it was silently cleared first. The
+call *looks* like Description Text working on a 0.6B package. It is not
+running at all. Description Text is VoiceDesign's alone -- upstream's
+`generate_voice_design` is the only entry point that reaches it, and
+`SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT` is reserved for the one variant that
+carries the tensors for it, once the RUNTIME half of that capability is wired
+(2026-08-18 correction below: the bit itself is not yet published by any
+variant, this package included) -- and this line is upstream's, not a defect
+in this port -- but a caller who tests "does an instruction change the voice"
+against CustomVoice and observes no audible change would reasonably conclude
+the feature is broken rather than absent.
+
+### The Golden Manifest schema did not anticipate a suite built across tasks
+
+A second gap, in test infrastructure rather than the runtime: this plan's
+manifest is deliberately committed with 0 cases now and stays there through
+Task 7 -- Plan 2 is what gives it its first case and the rest -- but
+`docs/schemas/synthesize-golden-manifest-v1.schema.json` required
+`cases.minItems: 12` (every previously-committed manifest's own floor), and two
+family-independent checks in `tests/python/test_golden_manifests.py` assumed
+every manifest already had a first case (`test_upstream_examples_are_present`)
+or a matching entry in its shared tolerance file's `variants` map
+(`test_tolerance_case_count_matches_manifest`). All three would have failed
+`synthesize-golden-manifest-contract` for this manifest alone, without
+touching any other family's data.
+
+**The first fix was too wide, and a Task 6 review round found it.**
+`cases.minItems` was widened to 0 for every manifest the schema governs, not
+only the one that needed it -- documented at the time in the schema's own new
+`description` field, but a real regression rather than a wording nit:
+`cases.minItems: 12` is `docs/port-validation.md`'s own Confirmed contract, and
+the repo-wide zero let a truncated manifest through, demonstrated by
+validating a 3-case copy of `vits-ljspeech`'s own committed manifest against
+the widened schema, which the unwidened schema had rejected. Replaced with a
+narrow opt-in instead: a top-level `if`/`then`/`else` keyed on a new optional
+`suite_status` field relaxes `cases.minItems` to 0 only when a manifest
+declares `suite_status: "incremental"` -- which only
+`qwen3-tts-12hz-1-7b-voicedesign` does. Every other manifest omits the field
+and stays at the 12-case floor, re-validated against the same truncated VITS
+copy, which is rejected again. Both Python checks still `continue`
+specifically for a manifest whose `cases` array is empty -- narrowly enough
+that the moment this manifest gains its first case (Plan 2), both checks
+re-engage on it exactly as they do on every other manifest.
+
+Task 6's own commit made no change to `tests/tolerances/qwen3-tts.json` or to
+`tests/python/test_tolerance_coverage.py`; Task 7 is what later added this
+variant's own tolerance entry. At Task 6's commit, though, the manifest's
+`reference.runner` named the already-committed, family-generic
+`scripts/dump_reference_qwen3_tts_pytorch.py` rather than a
+VoiceDesign-specific script -- which let `test_runner_is_committed` pass
+because *some* file existed at the named path, not because the named path was
+right. It was not: this variant's real oracle runner is
+`scripts/dump_reference_qwen3_tts_voicedesign.py`, written in Task 7 and
+already what the tolerance grid names. The manifest is corrected to match.
+Verified against the actual test suite, not merely reasoned about: both
+`tests.python.test_golden_manifests` (24/24) and
+`tests.python.test_tolerance_coverage` plus its inversion suite (8/8) pass
+with the corrected manifest committed, and the two pre-existing
+gitignored-VITS-artifact failures (`synthesize-python-api-wheel-test`,
+`synthesize-vits-python-unit`) are unchanged.
+
+### Load result
+
+```
+$ ./build/bin/synthesize-cli --model .../qwen3-tts-12hz-1-7b-voicedesign-BF16.gguf --help
+```
+
+carries no `--info` flag -- capability-snapshot printing is the CLI's own
+cross-family slice, out of this plan's scope by the design's own File
+Structure, not merely undiscovered here. Verified instead through a small,
+uncommitted probe driving the public C API directly
+(`synth_model_load` / `synth_model_get_preset_voice_count` /
+`synth_model_get_voice_profile_capabilities`), matching the pattern
+`tests/qwen3_tts_base_load_real.cpp` already exercises against the real Base
+package:
+
+| Field | VoiceDesign (as measured at Task 6) | Design's prediction |
+| --- | --- | --- |
+| `preset_voice_count` | 0 | zero Preset Voices |
+| `profile_source_flags` | `0xa` = `SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT \| SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` | Description Text + Serialized Profile |
+| `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO` | absent | absent |
+| six `reference_*` limits | all 0 | left at zero |
+| `profile_schema` | `qwen3-tts-voice-design`, version 1 | -- |
+
+Every field matched the Interfaces section's prediction exactly.
+
+**Erratum, 2026-08-18 -- jiangzhuo's ruling after the final whole-branch review
+found the prediction this table matched was itself wrong.** The `profile_source_flags`
+and `profile_schema` rows above are what Task 6 measured, and what the design
+predicted, but not what the RUNTIME should have reported:
+`synth_voice_profile_create_from_description` (`src/voice-profile.cpp`) had no
+Qwen3-TTS arm at that point, so the capability query was advertising a source
+the seam then refused -- the same trap this family's own transcript-assisted
+(ICL) mode was withheld from advertisement for the whole of Stage 2 Plan 2 to
+avoid, and `SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE` cannot survive alone
+either, since this package has no speaker encoder for
+`load_qwen3_tts_profile_from_memory` to ever accept a Profile against. The
+corrected measurement, taken against the same probe after
+`fill_voice_profile_capability` was fixed:
+
+| Field | VoiceDesign (corrected) |
+| --- | --- |
+| `preset_voice_count` | 0 |
+| `profile_source_flags` | `0x0` (none) |
+| `SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO` | absent |
+| six `reference_*` limits | all 0 |
+| `profile_schema` | null, size 0, version 0 |
+
+This is the same all-zero "no runtime Voice Profile support" shape a
+CustomVoice package reports, per `docs/c-interface.md`'s rule that Serialized
+Profile's schema fields are null/zero exactly when that bit is clear, for a
+different reason than CustomVoice's: CustomVoice carries no ProfileContract at
+all, while this package's `synthesize.profile.*` metadata is read and
+validated in full at load time and the schema string above (`qwen3-tts-voice-design`,
+version 1) is still there in `HParams` -- simply not surfaced through the
+public capability query until a later plan wires `create_from_description`.
+The PACKAGE's own declared `synthesize.voice.profile_sources` is unaffected by
+this correction and still names `description-text`; Task 3's loader and its
+cross-checks are untouched.
+
+## Stage 3: VoiceDesign Package, Task 7
+
+Executed 2026-08-18. Plan 1's completion gate -- a prefill built at empty
+instruct compared against the oracle, with the fault-injection figure proving
+that comparison can fail -- closing Plan 1 alongside Task 6's load result
+above. No new graph code: the empty-instruct path needs no instruct block
+(design decision D3), so this task's whole job is building the comparison
+Task 6 deferred, not extending the runtime.
+
+### The oracle dumper
+
+`scripts/dump_reference_qwen3_tts_voicedesign.py`, modeled on
+`scripts/dump_reference_qwen3_tts_base.py`, drives `generate_voice_design`
+against the pinned checkpoint with `text="Qwen3-TTS is awesome!"`,
+`instruct=""`, `language="English"`, pinned seed and greedy decoding matching
+the Base dumper's own determinism settings. It dumps three raw float32
+artifacts to `reports/porting/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign/oracle/`
+-- **not** under `build/goldens/qwen3-tts/...`, the location every other
+oracle dump in this family and VITS's uses (`docs/testing.md` states that
+convention); this variant's own usage example and the task's brief put it
+here instead, and `.gitignore` gained a dedicated `/reports/porting/**/oracle`
+rule for it (Task 7 Fix Round 1) rather than relying on the already-ignored
+`build/` tree:
+
+- `prefill.f32` -- the assembled talker input embeddings, `[18, 2048]`
+- `codes.i32` -- the talker's emitted codes
+- `waveform.f32` -- the decoded audio
+
+Only `prefill.f32` is compared against in this task. `codes.i32` and
+`waveform.f32` are dumped for the record and read by nothing here -- a
+synthesis-level comparison needs the instruct prompt block and the codec
+decoder wiring Plan 2 builds. `tests/tolerances/qwen3-tts.json`'s
+`qwen3-tts-12hz-1-7b-voicedesign` entry states this directly:
+`"status": "partial-measurement-prefill-only"`.
+
+### The driver, and the completion gate it did not enforce at first
+
+`tests/qwen3_tts_voicedesign_prefill_real.cpp` loads the real package, builds
+a prompt with `has_speaker = false` and no instruct tokens (Task 5's layout,
+the branch section 5.3 calls "a branch that has never run"), flattens it, and
+writes the prefill embeddings out for comparison against the oracle dump.
+
+**Task 7 Fix Round 2 corrected a gap a review found in the completed task,
+not in this record after the fact.** The driver's plan text said it "asserts
+nothing," which was approved and, taken literally, meant the completion gate
+enforced nothing: a fault-injected build printing a 365x tolerance breach and
+a shape mismatch still exited 0. Put to jiangzhuo because a finding that
+contradicts approved plan text is not a reviewer's or an implementer's to
+overrule alone; ruling was that the finding governs, and the plan doc's Task
+7 Step 3 carries the erratum rather than a silently rewritten sentence. The
+driver now takes the committed `max_relative` bound from
+`tests/tolerances/qwen3-tts.json` as an optional argument -- read at CMake
+configure time and passed to `add_test`, the same shape
+`synthesize-qwen3-tts-icl-prompt-real` already has -- and exits non-zero when
+the measured p95 exceeds it or the shapes disagree. Registered as
+`synthesize-qwen3-tts-voicedesign-prefill-real`, gated behind
+`-DSYNTH_BUILD_INTEGRATION_TESTS=ON` and a real package at
+`SYNTH_QWEN3_TTS_VOICEDESIGN_TEST_MODEL` plus the oracle dump above; it never
+enters `synthesize-check-unit`.
+
+### Measured, and the fault that proves the gate
+
+Compared with `reconstruction_p95_relative` (`tests/qwen3_tts_percentile.h`),
+this family's existing p95-over-positions statistic:
+
+| | value |
+| --- | --- |
+| positions | 18 |
+| hidden_size | 2048 |
+| codec_offset | 3 |
+| external_speaker_index | -1 |
+| observed `p95_relative` | 0.00269 -- under half of one bf16 ulp |
+| committed `max_relative` | 0.01 |
+| headroom | 3.72x |
+
+`0.01` is deliberately tighter than this family's own stated widening rule for
+a probe of this shape (`prompt.icl_embed`'s "5x the measured deviation" would
+give 0.01345): this is the probe's first and only measured case, with no
+ICL-style two-track summing to accumulate a second bf16 rounding on top of the
+weight tables' own quantization, and `0.01` sits close to 2.5 bfloat16
+unit-roundoffs -- a consistent story from a second direction, not a competing
+one.
+
+**Fault injection, per Task 7 Step 4 and this task's own plan brief**:
+`src/arch/qwen3-tts/talker-host.cpp:159`, `if (request.has_speaker)` changed
+to `if (true)` -- Task 5's exact branch, inverted, retaining a
+codec-vocabulary speaker slot even though `request.has_speaker` is false.
+
+| | value |
+| --- | --- |
+| faulted `p95_relative` | 0.983659 |
+| ratio | 365.7x |
+| faulted position count | 19 (against the oracle's and the clean port's 18) |
+
+The fault does not only perturb values at a fixed shape -- it changes the
+position count. The extra codec-vocabulary slot pushes the codec-prefix loop
+from 5 iterations to 6, shifting every position from index 7 onward relative
+to the clean, correct layout; the driver reports `compared_positions: 18`
+beside `shapes_match: false`, so the shape mismatch is at least as strong a
+failure signal as the number itself. Reverted and verified by
+`git status --porcelain` (clean) and `grep -n "if (request.has_speaker)"
+src/arch/qwen3-tts/talker-host.cpp` (line 159, unchanged) after the
+measurement.
+
+### Plan 1's completion gate, met
+
+All three of Plan 1's stated criteria hold as of this task: the BF16 package
+loads (Task 6); a prefill built at empty instruct matches the oracle within
+the recorded `replay` tolerance, with the fault-injection figure above proving
+the comparison can fail (Task 7); and the capability snapshot reports zero
+Preset Voices and, **on jiangzhuo's 2026-08-18 ruling after the final
+whole-branch review, correcting what Task 6 originally measured and this
+sentence originally claimed**, zero Profile source flags rather than
+`DESCRIPTION_TEXT | SERIALIZED_PROFILE` -- `REFERENCE_AUDIO` was, and remains,
+absent either way (Task 6, "Load result" above, which carries the correction
+in full). Not delivered here, and not a gap against Plan 1's own scope:
+`create_from_description`, the `DesignInstruct` payload, the instruct prompt
+block, the public-seam validator, quantization, backends, and the listening
+audit -- Plans 2 and 3.
 
 ## Open Questions for Intake
 

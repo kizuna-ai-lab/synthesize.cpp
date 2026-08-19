@@ -176,12 +176,26 @@ bool read_code_predictor(const GgufMetadata & meta, HParams & hparams) {
         !meta.u32("synthesize.qwen3-tts.code_predictor.code_group_count", cp.code_group_count)) {
         return false;
     }
+    // Optional, unlike every field above: a package converted before this key
+    // existed never declared it, and every such package's predictor and talker
+    // happened to share one intermediate_size (3072/3072 at the 0.6B rung), so
+    // the talker's own value is exactly what it always implicitly meant. A
+    // package that DOES carry the key -- every one converted after it, VITALLY
+    // including a rung whose predictor and talker disagree -- gets the value it
+    // declares rather than a borrowed one.
+    if (meta.has("synthesize.qwen3-tts.code_predictor.intermediate_size")) {
+        if (!meta.u32("synthesize.qwen3-tts.code_predictor.intermediate_size", cp.intermediate_size)) {
+            return false;
+        }
+    } else {
+        cp.intermediate_size = hparams.talker.intermediate_size;
+    }
     // Both head counts, not only the shapes: the divisibility test below divides
     // by key_value_head_count, and a package declaring zero would raise SIGFPE
     // during load rather than be refused. The talker guards both operands and
     // this half did not.
-    if (cp.layer_count == 0 || cp.hidden_size == 0 || cp.vocab_size == 0 || cp.code_group_count == 0 ||
-        cp.attention_head_count == 0 || cp.key_value_head_count == 0) {
+    if (cp.layer_count == 0 || cp.hidden_size == 0 || cp.intermediate_size == 0 || cp.vocab_size == 0 ||
+        cp.code_group_count == 0 || cp.attention_head_count == 0 || cp.key_value_head_count == 0) {
         std::fprintf(stderr, "qwen3-tts: code predictor geometry contains a zero dimension\n");
         return false;
     }
@@ -381,15 +395,33 @@ bool read_voices(const GgufMetadata & meta, HParams & hparams) {
     }
     if (mode == "preset-catalog") {
         hparams.voice_mode = VoiceMode::PresetCatalog;
+        // A preset-catalog package has no Voice Profile contract, so it has no
+        // sources to declare. read_hparams below only reaches
+        // read_profile_and_speaker_encoder -- and therefore
+        // read_profile_sources, the function that actually reads and
+        // cross-checks this key -- when the mode is ProfileSources; a
+        // preset-catalog package carrying the key regardless would have it
+        // silently ignored rather than honoured or refused, which is exactly
+        // the surplus declaration an external review caught (a package
+        // claiming e.g. `description-text` with nothing to check that claim
+        // against). Refused here, at the one place that knows the mode is
+        // wrong for it, rather than left inert.
+        if (meta.has("synthesize.voice.profile_sources")) {
+            std::fprintf(stderr,
+                         "qwen3-tts: preset-catalog mode declares synthesize.voice.profile_sources, which this "
+                         "voice mode has no Voice Profile contract to validate it against\n");
+            return false;
+        }
         if (preset_count == 0) {
             std::fprintf(stderr, "qwen3-tts: preset-catalog mode with no presets\n");
             return false;
         }
     } else if (mode == "profile-sources") {
-        // Base variants carry no selectable Voice at all: upstream ships an
-        // empty spk_id table. The package says so positively rather than
-        // arriving as a catalog that happens to be empty, so a truncated
-        // catalog cannot be mistaken for this.
+        // A profile-sources package carries no selectable Voice at all --
+        // both this family's variants that use this mode, Base and
+        // VoiceDesign, ship an empty spk_id table. The package says so
+        // positively rather than arriving as a catalog that happens to be
+        // empty, so a truncated catalog cannot be mistaken for this.
         //
         // `profile-sources` is the value omnivoice already established
         // (src/arch/omnivoice/weights.cpp) and the manifest schema's own enum.
@@ -474,23 +506,25 @@ bool is_sha256_hex(const std::string & value) {
 
 // Nothing consumes a Voice Profile before Plan 2, but a package whose contract
 // is wrong cannot be discovered then without re-cutting it, so it is refused
-// now. Matches omnivoice's read_profile_contract shape (weights.cpp:524):
-// same schema fields, same reference-bound ordering, same compatibility-id
-// check, differing only in the schema name this family requires.
+// now. Shaped after omnivoice's read_profile_contract (weights.cpp:524) for
+// the schema/version/compatibility-id fields and the reference-bound checks,
+// but not identical to it since Stage 3: omnivoice's one variant always
+// carries reference audio, so it reads the synthesize.reference.* block
+// unconditionally, while this family's Description Text source carries none
+// of those keys and accepts either of two schema names depending on what the
+// package declared (read_profile_sources, defined further down alongside its
+// caller, read_profile_and_speaker_encoder).
 bool read_profile_contract(const GgufMetadata & meta, HParams & hparams) {
     ProfileContract & profile = hparams.profile;
     if (!meta.string("synthesize.profile.schema", profile.schema) ||
         !meta.u32("synthesize.profile.schema_version", profile.schema_version) ||
-        !meta.string("synthesize.profile.compatibility_id", profile.compatibility_id_hex) ||
-        !meta.u32("synthesize.reference.target_sample_rate", profile.reference_sample_rate) ||
-        !meta.u32("synthesize.reference.target_channels", profile.reference_channels) ||
-        !meta.u64("synthesize.reference.min_frames_per_clip", profile.min_frames_per_clip) ||
-        !meta.u64("synthesize.reference.max_frames_per_clip", profile.max_frames_per_clip) ||
-        !meta.u64("synthesize.reference.max_total_frames", profile.max_total_frames) ||
-        !meta.u64("synthesize.reference.max_reference_count", profile.max_reference_count)) {
+        !meta.string("synthesize.profile.compatibility_id", profile.compatibility_id_hex)) {
         return false;
     }
-    if (profile.schema != "qwen3-tts-voice-clone" || profile.schema_version != kProfileSchemaVersion) {
+    const char * expected_schema = (hparams.profile_sources & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) != 0 ?
+                                       "qwen3-tts-voice-clone" :
+                                       "qwen3-tts-voice-design";
+    if (profile.schema != expected_schema || profile.schema_version != kProfileSchemaVersion) {
         std::fprintf(stderr, "qwen3-tts: unsupported profile schema %s version %u\n", profile.schema.c_str(),
                      profile.schema_version);
         return false;
@@ -498,6 +532,26 @@ bool read_profile_contract(const GgufMetadata & meta, HParams & hparams) {
     if (!is_sha256_hex(profile.compatibility_id_hex)) {
         std::fprintf(stderr, "qwen3-tts: profile compatibility id %s is not 32 bytes of lowercase hex\n",
                      profile.compatibility_id_hex.c_str());
+        return false;
+    }
+    // Everything below describes REFERENCE AUDIO specifically: the clip limits
+    // and the encoder's own front-end rate. A source set with no
+    // reference-audio bit carries none of the synthesize.reference.* keys at
+    // all -- scripts/convert-qwen3-tts.py's add_metadata only emits that block
+    // when the variant carries a speaker encoder -- so reading them
+    // unconditionally would refuse every Description Text package on keys it
+    // never had reason to write. Gated on has_speaker_encoder, which
+    // read_profile_and_speaker_encoder has already proven equals the declared
+    // reference-audio bit by the time this function runs.
+    if (!hparams.has_speaker_encoder) {
+        return true;
+    }
+    if (!meta.u32("synthesize.reference.target_sample_rate", profile.reference_sample_rate) ||
+        !meta.u32("synthesize.reference.target_channels", profile.reference_channels) ||
+        !meta.u64("synthesize.reference.min_frames_per_clip", profile.min_frames_per_clip) ||
+        !meta.u64("synthesize.reference.max_frames_per_clip", profile.max_frames_per_clip) ||
+        !meta.u64("synthesize.reference.max_total_frames", profile.max_total_frames) ||
+        !meta.u64("synthesize.reference.max_reference_count", profile.max_reference_count)) {
         return false;
     }
     // Reference audio is resampled to mono at this rate before it reaches the
@@ -523,6 +577,8 @@ bool read_profile_contract(const GgufMetadata & meta, HParams & hparams) {
     // would return SYNTH_OK and a frequency-scaled x-vector -- a silent
     // mis-clone. read_speaker_encoder runs before this function so the
     // comparison has something to make; see read_profile_and_speaker_encoder.
+    // Unreachable when this package carries no speaker encoder: the early
+    // return above already left the function for that case.
     if (profile.reference_sample_rate != hparams.speaker_encoder.sample_rate) {
         std::fprintf(stderr, "qwen3-tts: reference audio is resampled to %u Hz but the speaker encoder runs at %u Hz\n",
                      profile.reference_sample_rate, hparams.speaker_encoder.sample_rate);
@@ -690,31 +746,75 @@ bool read_frontend(const GgufMetadata & meta, HParams & hparams) {
     return true;
 }
 
-// A CustomVoice package carries none of the profile/speaker-encoder keys at
-// all -- it has a Preset Catalog and no Voice Profile contract -- and must
-// keep loading exactly as it does today. Gated on the declared Voice Mode
-// (populated by read_voices, which always runs first in the chain below)
-// rather than on raw key presence: gating on presence alone would let a
-// package that claims profile-sources but never actually got its
-// synthesize.profile.* / synthesize.qwen3-tts.speaker_encoder.* blocks
-// written load clean with a zeroed ProfileContract and no encoder -- a model
-// that says every request must carry a Voice Profile, with nothing to
-// validate one against. That is exactly the truncation read_voices's own
-// profile-sources comment above claims to rule out; gating on the mode
-// closes the gap because a truncated package still fails inside
-// read_profile_contract/read_speaker_encoder on their own missing keys.
+// The declared source names, mapped to the public bits. An unknown name is a
+// refusal rather than a skip: a package written by a newer converter must not
+// load with a capability quietly narrower than it claims.
+bool read_profile_sources(const GgufMetadata & meta, HParams & hparams) {
+    std::vector<std::string> names;
+    if (!meta.string_array("synthesize.voice.profile_sources", names) || names.empty()) {
+        std::fprintf(stderr, "qwen3-tts: profile-sources mode declares no profile sources\n");
+        return false;
+    }
+    hparams.profile_sources = 0;
+    for (const std::string & name : names) {
+        if (name == "reference-audio") {
+            hparams.profile_sources |= SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO;
+        } else if (name == "description-text") {
+            hparams.profile_sources |= SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT;
+        } else {
+            std::fprintf(stderr, "qwen3-tts: unknown profile source %s\n", name.c_str());
+            return false;
+        }
+    }
+    return true;
+}
+
+// A CustomVoice package carries none of the profile/speaker-encoder/
+// profile_sources keys at all -- it has a Preset Catalog and no Voice Profile
+// contract -- and must keep loading exactly as it does today. This function
+// is gated on the declared Voice Mode (populated by read_voices, which always
+// runs first in the chain below) rather than on raw key presence: gating on
+// presence alone would let a package that claims profile-sources but never
+// actually got any of its synthesize.voice.profile_sources /
+// synthesize.profile.* / synthesize.qwen3-tts.speaker_encoder.* keys written
+// load clean with a zeroed ProfileContract, no declared sources, and no
+// encoder -- a model that says every request must carry a Voice Profile, with
+// nothing to validate one against. That is exactly the truncation
+// read_voices's own profile-sources comment above claims to rule out; gating
+// on the mode closes the gap because a truncated package still fails, now at
+// the first step: read_profile_sources refuses a missing or empty
+// declaration before either block is even considered.
 //
-// The speaker encoder is read FIRST, though the contract is the more
-// externally visible half: read_profile_contract ties the declared reference
-// target rate to the encoder's own rate, and cannot do that against a
-// SpeakerEncoderParams nobody has filled in yet. Same ordering rule the rest
-// of read_hparams follows -- read_speaker_encoder itself only checks enc_dim
-// against the talker and its rate against the codec because read_talker and
-// read_codec already ran. Nothing in read_speaker_encoder reads
-// hparams.profile, so the pair has exactly one valid order.
+// The declaration and the package's actual shape are cross-checked rather
+// than either one alone deciding what to read: Reference Audio needs the
+// encoder and the reference limits; Description Text needs neither and must
+// not carry them, because a package that ships an encoder while claiming it
+// cannot clone disagrees with itself and one of the two statements is wrong.
+//
+// The speaker encoder is read FIRST when it is read at all, though the
+// contract is the more externally visible half: read_profile_contract ties
+// the declared reference target rate to the encoder's own rate, and cannot do
+// that against a SpeakerEncoderParams nobody has filled in yet. Same ordering
+// rule the rest of read_hparams follows -- read_speaker_encoder itself only
+// checks enc_dim against the talker and its rate against the codec because
+// read_talker and read_codec already ran. Nothing in read_speaker_encoder
+// reads hparams.profile, so the pair has exactly one valid order.
 bool read_profile_and_speaker_encoder(const GgufMetadata & meta, HParams & hparams) {
-    hparams.has_speaker_encoder = true;
-    return read_speaker_encoder(meta, hparams) && read_profile_contract(meta, hparams);
+    if (!read_profile_sources(meta, hparams)) {
+        return false;
+    }
+    const bool wants_reference = (hparams.profile_sources & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) != 0;
+    const bool carries_encoder = meta.has("synthesize.qwen3-tts.speaker_encoder.enc_dim");
+    if (wants_reference != carries_encoder) {
+        std::fprintf(stderr, "qwen3-tts: package declares reference-audio=%d but carries a speaker encoder=%d\n",
+                     static_cast<int>(wants_reference), static_cast<int>(carries_encoder));
+        return false;
+    }
+    if (wants_reference) {
+        hparams.has_speaker_encoder = true;
+        return read_speaker_encoder(meta, hparams) && read_profile_contract(meta, hparams);
+    }
+    return read_profile_contract(meta, hparams);
 }
 
 }  // namespace
@@ -776,11 +876,65 @@ void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & i
     if (hparams.voice_mode != VoiceMode::ProfileSources) {
         return;
     }
-    // Reference Audio and Serialized Profile publish together, never
-    // separately: docs/c-interface.md requires the second bit of any Model
-    // that can create a v1 Profile, because every successfully prepared v1
-    // Profile can be serialized.
-    info.source_flags         = SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE;
+
+    // jiangzhuo's ruling, 2026-08-18, after the final whole-branch review of
+    // Stage 3 Plan 1: SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT is withheld from
+    // the RUNTIME's published capability until a later plan wires
+    // synth_voice_profile_create_from_description for this family.
+    // src/voice-profile.cpp's create_from_description dispatch still routes
+    // every family but OmniVoice -- Qwen3-TTS included, VoiceDesign included
+    // -- to the generic "unsupported" fallback regardless of source_flags, so
+    // publishing the bit here would repeat exactly the mistake this family's
+    // own transcript-assisted (ICL) mode was built around avoiding: a mode
+    // advertised with no implementation behind it invites a caller to ask for
+    // it and receive SYNTH_ERR_UNSUPPORTED_VOICE instead of the Profile the
+    // advertisement promised. ICL carried exactly this restriction for the
+    // whole of Plan 2, lifted only once Plan 3 wired the handler -- see the
+    // comment on `info.reference_transcript` below for that precedent.
+    //
+    // This is a statement about the RUNTIME, not about the PACKAGE:
+    // `hparams.profile_sources` -- what read_profile_sources read and
+    // read_profile_and_speaker_encoder already cross-checked against what the
+    // package actually carries -- keeps naming description-text for a
+    // VoiceDesign package regardless of what this function publishes. Task
+    // 3's loader and its refusals are untouched by this rule.
+    const uint32_t publishable_sources = hparams.profile_sources & ~SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT;
+
+    if ((publishable_sources & SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO) == 0) {
+        // A VoiceDesign package's only declared source is description-text,
+        // so once that bit is withheld above, this runtime has nothing left
+        // to advertise for it: `create_from_reference` needs the (absent)
+        // speaker encoder, `create_from_description` is not wired yet (the
+        // reason the bit is withheld in the first place), and Random Seed is
+        // unimplemented by every variant of this family.
+        //
+        // SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE alone is not the honest
+        // fallback either. docs/c-interface.md permits it only for "a Model
+        // [that] can consume prebuilt profiles but cannot prepare them from
+        // another public source" -- and this one cannot consume one either:
+        // load_profile_from_memory (profile.cpp) unconditionally requires an
+        // x-vector tensor sized to `hparams.speaker_encoder.enc_dim`, the
+        // zero-initialized default for a package with no speaker encoder
+        // (`has_speaker_encoder` is false here), and that same function's own
+        // `tensor_bytes == 0` check refuses every nonempty envelope before
+        // the declared element count is ever compared against it -- so no
+        // serialized Profile, forged or genuine, can ever load against this
+        // Model. `info` is left at its all-zero default: the same "no
+        // runtime Voice Profile support" shape docs/c-interface.md requires
+        // and CustomVoice already reports, though for a different reason --
+        // CustomVoice carries no ProfileContract at all, while VoiceDesign
+        // carries one (schema "qwen3-tts-voice-design", version 1) with
+        // nothing yet wired to act on it.
+        return;
+    }
+
+    // The bits follow what the package DECLARED, minus Description Text
+    // above, and read_profile_sources already checked the declaration
+    // against what the package carries. Serialized Profile accompanies
+    // Reference Audio, because every v1 Profile this family can create from
+    // it can be serialized (docs/c-interface.md).
+    info.source_flags = publishable_sources | SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE;
+
     // OPTIONAL, both of them, since Plan 3 landed the transcript-assisted
     // (ICL) mode next to the x-vector one. BOTH MODES NOW EXIST, and D4 fixes
     // the clone mode at preparation, so the transcript's PRESENCE is what
@@ -799,8 +953,7 @@ void fill_voice_profile_capability(const HParams & hparams, VoiceProfileInfo & i
     // Nothing else here moves. This is a statement about the RUNTIME, not
     // about the package: `source_flags`, the six reference limits, the schema
     // identity and the compatibility id are all read from the same declared
-    // ProfileContract they were before, and Description Text and Random Seed
-    // stay unadvertised.
+    // ProfileContract they were before, and Random Seed stays unadvertised.
     info.reference_transcript = SYNTH_REQUIREMENT_OPTIONAL;
     info.reference_language   = SYNTH_REQUIREMENT_OPTIONAL;
 

@@ -753,7 +753,8 @@ synth_status_t create_omnivoice_profile_from_description(const synth_model_t *  
     }
     const std::string description_text(description, static_cast<size_t>(description_size));
 
-    // Step 2: the preparation seed must be concrete (docs/c-interface.md:570,
+    // Step 2: the preparation seed must be concrete
+    // (docs/c-interface.md's v1 Description Text Profile Preparation section,
     // "v1 profile preparation rejects SYNTH_SEED_RANDOM"; docs/voice-conditioning.md:57,
     // "a concrete preparation seed"). This family's Description Text
     // preparation is itself deterministic -- pure vocabulary resolution, no
@@ -773,7 +774,8 @@ synth_status_t create_omnivoice_profile_from_description(const synth_model_t *  
 
     // Step 3: description_language, validated against this family's own
     // description-language support (en/zh -- upstream's trained set) rather
-    // than the synthesis Language Capability Catalog (docs/c-interface.md:568:
+    // than the synthesis Language Capability Catalog
+    // (docs/c-interface.md's v1 Description Text Profile Preparation section:
     // "validated against the Model Variant's description-language support
     // rather than its synthesis Language Capability Catalog"). A null tag
     // selects the Model Package's declared default, a FIXED "en" -- NEVER
@@ -908,7 +910,8 @@ synth_status_t create_qwen3_tts_profile_from_description(const synth_model_t *  
         return SYNTH_ERR_INVALID_ARG;
     }
 
-    // docs/c-interface.md:570, "v1 profile preparation rejects
+    // docs/c-interface.md's v1 Description Text Profile Preparation section,
+    // "v1 profile preparation rejects
     // SYNTH_SEED_RANDOM" -- an ABI-wide Confirmed contract, not a per-family
     // option; OmniVoice's own arm enforces it above. This family's
     // Description Text preparation has nothing seed-dependent to fix (unlike

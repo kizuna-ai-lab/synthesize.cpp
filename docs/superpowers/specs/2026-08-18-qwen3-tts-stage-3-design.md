@@ -458,11 +458,18 @@ pin the gap rather than a rejection that doesn't happen.
 
 **Ordering note, 2026-08-19.** The erratum immediately below was written on
 the branch that merged first and lands after the one above it, which is the
-chronological order. It also overtakes that erratum's closing suggestion: a
-test pinning the gap by asserting `read_hparams` SUCCEEDS is no longer
-writable for the Preset Voice Catalog case, because that case is now refused.
-The suggestion still stands for the `profile-sources`-mode case, which stays
-uncorroborated for the reason both errata give.
+chronological order. It does NOT overtake the erratum above: that erratum's
+closing suggestion -- take `voice_design_metadata()`, change
+`synthesize.model_variant` to a CustomVoice string, leave the mode at
+`profile-sources`, and assert `read_hparams` SUCCEEDS to pin the gap -- is
+entirely a `profile-sources`-mode recipe and remains writable exactly as
+written. Measured 2026-08-19: that recipe still returns `SYNTH_OK`, while a
+Preset Voice Catalog package carrying the key returns `SYNTH_ERR_GGUF`. The
+erratum below closes the Preset Voice Catalog instance, which the erratum
+above described but gave no recipe for; the `profile-sources`-mode case it
+did give a recipe for stays uncorroborated, for the reason both errata give.
+(An earlier draft of this note claimed the suggestion was overtaken. It was
+not -- the two errata address different instances of the same gap.)
 
 **Erratum, 2026-08-19 — the CustomVoice case above is now refused, by a
 narrower rule than the one this erratum declined to build.** An external PR

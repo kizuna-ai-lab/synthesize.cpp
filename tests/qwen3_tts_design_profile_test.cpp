@@ -330,7 +330,8 @@ int test_create_from_description_accepts_both_empty_description_spellings() {
     return 0;
 }
 
-// Round-1 review finding (Important #3): docs/c-interface.md:570's ABI-wide
+// Round-1 review finding (Important #3): docs/c-interface.md's v1 Description
+// Text Profile Preparation section states an ABI-wide
 // "v1 profile preparation rejects SYNTH_SEED_RANDOM" contract, which
 // OmniVoice's own create_from_description arm above enforces. This family's
 // Description Text preparation has nothing seed-dependent to fix -- unlike

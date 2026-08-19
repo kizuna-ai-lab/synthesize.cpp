@@ -1247,6 +1247,84 @@
               "note": "F16, Stage 3 Plan 3 Task 2, 2026-08-20. Same 11 checks, same shape as the BF16 cell (see that cell's own note for what each one does); repeated here only where the F16 run differs. All 11 passed, identical verdicts to BF16. Digests differ from BF16's own recorded run because a different profile is a different sequence of floating-point operations -- reported here for completeness, not as a parity claim: seed 7 first digest 00960636381bf83c, seed 8 a5d7dfa4d5f7a4d1, second description 13dd7e7db8e5b2d1, random-seed digest ebdab21741add2f1 (reported seed 10946306257207060489), empty instruct public-seam smoke run 40320 frames. RELATION 3's citation ('an empty instruct reproduces the oracle within the replay stage's recorded tolerance') reads THIS SAME FILE's own F16 replay.prefill probe (added earlier in this same task, case voicedesign-empty-instruct-en, p95_relative 0.002689 against max_relative 0.01) -- the replay cell was filled before this one specifically so this citation has a real F16 record to point at rather than falling back to BF16's or reporting unmeasured."
             }
           }
+        },
+        "Q8_MIXED": {
+          "stages": {
+            "replay": {
+              "phase": "oracle_replay",
+              "description": "The talker's assembled prefill at an empty instruct and at a non-empty one, with the speaker slot correctly ABSENT -- the same two cases and the same driver as the BF16 and F16 cells (see BF16's own description for the Plan 1/Plan 2 history of what each case covers). The autoregressive codes and the decoded waveform are not compared at this profile either, matching BF16's and F16's own stage shape.",
+              "cases": 2,
+              "probes": {
+                "prefill": {
+                  "max_relative": 0.01,
+                  "observed_max_relative": 0.00613,
+                  "cases": 2,
+                  "case_ids": [
+                    "voicedesign-empty-instruct-en",
+                    "voicedesign-nonempty-instruct-en"
+                  ],
+                  "headroom": 1.63,
+                  "normalizer": "relative deviation = reconstruction_p95_relative(port, oracle, positions, hidden_size) (tests/qwen3_tts_percentile.h) -- the p95 over positions of the per-position L2 deviation, each relative to that oracle POSITION's own L2 norm. Not a cosine and not the icl_embed probe's round-to-bfloat16-then-compare block statistic: this probe compares the port's raw float32 prefill directly against the oracle's own captured `inputs_embeds` (widened bf16 -> f32, no further rounding applied on either side), because the whole prefill here is a single tensor rather than two summed tracks under upstream's own bf16 addition. UNLIKE prompt.icl_embed, this probe does not replay oracle token ids -- tests/qwen3_tts_voicedesign_prefill_real.cpp tokenizes the case text itself through Model::tokenize_request, so the port's own BPE is inside this number. That coupling does not weaken the gate: a tokenizer disagreement either changes the token COUNT (caught by shapes_match: false, no tolerance needed) or changes an id (an O(1) jump in p95_relative, the same signature the fault injection below produced). What it costs is ATTRIBUTION, not detection -- a failure here would not by itself say whether the tokenizer or build_talker_prompt is at fault.",
+                  "observed_by_case": {
+                    "voicedesign-empty-instruct-en": {
+                      "text": "Qwen3-TTS is awesome!",
+                      "instruct": "",
+                      "language": "English",
+                      "positions": 18,
+                      "hidden_size": 2048,
+                      "codec_offset": 3,
+                      "external_speaker_index": -1,
+                      "p95_relative": 0.00613
+                    },
+                    "voicedesign-nonempty-instruct-en": {
+                      "text": "Qwen3-TTS is awesome!",
+                      "instruct": "A cheerful, bright female voice speaking with fast pacing and high energy.",
+                      "language": "English",
+                      "positions": 37,
+                      "hidden_size": 2048,
+                      "codec_offset": 22,
+                      "external_speaker_index": -1,
+                      "instruct_tokens": 19,
+                      "p95_relative": 0.006085
+                    }
+                  },
+                  "note": "TASK 3 (Stage 3 Plan 3), 2026-08-20: first Q8_MIXED measurement of this probe, same bound as BF16/F16 (0.01), same two cases (voicedesign-empty-instruct-en, voicedesign-nonempty-instruct-en), same driver (tests/qwen3_tts_voicedesign_prefill_real.cpp, invoked directly against reports/porting/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign/oracle{,-instruct}/prefill.f32 -- scripts/validate-qwen3-tts-replay.py's ordinary --stage replay case loop has no meaningful reading for this variant, see this profile's own top-level note). Measured: 0.006130 (empty-instruct) and 0.006085 (nonempty-instruct), roughly 2.2x-2.3x BF16's/F16's own residual (0.00269-0.002903) -- the expected direction and rough size for Q8_0's coarser per-block quantization of the matrix half, against BF16's/F16's finer two-byte matrix weights. Bound left at the BF16-derived 0.01 rather than tightened or loosened, matching this family's precedent for reusing rather than re-deriving a bound a profile change did not by itself give reason to move. observed_max_relative is the larger of the two (0.006130), giving 1.63x headroom -- comfortably positive but visibly thinner than BF16's 3.72x or F16's 3.45x, the expected cost of an 8-bit matrix half. No fault injection was run against this profile; this cell carries none."
+                }
+              },
+              "backend": "CPU",
+              "note": "Q8_MIXED, Stage 3 Plan 3 Task 3, 2026-08-20 -- see this stage's probes.prefill.note for the measurement and why the ordinary replay case loop does not apply to this variant. Only the prefill probe is covered, matching BF16's and F16's own stage shape (design section 6.2's stage grid for this rung covers no codes or waveform for this variant at any profile)."
+            },
+            "public": {
+              "backend": "CPU",
+              "description": "The public C seam driven end to end against the Q8_MIXED VoiceDesign package, through a Description Text Voice Profile: seed reporting and repeatability, Voice and language resolution, plus design section 6.3's three relations and section 6.4's package-support refusals -- the same eleven checks the BF16 and F16 cells run (see BF16's own note for what each one does).",
+              "checks": 11,
+              "all_passed": true,
+              "skipped": 3,
+              "voice_kind": "description_text",
+              "measured": "2026-08-20",
+              "build": "build (Release, SYNTH_BUILD_INTEGRATION_TESTS=ON), left reconfigured from Task 2's own change to CLAUDE.md's default unit-gate tree; no timing figure is taken from this build",
+              "max_output_frames": 983040,
+              "descriptions": [
+                "A cheerful, bright female voice speaking with fast pacing and high energy.",
+                "A deep, calm male voice speaking slowly and quietly."
+              ],
+              "skipped_checks": [
+                {
+                  "check": "the resolved Voice is reported",
+                  "inapplicable_because": "a Voice Profile has no id, so the seam has nothing to resolve or echo and resolved_voice comes back empty. Observed, not assumed -- identical reasoning to the reference_audio variant's own skip above."
+                },
+                {
+                  "check": "a dialect speaker synthesizes",
+                  "inapplicable_because": "a dialect speaker is a Preset Voice and this package catalogues none"
+                },
+                {
+                  "check": "a dialect speaker differs from a plain one",
+                  "inapplicable_because": "a dialect speaker is a Preset Voice and this package catalogues none"
+                }
+              ],
+              "note": "Q8_MIXED, Stage 3 Plan 3 Task 3, 2026-08-20. Same 11 checks, same shape as the BF16 and F16 cells (see BF16's own note for what each one does); repeated here only where the Q8_MIXED run differs. All 11 checks passed, identical verdicts to BF16 and F16, same 3 skips (no Preset Voice catalogue). This cell was filled by running scripts/validate-qwen3-tts-public.py twice: a first run before this file's own Q8_MIXED replay cell existed, where relation 3 reported unmeasured (a fourth skip, not recorded here); a second run, after the replay cell above was written, where relation 3 read this same file's own Q8_MIXED replay.prefill probe and passed -- the same ordering Task 2 used for F16, so relation 3 has a real Q8_MIXED record to cite rather than falling back to BF16's or F16's. Digests are from the second, recorded run and differ from BF16's and F16's own because a different profile is a different sequence of floating-point operations -- reported here for completeness, not as a parity claim: seed 7 first digest f162444afa125cf9, seed 8 d442e887b5bd14da, second description bd22abdc4bdb04fa, random-seed digest 840005a66c15f559 (reported seed 1885585002671471434), empty instruct public-seam smoke run 44160 frames (a different frame count than BF16's/F16's 40320 -- expected, not a defect: generated length is build/profile-dependent, never a pinned invariant). RELATION 3's citation ('an empty instruct reproduces the oracle within the replay stage's recorded tolerance') reads THIS SAME FILE's own Q8_MIXED replay.prefill probe (case voicedesign-empty-instruct-en, p95_relative 0.00613 against max_relative 0.01)."
+            }
+          }
         }
       }
     }

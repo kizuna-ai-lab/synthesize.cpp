@@ -4943,6 +4943,151 @@ exists in the port yet," has been rewritten -- Plan 2 shipped the instruct
 block before this task ran, and this cell's own `instruct_tokens: 19` already
 contradicted the old text.
 
+## Stage 3: VoiceDesign Package, Plan 3 Task 3
+
+Cuts `qwen3-tts-12hz-1-7b-voicedesign-Q8_MIXED.gguf` from the same
+4,295,891,904-byte BF16 source Task 2 cut F16 from, and measures its size and
+the two tolerance cells the plan asks for. **This is a size result and a
+tolerance-agreement result only -- it does not decide publication.** Whether
+Q8_MIXED ships for this variant is settled in Task 4 (against `Q5_K_MIXED`)
+and Task 5 (on speed, forbidden to this task by the global
+no-performance-figure rule), not here -- the same boundary Task 2 drew for F16
+after its own first attempt drew a conclusion this task's evidence could not
+support.
+
+**All figures below are from the `build` tree, `CMAKE_BUILD_TYPE=Release`,
+left at `-DSYNTH_BUILD_INTEGRATION_TESTS=ON` by Task 2's own reconfigure (the
+only way to obtain `synthesize-qwen3-tts-voicedesign-prefill-real`, used
+below). No timing figure is taken from this build or claimed anywhere in this
+section.**
+
+### Cutting it required no fix this time
+
+`--quant Q8_MIXED` ran and wrote the package on the first attempt --
+`talker.code_predictor.small_to_mtp_projection`, the tensor pair Task 2 had to
+teach the quantizer's classifier (`98d8b84`), is shared by both profiles'
+runs through the same classifier code, so Task 2's fix already covers this
+cut. No production code changed in this task.
+
+### Size and tensor census
+
+| | BF16 (source) | Q8_MIXED |
+|---|---|---|
+| bytes | 4,295,891,904 | 2,499,423,680 |
+| tensor count | 659 | 659 |
+| by type | 404 BF16 + 255 F32 | 267 Q8_0 + 392 F32 |
+
+Delta: **-1,796,468,224 bytes**, a ratio of **0.5818** against BF16 (58.18 %
+of the source's size, i.e. **41.82 % smaller**). This does **not** match
+`qwen3-tts-12hz-0-6b-base`'s own Q8_MIXED ratio of 0.663 (33.7 % smaller,
+2,516,522,624 -> 1,667,606,112) -- the brief warned against assuming it would,
+and it does not: VoiceDesign shrinks proportionally *more*. The 267/392
+tensor-type split is identical to F16's own 267/392 split (Task 2, above) --
+same classifier boundary, same 267 tensors take the profile's matrix type
+(F16 there, Q8_0 here) and the same 392 stay F32 -- which is the same
+mechanism Task 2 named for why VoiceDesign's F16 penalty is smaller than
+Base's: the matrix half this variant halves (or, here, quantizes to Q8_0) is
+a larger share of the package than it is in the 2.5 GB Base package, so a
+change to that half moves the total by proportionally more in either
+direction, larger when two-byte types cannot shrink (F16) and smaller when an
+8-bit block type can (Q8_MIXED).
+
+### Load, confirmed before either cell was filled
+
+The brief's own Step 3 literal is broken, independently of Task 2's
+`--list-voices` finding for the same step in the F16 task: it invokes
+`synthesize-qwen3-tts-public-real <model> probe:description en`, supplying
+only two positional arguments after the model path where the driver requires
+four (`<model.gguf> <out.pcm> <voice-id|...> <language-tag|-> <seed|random>
+[max-frames] [cpu|cuda] [threads]`, confirmed against
+`tests/qwen3_tts_public_real.c`'s own usage string). Running it as written
+exits 2 on a usage error rather than probing anything. Confirmed instead with
+the same substitute Task 2 used, with an explicit language tag and seed added
+since this task's own out.pcm path makes the argument count unambiguous:
+
+```
+build/bin/synthesize-qwen3-tts-public-real \
+  models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-Q8_MIXED.gguf \
+  /tmp/qwen3-tts-q8mixed-probe.pcm \
+  probe:description - 0 8192 cpu
+```
+
+`{"probe": "description", "status": 0}`, exit 0. The package loads and
+`create_from_description` works on the cut package.
+
+### The `replay` cell: same prefill-driver method as F16, same reason
+
+`scripts/validate-qwen3-tts-replay.py --stage replay` (the brief's own Step 5
+text already says not to try this, and Task 2's report is the source of that
+finding) is not re-verified here beyond re-reading Task 2's account -- it
+fails identically for every profile of this variant because no per-case
+oracle artifacts exist for it, a fact about the variant's Golden Manifest
+plumbing, not about any one profile. `stages.replay` is filled the same way
+Task 2 filled F16's: `tests/qwen3_tts_voicedesign_prefill_real.cpp`, built
+already (Task 2's reconfigure), invoked directly against the same two
+committed oracle dumps, reusing BF16's and F16's 0.01 bound:
+
+| case | BF16 p95_relative | F16 p95_relative | Q8_MIXED p95_relative |
+|---|---|---|---|
+| voicedesign-empty-instruct-en | 0.00269 | 0.002689 | 0.006130 |
+| voicedesign-nonempty-instruct-en | 0.002903 | 0.002902 | 0.006085 |
+
+Both pass (`gate_passed: true`, `shapes_match: true`), but visibly further
+from BF16/F16 than those two are from each other -- roughly 2.2-2.3x their
+residual, rather than half a bf16 ulp. This is the expected direction and
+rough size for the difference in kind, not just degree, between the two
+profiles: F16's matrix half stays a two-byte float, finer than the oracle's
+own bf16 storage, so its residual is attributable to the *oracle*. Q8_MIXED's
+matrix half is an 8-bit block type, coarser than bf16, so some of this
+residual is attributable to the *port* for the first time in this variant's
+profile history. `observed_max_relative` is the larger of the two (0.00613),
+giving **1.63x headroom** against the unchanged 0.01 bound -- positive and
+passing, but the thinnest headroom this variant's `replay.prefill` probe has
+recorded (BF16 3.72x, F16 3.45x, Q8_MIXED 1.63x), consistent with Base's own
+`Q8_MIXED` cell being visibly closer to its bound than its `F16` cell is. No
+fault injection was run against Q8_MIXED; this cell carries no
+`fault_injection_by_case` block, matching the standing instruction not to
+carry one forward from a profile it was not measured on.
+
+### The `public` cell: eleven checks pass, filled after `replay`
+
+`scripts/validate-qwen3-tts-public.py --profile Q8_MIXED --backend cpu` (the
+brief's Step 4 command, run as written) against the same two description
+instructs Task 2 used. Run twice, in the same order Task 2 established for
+F16: once before `tests/tolerances/qwen3-tts.json` carried a Q8_MIXED
+`replay` cell (relation 3 -- "an empty instruct reproduces the oracle within
+the replay stage's recorded tolerance" -- read "unmeasured" and was skipped,
+a fourth skip beyond the usual three), and once after, so relation 3 had a
+real Q8_MIXED record of its own to cite instead of falling back to BF16's or
+F16's or reporting unmeasured. The second run is the one recorded: all 11
+checks passed, identical verdicts to BF16 and F16, the same 3 skips (no
+Preset Voice catalogue). Relation 3 read this same file's own Q8_MIXED
+`replay.prefill` probe (p95_relative 0.00613 against max_relative 0.01) and
+passed. Report: `reports/validate/qwen3-tts/public-voicedesign-Q8_MIXED.json`
+(gitignored).
+
+### Verification
+
+- `synthesize-qwen3-tts-quantization-policy-test`: passes, unchanged by this
+  task (no classifier edit was needed).
+- `synthesize-golden-manifest-contract` / `synthesize-tolerance-coverage`:
+  both pass -- the new Q8_MIXED profile carries the same stage set as BF16
+  and F16 (`replay`, `public`), and `case_count` (13) is untouched.
+- `synthesize-qwen3-tts-voicedesign-prefill-real` /
+  `-prefill-instruct-real` (the BF16-driven CTest golden gates): still pass,
+  unaffected -- this task changed no production code.
+- `scripts/ci/clang-format.sh --check-diff`: clean (only `.json`/`.md`
+  changed).
+- Full unit gate, `build` tree (`SYNTH_BUILD_INTEGRATION_TESTS=ON` per Task
+  2's still-standing reconfigure): 104/106, the same two pre-existing,
+  not-ours failures (`synthesize-python-api-wheel-test`,
+  `synthesize-vits-python-unit`'s sole error
+  `test_quantization_reports_match_current_artifacts`). No third.
+- `git status --porcelain` checked before staging; no `.gguf` or build
+  artifact staged. `models/` is a symlink outside the worktree, gitignored
+  via `/models`; `reports/validate/` is gitignored per the global
+  constraints.
+
 ## Open Questions for Intake
 
 1. Confirm the codec decoder topology against upstream rather than against a

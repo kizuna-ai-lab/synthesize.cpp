@@ -541,10 +541,13 @@ Compatibility section.
 
 **Erratum, 2026-08-20 — the third bullet is now implemented, and the "Second
 erratum, 2026-08-19" above named the wrong obstacle for why it could not be.**
-That erratum wrote that closing the bullet would need "a synthetic GGUF
-fixture built specifically to carry the mismatch", and that Task 6's three
-files could not manufacture one. The second half is true; the first half is
-not, and it is the half a later reader would act on. The fixture requirement
+That erratum offered two routes -- "either the weaker `model_variant`-string
+cross-check ... or a synthetic GGUF fixture built specifically to carry the
+mismatch" -- and what was built is the first of them, so the disjunction
+itself was sound and is not what this note corrects. What it corrects is the
+reason attached to the second route: that Task 6's three files could not
+manufacture such a fixture, stated broadly enough to read as though nothing
+in the tree could. The fixture requirement
 was the VALIDATOR's alone: `scripts/validate-qwen3-tts-public.py` drives real
 converted packages on disk and `tests/qwen3_tts_public_real.c` has no
 GGUF-writing path, so neither could forge a malformed one. But

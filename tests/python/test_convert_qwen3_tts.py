@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -970,6 +971,39 @@ class VariantKindAgreementTests(unittest.TestCase):
             metadata = {name: field.contents() for name, field in reader.fields.items()}
         self.assertEqual(metadata["synthesize.model_variant"], "qwen3-tts-12hz-0-6b-customvoice")
         self.assertNotIn("synthesize.voice.profile_sources", metadata)
+
+
+class VariantKindTableAgreementTests(unittest.TestCase):
+    """The loader's kind table and the converter's must name the same kinds.
+
+    They are independent literals in two languages -- `kVariantKinds` in
+    `src/arch/qwen3-tts/weights.cpp` and `MODEL_TYPE_BY_VARIANT_KIND` here --
+    and both sides' comments say they must agree, which until 2026-08-20 was
+    the only thing making them. Drift is not symmetric: a kind added to the
+    CONVERTER alone just means packages this project writes go ungoverned by
+    the loader, but a kind added to the LOADER alone makes it refuse packages
+    the converter happily writes. That direction is an over-refusal on real
+    output, which is the failure this whole rule was shaped to avoid, so it
+    gets a test rather than a comment.
+    """
+
+    def _loader_kinds(self) -> set[str]:
+        source = (REPO_ROOT / "src" / "arch" / "qwen3-tts" / "weights.cpp").read_text()
+        start = source.index("constexpr VariantKind kVariantKinds[]")
+        end = source.index("};", start)
+        # Each entry's first field is the kind string; nothing else in the
+        # block is a quoted literal, so this stays a parse of the table rather
+        # than a grep over the file.
+        return set(re.findall(r'\{\s*"([^"]+)"', source[start:end]))
+
+    def test_the_two_kind_tables_name_the_same_kinds(self) -> None:
+        self.assertEqual(self._loader_kinds(), set(convert.MODEL_TYPE_BY_VARIANT_KIND))
+
+    def test_the_table_this_test_parses_is_not_empty(self) -> None:
+        """Guards the parse itself: a renamed table would silently yield the
+        empty set and make the comparison above pass against an empty
+        converter table, which is exactly the drift it exists to catch."""
+        self.assertEqual(len(self._loader_kinds()), 3)
 
 
 if __name__ == "__main__":

@@ -922,6 +922,14 @@ def main() -> int:
         raise ConverterError("neither checkpoint matches the manifest's pinned digest")
 
     profile = variant_profile(config)
+    # Both inputs to the variant/sources agreement check exist HERE, before any
+    # tensor is read. add_metadata calls it too, and that call stays: it is the
+    # backstop on the single write path, so no future caller can reach the
+    # writer around it. But leaving it ONLY there means a mismatch knowable
+    # from the manifest alone is reported after a multi-minute conversion has
+    # already run. `check_variant_kind` is pure and idempotent, so calling it
+    # twice costs nothing and turns that wait into an immediate refusal.
+    check_variant_kind(manifest["variant"], profile)
     conversion = Conversion()
     convert_file(talker_path, "", conversion, reconstruct=False)
     convert_file(codec_path, "codec.", conversion, reconstruct=True,

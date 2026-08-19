@@ -206,7 +206,9 @@ BF16 is 4,295,891,904 bytes. Write the F16 figure and the **signed** difference 
 - [ ] **Step 3: Confirm it loads at all**
 
 ```bash
-build/bin/synthesize-cli --model models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-F16.gguf --list-voices
+build/bin/synthesize-qwen3-tts-public-real \
+  models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-F16.gguf \
+  probe:description en
 ```
 Expected: loads, reports zero Preset Voices. A load failure here is a Task 2 defect, not a later one — stop and report rather than proceeding to fill cells for a package that does not load.
 
@@ -226,11 +228,14 @@ uv run --project scripts/envs/qwen3-tts --locked python scripts/validate-qwen3-t
 - [ ] **Step 5: Fill the `replay` cell**
 
 ```bash
-uv run --project scripts/envs/qwen3-tts --locked python scripts/validate-qwen3-tts-replay.py \
-  --manifest tests/golden/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign.manifest.json \
-  --model models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-F16.gguf \
-  --runner build/bin/synthesize-qwen3-tts-replay-real \
-  --check --profile F16 --backend CPU --stage replay
+**This command does not work for this variant, and did not work for BF16 either.**
+Task 2 established that `validate-qwen3-tts-replay.py --stage replay` fails against
+every profile of `qwen3-tts-12hz-1-7b-voicedesign` because no oracle case artifacts
+exist for it. Use the method Task 2 used and recorded — direct invocation of the
+prefill driver, matching however the committed BF16 cell was produced. Read
+`.superpowers/sdd/2026-08-20-qwen3-tts-stage-3-plan-3-quantization-backends-ship/task-2-report.md`
+for the exact commands rather than reconstructing them, and record the cell as the
+prefill probe it is rather than as a full replay.
 ```
 
 - [ ] **Step 6: Verify the tolerance file still validates and its counts agree**
@@ -286,7 +291,9 @@ For scale: Base went 2,516,522,624 → 1,667,606,112, a ratio of 0.663. Record t
 - [ ] **Step 3: Confirm it loads**
 
 ```bash
-build/bin/synthesize-cli --model models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-Q8_MIXED.gguf --list-voices
+build/bin/synthesize-qwen3-tts-public-real \
+  models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-Q8_MIXED.gguf \
+  probe:description en
 ```
 
 - [ ] **Step 4: Fill the `public` cell**
@@ -304,11 +311,14 @@ uv run --project scripts/envs/qwen3-tts --locked python scripts/validate-qwen3-t
 - [ ] **Step 5: Fill the `replay` cell**
 
 ```bash
-uv run --project scripts/envs/qwen3-tts --locked python scripts/validate-qwen3-tts-replay.py \
-  --manifest tests/golden/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign.manifest.json \
-  --model models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-Q8_MIXED.gguf \
-  --runner build/bin/synthesize-qwen3-tts-replay-real \
-  --check --profile Q8_MIXED --backend CPU --stage replay
+**This command does not work for this variant, and did not work for BF16 either.**
+Task 2 established that `validate-qwen3-tts-replay.py --stage replay` fails against
+every profile of `qwen3-tts-12hz-1-7b-voicedesign` because no oracle case artifacts
+exist for it. Use the method Task 2 used and recorded — direct invocation of the
+prefill driver, matching however the committed BF16 cell was produced. Read
+`.superpowers/sdd/2026-08-20-qwen3-tts-stage-3-plan-3-quantization-backends-ship/task-2-report.md`
+for the exact commands rather than reconstructing them, and record the cell as the
+prefill probe it is rather than as a full replay.
 ```
 
 - [ ] **Step 6: Verify**
@@ -353,7 +363,9 @@ build/bin/synthesize-quantize \
 - [ ] **Step 2: Confirm the runtime accepts the profile string**
 
 ```bash
-build/bin/synthesize-cli --model models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-Q5_K_MIXED.gguf --list-voices
+build/bin/synthesize-qwen3-tts-public-real \
+  models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-Q5_K_MIXED.gguf \
+  probe:description en
 ```
 `src/arch/qwen3-tts/weights.cpp`'s `read_quantization` accepts `Q5_K_MIXED` and `catalog.cpp`'s `expected_type` folds `Q5KMixed` into the shared F16/Q8Mixed/Q5KMixed branch, so this should load. If it does not, the failure is a real contradiction between the tool and the runtime and must be reported rather than worked around.
 
@@ -375,11 +387,14 @@ uv run --project scripts/envs/qwen3-tts --locked python scripts/validate-qwen3-t
   --profile Q5_K_MIXED --backend cpu \
   --report reports/validate/qwen3-tts/public-voicedesign-Q5_K_MIXED.json
 
-uv run --project scripts/envs/qwen3-tts --locked python scripts/validate-qwen3-tts-replay.py \
-  --manifest tests/golden/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign.manifest.json \
-  --model models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-Q5_K_MIXED.gguf \
-  --runner build/bin/synthesize-qwen3-tts-replay-real \
-  --check --profile Q5_K_MIXED --backend CPU --stage replay
+**This command does not work for this variant, and did not work for BF16 either.**
+Task 2 established that `validate-qwen3-tts-replay.py --stage replay` fails against
+every profile of `qwen3-tts-12hz-1-7b-voicedesign` because no oracle case artifacts
+exist for it. Use the method Task 2 used and recorded — direct invocation of the
+prefill driver, matching however the committed BF16 cell was produced. Read
+`.superpowers/sdd/2026-08-20-qwen3-tts-stage-3-plan-3-quantization-backends-ship/task-2-report.md`
+for the exact commands rather than reconstructing them, and record the cell as the
+prefill probe it is rather than as a full replay.
 ```
 
 - [ ] **Step 5: Write the recommendation, with its reasoning visible**

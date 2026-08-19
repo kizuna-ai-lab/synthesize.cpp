@@ -1237,6 +1237,16 @@ synth_status_t load_qwen3_tts_profile_from_memory(const synth_model_t *         
     // than approximating it. Every other field stays at its zero default, so
     // the safe-degradation property above is untouched.
     //
+    // That derivation is PINNED, not merely mirrored: qwen3_tts_voice_required_test.cpp's
+    // test_capability_follows_the_declared_sources asserts `source_flags ==
+    // (DESCRIPTION_TEXT | SERIALIZED_PROFILE)` by equality, and its Base twin
+    // does the same for REFERENCE_AUDIO -- so re-introducing a mask into
+    // fill_voice_profile_capability breaks those tests rather than silently
+    // desynchronising this reconstruction. Verified 2026-08-19 by injecting
+    // exactly that mask and watching them fail. The one direction that would
+    // slip past is a THIRD source bit added to read_profile_sources, which
+    // narrows this fallback rather than widening it, and so fails safe.
+    //
     // The alternative -- giving that test a Model with real VoiceDesign
     // hparams -- is not available at the `unit` tier: `qwen3tts::Model`'s
     // constructor is private and its only factories (`load`/`load_cpu`) read

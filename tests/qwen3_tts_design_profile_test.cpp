@@ -1015,6 +1015,55 @@ int test_design_instruct_over_length_is_refused_at_load() {
     return 0;
 }
 
+int test_design_instruct_with_an_on_disk_nul_is_refused_at_load() {
+    uint8_t compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    // A NUL INSIDE the on-disk string. create_design_profile refuses this at
+    // the entry, so this project never writes such an envelope -- but that
+    // governs the writer, not the loader, and the loader is the side facing
+    // untrusted bytes. Before 2026-08-19 this buffer loaded with SYNTH_OK and
+    // yielded a five-byte Voice while its own bytes declared twenty-four:
+    // gguf stores the string length-prefixed, and every reader this family
+    // uses to get one back (gguf_get_val_str, GgufMetadata::string) returns a
+    // null-terminated `const char *`. Two readers of one digest-valid buffer
+    // disagreeing about which Voice it encodes is the defect, not the
+    // truncation itself.
+    const std::string with_nul("warm,\0 low, unmistakable", 24);
+    SYNTH_TEST_CHECK(with_nul.size() == 24);
+    std::vector<uint8_t> bytes = hand_build_design_bytes(compatibility_id, with_nul);
+    SYNTH_TEST_CHECK(reseal(bytes));
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> loaded;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    const synth_status_t        status  = load_profile_from_memory(voice_design_hparams(), bytes.data(), bytes.size(),
+                                                                   compatibility_id, family_tag, loaded, code, message);
+    SYNTH_TEST_CHECK(status == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(loaded == nullptr);
+
+    // ISOLATION CONTROL: the SAME buffer shape and the same 24 bytes, with
+    // the NUL replaced by an ordinary character. If this arm did not load,
+    // the refusal above would prove nothing about the NUL -- it could be the
+    // length, the resealing, or the hand-built shape being rejected. It must
+    // load, and it must load the WHOLE string, which is also what pins that
+    // the new prescan check did not start truncating legitimate values.
+    const std::string    without_nul("warm,- low, unmistakable", 24);
+    std::vector<uint8_t> control = hand_build_design_bytes(compatibility_id, without_nul);
+    SYNTH_TEST_CHECK(reseal(control));
+
+    synth::ProfileFamilyTag     control_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> control_loaded;
+    const synth_status_t        control_status =
+        load_profile_from_memory(voice_design_hparams(), control.data(), control.size(), compatibility_id, control_tag,
+                                 control_loaded, code, message);
+    SYNTH_TEST_CHECK(control_status == SYNTH_OK);
+    SYNTH_TEST_CHECK(control_loaded != nullptr);
+    SYNTH_TEST_CHECK(control_tag == synth::ProfileFamilyTag::Qwen3TtsDesign);
+    SYNTH_TEST_CHECK(static_cast<const DesignInstruct *>(control_loaded.get())->instruct == without_nul);
+    return 0;
+}
+
 int test_design_instruct_invalid_utf8_is_refused_at_load() {
     uint8_t compatibility_id[32];
     fill_compatibility_id(compatibility_id);
@@ -1235,6 +1284,7 @@ int main() {
     SYNTH_TEST_CHECK(test_an_empty_instruct_round_trips() == 0);
     SYNTH_TEST_CHECK(test_shared_header_tampers_produce_identical_statuses_for_both_envelope_kinds() == 0);
     SYNTH_TEST_CHECK(test_design_instruct_over_length_is_refused_at_load() == 0);
+    SYNTH_TEST_CHECK(test_design_instruct_with_an_on_disk_nul_is_refused_at_load() == 0);
     SYNTH_TEST_CHECK(test_design_instruct_invalid_utf8_is_refused_at_load() == 0);
     SYNTH_TEST_CHECK(test_the_design_writer_emits_exactly_the_whitelisted_keys() == 0);
     SYNTH_TEST_CHECK(test_the_design_writer_refuses_an_embedded_nul() == 0);

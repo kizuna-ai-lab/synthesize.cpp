@@ -871,6 +871,34 @@ bool prescan_skip_value(const uint8_t * data, size_t size, size_t & offset, gguf
             if (!prescan_read(data, size, offset, length) || length > kPrescanMaxStringLength) {
                 return false;
             }
+            // An EMBEDDED NUL is refused here, before the value is skipped.
+            // gguf stores a string length-prefixed, but every reader this
+            // family uses to get one back out -- gguf_get_val_str,
+            // GgufMetadata::string -- hands back a null-terminated
+            // `const char *`. So a digest-valid buffer whose instruct is
+            // "warm,\0 low, unmistakable" declares 24 bytes on disk and
+            // yields a 5-byte Voice, with SYNTH_OK: two readers of the same
+            // bytes disagreeing about which Voice they encode.
+            //
+            // create_design_profile refuses a NUL at the ENTRY, which stops
+            // this project ever writing such an envelope. That is not the
+            // same as refusing to load one, and the load side is the side
+            // facing untrusted bytes. This check is the load side.
+            //
+            // It belongs HERE, in the shared prescan, rather than after the
+            // KV parse: the prescan already reads each string's on-disk
+            // length from the raw bytes, so the length-aware reader that
+            // detecting this was once thought to require already exists --
+            // it is the code this comment sits in. Being shared, it also
+            // closes the identical truncation on `language_tag`, which
+            // valid_bcp47_shape never sees because it runs on the already
+            // truncated value.
+            if (!prescan_has_remaining(offset, size, size_t(length))) {
+                return false;
+            }
+            if (length > 0 && std::memchr(data + offset, 0, size_t(length)) != nullptr) {
+                return false;
+            }
             if (!prescan_skip(offset, size, size_t(length))) {
                 return false;
             }
@@ -1568,12 +1596,15 @@ synth_status_t serialize_design_profile(const HParams &        hparams,
     // for the next reader: anyone adding a second string-valued key to this
     // envelope inherits the same truncation and needs the same entry-side
     // refusal, and anyone loosening create_design_profile reopens this line.
-    // A HAND-BUILT envelope can still carry a 0x00 inside its on-disk
-    // instruct string (GGUF strings are length-prefixed on disk), and the
-    // loader will read back the prefix before it; that is self-consistent --
-    // the digest binds the whole buffer, and the value the loader acts on is
-    // the value it validates -- not a round-trip mismatch, because nothing
-    // this project writes produced those bytes.
+    // A HAND-BUILT envelope carrying a 0x00 inside its on-disk instruct
+    // string is refused by prescan_skip_value, on the LOAD side, where the
+    // untrusted bytes actually arrive. Until 2026-08-19 this comment claimed
+    // that case was "self-consistent" and therefore harmless. It was not:
+    // measured on a resealed envelope, a 24-byte on-disk instruct loaded as
+    // SYNTH_OK with a 5-byte Voice, so two readers of one digest-valid
+    // buffer disagreed about which Voice it encoded. The entry-side refusal
+    // below stops THIS PROJECT writing such bytes; it never governed what
+    // the loader would accept.
     gguf_set_val_str(ctx.get(), kKeyInstruct, profile.instruct.c_str());
 
     // No tensor: see this function's own header comment (profile.h) for why
@@ -1698,8 +1729,17 @@ synth_status_t load_profile_from_memory(const HParams & hparams,
         // package carries no speaker encoder, so its
         // `speaker_encoder.enc_dim` is 0 and every clone envelope already
         // fails there (an envelope declaring 0 elements dies earlier still,
-        // on the `tensor_bytes == 0` refusal). That is a structural accident
-        // rather than a stated rule, so a fourth kind should not assume it.
+        // on the `tensor_bytes == 0` refusal). The only shape that would
+        // reach it is a package declaring `description-text` WHILE carrying
+        // a speaker encoder -- and that is not a structural accident but a
+        // STATED rule: read_profile_and_speaker_encoder (weights.cpp) refuses
+        // exactly that on `wants_reference != carries_encoder`, and the
+        // `names.size() != 1` rule beside it forbids declaring both sources.
+        // So no loadable package can reach the clone branch's gap. Reviewed
+        // 2026-08-19 by trying to reach it: a clone envelope against
+        // description-text hparams with a fabricated enc_dim of 11 does load,
+        // which is why the rule above -- not enc_dim -- is what to cite if a
+        // fourth kind is ever added.
         if ((hparams.profile_sources & SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT) == 0) {
             return SYNTH_ERR_UNSUPPORTED_VOICE;
         }

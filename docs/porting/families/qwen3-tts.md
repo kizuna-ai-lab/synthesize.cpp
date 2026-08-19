@@ -4744,7 +4744,7 @@ sensitive half does not also grow.
 
 **This is a size result only, and it does not decide publication.** Whether
 F16 ships for this family is a **speed** question, not a size one --
-`docs/quantization.md:449-453` states the rule directly ("F16 is a speed
+`docs/quantization.md:450-454` states the rule directly ("F16 is a speed
 profile for this family rather than a size one"), and Base's own F16, also
 larger than its source, **was published** on 2026-08-17 on exactly that
 reasoning (see the Status paragraph above). The precedent this section
@@ -4834,6 +4834,8 @@ unit-test speed, with no real package on disk required. It would not replace
 running the quantizer against a real package -- no synthetic fixture stands in
 for a genuine checkpoint's actual tensor names -- but it would have caught
 this exact class of gap earlier than this task did.
+
+### Size and tensor census
 
 | | BF16 (source) | F16 |
 |---|---|---|

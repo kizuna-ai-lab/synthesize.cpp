@@ -659,6 +659,16 @@ int test_a_variant_kind_that_contradicts_the_package_is_refused() {
     failures += expect_variant_rejected(valid_metadata(), "qwen3-tts-12hz-1-7b-voicedesign",
                                         "a VoiceDesign kind over a preset-catalog package");
 
+    // The same contradictions spelled WITHOUT a separator. Until 2026-08-20
+    // the loader returned early on these while the converter refused them, so
+    // the two ends disagreed about whether a bare kind name is a kind. It is.
+    failures += expect_variant_rejected(voice_design_metadata(), "base",
+                                        "a bare Base kind over a description-text declaration");
+    failures += expect_variant_rejected(base_metadata(), "voicedesign",
+                                        "a bare VoiceDesign kind over a reference-audio declaration");
+    failures += expect_variant_rejected(voice_design_metadata(), "customvoice",
+                                        "a bare CustomVoice kind over a profile-sources package");
+
     SYNTH_TEST_CHECK(failures == 0);
     return 0;
 }
@@ -695,8 +705,16 @@ int test_variant_strings_this_rule_does_not_govern_still_load() {
     failures += expect_variant_accepted(voice_design_metadata(), "qwen3-tts-24hz-3b-dialogue",
                                         "an unknown kind, description-text");
 
-    // A variant string with no separator at all has no kind segment to read.
-    failures += expect_variant_accepted(voice_design_metadata(), "synthetic", "a variant string with no kind segment");
+    // A variant string with no separator is its own final segment, so it is
+    // read as a kind. "synthetic" is not a known one, so it stays governed by
+    // nothing; the two below are known kinds arriving on their OWN shape, so
+    // they agree and load. Both changed meaning on 2026-08-20, when the loader
+    // stopped returning early on a missing separator and started agreeing with
+    // the converter about what such a string names.
+    failures += expect_variant_accepted(voice_design_metadata(), "synthetic", "an unknown kind, no separator");
+    failures += expect_variant_accepted(base_metadata(), "base", "a known kind, no separator, on its own shape");
+    failures +=
+        expect_variant_accepted(voice_design_metadata(), "voicedesign", "a known kind, no separator, on its own shape");
 
     SYNTH_TEST_CHECK(failures == 0);
     return 0;

@@ -1,6 +1,6 @@
 # Voice Conditioning Survey
 
-Status: Research snapshot on 2026-07-21; the public source set, all four source-specific C representations, Reference Audio normalization, the Serialized Profile format and compatibility rules, and the declaration rule for invertible derived conditioning stated below are confirmed; amended 2026-08-14, and again on 2026-08-15, for the qwen3-tts ICL Profile's recoverable transcript; amended again on 2026-08-19, so that a non-empty Description Text prompt is the default requirement rather than an absolute one, and corrected the same day to separate what a prepared Profile stops depending on (the caller's buffer) from what it keeps depending on (the description's content, verbatim on qwen3-tts VoiceDesign).
+Status: Research snapshot on 2026-07-21; the public source set, all four source-specific C representations, Reference Audio normalization, the Serialized Profile format and compatibility rules, and the declaration rule for invertible derived conditioning stated below are confirmed; amended 2026-08-14, and again on 2026-08-15, for the qwen3-tts ICL Profile's recoverable transcript; amended on 2026-08-19, so that a non-empty Description Text prompt is the default requirement rather than an absolute one; corrected on 2026-08-20 to separate what a prepared Profile stops depending on (the caller's buffer) from what it keeps depending on (the description's content, verbatim on qwen3-tts VoiceDesign).
 
 ## Purpose
 

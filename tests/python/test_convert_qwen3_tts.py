@@ -987,21 +987,32 @@ class VariantKindTableAgreementTests(unittest.TestCase):
     gets a test rather than a comment.
     """
 
-    def _loader_kinds(self) -> set[str]:
+    def _loader_kinds(self) -> list[str]:
+        """The loader table's entries IN ORDER, duplicates preserved.
+
+        Returning a list rather than a set is deliberate: a duplicated entry
+        collapses in a set and would satisfy both assertions below while the
+        C++ table carried two rows for one kind -- the parse would agree with
+        the converter and the count would still read three.
+        """
         source = (REPO_ROOT / "src" / "arch" / "qwen3-tts" / "weights.cpp").read_text()
         start = source.index("constexpr VariantKind kVariantKinds[]")
         end = source.index("};", start)
         # Each entry's first field is the kind string; nothing else in the
         # block is a quoted literal, so this stays a parse of the table rather
         # than a grep over the file.
-        return set(re.findall(r'\{\s*"([^"]+)"', source[start:end]))
+        return re.findall(r'\{\s*"([^"]+)"', source[start:end])
 
     def test_the_two_kind_tables_name_the_same_kinds(self) -> None:
-        self.assertEqual(self._loader_kinds(), set(convert.MODEL_TYPE_BY_VARIANT_KIND))
+        self.assertEqual(set(self._loader_kinds()), set(convert.MODEL_TYPE_BY_VARIANT_KIND))
+
+    def test_the_loader_table_has_no_duplicate_entries(self) -> None:
+        kinds = self._loader_kinds()
+        self.assertEqual(len(kinds), len(set(kinds)), kinds)
 
     def test_the_table_this_test_parses_is_not_empty(self) -> None:
-        """Guards the parse itself: a renamed table would silently yield the
-        empty set and make the comparison above pass against an empty
+        """Guards the parse itself: a renamed table would silently yield an
+        empty list and make the comparison above pass against an empty
         converter table, which is exactly the drift it exists to catch."""
         self.assertEqual(len(self._loader_kinds()), 3)
 

@@ -920,13 +920,23 @@ constexpr VariantKind kVariantKinds[] = {
 // variant KIND has to come here anyway, because a kind is exactly a Voice Mode
 // plus a source and neither can be guessed; a future variant SIZE must not.
 // An unrecognized kind is therefore governed by nothing and passes through
-// untouched, including a variant string with no separator at all.
+// untouched.
+//
+// A variant string with NO separator is its own final segment, so it is read
+// as a kind like any other: `base` names the base kind exactly as
+// `qwen3-tts-12hz-0-6b-base` does. This function returned early on that shape
+// until 2026-08-20, which made it disagree with the converter's own
+// `check_variant_kind` -- `rsplit("-", 1)[-1]` yields the whole string there
+// -- so one end governed `base` and the other did not. The rule as written is
+// "the kind is the final hyphen-separated segment", and the early return was
+// a special case that rule never implied; the converter had it right. Nothing
+// real is newly refused: every published package carries a full slug, and the
+// only strings this newly reaches are ones equal to a kind name outright,
+// which are claiming that kind.
 bool check_variant_kind(const HParams & hparams) {
-    const size_t separator = hparams.model_variant.rfind('-');
-    if (separator == std::string::npos) {
-        return true;
-    }
-    const std::string kind = hparams.model_variant.substr(separator + 1);
+    const size_t      separator = hparams.model_variant.rfind('-');
+    const std::string kind =
+        separator == std::string::npos ? hparams.model_variant : hparams.model_variant.substr(separator + 1);
     for (const VariantKind & known : kVariantKinds) {
         if (kind != known.name) {
             continue;

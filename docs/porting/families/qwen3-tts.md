@@ -5316,6 +5316,221 @@ next touches CustomVoice's card or Task 8's own card-writing work to close.
   via `/models`; `reports/validate/` is gitignored per the global
   constraints.
 
+## Stage 3: VoiceDesign Package, Plan 3 Task 5
+
+Measures latency, RTF, load time and peak memory for the three profiles Tasks
+2-4 cut (`BF16`, `F16`, `Q8_MIXED`), and decides the question Task 2 was
+forbidden to answer: whether `F16`, which is *larger* than its `BF16` source
+(+283,136 bytes, Task 2), is fast enough on this variant to justify shipping
+it anyway. `docs/quantization.md:455-459` already records F16 as this
+family's speed profile rather than its size one (the plan's own brief and
+Global Constraints cite this paragraph as `:449-453`, which was correct before
+Task 4's edit inserted six lines above it and pushed the paragraph down --
+verified against the tree rather than transcribed, per this plan's own
+standing instruction after four prior tasks hit a stale literal); this task
+supplies the speed number. `Q5_K_MIXED` already failed its own accuracy gate
+in Task 4 (headroom 0.32x) and is measured here for context only, not as a
+candidate.
+
+### The measurement tree
+
+`build/rel-dgx-spark` predated this plan's HEAD by three days (last configured
+2026-08-17, before Tasks 1-4 landed), so it was reconfigured and rebuilt
+before anything was timed:
+
+```
+cmake --preset rel-dgx-spark
+cmake --build --preset rel-dgx-spark -j 20
+```
+
+Confirmed before measuring anything:
+
+```
+$ grep CMAKE_BUILD_TYPE build/rel-dgx-spark/CMakeCache.txt
+CMAKE_BUILD_TYPE:STRING=Release
+```
+
+`sm_121a`, CUDA Toolkit 13.3, aarch64/GB10 (`GGML_SYSTEM_ARCH: ARM`, ggml
+commit `707321c4`) -- the same tree Base's own Task 14 used, rebuilt at this
+task's own HEAD rather than reused stale.
+
+### The workload, fixed and repeatable
+
+VoiceDesign has no reference audio and no ICL path (Stage 3 Plan 1), so
+Base's Task 14 workload -- a sentence through an ICL Voice Profile -- has no
+counterpart here; the analogous fixed point for this variant is a `desc:`
+Voice Profile built from a Description Text instruct, driven through
+`synthesize-qwen3-tts-public-real`. Text and description, seed and thread
+count are all fixed and repeated verbatim across every run in this table:
+
+- **Text** (delivered on stdin): `"This is a test of Qwen three T T S voice
+  design synthesis."` -- 13 words, chosen to mirror the length and cadence of
+  Base's own Task 14 sentence without borrowing its "voice cloning" claim,
+  which this variant cannot make.
+- **Description** (the `desc:` voice): `"A cheerful, bright female voice
+  speaking with fast pacing and high energy."` -- the same nonempty-instruct
+  description Tasks 2-4 already used for this variant's `public`/`replay`
+  checks, reused here rather than inventing a fourth string.
+- **Language tag:** `en`. **Seed:** `7` -- the same seed
+  `scripts/validate-qwen3-tts-public.py`'s own smoke run already uses for
+  this variant. **Threads:** `10`, fixed with the driver's own
+  `synth_context_set_threads`. **Backend:** `cpu`. **`max_output_frames`:**
+  left at the driver's own default, `983040`.
+
+```
+printf '%s' "This is a test of Qwen three T T S voice design synthesis." | \
+  /usr/bin/time -v build/rel-dgx-spark/bin/synthesize-qwen3-tts-public-real \
+  models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-<PROFILE>.gguf \
+  <out.pcm> \
+  "desc:A cheerful, bright female voice speaking with fast pacing and high energy." \
+  en 7 983040 cpu 10
+```
+
+`frames`, `load_seconds` and `synthesis_seconds` are read from the driver's
+own stdout JSON; peak RSS is `/usr/bin/time -v`'s `Maximum resident set
+size`. Three repetitions per profile, run back to back with nothing else
+compiling or synthesizing on the host; medians are reported.
+
+### Latency, RTF and peak memory, measured on Release 2026-08-20
+
+**Every figure below comes from `build/rel-dgx-spark`.**
+
+| profile | backend | frames | audio | synthesis | **RTF** | load | peak RSS |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| BF16 | CPU | 97,920 | 4.080 s | 19.30 s | **4.73** | 2.18 s | 4.95 GiB |
+| F16 | CPU | 103,680 | 4.320 s | 7.12 s | **1.65** | 2.13 s | 4.95 GiB |
+| Q8_MIXED | CPU | 120,960 | 5.040 s | 5.31 s | **1.05** | 1.41 s | 3.16 GiB |
+
+Medians of three runs per profile. RTF is each row's own synthesis time over
+its own audio length, never across rows -- the three profiles stop at
+different frame counts (97,920 / 103,680 / 120,960), which is a property of
+their weights, not an error, matching Base's own precedent that BF16 and
+Q8_MIXED need not agree on where they stop.
+
+**Two known contaminants, named beside the table rather than in a footnote.**
+The second BPE frontend costs about +45 MB of peak RSS and is inside every
+figure above -- carried forward from Base's own Task 14 measurement
+(carry-over §3.4: 5,594,676 to 5,639,716 KB), not independently
+re-measured against this package in this task, since isolating it would need
+a build variant this task does not have. And generated length is
+build-dependent (`docs/testing.md`): none of the frame counts above may be
+read against any other tree, including `build`'s own tolerance-cell runs,
+which use different requests and a different tree entirely.
+
+**Gate 6, repeated runs and cleanup.** Every repetition at the fixed seed
+produced byte-identical frame counts within its own profile -- 97,920 (BF16),
+103,680 (F16), 120,960 (Q8_MIXED) across all three reps each -- and peak RSS
+varied by under 0.01% between repetitions of the same configuration (BF16
+0.0006%, F16 0.009%, Q8_MIXED 0.0095%), all comfortably inside Base's own
+<0.03% bound. Synthesis-time spread within a profile's three reps stayed
+under 2.4% (tightest: F16 at 0.26%), nothing like the multi-times spread
+Base's Task 14 had to discard as contention -- **no run in this table was
+discarded**, unlike Base's, whose report is the reason this task checked for
+contention at all.
+
+**Sanity check against Base (brief Step 5).** Base measured BF16 RTF 3.15 on
+CPU at 0.6B. VoiceDesign's talker is 3.2x larger, and its BF16 RTF came out
+*worse*, not better: **4.73**, about 1.50x Base's own number
+(4.7305 / 3.15 = 1.502) -- the expected direction for a larger model doing
+more compute per generated frame, so the brief's re-measure trigger ("RTF
+better than Base's is surprising") did not fire and nothing was re-measured
+on that account. VoiceDesign's fastest profile, Q8_MIXED at RTF 1.05, is
+likewise slower than Base's own Q8_MIXED at 0.863 -- same direction, same
+reason.
+
+### Does F16 pay here? Yes -- decided on speed, since size already said no
+
+Task 2 measured F16 at +283,136 bytes against its BF16 source (0.0066%
+larger) and declined to draw a publication conclusion, because
+`docs/quantization.md:455-459` records F16 as this family's speed profile,
+not its size one -- Base's own F16 published despite the same larger-than-
+source shape. The question left for this task: **is F16 fast enough on this
+variant to justify a profile that saves no disk?**
+
+**Yes, decisively.** F16's median synthesis time (7.12 s) is 2.71x shorter
+than BF16's (19.30 s) for the same request. Because the two profiles stop at
+different frame counts (103,680 vs 97,920), the fair, audio-length-normalized
+comparison is RTF, not raw wall time: **4.73 -> 1.65, a 2.87x improvement**
+(4.7305 / 1.6482 = 2.870). That crosses real time with headroom to spare --
+about 64% of this same table's own Q8_MIXED improvement (RTF 4.73 -> 1.05,
+4.49x, 2.870 / 4.4926 = 0.639) -- so F16 alone recovers roughly two-thirds of
+what quantizing all the way to Q8_0 buys, while changing nothing about the
+package's on-disk footprint.
+
+**Why, mechanically -- a source-confirmed explanation, not asserted.** ggml's
+CPU backend (commit `707321c4`, `GGML_SYSTEM_ARCH: ARM` on this aarch64/GB10
+host) has no ARM-vectorized GEMM path for BF16 weights, and does have one for
+F16. `ggml/src/ggml-cpu/llamafile/sgemm.cpp`'s `case GGML_TYPE_BF16` (line
+3781) branches only on `__AVX512BF16__`, `__AVX512F__`, `__AVX2__`, `__MMA__`
+(POWER) and RISC-V's `__riscv_zvfbfwma` -- none of which this host defines --
+and falls through to `return false` when none match, which sends BF16
+matmuls to ggml's generic reference path instead of a tuned kernel.
+`case GGML_TYPE_F16` (line 3845), by contrast, has an additional
+`__ARM_NEON` branch that this host's build does take. The scalar dot product
+tells the same story: `ggml_vec_dot_bf16` (`ggml/src/ggml-cpu/vec.cpp:139`)
+vectorizes only under AVX512BF16/AVX512F/AVX2/AVX and RISC-V's
+`zvfbfwma` -- there is no ARM branch at all, so it falls to the scalar tail
+loop on this host, while F16's own dot product has broad ARM NEON support.
+This is an architecture/build fact about this ggml commit's CPU backend on
+this host, not a numerical-precision claim: Task 2 already showed F16 costs
+nothing measurable on accuracy either (replay headroom 3.45x, essentially
+identical to BF16's own 3.44x).
+
+**Verdict: ship F16.** Recommend Task 8 carry it in the card as a speed
+profile, matching how Base's own F16 is already characterized in
+`docs/quantization.md`, on the evidence this task measured rather than by
+inheriting Base's characterization: **2.87x RTF improvement on this variant,
+for a package 0.0066% larger than its source.** That is the arithmetic that
+answers the question Task 2 could not -- F16 is faster by more than enough to
+justify shipping a profile that saves no disk.
+
+### Q5_K_MIXED, measured for context only -- not a shipping candidate
+
+Q5_K_MIXED already failed its own accuracy gate in Task 4 (replay headroom
+0.32x, both cases breaching the committed 0.01 bound by roughly 3x) and
+Task 4's recommendation -- do not publish -- does not change on a speed
+result, so what follows is orientation, not a fourth row in the table above.
+Same workload, same tree:
+
+| profile | backend | frames | audio | synthesis | RTF | load | peak RSS |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Q5_K_MIXED (context; fails Task 4's accuracy gate) | CPU | 96,000 | 4.000 s | 4.30 s | 1.08 | 1.07 s | 2.40 GiB |
+
+Medians of three runs, byte-identical frame counts across all three, peak RSS
+varying under 0.015% between repetitions. Q5_K_MIXED lands slightly *behind*
+Q8_MIXED on RTF (1.08 vs 1.05) despite its smaller package -- both are well
+inside real time and the difference is not the deciding evidence either way,
+since Task 4's accuracy failure already settles this profile's publication
+question on its own.
+
+### What is not claimed
+
+One machine, one workload, one utterance length, one Description Text
+instruct. `docs/testing.md` records that generated length is build-dependent,
+so an RTF computed from a frame count taken on another tree would be wrong;
+every figure above is same-tree. This section does not re-open Task 4's
+Q5_K_MIXED recommendation, does not claim CUDA placement (VoiceDesign has no
+new graphs to place -- see this plan's own "What This Variant Does NOT Have"),
+and implies no listening judgement -- a tolerance table and an RTF number are
+not audible evidence, and no VoiceDesign listening audit has run as of this
+task.
+
+### Verification
+
+- No production code, tolerance cell or tensor-classifier logic touched --
+  this task's whole diff is prose in this file.
+- `synthesize-golden-manifest-contract` / `synthesize-tolerance-coverage`:
+  unaffected, unchanged by this task.
+- Full unit gate, `build` tree (`SYNTH_BUILD_INTEGRATION_TESTS=ON` per Task
+  2's still-standing reconfigure, `CMAKE_BUILD_TYPE=Release`): the same two
+  pre-existing, not-ours failures (`synthesize-python-api-wheel-test`,
+  `synthesize-vits-python-unit`'s sole error
+  `test_quantization_reports_match_current_artifacts`). No third.
+- `scripts/ci/clang-format.sh --check-diff`: clean (only `.md` changed).
+- `git status --porcelain` checked before staging; no `.gguf`, `.pcm` or
+  `/usr/bin/time` log staged. `models/` is a symlink outside the worktree,
+  gitignored via `/models`.
+
 ## Open Questions for Intake
 
 1. Confirm the codec decoder topology against upstream rather than against a

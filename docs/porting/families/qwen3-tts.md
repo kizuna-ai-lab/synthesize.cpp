@@ -5399,6 +5399,12 @@ compiling or synthesizing on the host; medians are reported.
 | F16 | CPU | 103,680 | 4.320 s | 7.12 s | **1.65** | 2.13 s | 4.95 GiB |
 | Q8_MIXED | CPU | 120,960 | 5.040 s | 5.31 s | **1.05** | 1.41 s | 3.16 GiB |
 
+**The BF16 CPU row above was re-measured in Plan 3 Task 6** (n=8, median
+18.92 s / RTF 4.64, against this table's own n=3 / 19.30 s / RTF 4.73) as
+part of pairing it against a same-session CUDA run; see "Stage 3: VoiceDesign
+Package, Plan 3 Task 6" below for which figure to use and why they differ.
+Task 8's card should read from the later measurement.
+
 Medians of three runs per profile. RTF is each row's own synthesis time over
 its own audio length, never across rows -- the three profiles stop at
 different frame counts (97,920 / 103,680 / 120,960), which is a property of
@@ -5665,10 +5671,13 @@ What CUDA buys this variant end to end, on Task 5's own fixed workload,
 reused verbatim for comparability. The design spec's expectation, with its
 reasoning: Stage 1's placement puts the codec decoder on the device and holds
 the autoregressive half on the CPU by the discrete-outputs rule; this
-variant's talker is 3.2x larger than Base's (hidden 1024 -> 2048,
-`qwen3-tts.md:311`), so the AR half's share of wall clock grows, and CUDA's
-end-to-end gain is expected **smaller than Base's ~6%, not larger**. A
-smaller gain would confirm the model, not undermine it.
+variant's talker parameters run 3.2x larger than Base's per layer -- 15.73 M
+-> 50.33 M, attention 6.29 M -> 12.58 M and MLP 9.44 M -> 37.75 M, at an
+unchanged 28 layers (design spec D7,
+`docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md:227-229`) --
+so the AR half's share of wall clock grows, and CUDA's end-to-end gain is
+expected **smaller than Base's ~6%, not larger**. A smaller gain would
+confirm the model, not undermine it.
 
 ### What CUDA reaches on this variant, before any number
 
@@ -5684,7 +5693,7 @@ can move:
 | stage | does a CUDA run measure anything different? | why |
 | --- | --- | --- |
 | `public` | **yes** | the Stage 1 codec-decoder twin moves under `SYNTH_BACKEND_CUDA`, the same twin Base's own `public` cell exercises -- this variant's `synth_model_load` puts the same graph on the device |
-| `replay` (`prefill` probe only) | **no** | `tests/qwen3_tts_voicedesign_prefill_real.cpp:289` calls `ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)` directly -- there is no backend argument to this driver at all, not even one that would be ignored. A "CUDA" run is not merely equal to the CPU one; it cannot be requested |
+| `replay` (`prefill` probe only) | **no** | `tests/qwen3_tts_voicedesign_prefill_real.cpp:289` calls `ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)` directly, so today's driver has no backend argument to pass -- but the deeper reason a backend argument would not help is `src/arch/qwen3-tts/model.cpp:573-585`: the device-mirroring loop only copies tensors whose name starts with `codec.decoder.` (14 characters, `strncmp` at `:584`), so the talker's own weights are never mirrored onto the device at all. The prefill graph runs entirely on the talker, so it has no device-side weights to run against regardless of what the driver requests |
 
 One of this variant's two tolerance stages exercises CUDA, not Base's one of
 three -- fewer stages exist here because there are fewer graphs to begin
@@ -5742,49 +5751,69 @@ Base's Task 14 discards), so no run was discarded.
 **18.92 s -> 17.76 s and RTF 4.64 -> 4.35**, which divide out to
 (18.92 - 17.76) / 18.92 = **6.13%** and (4.64 - 4.35) / 4.64 = **6.25%** using
 the table's own rounded figures -- the two percentages differ from each
-other only because of that rounding. Base's own doc text
+other only because of that rounding. Base's own family-record text
 (`qwen3-tts.md:3440-3441`) records its own pair the same way, at one decimal
 place: "11.60 s -> 10.85 s ... RTF 3.15 -> 2.95 -- 6.5 % and 6.3 %
-respectively" -- re-divided here rather than copied from the task brief's
-own paraphrase (which read "6.47% and 6.35%" and is not what the committed
-doc says): (11.60 - 10.85) / 11.60 = 6.47% and (3.15 - 2.95) / 3.15 = 6.35%
-unrounded, which is where the doc's own "6.5 %"/"6.3 %" came from. The
-precise, unrounded medians for this task -- 18.9220 s and 17.7564 s (n=8
-each) -- divide to **6.16%**, and RTF's own unrounded pair, 4.6377 -> 4.3520,
-divides to the identical **6.16%**: not a coincidence but an algebraic
-identity, since both backends produced the same 97,920-frame, 4.080 s audio
-for this workload, so RTF's shared denominator cancels and the two
-percentages restate one fraction rather than measuring two independent
+respectively". The design spec's own erratum commits the same pair at two
+decimal places instead, verbatim:
+"11.60 s -> 10.85 s and RTF 3.15 -> 2.95, which divide out to 6.47% and
+6.35%" (`docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md:637`)
+-- both roundings of the same unrounded quotient are committed in this tree,
+one decimal place in the family record and two in the design spec, and the
+task brief's own "6.47% and 6.35%" citation is the spec's figure, not a
+fabrication. The precise, unrounded medians for this task -- 18.9220 s and
+17.7564 s (n=8 each) -- divide to **6.16%**, and RTF's own unrounded pair,
+4.6377 -> 4.3520, divides to the identical **6.16%**: not a coincidence but
+an algebraic identity, since both backends produced the same 97,920-frame,
+4.080 s audio for this workload, so RTF's shared denominator cancels and the
+two percentages restate one fraction rather than measuring two independent
 things that happen to agree.
 
 **Confirms the smaller-than-Base's-~6% prediction, narrowly.** 6.16% here
-against Base's own 6.47%/6.35% unrounded (6.5%/6.3% as the doc itself
+against Base's own 6.47%/6.35% unrounded (6.5%/6.3% as the family record
 displays them, `qwen3-tts.md:3440-3441`) is smaller, in the direction the
 design spec's reasoning predicted -- but by about 0.2-0.3 percentage points,
-not by the large margin a literal reading of "the talker is 3.2x larger, so
-its share of wall clock grows 3.2x" might suggest. Stated plainly: the
-direction is right: **smaller, not larger**, but the model's single stated
-mechanism (AR share growing) does not by itself explain why the margin is
-this narrow.
+not by the large margin a literal reading of "the talker's per-layer
+parameters run 3.2x larger, so its share of wall clock grows 3.2x" might
+suggest. Stated plainly: the direction is right: **smaller, not larger**,
+but the model's single stated mechanism (AR share growing) does not by
+itself explain why the margin is this narrow.
 
 **Why the margin is narrow, not large -- inferred from a source-read fact,
 not independently re-derived.** The codec decoder -- the only graph CUDA
-moves here -- is byte-identical between the CustomVoice (0.6B) and
-VoiceDesign (1.7B) BF16 packages: 255 tensors, 457,161,476 bytes, same shapes,
-in both (`gguf.GGUFReader` against both packages' `codec.decoder.decoder.*`
-tensors). The "3.2x larger" figure is a talker-hidden-size fact
-(`qwen3-tts.md:311`) and does not touch the codec decoder at all. If the
-codec decoder's own per-frame cost -- and CUDA's saving from it -- tracks
-frame count rather than talker width, and this workload's frame counts are
-close between the two variants' own fixed-workload measurements (97,920 here
-against Base's 88,320, +10.9%), then the CUDA-accelerated numerator changes
-only a little between variants while the AR-dominated wall-clock denominator
-grows -- which points toward a small negative move in the percentage, not a
-large one. This is inferred from the tensor-identity finding and the two
-variants' own frame counts; this task did not isolate the codec decoder's
-own wall-clock cost in either build the way Stage 2 Plan 4 Task 12 isolated
-the speaker and codec *encoders*, so the size of the narrowing is not
-independently confirmed the way the direction is.
+moves here -- is byte-identical between **Base** (the variant this task's
+gain is measured against) and VoiceDesign: 255 tensors, 457,161,476 bytes,
+same shapes, in both (`gguf.GGUFReader` against the `codec.decoder.*`
+prefix -- one level up from an earlier draft of this paragraph, which named
+`codec.decoder.decoder.*` and thereby described only 118 of these 255
+tensors and 209,480,452 of these 457,161,476 bytes, a nested
+weight-normalized-conv submodule rather than the whole decoder; the reported
+counts were always the full-prefix ones, only the selector's own name was
+wrong). `codec.decoder.` (14 characters) is also the exact prefix
+`src/arch/qwen3-tts/model.cpp:585` mirrors onto the device, so this is the
+same tensor set the runtime twin actually moves. Re-hashed for this fix
+round rather than trusted from shape/size agreement alone: sha256 over
+tensor name and data for every `codec.decoder.*` tensor is
+`42772743b165...` identically across **all three** committed BF16
+packages -- CustomVoice, Base and VoiceDesign -- so the codec decoder is one
+shared, unmodified artifact across the whole family, not merely matched
+between the two variants this paragraph compares.
+
+The 3.2x figure this section opened with is a talker-parameter-count fact
+(design spec D7, `docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md:227-229`
+-- talker parameters per layer, 15.73 M -> 50.33 M) and does not touch the
+codec decoder at all. If the codec decoder's own per-frame cost -- and
+CUDA's saving from it -- tracks frame count rather than talker size, and
+this workload's frame counts are close between the two variants' own
+fixed-workload measurements (97,920 here against Base's 88,320, +10.9%),
+then the CUDA-accelerated numerator changes only a little between variants
+while the AR-dominated wall-clock denominator grows -- which points toward a
+small negative move in the percentage, not a large one. This is inferred
+from the tensor-identity finding and the two variants' own frame counts;
+this task did not isolate the codec decoder's own wall-clock cost in either
+build the way Stage 2 Plan 4 Task 12 isolated the speaker and codec
+*encoders*, so the size of the narrowing is not independently confirmed the
+way the direction is.
 
 ### Structural agreement: CPU and CUDA disagree in bytes, as TF32 predicts
 
@@ -5795,7 +5824,10 @@ Two independent pieces of evidence, both measured this task, not asserted:
   bright female voice speaking with fast pacing and high energy." / "A deep,
   calm male voice speaking slowly and quietly.", text `"Hi."`, its own
   default): **all 11 checks pass, 3 skipped** for the same
-  `description_text`-package reasons the CPU cell already records. Seed 7's
+  `description_text`-package reasons the CPU cell already records -- one of
+  the eleven (the empty-instruct-vs-oracle relation) passes through the
+  `replay` stage's own CPU-only prefill-probe figure rather than recomputing
+  anything under CUDA, identically to how the CPU cell reports it. Seed 7's
   own digest differs from the CPU cell's -- `dcc9279c69679412` (CUDA) against
   `5e772fc5cc8b2a90` (CPU), reports at
   `reports/validate/qwen3-tts/public-voicedesign-BF16-cuda.json` and
@@ -5842,8 +5874,8 @@ any committed gate.
 
 One machine, one workload, one build tree, one profile (BF16). F16,
 Q8_MIXED and Q5_K_MIXED were not measured under CUDA in this task -- Task 5
-already measured their CPU speed and this task's own brief scopes to "at
-least BF16" for the backend comparison, not a full profile x backend cross.
+already measured their CPU speed, and this task's own brief pins its Step 2
+command to `--profile BF16`, not a full profile x backend cross.
 No listening judgement is implied: a numeric agreement figure and an RTF
 number are not audible evidence, and no VoiceDesign CUDA listening comparison
 has run. No publication conclusion is drawn, and no movement of the
@@ -5868,6 +5900,73 @@ ADR 0017.
 - `git status --porcelain` checked before staging: no `.gguf`, `.pcm` or
   `/usr/bin/time` log staged; all scratch files for this task live under
   `/tmp/qwen3-tts-task6/`, outside the worktree.
+
+### Fix round 1 (review response)
+
+Spec passed; code quality review found four Important and five Minor
+findings, all in prose -- the reviewer mutation-tested the coverage rule
+(confirmed a `public`-only `backends.CUDA` sub-grid fails
+`test_measured_families_cover_every_profile_backend_and_stage`), reproduced
+the CPU/CUDA runs within 1.15%/0.24% of this task's own medians, and
+reproduced the PCM cosine to seven decimal places. No measurement, table
+value, or arithmetic result changed in this round -- every fix is in what a
+number was cited from or said to mean, or a fact was attributed to the wrong
+selector or the wrong sibling package. Four Important findings, all
+addressed:
+
+1. **A fabricated quotation.** "this task's own brief scopes to 'at least
+   BF16'" put quote marks around a phrase that appears nowhere in the brief.
+   Replaced with what the brief actually does: its Step 2 command pins
+   `--profile BF16`.
+2. **The tensor-identity selector's own name didn't match its own numbers.**
+   The reported 255 tensors / 457,161,476 bytes are correct for
+   `codec.decoder.*` (the exact 14-character prefix
+   `src/arch/qwen3-tts/model.cpp:585` mirrors) but the prose named the
+   selector `codec.decoder.decoder.*`, a nested submodule that is only 118
+   of those tensors and 209,480,452 of those bytes -- confirmed by re-running
+   both selectors. The selector's name is fixed; the numbers were already
+   right.
+3. **Byte-identity proven against the wrong sibling.** The paragraph
+   explaining why the CUDA gain is close to Base's own compared VoiceDesign
+   against CustomVoice, not Base -- the variant this task's gain is actually
+   measured against. Re-hashed `codec.decoder.*` (tensor name and data,
+   sha256) across all three committed BF16 packages this round:
+   `42772743b165...` identically in CustomVoice, Base and VoiceDesign, so
+   the paragraph now states the identity against Base directly and cites the
+   three-way match.
+4. **"3.2x larger" cited to a line that records 2x.** Two citations pointed
+   at `qwen3-tts.md:311` (hidden 1024 -> 2048, a 2x fact) for the 3.2x
+   figure and called it "a talker-hidden-size fact". The real source is
+   design spec D7
+   (`docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md:227-229`):
+   talker parameters per layer, 15.73 M -> 50.33 M, a factor that comes from
+   attention (2x) and MLP (4x) scaling together, not hidden size alone.
+   Re-cited to D7 throughout; no longer called a hidden-size fact.
+
+Five Minors, all addressed: the brief's "6.47%/6.35%" is not a fabrication --
+the design spec's own erratum (`...design.md:637`) commits that exact pair
+verbatim, two decimal places where the family record's own text
+(`qwen3-tts.md:3440-3441`) carries one (6.5%/6.3%); both are real citations
+to different committed documents, and the paragraph now says so instead of
+calling the brief's figure something the tree doesn't contain. The tolerance
+JSON's "as Base's own declined sub-grid above" pointed at this file, where
+Base's own entry records no such decline -- repointed to
+`docs/backends.md:506` and `qwen3-tts.md:3205`, where it actually lives.
+Both docs' `replay`-immobility explanation now cites the deeper structural
+fact, `model.cpp:573-585`'s device-mirroring loop copying only
+`codec.decoder.`-prefixed tensors (so the talker has no device-side weights
+regardless of what any driver requests), alongside the pre-existing
+driver-hardcoding fact. `docs/backends.md`'s "11 of 11 applicable checks
+pass" now notes that one of the eleven reuses a CPU-only prefill-probe
+figure rather than recomputing anything under CUDA (this file's own parallel
+sentence gained the same clause). Task 5's own BF16 CPU table row (19.30 s /
+RTF 4.73) now carries a forward pointer to this task's later re-measurement
+(18.92 s / RTF 4.64, same profile, later session), since Task 8 reads the
+card off these tables and would otherwise see two disagreeing rows with no
+signpost between them.
+
+Re-ran `scripts/ci/clang-format.sh --check-diff` (clean) and the full unit
+gate (98/106, same two pre-existing failures, no third) after this round.
 
 ## Open Questions for Intake
 

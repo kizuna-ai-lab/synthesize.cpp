@@ -546,9 +546,12 @@ This variant's tolerance grid tracks two stages, and only one of them can
 move under CUDA. `public` does, through the same Stage 1 codec-decoder twin
 Base's own `public` cell exercises. `replay` does not: its only probe is
 `prefill`, and `tests/qwen3_tts_voicedesign_prefill_real.cpp:289` calls
-`ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)` directly -- this
-driver takes no backend argument at all, so there is no "CUDA" request to
-even make for it, not merely one that would return the CPU numbers back.
+`ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)` directly, so today's
+driver has no backend argument to pass -- but the deeper reason a backend
+argument would not help is `src/arch/qwen3-tts/model.cpp:573-585`: the
+device-mirroring loop only copies tensors whose name starts with
+`codec.decoder.`, so the talker's own weights, which the prefill graph runs
+entirely on, are never mirrored onto the device at all.
 
 Since `tests/python/test_tolerance_coverage.py` requires a `backends`
 sub-grid to carry a variant's full stage set, and `replay` cannot move, a
@@ -562,14 +565,19 @@ Task 6") instead: on the family's own fixed VoiceDesign measurement workload
 Plan 3 Task 5), BF16 synthesizes in 18.92 s on CPU against 17.76 s on CUDA
 (RTF 4.64 -> 4.35), a **6.16%** end-to-end gain -- smaller than Base's own
 ~6.5%/6.3% (`qwen3-tts.md:3440-3441`; 6.47%/6.35% unrounded), which is the
-direction Stage 3's design spec predicted for a talker 3.2x larger than
-Base's, held on the CPU by the discrete-outputs rule the same way. 11 of 11
-applicable `public`-seam checks pass under CUDA, and the CUDA waveform
-differs from the CPU one in bytes (cosine 0.9999988, max_abs 0.002414
-against the same seed and workload), which is the codec decoder's TF32
-arithmetic showing up exactly as gate 2's own tolerance model predicts, on a
-different package and case than Base's own comparison and not claimed to
-reproduce it exactly.
+direction Stage 3's design spec predicted for a talker whose per-layer
+parameter count runs 3.2x larger than Base's (D7,
+`docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md:227-229`),
+held on the CPU by the discrete-outputs rule the same way. 11 of 11
+applicable `public`-seam checks pass under CUDA -- one of the eleven (the
+empty-instruct-vs-oracle relation) passes through a figure the `replay`
+stage's own CPU-only prefill probe already measured rather than recomputing
+anything under CUDA, the same way it does for the CPU cell -- and the CUDA
+waveform differs from the CPU one in bytes (cosine 0.9999988, max_abs
+0.002414 against the same seed and workload), which is the codec decoder's
+TF32 arithmetic showing up exactly as gate 2's own tolerance model predicts,
+on a different package and case than Base's own comparison and not claimed
+to reproduce it exactly.
 
 No CUDA threshold was derived for this variant either. Unlike Base, there is
 also no hypothetical future graph within it to pre-derive one for -- its

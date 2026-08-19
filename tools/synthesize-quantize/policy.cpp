@@ -640,6 +640,10 @@ CatalogRole classify_vits_tensor(const std::string & name) {
 
 }  // namespace
 
+bool qwen3_tts_tensor_is_conv_kernel(const std::string & name) {
+    return classify_qwen3_tts_tensor(name) == CatalogRole::ConvKernel;
+}
+
 const Profile * find_profile(const char * name) {
     for (const Profile & profile : kProfiles) {
         if (iequals(profile.name, name)) {

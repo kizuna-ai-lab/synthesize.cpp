@@ -65,6 +65,15 @@ bool resolve_kokoro_target_spec(const Profile & profile, const std::string & nam
 bool resolve_qwen3_tts_target_type(const Profile & profile, const std::string & name, ggml_type & type_out);
 bool resolve_qwen3_tts_target_spec(const Profile & profile, const std::string & name, TargetSpec & spec_out);
 
+// True when `name` resolves to the ConvKernel role under the qwen3-tts
+// classifier. Exposed for one proposition the resolved TargetSpec cannot
+// express: ConvKernel and MatrixWeight resolve to the SAME type under F16
+// (both take profile.transpose_weight_type there), so a test asserting on
+// type alone is blind exactly where a misclassification would hide. The role
+// is the thing section 7 of the Stage 3 design asks to be asserted, so the
+// role is what this returns.
+bool qwen3_tts_tensor_is_conv_kernel(const std::string & name);
+
 // And for OmniVoice, which is the one family whose profiles do not all
 // quantize the same half of the package -- and so the one family whose profile
 // names encode a half. `F16_CODEC` and `Q8_CODEC_MIXED` quantize the codec and

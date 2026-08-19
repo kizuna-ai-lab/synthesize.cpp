@@ -28,6 +28,7 @@
 using synth::quantize::find_profile;
 using synth::quantize::Profile;
 using synth::quantize::profile_applies_to_architecture;
+using synth::quantize::qwen3_tts_tensor_is_conv_kernel;
 using synth::quantize::resolve_qwen3_tts_target_spec;
 using synth::quantize::TargetSpec;
 using synth::quantize::TensorLayout;
@@ -509,6 +510,39 @@ int main() {
     // alone rather than on the pair would have taken that away.
     SYNTH_TEST_CHECK(profile_applies_to_architecture("omnivoice", *bf16, reason));
     SYNTH_TEST_CHECK(reason.empty());
+
+    // Design spec section 7: "a package with no speaker encoder resolves no
+    // ConvKernel". Asserted on the ROLE, not on the resolved type: under F16
+    // the ConvKernel column (profile.transpose_weight_type) and the
+    // MatrixWeight column are both GGML_TYPE_F16, so a type-only check cannot
+    // tell a misclassified tensor from a correct one and would pass on the
+    // bug it exists to catch.
+    //
+    // The names below are real tensor names from the shipped CustomVoice
+    // package (reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/intake.json
+    // and src/arch/qwen3-tts/catalog.cpp), covering a talker block, the
+    // talker's own output head, a code predictor block, the code predictor's
+    // per-group output head, and the codec decoder's input and output
+    // convolutions -- no speaker_encoder.* tensor anywhere. VoiceDesign
+    // carries this same shape; Base is the only variant with a speaker
+    // encoder.
+    for (const char * name : {
+             "talker.model.layers.0.self_attn.q_proj.weight",
+             "talker.model.layers.12.mlp.gate_proj.weight",
+             "talker.codec_head.weight",
+             "talker.code_predictor.model.layers.2.self_attn.k_proj.weight",
+             "talker.code_predictor.lm_head.3.weight",
+             "codec.decoder.decoder.0.conv.weight",
+             "codec.decoder.decoder.6.conv.weight",
+         }) {
+        SYNTH_TEST_CHECK(!qwen3_tts_tensor_is_conv_kernel(name));
+    }
+
+    // The control, a real speaker-encoder convolution weight from
+    // kSpeakerEncoderConvWeights above. Without it the loop above passes on a
+    // build where the function always returns false, which is the same
+    // failure the loop is written to catch, spelled the other way.
+    SYNTH_TEST_CHECK(qwen3_tts_tensor_is_conv_kernel("speaker_encoder.blocks.1.tdnn1.conv.weight"));
 
     return 0;
 }

@@ -150,6 +150,50 @@ int test_invalid_utf8_is_refused() {
     return 0;
 }
 
+// PR #15 finding 1. An embedded NUL is structurally valid UTF-8 (a single
+// 0x00 lead byte), so is_well_formed_utf8 accepts it and always did -- but
+// gguf's KV API is null-terminated in both directions, so such an instruct
+// would serialize and load back as the PREFIX before that byte: a 16-byte
+// description round-tripping as a 4-byte one, a different Voice, returned
+// with SYNTH_OK at every step. Refused at the entry instead.
+int test_an_embedded_nul_is_refused_at_creation() {
+    const HParams  hparams = voice_design_hparams();
+    DesignInstruct payload;
+
+    // Interior, leading, trailing, and a NUL-only string. The trailing case
+    // matters on its own: a std::string of size N whose last byte is 0x00
+    // still hands `c_str()` an N-1-character string, so "only interior NULs
+    // are a problem" would be the wrong rule.
+    for (const std::string bad :
+         { std::string("warm,\0 low", 10), std::string("\0warm", 5), std::string("warm\0", 5), std::string("\0", 1) }) {
+        payload.instruct = "untouched";
+        SYNTH_TEST_CHECK(create_design_profile(hparams, bad, payload) == SYNTH_ERR_INVALID_ARG);
+        SYNTH_TEST_CHECK(payload.instruct == "untouched");
+    }
+
+    // ISOLATION, in the test rather than only in the fault-injection log: the
+    // same string with the NUL replaced by a space is ACCEPTED. Both are well
+    // under kMaxDesignInstructBytes and both are well-formed UTF-8, so the
+    // refusal above cannot be the length check or the encoding check firing
+    // early -- the NUL is the only difference between the two calls.
+    payload.instruct.clear();
+    SYNTH_TEST_CHECK(create_design_profile(hparams, std::string("warm, low", 9), payload) == SYNTH_OK);
+    SYNTH_TEST_CHECK(payload.instruct == "warm, low");
+
+    // And through the PUBLIC SEAM, which is where a caller's bytes actually
+    // arrive: `description_size` is length-delimited there, so a NUL reaches
+    // the family rather than terminating the string on the way in. The
+    // description is a NAMED local because description_params only borrows
+    // its bytes.
+    synth_model                            model    = voice_design_model();
+    const std::string                      with_nul = std::string("warm,\0 low", 10);
+    const synth_voice_description_params_t params   = description_params(with_nul);
+    synth_voice_profile_t *                profile  = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+    SYNTH_TEST_CHECK(synth_voice_profile_create_from_description(&model, &params, &profile) == SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(profile == nullptr);
+    return 0;
+}
+
 int test_an_over_long_instruct_is_refused_at_the_boundary() {
     const HParams  hparams = voice_design_hparams();
     DesignInstruct payload;
@@ -460,6 +504,19 @@ void fill_compatibility_id(uint8_t (&id)[32]) {
 // hparams.speaker_encoder.enc_dim before it returns.
 HParams clone_envelope_hparams(uint32_t enc_dim) {
     HParams hparams;
+    hparams.speaker_encoder.enc_dim = enc_dim;
+    return hparams;
+}
+
+// A BASE package, as read_profile_sources would have left it: reference-audio
+// declared, description-text NOT, plus the x-vector width such a package
+// carries. This is the shape PR #15's finding 2 is about -- a Model that
+// publishes SERIALIZED_PROFILE (so the load dispatcher routes to this family)
+// and supports the clone conditioning path only.
+HParams base_package_hparams(uint32_t enc_dim) {
+    HParams hparams;
+    hparams.model_variant           = "qwen3-tts-12hz-1-7b-base";
+    hparams.profile_sources         = SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO;
     hparams.speaker_encoder.enc_dim = enc_dim;
     return hparams;
 }
@@ -1009,10 +1066,160 @@ int test_the_design_writer_emits_exactly_the_whitelisted_keys() {
     return 0;
 }
 
+// =============================================================================
+// PR #15's two reviewer findings, at the envelope level.
+// =============================================================================
+
+// Finding 1, writer side. The DesignInstruct is assembled by HAND rather than
+// through create_design_profile, which is the only way to reach
+// serialize_design_profile's own defensive re-check -- the same reason it
+// re-asserts the length and encoding invariants it cannot know its caller
+// already applied. This clause carries an obligation the other two do not:
+// gguf's null-terminated setter would TRUNCATE such a string rather than
+// refuse it, so without the re-check this writer could emit an envelope its
+// own reader accepts as a DIFFERENT Voice, with SYNTH_OK on both ends.
+int test_the_design_writer_refuses_an_embedded_nul() {
+    uint8_t compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+
+    DesignInstruct payload;
+    payload.instruct = std::string("warm,\0 low", 10);
+    std::vector<uint8_t> bytes;
+    SYNTH_TEST_CHECK(serialize_design_profile(voice_design_hparams(), payload, compatibility_id, bytes) ==
+                     SYNTH_ERR_INVALID_ARG);
+    SYNTH_TEST_CHECK(bytes.empty());
+
+    // Isolation: the same length, the same encoding, one byte different. If
+    // the length or UTF-8 clause were what refused the buffer above, this
+    // would be refused too.
+    payload.instruct = std::string("warm,  low", 10);
+    SYNTH_TEST_CHECK(serialize_design_profile(voice_design_hparams(), payload, compatibility_id, bytes) == SYNTH_OK);
+    SYNTH_TEST_CHECK(!bytes.empty());
+    return 0;
+}
+
+// Finding 2, family level. A GENUINELY hand-built design envelope carrying a
+// BASE package's own compatibility_id -- a value derivable by anyone holding
+// the package, not a secret -- loaded as ProfileFamilyTag::Qwen3TtsDesign
+// against a Model declaring the clone schema and no Description Text source
+// at all: the branch was chosen from the BUFFER's shape and then validated
+// only against constants, so nothing in the chain asked what conditioning
+// paths the package supports.
+//
+// The envelope here is otherwise PERFECT: correct architecture, family,
+// schema, schema_version, a resealed digest, a well-formed instruct, and a
+// compatibility_id that matches the one handed to the loader byte for byte.
+// That is deliberate -- an envelope wrong in any other way would be refused
+// by a check that already existed, and would prove nothing about this one.
+int test_a_design_envelope_is_refused_by_a_package_without_description_text() {
+    uint8_t compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    constexpr uint32_t   kEncDim = 11;
+    std::vector<uint8_t> bytes   = hand_build_design_bytes(compatibility_id, "a description, unremarkable on purpose");
+    SYNTH_TEST_CHECK(reseal(bytes));
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> loaded;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    const synth_status_t status = load_profile_from_memory(base_package_hparams(kEncDim), bytes.data(), bytes.size(),
+                                                           compatibility_id, family_tag, loaded, code, message);
+    // "Structurally sound, but not for this Model" -- the same status the
+    // model_family / schema / compatibility_id refusals beside it return.
+    SYNTH_TEST_CHECK(status == SYNTH_ERR_UNSUPPORTED_VOICE);
+    SYNTH_TEST_CHECK(loaded == nullptr);
+    SYNTH_TEST_CHECK(family_tag == synth::ProfileFamilyTag::None);
+
+    // ISOLATION, and the part that makes this test about the new check rather
+    // than about the envelope: the SAME bytes, the SAME compatibility_id, a
+    // package that declares description-text -- accepted. The only difference
+    // between the two calls is `hparams.profile_sources`, so nothing else in
+    // this loader can be what refused the call above.
+    synth::ProfileFamilyTag     accepted_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> accepted;
+    const char *                accepted_code    = nullptr;
+    const char *                accepted_message = nullptr;
+    SYNTH_TEST_CHECK(load_profile_from_memory(voice_design_hparams(), bytes.data(), bytes.size(), compatibility_id,
+                                              accepted_tag, accepted, accepted_code, accepted_message) == SYNTH_OK);
+    SYNTH_TEST_CHECK(accepted_tag == synth::ProfileFamilyTag::Qwen3TtsDesign);
+    return 0;
+}
+
+// The same finding at the PUBLIC SEAM, which is where it is reachable: the
+// load dispatcher (src/voice-profile.cpp) gates only on
+// SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE, and a Base Model publishes that
+// bit too -- so a design envelope reaches this family's loader against a Base
+// handle and the refusal has to happen inside it. The two hand-built handles
+// share an all-zero `compatibility_id` (VoiceProfileInfo's own default), so
+// the envelope one produces really does satisfy the other's identity check,
+// which is the whole point: that check proves the bytes were not tampered
+// with, never that they belong to a conditioning path the Model supports.
+int test_load_from_memory_refuses_a_design_envelope_on_a_base_model() {
+    synth_model                            design_side   = voice_design_model();
+    const std::string                      description   = "A warm, low voice, unhurried, with a slight rasp.";
+    const synth_voice_description_params_t create_params = description_params(description);
+
+    synth_voice_profile_t * created = nullptr;
+    SYNTH_TEST_CHECK(synth_voice_profile_create_from_description(&design_side, &create_params, &created) == SYNTH_OK);
+    synth_voice_profile_serialize_params_t serialize_params;
+    synth_voice_profile_serialize_params_init(&serialize_params, sizeof(serialize_params));
+    synth_byte_buffer_t * bytes = nullptr;
+    SYNTH_TEST_CHECK(synth_voice_profile_serialize(created, &serialize_params, &bytes) == SYNTH_OK);
+    synth_voice_profile_free(created);
+
+    synth_voice_profile_load_params_t load_params;
+    synth_voice_profile_load_params_init(&load_params, sizeof(load_params));
+    load_params.data      = bytes->data;
+    load_params.data_size = bytes->data_size;
+
+    synth_model             base   = base_model();
+    synth_voice_profile_t * loaded = reinterpret_cast<synth_voice_profile_t *>(uintptr_t(1));
+    SYNTH_TEST_CHECK(synth_voice_profile_load_from_memory(&base, &load_params, &loaded) == SYNTH_ERR_UNSUPPORTED_VOICE);
+    SYNTH_TEST_CHECK(loaded == nullptr);
+
+    // Isolation again: the same bytes on the VoiceDesign handle still load,
+    // so the refusal above is the Model's declared sources and not anything
+    // about this envelope. (test_serialize_and_load_round_trip_through_the_
+    // public_seam pins that round trip on its own; repeated here so this
+    // test's own two calls differ in exactly one thing.)
+    synth_voice_profile_t * round_tripped = nullptr;
+    SYNTH_TEST_CHECK(synth_voice_profile_load_from_memory(&design_side, &load_params, &round_tripped) == SYNTH_OK);
+    SYNTH_TEST_CHECK(round_tripped != nullptr);
+    SYNTH_TEST_CHECK(round_tripped->family_tag == synth::ProfileFamilyTag::Qwen3TtsDesign);
+    synth_voice_profile_free(round_tripped);
+
+    synth_byte_buffer_free(bytes);
+    return 0;
+}
+
+// A real CLONE Profile must still load against a Base package -- the new
+// description-text requirement sits inside the DESIGN branch only, and a
+// regression that moved it up to cover both would take this family's actual
+// shipped Voice-cloning path down with it.
+int test_a_clone_envelope_still_loads_against_a_base_package() {
+    uint8_t compatibility_id[32];
+    fill_compatibility_id(compatibility_id);
+    constexpr uint32_t                    kEncDim = 11;
+    const std::shared_ptr<XVectorProfile> payload = make_x_vector_profile(kEncDim);
+    std::vector<uint8_t>                  bytes;
+    SYNTH_TEST_CHECK(serialize_x_vector_profile(*payload, compatibility_id, bytes) == SYNTH_OK);
+
+    synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
+    std::shared_ptr<const void> loaded;
+    const char *                code    = nullptr;
+    const char *                message = nullptr;
+    SYNTH_TEST_CHECK(load_profile_from_memory(base_package_hparams(kEncDim), bytes.data(), bytes.size(),
+                                              compatibility_id, family_tag, loaded, code, message) == SYNTH_OK);
+    SYNTH_TEST_CHECK(family_tag == synth::ProfileFamilyTag::Qwen3TtsClone);
+    SYNTH_TEST_CHECK(loaded != nullptr);
+    return 0;
+}
+
 int main() {
     SYNTH_TEST_CHECK(test_design_profile_holds_the_string_verbatim() == 0);
     SYNTH_TEST_CHECK(test_an_empty_instruct_is_accepted() == 0);
     SYNTH_TEST_CHECK(test_invalid_utf8_is_refused() == 0);
+    SYNTH_TEST_CHECK(test_an_embedded_nul_is_refused_at_creation() == 0);
     SYNTH_TEST_CHECK(test_an_over_long_instruct_is_refused_at_the_boundary() == 0);
     SYNTH_TEST_CHECK(test_create_from_description_accepts_a_voicedesign_model() == 0);
     SYNTH_TEST_CHECK(test_create_from_description_refuses_the_clone_variants() == 0);
@@ -1030,5 +1237,9 @@ int main() {
     SYNTH_TEST_CHECK(test_design_instruct_over_length_is_refused_at_load() == 0);
     SYNTH_TEST_CHECK(test_design_instruct_invalid_utf8_is_refused_at_load() == 0);
     SYNTH_TEST_CHECK(test_the_design_writer_emits_exactly_the_whitelisted_keys() == 0);
+    SYNTH_TEST_CHECK(test_the_design_writer_refuses_an_embedded_nul() == 0);
+    SYNTH_TEST_CHECK(test_a_design_envelope_is_refused_by_a_package_without_description_text() == 0);
+    SYNTH_TEST_CHECK(test_load_from_memory_refuses_a_design_envelope_on_a_base_model() == 0);
+    SYNTH_TEST_CHECK(test_a_clone_envelope_still_loads_against_a_base_package() == 0);
     return 0;
 }

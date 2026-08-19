@@ -142,6 +142,24 @@ bool is_well_formed_utf8(const std::string & text) {
     return true;
 }
 
+// A SEPARATE predicate from is_well_formed_utf8 above, not a missing case in
+// it: U+0000 is a structurally valid code point encoded as a single 0x00 byte,
+// so the `lead < 0x80` arm accepts it and is right to. What refuses it is a
+// SERIALIZATION constraint, not an encoding one -- gguf's KV API is
+// null-terminated in both directions (see serialize_design_profile's own
+// comment on gguf_set_val_str), so an instruct carrying a 0x00 anywhere in
+// `[0, size())` cannot survive a round trip through an envelope: it would come
+// back as the prefix before that byte, a DIFFERENT Voice that still loads
+// cleanly. This project refuses such input rather than accepting and
+// corrupting it, which is the same posture the envelope loader takes towards
+// every other malformed shape.
+//
+// Any position counts, including the last: a std::string of size N whose byte
+// N-1 is 0x00 still hands `c_str()` an N-1-character string.
+bool contains_embedded_nul(const std::string & text) {
+    return text.find('\0') != std::string::npos;
+}
+
 }  // namespace
 
 synth_status_t create_design_profile(const HParams & hparams, const std::string & instruct, DesignInstruct & output) {
@@ -152,6 +170,16 @@ synth_status_t create_design_profile(const HParams & hparams, const std::string 
         return SYNTH_ERR_INVALID_ARG;
     }
     if (!is_well_formed_utf8(instruct)) {
+        return SYNTH_ERR_INVALID_ARG;
+    }
+    // Reviewer finding (PR #15): the ENTRY is where the serializer's
+    // null-terminated-KV truncation is closed. Refusing here is what makes
+    // "a Voice Profile serializes and loads back as the same Voice" true for
+    // every DesignInstruct the public seam can produce -- see
+    // contains_embedded_nul's own comment above for why this is not something
+    // is_well_formed_utf8 should have caught, and serialize_design_profile's
+    // for what the writer would otherwise have done with such a string.
+    if (contains_embedded_nul(instruct)) {
         return SYNTH_ERR_INVALID_ARG;
     }
     output.instruct = instruct;
@@ -1495,10 +1523,11 @@ synth_status_t serialize_design_profile(const HParams &        hparams,
     // checked (the same reason serialize_x_vector_profile re-checks
     // `language_tag` against kMaxLanguageTagLength): this writer has no way
     // to know whether `profile` reached it through that path or was built by
-    // hand, so it re-asserts create_design_profile's own two invariants
-    // itself. `is_well_formed_utf8` is the same validator defined above,
-    // beside create_design_profile.
-    if (profile.instruct.size() > kMaxDesignInstructBytes || !is_well_formed_utf8(profile.instruct)) {
+    // hand, so it re-asserts create_design_profile's own three invariants
+    // itself. `is_well_formed_utf8` and `contains_embedded_nul` are the same
+    // validators defined above, beside create_design_profile.
+    if (profile.instruct.size() > kMaxDesignInstructBytes || !is_well_formed_utf8(profile.instruct) ||
+        contains_embedded_nul(profile.instruct)) {
         return SYNTH_ERR_INVALID_ARG;
     }
 
@@ -1514,19 +1543,37 @@ synth_status_t serialize_design_profile(const HParams &        hparams,
     gguf_set_arr_data(ctx.get(), kKeyCompatibilityId, GGUF_TYPE_UINT8, compatibility_id, 32);
     static constexpr uint8_t kZeroDigest[32] = {};
     gguf_set_arr_data(ctx.get(), kKeyContentSha256, GGUF_TYPE_UINT8, kZeroDigest, 32);
-    // Known gap, the same one set_common_metadata's own comment records for
-    // `language_tag`, and symmetric at BOTH ends: gguf's KV API has no
-    // length-aware string setter OR getter (ggml/include/gguf.h), only a
-    // null-terminated `const char *` pair, so an EMBEDDED NUL in `instruct`
-    // silently truncates on the way OUT here (gguf_set_val_str) and again on
-    // the way IN at load (GgufMetadata::string, which resolves to the same
-    // API) -- a 16-byte instruct with a NUL at index 4 round-trips as a
-    // 4-byte one on both ends, not just this one. NUL (U+0000) is a
-    // structurally valid code point, so is_well_formed_utf8 above does not
-    // catch it; fixing this for real would mean bypassing gguf's own KV
-    // setter/getter API for this one field, which set_common_metadata's own
-    // comment explains the cost of. Left as a known, named gap rather than
-    // silently reproduced.
+    // WHY THIS LINE IS SAFE, given what it cannot express. gguf's KV API has
+    // no length-aware string setter OR getter (ggml/include/gguf.h), only a
+    // null-terminated `const char *` pair -- the same limitation
+    // set_common_metadata's own comment records for `language_tag`, and
+    // symmetric at BOTH ends: an EMBEDDED NUL in `instruct` would truncate on
+    // the way OUT here (gguf_set_val_str) and again on the way IN at load
+    // (GgufMetadata::string, which resolves to the same API), so a 16-byte
+    // instruct with a NUL at index 4 would round-trip as a 4-byte one -- a
+    // different Voice, returned with SYNTH_OK.
+    //
+    // That cannot happen, because no such `instruct` reaches this line: NUL
+    // is refused at the ENTRY, by create_design_profile, and again by this
+    // function's own defensive re-check above (contains_embedded_nul), so the
+    // truncation has no input to act on rather than being merely named. That
+    // is the third option a reviewer named on PR #15, and it is the cheap
+    // correct one: the other two on the table were bypassing gguf's KV
+    // setter/getter API for this one field -- whose cost set_common_metadata's
+    // own comment explains -- and leaving the gap open. Refusing the input is
+    // also this loader's standing posture everywhere else, so it needs no
+    // separate justification here.
+    //
+    // The gguf limitation itself has NOT gone away and this paragraph stays
+    // for the next reader: anyone adding a second string-valued key to this
+    // envelope inherits the same truncation and needs the same entry-side
+    // refusal, and anyone loosening create_design_profile reopens this line.
+    // A HAND-BUILT envelope can still carry a 0x00 inside its on-disk
+    // instruct string (GGUF strings are length-prefixed on disk), and the
+    // loader will read back the prefix before it; that is self-consistent --
+    // the digest binds the whole buffer, and the value the loader acts on is
+    // the value it validates -- not a round-trip mismatch, because nothing
+    // this project writes produced those bytes.
     gguf_set_val_str(ctx.get(), kKeyInstruct, profile.instruct.c_str());
 
     // No tensor: see this function's own header comment (profile.h) for why
@@ -1618,6 +1665,42 @@ synth_status_t load_profile_from_memory(const HParams & hparams,
             return SYNTH_ERR_INVALID_ARG;
         }
         if (std::memcmp(file_compatibility_id, compatibility_id, sizeof(file_compatibility_id)) != 0) {
+            return SYNTH_ERR_UNSUPPORTED_VOICE;
+        }
+        // Reviewer finding (PR #15): the last clause of "is this envelope for
+        // THIS Model", and the one the three checks above cannot express.
+        // They ask whether the envelope was built for this family, this
+        // schema, and this exact package -- and `compatibility_id` is a
+        // digest of the package, derivable by anyone holding it, not a
+        // secret. None of them asks whether the package declares the
+        // CONDITIONING PATH this envelope needs. Without this check a
+        // hand-built design envelope stamped with a BASE package's own
+        // compatibility_id loaded as `Qwen3TtsDesign` against a Model that
+        // declares the clone schema and no Description Text source at all,
+        // because the branch was selected from the BUFFER's shape
+        // (prescan_design_buffer) and then validated only against constants.
+        //
+        // `hparams` is what settles it, and this is the one place in the
+        // design path that has a reason to read it (create_design_profile and
+        // serialize_design_profile still do not -- their `(void) hparams;`
+        // stands, because a PAYLOAD really does not depend on the package;
+        // what depends on it is whether this Model accepts the payload at
+        // all, and only a LOAD from untrusted bytes asks that without a
+        // caller who already knows).
+        //
+        // SYNTH_ERR_UNSUPPORTED_VOICE, matching the three refusals above it:
+        // the bytes are structurally sound and this loader understands them,
+        // just not for this Model. Placed here, with them, rather than after
+        // the digest check below, so the whole "for this Model" question is
+        // answered in one contiguous block.
+        //
+        // The CLONE branch below needs no mirror of this: a VoiceDesign
+        // package carries no speaker encoder, so its
+        // `speaker_encoder.enc_dim` is 0 and every clone envelope already
+        // fails there (an envelope declaring 0 elements dies earlier still,
+        // on the `tensor_bytes == 0` refusal). That is a structural accident
+        // rather than a stated rule, so a fourth kind should not assume it.
+        if ((hparams.profile_sources & SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT) == 0) {
             return SYNTH_ERR_UNSUPPORTED_VOICE;
         }
         uint8_t stored_digest[32];

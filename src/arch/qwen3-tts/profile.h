@@ -166,11 +166,22 @@ struct DesignInstruct {
 
 // Validates a description and prepares its payload.
 //
-// Encoding and length, and NOTHING else. See design D2: OmniVoice's arm can
-// reject on a closed attribute vocabulary because upstream defines one, and
-// this family's upstream defines none, so any rule invented here would refuse
-// input upstream accepts. An empty instruct is VALID (D3) -- it selects the
-// unconditioned path, which is the same path Plan 1's completion gate measured.
+// Encoding, length, and round-trippability -- NOTHING else. See design D2:
+// OmniVoice's arm can reject on a closed attribute vocabulary because upstream
+// defines one, and this family's upstream defines none, so any rule invented
+// here would refuse input upstream accepts. An empty instruct is VALID (D3) --
+// it selects the unconditioned path, which is the same path Plan 1's
+// completion gate measured.
+//
+// The third invariant is an EMBEDDED NUL (PR #15's reviewer finding), and it
+// is not a semantic judgement either: gguf's KV API is null-terminated in both
+// directions, so an instruct carrying a 0x00 would serialize and load back as
+// the prefix before that byte -- a different Voice, returned with SYNTH_OK.
+// Refused at this entry, which is what makes the writer's own truncation
+// unreachable through the public seam rather than merely documented; see
+// serialize_design_profile's own comment on gguf_set_val_str (profile.cpp) for
+// the limitation and the two alternatives that were rejected in favour of
+// this one.
 //
 // `output` is left untouched on any non-OK return.
 synth_status_t create_design_profile(const HParams & hparams, const std::string & instruct, DesignInstruct & output);
@@ -605,12 +616,17 @@ synth_status_t serialize_icl_profile(const HParams &    hparams,
 // digest step below it assumes a nonzero tensor count.
 //
 // Returns SYNTH_ERR_INVALID_ARG if `profile.instruct` exceeds
-// kMaxDesignInstructBytes or is not well-formed UTF-8 -- both re-asserted
-// here independently of whatever create_design_profile already checked, the
-// same reason serialize_x_vector_profile re-checks `language_tag` against
+// kMaxDesignInstructBytes, is not well-formed UTF-8, or carries an embedded
+// NUL -- all three re-asserted here independently of whatever
+// create_design_profile already checked, the same reason
+// serialize_x_vector_profile re-checks `language_tag` against
 // kMaxLanguageTagLength: this writer has no way to know whether `profile`
 // reached it through create_design_profile or was built by hand, and it must
-// never be able to emit an envelope its own reader refuses.
+// never be able to emit an envelope its own reader refuses. The NUL clause
+// carries a second obligation the other two do not: gguf's null-terminated KV
+// setter would TRUNCATE such a string rather than refuse it, so without the
+// re-check this writer could emit an envelope its reader accepts as a
+// different Voice, which is worse than refusing.
 //
 // `hparams` is unused (mirrors create_design_profile's own signature, and for
 // the same reason its own header comment gives): the payload does not depend
@@ -646,6 +662,23 @@ synth_status_t serialize_design_profile(const HParams &        hparams,
 // count is safe (each path fully and independently validates the bytes
 // regardless of which one this routing picked).
 //
+// THAT THIRD PATH ALSO ASKS `hparams` ONE QUESTION (PR #15's reviewer
+// finding): the package must declare SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT,
+// or the envelope is refused with SYNTH_ERR_UNSUPPORTED_VOICE. Routing on the
+// BUFFER's own shape decides which validation runs, never whether the
+// resulting Voice Profile is one this Model can be conditioned on -- and
+// `compatibility_id`, the only other per-Model check on that path, is a
+// digest of the package derivable by anyone holding it, so it proves the
+// envelope was not tampered with and nothing about which conditioning path it
+// belongs to. Before this check, a hand-built design envelope carrying a Base
+// package's compatibility_id loaded as `ProfileFamilyTag::Qwen3TtsDesign`
+// against a Base Model. Note the asymmetry with the CREATE side, which is
+// real and not an inconsistency: create_design_profile can ignore `hparams`
+// because its caller holds the Model and has checked the variant; this
+// function's caller (src/voice-profile.cpp's load dispatcher) has only
+// checked SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE, which a Base package
+// publishes too.
+//
 // WHY `HParams` AND NOT A BARE `enc_dim`, WHICH IS WHAT THIS TOOK THROUGH
 // PLAN 2. That parameter's own justification said, in as many words, that the
 // checks needing a live Model had no counterpart here because "XVectorProfile
@@ -654,7 +687,8 @@ synth_status_t serialize_design_profile(const HParams &        hparams,
 // true, and range-checking them is exactly the class of check the old comment
 // named as absent. It still needs no `Model`: every bound is a plain scalar
 // on `HParams` (`speaker_encoder.enc_dim`, `codec.decoder.codebook_size`,
-// `codec.decoder.quantizer_count`, `talker.text_vocab_size`), so taking the
+// `codec.decoder.quantizer_count`, `talker.text_vocab_size`, and -- since
+// PR #15 -- the design path's `profile_sources`), so taking the
 // struct rather than the Model keeps this function reachable from a `unit`
 // test with a synthetic package, which is the same substitution
 // create_x_vector_profile and create_icl_profile above already make and
@@ -725,8 +759,10 @@ synth_status_t serialize_design_profile(const HParams &        hparams,
 //     not equal `enc_dim`, the content digest does not match, or a
 //     payload-value invariant above is violated) -> SYNTH_ERR_INVALID_ARG;
 //   * a structurally well-formed envelope for a DIFFERENT model_family,
-//     schema, schema_version, or exact compatibility_id -> SYNTH_ERR_UNSUPPORTED_VOICE
-//     (this loader understands the envelope, just not for this Model);
+//     schema, schema_version, or exact compatibility_id, or a DESIGN envelope
+//     handed to a package whose `profile_sources` does not name
+//     description-text -> SYNTH_ERR_UNSUPPORTED_VOICE (this loader
+//     understands the envelope, just not for this Model);
 //   * an unrecognized `kind` value (anything other than "x-vector" or "icl")
 //     -> SYNTH_ERR_INVALID_ARG: unlike the three mismatches above, `kind` is
 //     this ONE schema's own internal tag, not a different schema/version/

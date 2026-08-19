@@ -1186,10 +1186,25 @@ synth_status_t load_qwen3_tts_profile_from_memory(const synth_model_t *         
 
     // `load_profile_from_memory` (profile.cpp) routes on the buffer's OWN
     // declared envelope kind (Task 3's prescan) before either payload's own
-    // hparams-dependent checks ever run: the design branch never reads
-    // `hparams` at all (mirrors serialize/create_design_profile's own
-    // `(void) hparams;`), while the x-vector/ICL branch genuinely needs the
-    // package's real enc_dim, codec width and frame ceilings.
+    // size checks run: the x-vector/ICL branch needs the package's real
+    // enc_dim, codec width and frame ceilings, and the design branch needs
+    // exactly one field, `profile_sources`.
+    //
+    // THAT LAST CLAUSE IS NEW, AND THIS COMMENT USED TO SAY THE OPPOSITE --
+    // that the design branch "never reads `hparams` at all (mirrors
+    // serialize/create_design_profile's own `(void) hparams;`)". PR #15's
+    // reviewer measured what that analogy was hiding. The two CREATE-side
+    // functions are safe ignoring `hparams` because their caller holds the
+    // Model and has already checked the variant: this file's own
+    // create_from_description dispatcher gates on
+    // SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT before the family ever sees the
+    // string. The LOAD-side caller -- the dispatcher below -- gates on
+    // SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE, which a BASE package publishes
+    // too, so nothing in the chain asked whether the Model supports
+    // Description Text at all. A hand-built design envelope stamped with a
+    // Base package's compatibility_id therefore loaded as `Qwen3TtsDesign`
+    // against a Base Model. The design branch now asks `hparams` itself; the
+    // analogy to the create path does not transfer and is not made here.
     //
     // Round 1 review (M2): `model->qwen3_tts` is null only for a hand-built
     // test handle, never in production -- the dispatcher above already
@@ -1202,19 +1217,39 @@ synth_status_t load_qwen3_tts_profile_from_memory(const synth_model_t *         
     // reachable from nowhere but a test; this is an ordinary null-coalesce
     // over a pointer the function already receives, grants no special access,
     // and degrades safely rather than silently -- a clone envelope loaded
-    // against the empty fallback still fails its enc_dim check rather than
-    // succeeding on wrong data (`empty_hparams.speaker_encoder.enc_dim ==
-    // 0`, and no real x-vector envelope declares zero elements). It is what
-    // lets test_serialize_and_load_round_trip_through_the_public_seam
-    // (qwen3_tts_design_profile_test.cpp) exercise this family's LOAD
-    // dispatch decision -- the one item 5 exists to fix -- at the `unit`
-    // tier at all: without it, that fix would have no coverage but
-    // tests/qwen3_tts_voicedesign_synthesis_real.cpp's real-package
-    // integration case, which proves synthesis but does not run in
-    // synthesize-check-unit.
-    const synth::qwen3tts::HParams   empty_hparams;
+    // against the fallback still fails its enc_dim check rather than
+    // succeeding on wrong data (`fallback_hparams.speaker_encoder.enc_dim ==
+    // 0`, and no real x-vector envelope declares zero elements).
+    //
+    // WHY THE FALLBACK IS NO LONGER DEFAULT-CONSTRUCTED (PR #15). A
+    // default-constructed `HParams` has `profile_sources == 0`, which names
+    // NO conditioning path, so the design branch's new check would refuse
+    // every envelope loaded through a hand-built handle -- including
+    // test_serialize_and_load_round_trip_through_the_public_seam's
+    // (qwen3_tts_design_profile_test.cpp) legitimate one. The fix is not to
+    // weaken that check; it is that a fallback standing in for a Model must
+    // carry what the handle actually declares in the ONE field the check
+    // reads. `model->info.voice_profile.source_flags` is exactly that field,
+    // already on this handle: fill_voice_profile_capability (weights.cpp)
+    // computes it as `hparams.profile_sources | SERIALIZED_PROFILE`, and
+    // read_profile_sources can set no bits but the two masked back out here,
+    // so this reconstructs a real Model's `profile_sources` EXACTLY rather
+    // than approximating it. Every other field stays at its zero default, so
+    // the safe-degradation property above is untouched.
+    //
+    // The alternative -- giving that test a Model with real VoiceDesign
+    // hparams -- is not available at the `unit` tier: `qwen3tts::Model`'s
+    // constructor is private and its only factories (`load`/`load_cpu`) read
+    // a real package off disk, which is what puts a live-Model version of
+    // this coverage in tests/qwen3_tts_voicedesign_synthesis_real.cpp's
+    // integration case, outside synthesize-check-unit. Reinstating a
+    // `friend` factory to get one back is the shape item 4 deliberately
+    // removed.
+    synth::qwen3tts::HParams fallback_hparams;
+    fallback_hparams.profile_sources = model->info.voice_profile.source_flags &
+                                       (SYNTH_PROFILE_SOURCE_REFERENCE_AUDIO | SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT);
     const synth::qwen3tts::HParams & load_hparams =
-        model->qwen3_tts != nullptr ? model->qwen3_tts->hparams() : empty_hparams;
+        model->qwen3_tts != nullptr ? model->qwen3_tts->hparams() : fallback_hparams;
 
     synth::ProfileFamilyTag     family_tag = synth::ProfileFamilyTag::None;
     std::shared_ptr<const void> payload;

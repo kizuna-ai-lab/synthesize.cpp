@@ -1,8 +1,10 @@
 # Qwen3-TTS Stage 3 — Description Text Voice Design — Design
 
-Status: Approved in discussion with jiangzhuo on 2026-08-18. This is the design
-record for the third and final rung of the Qwen3-TTS Reference Model Variant
-Ladder (`docs/porting/families/qwen3-tts.md`, "Reference Model Variant Ladder").
+Status: Approved in discussion with jiangzhuo on 2026-08-18; two errata added
+2026-08-19 from PR #15's review (D2 and D6), recording corrections execution
+found rather than a new approval. This is the design record for the third and
+final rung of the Qwen3-TTS Reference Model Variant Ladder
+(`docs/porting/families/qwen3-tts.md`, "Reference Model Variant Ladder").
 The family record itself is extended at intake, per `docs/model-porting.md`.
 
 Plans 1–3 are written from this document, so where execution contradicts it the
@@ -117,6 +119,26 @@ turns a port into a redesign. The consequence is that `create_from_description`
 does very little on this family, and the model card must say so rather than
 imply a validation that does not happen.
 
+**Erratum, 2026-08-19 — a third invariant, from PR #15's review: an embedded
+NUL is refused. D2's principle is unchanged.** "Nothing else" was written
+against *semantic* rules — an invented attribute vocabulary — and that
+prohibition stands: nothing about the meaning of a description is judged.
+What the wording did not anticipate is a rule about whether a description can
+be *stored*. `U+0000` is structurally valid UTF-8, so `is_well_formed_utf8`
+accepts it, but gguf's KV API is null-terminated in both directions
+(`ggml/include/gguf.h` offers no length-aware string setter or getter), so an
+instruct carrying a `0x00` serializes and loads back as the prefix before that
+byte: a 16-byte description round-tripping as a 4-byte one, a *different*
+Voice, with `SYNTH_OK` returned at every step. Three options were on the table
+— bypass gguf's KV API for this one field, leave the gap named in a comment,
+or refuse the input. The third is taken: `create_design_profile` (and, for a
+hand-built payload, `serialize_design_profile`) returns
+`SYNTH_ERR_INVALID_ARG`. Upstream is not contradicted, because upstream never
+serializes a Voice Profile at all — this is a constraint of the envelope this
+port adds, not a judgement about the string. The sibling OmniVoice design path
+needs no equivalent: its closed vocabulary already refuses any item containing
+a NUL, measured rather than assumed.
+
 **D3. An empty instruct is a legal input, not an error.** It maps to upstream's
 `instruct_ids.append(None)` — no instruct block — which with no speaker embedding
 is an unconditioned generation whose voice is the seed's. This is the path Plan 1
@@ -178,6 +200,29 @@ Upstream takes `text`, `instruct` and `language` as three separate arguments to
 OmniVoice's `ClonePrompt` already applies to `transcript_ids`: determinism comes
 from the frozen BPE vocabulary, so storing ids costs nothing and risks
 everything across a package upgrade.
+
+**Erratum, 2026-08-19 — from PR #15's review: loading a design envelope
+requires the Model to declare description-text. D6 is unchanged; this is a
+rule D6 never stated.** D6 settles what the envelope *carries*. It does not
+say which Models may consume one, and neither did the loader:
+`load_profile_from_memory` picked its branch from the buffer's own shape and
+then validated the design envelope against hard-coded constants plus a
+`compatibility_id` match. `compatibility_id` is a digest of the package,
+derivable by anyone holding it — it proves the bytes were not tampered with,
+never that they belong to a conditioning path the package supports. Because
+the public load dispatcher gates only on
+`SYNTH_PROFILE_SOURCE_SERIALIZED_PROFILE`, which a **Base** package publishes
+too, a hand-built design envelope stamped with a Base package's own
+`compatibility_id` loaded as `ProfileFamilyTag::Qwen3TtsDesign` against a
+Model declaring the clone schema and no Description Text source. The design
+branch now requires `hparams.profile_sources &
+SYNTH_PROFILE_SOURCE_DESCRIPTION_TEXT` and otherwise returns
+`SYNTH_ERR_UNSUPPORTED_VOICE` — the status the model_family / schema /
+compatibility_id refusals beside it already return, and what
+`docs/c-interface.md` already promised for "incompatible Model data". Note
+that the CREATE path's `(void) hparams;` is *not* the same situation and
+stands: its caller holds the Model and has checked the variant, whereas a
+load from untrusted bytes has no such caller.
 
 **D7. Speed is not this rung's claim.** Talker parameters per layer go from
 15.73 M to 50.33 M — attention 6.29 M → 12.58 M, MLP 9.44 M → 37.75 M — a factor

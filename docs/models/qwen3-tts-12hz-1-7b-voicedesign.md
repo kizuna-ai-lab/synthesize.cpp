@@ -130,7 +130,8 @@ gate**, so this page establishes a *published-despite-gate-failure* shape,
 not the measured-and-not-shipped shape an earlier draft claimed. That
 matters for the tracked CustomVoice gap: CustomVoice's own published card
 still omits `Q5_K_MIXED` entirely -- its `quants:` block
-(`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml:176-209`) ships
+(the `quants:` block of
+`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml`) ships
 `BF16`, `F16` and `Q8_MIXED`, three profiles, none of them `Q5_K_MIXED` -- a
 separate, pre-existing gap this page does not fix, since that card is
 already published and re-publishing it is its own outward act. This page no

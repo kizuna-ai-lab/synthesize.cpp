@@ -3506,8 +3506,9 @@ median of the stable runs is reported, which is why the run counts are stated
 above.
 
 **What is not claimed.** These are one machine, one workload and one utterance
-length. This document's own build-dependent-length finding
-(`qwen3-tts.md:2966-2976`) is why -- not `docs/testing.md`, cited here until
+length. This document's own build-dependent-length finding -- the
+"Generated length is build-dependent, and no frame count may be quoted
+without naming its build" paragraph above -- is why, not `docs/testing.md`, cited here until
 Task 5's fix round corrected it; that file documents a different claim, the
 Release/RelWithDebInfo speed gap -- so an RTF computed from a frame count
 taken on another tree would be wrong; every figure here is same-tree. No
@@ -4800,8 +4801,9 @@ sensitive half does not also grow.
 
 **This is a size result only, and it does not decide publication.** Whether
 F16 ships for this family is a **speed** question, not a size one --
-`docs/quantization.md:465-469` states the rule directly ("F16 is a speed
-profile for this family rather than a size one"), and Base's own F16, also
+`docs/quantization.md`'s "F16 is 184,448 bytes LARGER than the package it
+was cut from" paragraph states the rule directly ("which is why F16 is a
+**speed** profile for this family rather than a size one"), and Base's own F16, also
 larger than its source, **was published** on 2026-08-17 on exactly that
 reasoning (see the Status paragraph above). The precedent this section
 originally cited was wrong on two counts: `Q5_K_MIXED` is withheld for
@@ -5294,8 +5296,8 @@ larger to begin with), but that answer is moot once the accuracy side has
 moved even further than the size side did. Task 8's card should record
 `Q5_K_MIXED` as buildable and load-checked for this variant but not shipped,
 on accuracy -- but the CustomVoice card Task 8 might otherwise use as a
-template does not do this at all: `scripts/hf_cards/
-qwen3-tts-12hz-0-6b-customvoice.yaml:176-209`'s `quants:` block ships `BF16`,
+template does not do this at all: the `quants:` block of
+`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml` ships `BF16`,
 `F16` and `Q8_MIXED`,
 omitting `Q5_K_MIXED` entirely rather than naming it measured-and-not-shipped.
 Task 8 has to establish this shape, not copy it. See "Open item: CustomVoice's
@@ -5334,8 +5336,8 @@ Found while writing this task's recommendation, not fixed here (out of this
 task's file list). This plan's own Global Constraints state that a profile
 which fails its own test belongs in the card "as measured-and-not-shipped
 ... rather than omitted." CustomVoice's published card,
-`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml:176-209`'s `quants:`
-block, ships `BF16`, `F16` and
+the `quants:` block of
+`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml`, ships `BF16`, `F16` and
 `Q8_MIXED` -- `Q5_K_MIXED` (talker-logits cosine 0.9648, withheld on
 accuracy, recorded in `docs/quantization.md`'s "What each profile is for")
 is silently absent rather than named. A case-insensitive `grep -rn q5` across
@@ -5362,6 +5364,38 @@ CustomVoice's own evidence rather than copying a sibling. Note the two
 cases are not alike: CustomVoice's `Q5_K_MIXED` was withheld on a lower
 talker-logits cosine with no committed pass/fail bound, whereas
 VoiceDesign's breaches a committed `max_relative` gate outright.
+
+### Open item: three published cards carry `stages`/`cases_per_stage` numbers the record does not support, because the two fields have no agreed meaning
+
+Filed 2026-08-20 under PR #16's review, which re-derived every card's
+duration claim and found these while checking the same cards' surrounding
+numbers. **Not fixed here:** all three are already-published cards, and
+re-publishing one is its own outward act requiring jiangzhuo's per-act
+confirmation. This item names them, their correct values, and the reason
+they went wrong together.
+
+**The root cause is that `stages` and `cases_per_stage` are ambiguous
+family-wide.** Nothing in `scripts/hf_cards/generate.py` validates either
+field, and the template spends them in one sentence -- "{{ stages }} graph
+stages were replayed for {{ cases_per_stage }} cases" -- whose wording says
+GRAPH stages while four of the five families fill it from their TOLERANCE
+stage count. The two readings coincide for VITS and Kokoro and diverge for
+Qwen3-TTS and OmniVoice, which is why the errors below look unrelated and
+are not. Whoever fixes the numbers should settle the field semantics first,
+in the template and in `validate_spec`, or the next card will re-earn them.
+
+| card | field | committed | what the record supports |
+| --- | --- | ---: | --- |
+| `qwen3-tts-12hz-0-6b-base` | `cases_per_stage: 13` | 13 | No stage measures 13. `replay` measures 4 (`speaker.x_vector`) and 3 (`prompt.icl_embed`); `codec_encoder` measures 5. 13 is the Golden Manifest's case count, and `tests/tolerances/qwen3-tts.json`'s own Base note says so outright: "case_count (13) tracks this variant's manifest ..., **not a measurement**." |
+| `omnivoice-0-6b` | `stages: 8` | 8 | `tests/tolerances/omnivoice.json` carries **2** stages (`replay`, `public`), the count every sibling card's `stages` is filled from. No basis for 8 appears anywhere in the record; it entered in `573ba142` with no justifying comment. `cases_per_stage: 20` is true of `replay` only -- `public` is 13 checks. |
+| `qwen3-tts-12hz-0-6b-customvoice` | `cases_per_stage: 18` | 18 | The manifest holds **20** cases (`suite_version: 2`), and the tolerance file's `BF16/replay` measures all 20. Only `F16/replay` and `Q8_MIXED/replay` measure 18. So 18 describes two of the three shipped profiles and understates the source profile's own coverage. |
+
+The Base row is the one worth reading twice: the tolerance file states in its
+own prose that the number is not a measurement, and the card nevertheless
+renders it into a sentence that says it was replayed for that many cases.
+That is the same failure mode as the duration claim PR #16 removed from this
+same card -- a number that is true of some artifact, rendered as though it
+were true of a measurement.
 
 ### Verification
 
@@ -5395,7 +5429,8 @@ Measures latency, RTF, load time and peak memory for the three profiles Tasks
 2-4 cut (`BF16`, `F16`, `Q8_MIXED`), and decides the question Task 2 was
 forbidden to answer: whether `F16`, which is *larger* than its `BF16` source
 (+283,136 bytes, Task 2), is fast enough on this variant to justify shipping
-it anyway. `docs/quantization.md:465-469` already records F16 as this
+it anyway. `docs/quantization.md`'s "F16 is 184,448 bytes LARGER than the
+package it was cut from" paragraph already records F16 as this
 family's speed profile rather than its size one; this task supplies the speed
 number. `Q5_K_MIXED` already failed its own accuracy gate in Task 4 (headroom
 0.32x) and is measured here for context only, not as a candidate.
@@ -5479,7 +5514,9 @@ Medians of three runs per profile. RTF is each row's own synthesis time over
 its own audio length, never across rows -- the three profiles stop at
 different frame counts (97,920 / 103,680 / 120,960), which is a property of
 their weights, not an error: the autoregressive stop decision is what moves
-here too, the same one-clause mechanism `qwen3-tts.md:2971` names for why it
+here too, the same one-clause mechanism this file's "Generated length is
+build-dependent" paragraph names ("The autoregressive stop decision is what
+moves") for why it
 moves between builds, just triggered by weight precision rather than a
 compiler's floating-point choices. Matches Base's own precedent that BF16 and
 Q8_MIXED need not agree on where they stop.
@@ -5490,7 +5527,9 @@ figure above -- carried forward from Base's own Task 14 measurement
 (carry-over §3.4: 5,594,676 to 5,639,716 KB), not independently
 re-measured against this package in this task, since isolating it would need
 a build variant this task does not have. And generated length is
-build-dependent (`qwen3-tts.md:2966-2976`, not `docs/testing.md`, which
+build-dependent (this file's "Generated length is build-dependent, and no
+frame count may be quoted without naming its build" paragraph, not
+`docs/testing.md`, which
 documents a different claim -- the Release/RelWithDebInfo speed gap): none of
 the frame counts above may be read against any other tree, including
 `build`'s own tolerance-cell runs, which use different requests and a
@@ -5521,7 +5560,8 @@ reason.
 
 Task 2 measured F16 at +283,136 bytes against its BF16 source (0.0066%
 larger) and declined to draw a publication conclusion, because
-`docs/quantization.md:465-469` records F16 as this family's speed profile,
+`docs/quantization.md`'s "F16 is 184,448 bytes LARGER than the package it
+was cut from" paragraph records F16 as this family's speed profile,
 not its size one -- Base's own F16 published despite the same larger-than-
 source shape. The question left for this task: **is F16 fast enough on this
 variant to justify a profile that saves no disk?**
@@ -5573,12 +5613,14 @@ speed profile on this evidence once both gates clear -- not before.
 
 ### Open item: Base's own F16 verdict rests on size alone, and was never speed-measured
 
-`docs/quantization.md:457`'s table row for Base's F16 reads "**clears every
+The `F16 | Base` row of `docs/quantization.md`'s "What each profile is for"
+table reads "**clears every
 gate and does not pay**", RTF "not measured" -- and this file's own Status
 paragraph (line 21) repeats it verbatim: "F16 clears every gate and does NOT
 pay -- it is 184,448 bytes *larger* than its source." Only the speed-profile
-*paragraph* just below that table (`docs/quantization.md:465-469`, "F16 is a
-speed profile for this family rather than a size one") supports this task's
+*paragraph* just below that table ("F16 is 184,448 bytes LARGER than the
+package it was cut from", which ends "which is why F16 is a **speed**
+profile for this family rather than a size one") supports this task's
 own framing that F16 should be judged on speed; Base's recorded *verdict* is
 the opposite, and it was reached without an RTF number at all. This task does
 **not** claim VoiceDesign's result matches how Base's F16 is characterized --
@@ -5619,8 +5661,9 @@ question on its own.
 ### What is not claimed
 
 One machine, one workload, one utterance length, one Description Text
-instruct. This document's own build-dependent-length finding
-(`qwen3-tts.md:2966-2976`), not `docs/testing.md`, is why an RTF computed
+instruct. This document's own build-dependent-length finding -- the
+"Generated length is build-dependent, and no frame count may be quoted
+without naming its build" paragraph -- not `docs/testing.md`, is why an RTF computed
 from a frame count taken on another tree would be wrong; every figure above
 is same-tree. This section does not re-open Task 4's
 Q5_K_MIXED recommendation, does not claim CUDA placement (VoiceDesign has no
@@ -5681,11 +5724,12 @@ for one paragraph.
 **Important -- `docs/testing.md` was cited for a claim it does not contain,
 in three places, one of them pre-existing.** Grepped: `docs/testing.md` never
 says "build-dependent" anywhere; its Release-preset section documents a
-different claim, the -O2/-O3 *speed* gap. The real source is this same file,
-`qwen3-tts.md:2966-2976` ("Generated length is build-dependent, and no frame
-count may be quoted without naming its build"). Fixed at both of this task's
+different claim, the -O2/-O3 *speed* gap. The real source is this same file's
+"Generated length is build-dependent, and no frame
+count may be quoted without naming its build" paragraph. Fixed at both of this task's
 own citations and, since the reviewer traced the error to its origin, at
-Base's own Task 14 text too (`qwen3-tts.md:3500` as originally written) --
+Base's own Task 14 text too (its "What is not claimed" paragraph, which
+carried the same wrong citation as originally written) --
 that citation was already wrong before this task copied its shape into new
 prose.
 
@@ -5717,7 +5761,8 @@ Base is explicitly **not** re-measured here -- out of this task's scope --
 and the item is left for whoever next touches Base's own record.
 
 **Minors, all fixed.** The frame-count-divergence sentence now cross-references
-`qwen3-tts.md:2971`'s one-clause mechanism ("the autoregressive stop decision
+this file's "Generated length is build-dependent" paragraph and its
+one-clause mechanism ("The autoregressive stop decision
 is what moves") instead of asserting the divergence is non-alarming without
 saying why. The "Does F16 pay here?" subsection now names its build
 (`build/rel-dgx-spark`) in the sentence that first quotes frame counts,
@@ -5816,13 +5861,14 @@ under 2.4% for CPU (2.30%) and under 4.6% for CUDA (4.59%) -- wider than
 CPU's own but nothing like a contention signature (no run doubled, unlike
 Base's Task 14 discards), so no run was discarded.
 
-### The gain, division shown
+### The gain, arithmetic shown
 
 **18.92 s -> 17.76 s and RTF 4.64 -> 4.35**, which divide out to
 (18.92 - 17.76) / 18.92 = **6.13%** and (4.64 - 4.35) / 4.64 = **6.25%** using
 the table's own rounded figures -- the two percentages differ from each
-other only because of that rounding. Base's own family-record text
-(`qwen3-tts.md:3474-3475`) records its own pair the same way, at one decimal
+other only because of that rounding. Base's own family-record text -- the
+"CUDA buys about 6 % and that is the expected amount" paragraph above --
+records its own pair the same way, at one decimal
 place: "11.60 s -> 10.85 s ... RTF 3.15 -> 2.95 -- 6.5 % and 6.3 %
 respectively". The design spec's own erratum commits the same pair at two
 decimal places instead, verbatim:
@@ -5832,8 +5878,14 @@ decimal places instead, verbatim:
 one decimal place in the family record and two in the design spec, and the
 task brief's own "6.47% and 6.35%" citation is the spec's figure, not a
 fabrication. The precise, unrounded medians for this task -- 18.9220 s and
-17.7564 s (n=8 each) -- divide to **6.16%**, and RTF's own unrounded pair,
-4.6377 -> 4.3520, divides to the identical **6.16%**: not a coincidence but
+17.7564 s (n=8 each) -- give **6.16%** as a reduction against the CPU
+baseline, `(CPU - CUDA) / CPU`, and RTF's own unrounded pair, 4.6377 ->
+4.3520, gives the identical **6.16%** under that same operation. (Dividing
+CPU by CUDA instead gives 1.0656 for both pairs -- a 6.56% throughput
+increase, a different quantity from the one reported here. This sentence
+read "divide to 6.16%" and "divides to the identical 6.16%" until
+2026-08-20, naming the wrong operation for the right number.) The agreement
+between the two pairs is not a coincidence but
 an algebraic identity, since both backends produced the same 97,920-frame,
 4.080 s audio for this workload, so RTF's shared denominator cancels and the
 two percentages restate one fraction rather than measuring two independent
@@ -5841,7 +5893,8 @@ things that happen to agree.
 
 **Confirms the smaller-than-Base's-~6% prediction, narrowly.** 6.16% here
 against Base's own 6.47%/6.35% unrounded (6.5%/6.3% as the family record
-displays them, `qwen3-tts.md:3474-3475`) is smaller, in the direction the
+displays them, in its "CUDA buys about 6 % and that is the expected amount"
+paragraph) is smaller, in the direction the
 design spec's reasoning predicted -- but by about 0.2-0.3 percentage points,
 not by the large margin a literal reading of "the talker's per-layer
 parameters run 3.2x larger, so its share of wall clock grows 3.2x" might
@@ -6005,7 +6058,8 @@ addressed:
    the paragraph now states the identity against Base directly and cites the
    three-way match.
 4. **"3.2x larger" cited to a line that records 2x.** Two citations pointed
-   at `qwen3-tts.md:345` (hidden 1024 -> 2048, a 2x fact) for the 3.2x
+   at this file's architecture sketch line "hidden 1024 (0.6B) | 2048
+   (1.7B)" (a 2x fact) for the 3.2x
    figure and called it "a talker-hidden-size fact". The real source is
    design spec D7
    (`docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md:227-229`):
@@ -6016,12 +6070,15 @@ addressed:
 Five Minors, all addressed: the brief's "6.47%/6.35%" is not a fabrication --
 the design spec's own erratum (`...design.md:637`) commits that exact pair
 verbatim, two decimal places where the family record's own text
-(`qwen3-tts.md:3474-3475`) carries one (6.5%/6.3%); both are real citations
+(its "CUDA buys about 6 % and that is the expected amount" paragraph)
+carries one (6.5%/6.3%); both are real citations
 to different committed documents, and the paragraph now says so instead of
 calling the brief's figure something the tree doesn't contain. The tolerance
 JSON's "as Base's own declined sub-grid above" pointed at this file, where
 Base's own entry records no such decline -- repointed to
-`docs/backends.md:506` and `qwen3-tts.md:3239`, where it actually lives.
+`docs/backends.md`'s "qwen3-tts-12hz-0-6b-base carries no CUDA sub-grid, on
+a measurement" section and this file's "The Base variant carries no CUDA
+sub-grid" section, where it actually lives.
 Both docs' `replay`-immobility explanation now cites the deeper structural
 fact, `model.cpp:573-585`'s device-mirroring loop copying only
 `codec.decoder.`-prefixed tensors (so the talker has no device-side weights
@@ -6181,8 +6238,9 @@ convention. **This is the project's first profile published over a failing
 numerical gate.**
 
 CustomVoice's own published card
-(`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml:176-209`'s `quants:`
-block, `BF16`/`F16`/`Q8_MIXED`) still omits `Q5_K_MIXED` entirely -- the gap
+(the `quants:` block of
+`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml`,
+`BF16`/`F16`/`Q8_MIXED`) still omits `Q5_K_MIXED` entirely -- the gap
 Task 4 tracked as an open item, unchanged by this ruling and still not fixed
 here, since that card is already published and re-publishing it is its own
 outward act. What did change is that this card no longer supplies a
@@ -6225,7 +6283,8 @@ files, and CustomVoice's genuinely-published `BF16`, returns the identical
 this check: it is the 2026-08-18 re-cut this document's own Status
 paragraph records above (sha256 `76275beb...` against the published
 `993f4cd1...`), re-confirmed for this check by re-hashing the local file
-and comparing against `scripts/hf_cards/qwen3-tts-12hz-0-6b-base.yaml:219`'s
+and comparing against the `sha256:` line of the BF16 entry in
+`scripts/hf_cards/qwen3-tts-12hz-0-6b-base.yaml`'s `quants:` block, its
 committed digest -- they disagree, so the local file does not speak to what
 is actually live. Base's `F16` (`e7484194...`) and `Q8_MIXED` (`808667ae...`)
 are unchanged since 2026-08-17 and match their own card's committed digests

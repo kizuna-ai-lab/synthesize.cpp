@@ -580,6 +580,19 @@ int main() {
     //     non-convolution tensor under this prefix an error rather than
     //     something that inherits a convolution's role by position" comment
     //     in policy.cpp true: position alone must not confer the role.
+    //
+    // MUTATION-TESTER'S NOTE, on the order of the two guards for that last
+    // name. `speaker_encoder.blocks.x.conv.weight` is ALREADY asserted
+    // earlier in this same test, through resolve_qwen3_tts_target_spec in
+    // the "plausible-looking tensor that is not one of the 237" block. That
+    // assertion runs FIRST, so a mutation to is_index() kills the test there
+    // and never reaches this line -- crediting the kill to this assertion is
+    // a misattribution (PR #16's fix round made exactly that mistake). This
+    // assertion is independently load-bearing only once the earlier one is
+    // neutralized, and it tests a different predicate: the earlier block
+    // asserts the name RESOLVES to nothing, this one asserts it is not
+    // classified ConvKernel specifically. Both are wanted; neutralize the
+    // earlier one before mutation-testing this one.
     for (const char * name : {
              "talker.code_predictor.small_to_mtp_projection.weight",
              "",

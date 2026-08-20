@@ -113,9 +113,16 @@ validation:
   # decode is arithmetic on an input, not an output of the port's own
   # duration behaviour. The comparison set -- audio.pcm, talker.logits,
   # talker.final, talker.hidden_l{0,7,14,21,27} -- contains no duration,
-  # frame-count or code-length probe, and compare()'s shape_mismatch branch
-  # cannot fire on a length difference because both sides' lengths derive
-  # from the same replayed array.
+  # frame-count or code-length probe at all: nothing here measures whether
+  # this port would STOP where the oracle stopped, because nothing here
+  # lets it decide when to stop. (Earlier wording claimed compare()'s
+  # shape_mismatch branch "cannot fire on a length difference"; that is
+  # false for audio.pcm, whose port-side length comes from the port's own
+  # decoder and which does go through compare(). The drop does not rest on
+  # that mechanism, and the false claim is removed rather than repaired --
+  # what the drop rests on is that the duration-prediction claim the
+  # rendered sentence makes is never exercised here, and that parity of the
+  # replayed codes is by construction.)
   #
   # The harm is not falsehood, it is transfer: a reader who has seen the
   # SAME sentence on the Kokoro and VITS cards -- where it reports a

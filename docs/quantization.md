@@ -591,8 +591,8 @@ measured `replay` cases, reproduced identically on a repeat run. Task 8's card
 should record `Q5_K_MIXED` as buildable and load-checked (`synth_model_load` and
 `synth_voice_profile_create_from_description` both succeed against the cut
 package) but not shipped for this variant, on accuracy. **This is NOT
-"exactly as CustomVoice's own card already does"** — `scripts/hf_cards/
-qwen3-tts-12hz-0-6b-customvoice.yaml:176-209`'s `quants:` block ships `BF16`,
+"exactly as CustomVoice's own card already does"** — the `quants:` block of
+`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml` ships `BF16`,
 `F16` and `Q8_MIXED`; CustomVoice's `Q5_K_MIXED` is **omitted** from its card, not named as
 measured-and-not-shipped, which is itself a departure from this plan's own
 rule that a profile failing its own test "belongs in the card as

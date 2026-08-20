@@ -571,8 +571,9 @@ CPU by CUDA gives 1.0656, a 6.56% throughput increase over the same pair.
 (The display-rounded pairs shown here reduce to 6.13%/6.25% by the same
 `(CPU - CUDA) / CPU`, reconciled in the family record's Plan 3 Task 6
 section.) This is smaller than Base's own
-~6.5%/6.3% (`qwen3-tts.md:3474-3475`; 6.47%/6.35% unrounded, the same
-CPU-baseline reduction), which is the
+~6.5%/6.3% (the "CUDA buys about 6 % and that is the expected amount"
+paragraph in `docs/porting/families/qwen3-tts.md`; 6.47%/6.35% unrounded,
+the same CPU-baseline reduction), which is the
 direction Stage 3's design spec predicted for a talker whose per-layer
 parameter count runs 3.2x larger than Base's (D7,
 `docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md:227-229`),

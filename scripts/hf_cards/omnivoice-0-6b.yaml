@@ -274,10 +274,17 @@ validation:
   #   - "token count is frame count for this architecture" is not in the
   #     record and is wrong twice over: the grid is 8 codebooks x T frames,
   #     so token count is 8x frame count; and the causal direction is
-  #     backwards -- omnivoice.md's "Duration and the Canvas Length" says the
-  #     canvas length is fixed BEFORE the first forward by
-  #     RuleDurationEstimator, so exact tokens do not imply exact duration.
-  #     omnivoice.md:1967-1973 warns against this exact inference by name.
+  #     backwards. The "Duration and the Canvas Length" section of
+  #     docs/porting/families/omnivoice.md opens "The canvas length is not a
+  #     model output; it is fixed before the first forward by upstream's
+  #     `RuleDurationEstimator`", so exact tokens cannot imply exact
+  #     duration -- the length was already settled by deterministic host
+  #     code before any token existed.
+  #   - That same record warns against this exact inference by name: the
+  #     unseeded-sampling paragraph states "**a duration comparison would
+  #     call this family deterministic when it is not**". Reading duration
+  #     agreement as evidence of generative agreement is the specific error
+  #     it names.
   #
   # A stronger, record-supported claim does exist for the greedy 17 (T is
   # host-fixed and `primary_size_match` asserts it unconditionally), but the

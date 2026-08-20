@@ -1,7 +1,12 @@
 # Hugging Face card specification for the Qwen3-TTS 12Hz 1.7B VoiceDesign
 # packages.
 #
-# PREPARED 2026-08-20. NOT UPLOADED. Stage 3 Plan 3 Tasks 2-7 measured FOUR
+# PREPARED 2026-08-20, PUBLISHED 2026-08-21 to
+# jiangzhuo9357/qwen3-tts-12hz-1-7b-voicedesign-gguf, commit 0dcbe6df83b1
+# (all four GGUF LFS sha256 oids verified remotely against the digests
+# below after upload; README re-uploaded same day to drop the
+# prepared-not-published wording the first render truthfully carried).
+# Stage 3 Plan 3 Tasks 2-7 measured FOUR
 # profiles, and all four ship: BF16, F16, Q8_MIXED and Q5_K_MIXED.
 #
 # Q5_K_MIXED FAILS ITS OWN REPLAY-STAGE TOLERANCE GATE and is published
@@ -258,8 +263,11 @@ publication_note: |
   validation record exercises a language beyond `en`, so none beyond `en` is
   advertised here -- the same caution CustomVoice's own card already takes.
 
-  **This card is prepared and has not been uploaded.** The four GGUFs it
-  describes exist locally; their digests above were computed against those
+  **Published 2026-08-21** to `jiangzhuo9357/qwen3-tts-12hz-1-7b-voicedesign-gguf`
+  (commit `0dcbe6df83b1`), after jiangzhuo's explicit per-act confirmation.
+  The four GGUFs' LFS sha256 oids were verified remotely against the digests
+  above after the upload landed. This paragraph said "prepared and has not
+  been uploaded" until the same day; the digests above were computed against those
   exact files. Nothing has been pushed to `{{ target_repo }}` or anywhere
   else, and publication is a separate outward act requiring jiangzhuo's
   explicit, per-act confirmation naming the target repository. The

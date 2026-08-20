@@ -152,11 +152,15 @@ profiles -- `BF16`, `F16`, `Q8_MIXED` and `Q5_K_MIXED`.** This sentence read
 measured-and-not-shipped" until jiangzhuo's 2026-08-20 ruling put the fourth
 profile on the roster; **it is the project's first profile published over a
 failing numerical gate**, and the card discloses the breach and the ruling
-in the same paragraph. Nothing has been uploaded: publication is a separate outward act
-requiring jiangzhuo's explicit, per-act confirmation naming the target
-repository, the same standing policy every other package in this family was
-published under. See "Stage 3: VoiceDesign Package, Plan 3 Task 2" through
-"...Task 8" below for the full record.
+in the same paragraph. **Published 2026-08-21** to
+`jiangzhuo9357/qwen3-tts-12hz-1-7b-voicedesign-gguf` (commit `0dcbe6df83b1`)
+on jiangzhuo's explicit per-act confirmation, under the same standing policy
+every other package in this family was published under; all four GGUFs' LFS
+sha256 oids were verified remotely against the card's digests after the
+upload landed, and the README was re-uploaded the same day to retire its own
+prepared-not-published wording. (This paragraph said "Nothing has been
+uploaded" until publication day.) See "Stage 3: VoiceDesign Package, Plan 3
+Task 2" through "...Task 8" below for the full record.
 
 **Until 2026-08-12 this line read "Q8_MIXED, the public backend control and
 stage 8 are not done. Port validation is not started."** All four clauses were

@@ -196,7 +196,7 @@ publication_note: |
   advertised here -- the same caution CustomVoice's own card already takes.
 
   **This card is prepared and has not been uploaded.** The three GGUFs it
-  describes exist locally; their digests below were computed against those
+  describes exist locally; their digests above were computed against those
   exact files. Nothing has been pushed to `{{ target_repo }}` or anywhere
   else, and publication is a separate outward act requiring jiangzhuo's
   explicit, per-act confirmation naming the target repository.

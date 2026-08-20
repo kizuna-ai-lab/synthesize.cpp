@@ -3498,7 +3498,7 @@ above.
 
 **What is not claimed.** These are one machine, one workload and one utterance
 length. This document's own build-dependent-length finding
-(`qwen3-tts.md:2932-2942`) is why -- not `docs/testing.md`, cited here until
+(`qwen3-tts.md:2966-2976`) is why -- not `docs/testing.md`, cited here until
 Task 5's fix round corrected it; that file documents a different claim, the
 Release/RelWithDebInfo speed gap -- so an RTF computed from a frame count
 taken on another tree would be wrong; every figure here is same-tree. No
@@ -4791,7 +4791,7 @@ sensitive half does not also grow.
 
 **This is a size result only, and it does not decide publication.** Whether
 F16 ships for this family is a **speed** question, not a size one --
-`docs/quantization.md:455-459` states the rule directly ("F16 is a speed
+`docs/quantization.md:465-469` states the rule directly ("F16 is a speed
 profile for this family rather than a size one"), and Base's own F16, also
 larger than its source, **was published** on 2026-08-17 on exactly that
 reasoning (see the Status paragraph above). The precedent this section
@@ -5371,7 +5371,7 @@ Measures latency, RTF, load time and peak memory for the three profiles Tasks
 2-4 cut (`BF16`, `F16`, `Q8_MIXED`), and decides the question Task 2 was
 forbidden to answer: whether `F16`, which is *larger* than its `BF16` source
 (+283,136 bytes, Task 2), is fast enough on this variant to justify shipping
-it anyway. `docs/quantization.md:455-459` already records F16 as this
+it anyway. `docs/quantization.md:465-469` already records F16 as this
 family's speed profile rather than its size one; this task supplies the speed
 number. `Q5_K_MIXED` already failed its own accuracy gate in Task 4 (headroom
 0.32x) and is measured here for context only, not as a candidate.
@@ -5455,7 +5455,7 @@ Medians of three runs per profile. RTF is each row's own synthesis time over
 its own audio length, never across rows -- the three profiles stop at
 different frame counts (97,920 / 103,680 / 120,960), which is a property of
 their weights, not an error: the autoregressive stop decision is what moves
-here too, the same one-clause mechanism `qwen3-tts.md:2937` names for why it
+here too, the same one-clause mechanism `qwen3-tts.md:2971` names for why it
 moves between builds, just triggered by weight precision rather than a
 compiler's floating-point choices. Matches Base's own precedent that BF16 and
 Q8_MIXED need not agree on where they stop.
@@ -5466,7 +5466,7 @@ figure above -- carried forward from Base's own Task 14 measurement
 (carry-over §3.4: 5,594,676 to 5,639,716 KB), not independently
 re-measured against this package in this task, since isolating it would need
 a build variant this task does not have. And generated length is
-build-dependent (`qwen3-tts.md:2932-2942`, not `docs/testing.md`, which
+build-dependent (`qwen3-tts.md:2966-2976`, not `docs/testing.md`, which
 documents a different claim -- the Release/RelWithDebInfo speed gap): none of
 the frame counts above may be read against any other tree, including
 `build`'s own tolerance-cell runs, which use different requests and a
@@ -5497,7 +5497,7 @@ reason.
 
 Task 2 measured F16 at +283,136 bytes against its BF16 source (0.0066%
 larger) and declined to draw a publication conclusion, because
-`docs/quantization.md:455-459` records F16 as this family's speed profile,
+`docs/quantization.md:465-469` records F16 as this family's speed profile,
 not its size one -- Base's own F16 published despite the same larger-than-
 source shape. The question left for this task: **is F16 fast enough on this
 variant to justify a profile that saves no disk?**
@@ -5549,11 +5549,11 @@ speed profile on this evidence once both gates clear -- not before.
 
 ### Open item: Base's own F16 verdict rests on size alone, and was never speed-measured
 
-`docs/quantization.md:447`'s table row for Base's F16 reads "**clears every
+`docs/quantization.md:457`'s table row for Base's F16 reads "**clears every
 gate and does not pay**", RTF "not measured" -- and this file's own Status
 paragraph (line 21) repeats it verbatim: "F16 clears every gate and does NOT
 pay -- it is 184,448 bytes *larger* than its source." Only the speed-profile
-*paragraph* just below that table (`docs/quantization.md:455-459`, "F16 is a
+*paragraph* just below that table (`docs/quantization.md:465-469`, "F16 is a
 speed profile for this family rather than a size one") supports this task's
 own framing that F16 should be judged on speed; Base's recorded *verdict* is
 the opposite, and it was reached without an RTF number at all. This task does
@@ -5596,7 +5596,7 @@ question on its own.
 
 One machine, one workload, one utterance length, one Description Text
 instruct. This document's own build-dependent-length finding
-(`qwen3-tts.md:2932-2942`), not `docs/testing.md`, is why an RTF computed
+(`qwen3-tts.md:2966-2976`), not `docs/testing.md`, is why an RTF computed
 from a frame count taken on another tree would be wrong; every figure above
 is same-tree. This section does not re-open Task 4's
 Q5_K_MIXED recommendation, does not claim CUDA placement (VoiceDesign has no
@@ -5658,10 +5658,10 @@ for one paragraph.
 in three places, one of them pre-existing.** Grepped: `docs/testing.md` never
 says "build-dependent" anywhere; its Release-preset section documents a
 different claim, the -O2/-O3 *speed* gap. The real source is this same file,
-`qwen3-tts.md:2932-2942` ("Generated length is build-dependent, and no frame
+`qwen3-tts.md:2966-2976` ("Generated length is build-dependent, and no frame
 count may be quoted without naming its build"). Fixed at both of this task's
 own citations and, since the reviewer traced the error to its origin, at
-Base's own Task 14 text too (`qwen3-tts.md:3466` as originally written) --
+Base's own Task 14 text too (`qwen3-tts.md:3500` as originally written) --
 that citation was already wrong before this task copied its shape into new
 prose.
 
@@ -5693,7 +5693,7 @@ Base is explicitly **not** re-measured here -- out of this task's scope --
 and the item is left for whoever next touches Base's own record.
 
 **Minors, all fixed.** The frame-count-divergence sentence now cross-references
-`qwen3-tts.md:2937`'s one-clause mechanism ("the autoregressive stop decision
+`qwen3-tts.md:2971`'s one-clause mechanism ("the autoregressive stop decision
 is what moves") instead of asserting the divergence is non-alarming without
 saying why. The "Does F16 pay here?" subsection now names its build
 (`build/rel-dgx-spark`) in the sentence that first quotes frame counts,
@@ -5798,7 +5798,7 @@ Base's Task 14 discards), so no run was discarded.
 (18.92 - 17.76) / 18.92 = **6.13%** and (4.64 - 4.35) / 4.64 = **6.25%** using
 the table's own rounded figures -- the two percentages differ from each
 other only because of that rounding. Base's own family-record text
-(`qwen3-tts.md:3440-3441`) records its own pair the same way, at one decimal
+(`qwen3-tts.md:3474-3475`) records its own pair the same way, at one decimal
 place: "11.60 s -> 10.85 s ... RTF 3.15 -> 2.95 -- 6.5 % and 6.3 %
 respectively". The design spec's own erratum commits the same pair at two
 decimal places instead, verbatim:
@@ -5817,7 +5817,7 @@ things that happen to agree.
 
 **Confirms the smaller-than-Base's-~6% prediction, narrowly.** 6.16% here
 against Base's own 6.47%/6.35% unrounded (6.5%/6.3% as the family record
-displays them, `qwen3-tts.md:3440-3441`) is smaller, in the direction the
+displays them, `qwen3-tts.md:3474-3475`) is smaller, in the direction the
 design spec's reasoning predicted -- but by about 0.2-0.3 percentage points,
 not by the large margin a literal reading of "the talker's per-layer
 parameters run 3.2x larger, so its share of wall clock grows 3.2x" might
@@ -5981,7 +5981,7 @@ addressed:
    the paragraph now states the identity against Base directly and cites the
    three-way match.
 4. **"3.2x larger" cited to a line that records 2x.** Two citations pointed
-   at `qwen3-tts.md:311` (hidden 1024 -> 2048, a 2x fact) for the 3.2x
+   at `qwen3-tts.md:345` (hidden 1024 -> 2048, a 2x fact) for the 3.2x
    figure and called it "a talker-hidden-size fact". The real source is
    design spec D7
    (`docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md:227-229`):
@@ -5992,12 +5992,12 @@ addressed:
 Five Minors, all addressed: the brief's "6.47%/6.35%" is not a fabrication --
 the design spec's own erratum (`...design.md:637`) commits that exact pair
 verbatim, two decimal places where the family record's own text
-(`qwen3-tts.md:3440-3441`) carries one (6.5%/6.3%); both are real citations
+(`qwen3-tts.md:3474-3475`) carries one (6.5%/6.3%); both are real citations
 to different committed documents, and the paragraph now says so instead of
 calling the brief's figure something the tree doesn't contain. The tolerance
 JSON's "as Base's own declined sub-grid above" pointed at this file, where
 Base's own entry records no such decline -- repointed to
-`docs/backends.md:506` and `qwen3-tts.md:3205`, where it actually lives.
+`docs/backends.md:506` and `qwen3-tts.md:3239`, where it actually lives.
 Both docs' `replay`-immobility explanation now cites the deeper structural
 fact, `model.cpp:573-585`'s device-mirroring loop copying only
 `codec.decoder.`-prefixed tensors (so the talker has no device-side weights
@@ -6214,6 +6214,23 @@ the declared `input_kinds` would have caught this at generation time
 instead of by manual inspection. Not built here -- named as a real gap, not
 implemented.
 
+Two more gaps of the same shape, found by this plan's final whole-branch
+review and likewise named rather than built. First:
+`validation.replay_duration_exact` -- the opt-in field this task added so the
+shared card template stops rendering "Duration structure was exact in every
+case" onto variants whose records do not support it -- is UNGUARDED on the
+two cards whose records do: deleting the field from
+`qwen3-tts-12hz-0-6b-base.yaml` or `...customvoice.yaml` fails no test
+(verified by mutation; the other four cards are caught only incidentally, by
+tests keyed to gitignored local READMEs), so a published card could silently
+lose a true sentence on its next regeneration. Second: line-number citations
+between documents this project edits have now produced five separate defect
+rounds on this branch alone (nineteen stale at the final review, plus the
+:210/:219 and :585/:584 rounds caught by hand) -- a checker that resolves
+each `doc:line` citation and asserts the cited line carries a quoted anchor
+would have caught every one at commit time. Both are generator/CI work, out
+of this plan's file list.
+
 ### A ratio that does not survive a baseline swap: `F16`'s speedup against which `BF16`
 
 Task 5 computed `F16`'s speedup as 2.87x against its own n=3 `BF16` pass
@@ -6254,7 +6271,7 @@ brief asked for from the start.
   registered by the file's own `unittest discover`, not by name in any
   CMake list -- confirmed by running the module directly:
   `uv run --project scripts/envs/vits --locked python -m unittest
-  tests.python.test_hf_card_generator -v`, 46 tests: 43 passed, 1
+  tests.python.test_hf_card_generator -v`, 49 tests: 46 passed (the fix round's three new `replay_duration_exact` tests moved this from 46/43), 1
   pre-existing error (`test_quantization_reports_match_current_artifacts`,
   unrelated to this variant), 2 skipped (OmniVoice, not materialized in
   this worktree).

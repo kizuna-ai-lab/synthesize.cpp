@@ -3977,13 +3977,19 @@ in the file where the next person will hit it.
 
 ## Listening Audits
 
-Three have run for this family. Two on **2026-07-29** covered Stage 1's
+Five have run for this family. Two on **2026-07-29** covered Stage 1's
 CustomVoice variant and produced the `listening_audit: no_obvious_regression`
 that `scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml` carries; the
 **2026-08-13** audit is Stage 2's, on the Base variant's x-vector clone path,
 and is the first in this repository to put a question about resemblance to a
-listener. All three are one listener, non-statistical, and none moves
-`quality_evaluation` off `not_run` or changes any Validation Level.
+listener. The **2026-08-17** ICL audit is recorded in its own Stage 2 Plan 4
+section rather than here, and the **2026-08-20** VoiceDesign audit -- the first
+with a description-control half, and the first to put a numerically-failed
+profile in front of a blind listener -- is recorded under "Stage 3: VoiceDesign
+Package, Plan 3 Task 7". (This paragraph said "three have run" until
+2026-08-20, a count the 2026-08-17 audit had already outdated.) All five are
+one listener, non-statistical, and none moves `quality_evaluation` off
+`not_run` or changes any Validation Level.
 
 ### Base, the x-vector clone path (Stage 2 Plan 2, 2026-08-13)
 
@@ -5967,6 +5973,111 @@ signpost between them.
 
 Re-ran `scripts/ci/clang-format.sh --check-diff` (clean) and the full unit
 gate (98/106, same two pre-existing failures, no third) after this round.
+
+## Stage 3: VoiceDesign Package, Plan 3 Task 7
+
+**The VoiceDesign listening audit, in two halves weighted differently.
+Listener: jiangzhuo, count 1, 2026-08-20.** Delivered as two private claude.ai
+artifact pages (blind A/B and labelled description control, separate pages so
+the labelled half cannot masquerade as blind); verdicts returned as JSON and
+quoted verbatim at the end of this section.
+
+### Half one: blind A/B, quantization and backend regression (strong evidence)
+
+**Verdict: `no_obvious_regression` -- all four pairs "indistinguishable".**
+
+| # | comparison | A/B assignment (unblinded from the manifest after the verdicts) | verdict |
+| --- | --- | --- | --- |
+| 1 | BF16 vs F16, CPU | A=BF16, B=F16 (not swapped) | indistinguishable |
+| 2 | BF16 vs Q8_MIXED, CPU | A=Q8_MIXED, B=BF16 (swapped) | indistinguishable |
+| 3 | BF16 vs Q5_K_MIXED, CPU | A=BF16, B=Q5_K_MIXED (not swapped) | indistinguishable |
+| 4 | BF16 CPU vs BF16 CUDA | A=CPU, B=CUDA (not swapped) | indistinguishable |
+
+Every verdict being "indistinguishable", the A/B positions carry no
+interpretive weight; they are recorded so the audit is reconstructible.
+
+**Method.** Clips generated from `build/rel-dgx-spark`
+(`CMAKE_BUILD_TYPE=Release`, confirmed in the tree's CMakeCache before
+generation) on the family workload: text "This is a test of Qwen three T T S
+voice design synthesis.", description "A cheerful, bright female voice speaking
+with fast pacing and high energy.", language en, seed 7, threads 10. The
+public-seam runner writes raw little-endian float32 mono at 24,000 Hz
+(established from `tests/qwen3_tts_public_real.c`'s own `write_pcm`, not
+assumed); clips were wrapped to 16-bit PCM WAV and verified decodable before
+any page was built. **Every pair was verified to differ in bytes before anyone
+listened** -- a byte-identical pair would produce a meaningless
+"indistinguishable" -- with common-prefix max-abs sample differences of 0.7996
+(pair 1), 0.7056 (pair 2), 0.8519 (pair 3): large because the autoregressive
+paths diverge and the waveforms desynchronize, not because either side is
+degraded. Pair 4's clips are same-length with max-abs 0.002414 and cosine
+0.9999988, reproducing Plan 3 Task 6's own CPU-vs-CUDA measurement exactly.
+A/B positions were shuffled by per-pair coin flip from recorded seed 20260820;
+the key was withheld from the page and the listener, and lives in the
+gitignored `build/listening-voicedesign/manifest.json` beside the clips.
+
+**Two disclosed limitations.** First, the four profiles stop at different
+lengths on this build -- 4.080 s (BF16), 4.320 s (F16), 5.040 s (Q8_MIXED),
+4.000 s (Q5_K_MIXED), Release figures, never invariants -- so pairing identity
+can in principle leak through duration; the page disclosed this and instructed
+"judge on sound, not on duration", and trimming or padding was rejected because
+altered audio would defeat the audit. Second, a caveat line in the generated
+page originally named Pair 4's identity ("CPU vs CUDA, same profile"); it was
+found in a pre-delivery check and removed BEFORE the listener saw the page, so
+all four pairs were delivered blind.
+
+### The Q5_K_MIXED result, separately
+
+Pair 3 carried the profile that **fails its numerical gate** -- Plan 3 Task 4
+measured both replay cases at ~0.031 against the 0.01 bound, headroom 0.32x --
+included in the blind half by jiangzhuo's ruling of 2026-08-20, unlabelled like
+every other pair, precisely to ask the question the numbers cannot answer:
+does a 3x tolerance breach audibly manifest? On this clip it did not: blind,
+Q5_K_MIXED was indistinguishable from BF16.
+
+What that establishes, at its actual strength: the 0.01 prefill bound is
+conservative relative to audibility **at this margin, on one clip, one
+sentence, one seed, one listener**. It is a data point about the gate's
+calibration, not a recalibration. Task 4's do-not-publish recommendation is
+unchanged by the audit itself; whether an inaudible breach changes the
+publication decision is jiangzhuo's call at Task 8, exactly as the ruling
+reserved it.
+
+### Half two: description control (labelled, weak evidence, recorded as weak)
+
+**Verdict: "yes, in the described direction."** Same sentence, same seed, BF16
+on CPU, two descriptions differing in a stated direction -- "A cheerful,
+bright female voice speaking with fast pacing and high energy." against "A
+deep, calm male voice speaking slowly and quietly." -- each clip labelled with
+its full description. This half is labelled because the label is the question;
+it is weak evidence and is recorded as weak.
+
+The design's own standing rule -- if descriptions do not control the voice in
+any recognizable way, the honest output is a recorded negative, not a
+published package -- **does not trigger**.
+
+### What this audit does and does not move
+
+`listening_audit: no_obvious_regression` is what Task 8's card carries for the
+quantization half, with the description control recorded beside it at its
+stated strength. Neither half moves `quality_evaluation` off `not_run` (ADR
+0017) or changes any Validation Level. Task 5's ship-F16 recommendation had
+two open gates; this audit closes the blind-A/B one for F16 (pair 1,
+indistinguishable). Publication remains a separate act requiring jiangzhuo's
+confirmation, naming the target repository.
+
+**Verbatim verdicts as returned, 2026-08-20:**
+
+```json
+{"pair1": {"verdict": "indistinguishable", "notes": ""},
+ "pair2": {"verdict": "indistinguishable", "notes": ""},
+ "pair3": {"verdict": "indistinguishable", "notes": ""},
+ "pair4": {"verdict": "indistinguishable", "notes": ""}}
+```
+
+```json
+{"verdict": "yes, in the described direction", "notes": ""}
+```
+
 
 ## Open Questions for Intake
 

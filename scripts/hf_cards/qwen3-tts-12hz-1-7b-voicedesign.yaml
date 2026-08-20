@@ -308,7 +308,7 @@ downloads_note: >-
   bound, not a Quality Evaluation (still deferred, ADR 0017), and not a
   general finding that a 3x breach of this probe is inaudible. A reader who
   needs numerical fidelity to the reference should choose `Q8_MIXED`, which
-  clears the same gate at 1.63x and is 28.75% larger. A reader who wants the
+  clears the same gate at 1.63x and is 40.36% larger (2,499,423,680 against 1,780,723,136 bytes; equivalently, Q5_K_MIXED is 28.75% smaller than it). A reader who wants the
   smallest package and accepts a disclosed, unresolved numerical breach on
   one listener's word can choose this one. See `docs/quantization.md`'s
   "VoiceDesign's Q5_K_MIXED" section for the full arithmetic, Task 4's

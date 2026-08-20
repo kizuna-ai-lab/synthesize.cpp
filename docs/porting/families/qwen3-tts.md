@@ -1,6 +1,6 @@
 # Qwen3-TTS Family Selection and Port Plan
 
-Status: Confirmed 2026-08-19. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
+Status: Confirmed 2026-08-20. Stage 1 (`qwen3-tts-12hz-0.6b-customvoice`) is
 complete and published. Intake, the oracle and conversion are done; stages 4
 through 7 have their measured work done: oracle replay and the public seam
 pass, and the codec runs on CUDA while the autoregressive half stays on the CPU
@@ -118,6 +118,45 @@ first thing in its publication note that those three files no longer load and
 why, so the live artifact stops claiming a loadability it does not have. That
 correction also carried a second one: the CUDA end-to-end figure read "about
 8 %" against numbers that divide out to 6.5 %.
+
+**Stage 3 Plan 3 (quantization, backends, ship-prep) is done as of
+2026-08-20, all eight tasks; artifacts are prepared and NOT published.**
+Tasks 2-4 cut and measured all four Quantization Profiles against the
+4,295,891,904-byte BF16 source: `F16` is 283,136 bytes larger than its
+source (the same shape Base's own F16 already showed, at a smaller relative
+penalty here); `Q8_MIXED` is 2,499,423,680 bytes, 58.18 % of source, its own
+`replay`-prefill headroom the thinnest PASSING margin of the four at
+1.63x; and `Q5_K_MIXED`, cut at 1,780,723,136 bytes, **fails its own
+`replay`-stage tolerance gate roughly 3x over the committed 0.01 bound**
+(headroom 0.32x). Task 4 recommended not publishing it; **jiangzhuo
+overruled that on 2026-08-20 after the Task 7 audit, and it ships with the
+gate failure disclosed on the card** (see the closure note under "Task 8"
+below). Task 5 measured RTF on
+`build/rel-dgx-spark` (Release) and settled `F16`'s publication question on
+speed: 2.87x faster than `BF16` on that task's own pass (recomputed against
+Task 6's later, paired `BF16` re-measurement, roughly 2.8x), recommending
+`F16` ship despite saving no disk. Task 6 measured CUDA's end-to-end gain at
+6.16 % (narrower than Base's own ~6.5 %/6.3 %, in the direction the design
+predicted) and confirmed no CUDA sub-grid is owed here, for the same
+structural reason as Base. Task 7 ran the Listening Audit on 2026-08-20: all
+four blind pairs (`BF16` vs `F16`, vs `Q8_MIXED`, vs `Q5_K_MIXED`, and `BF16`
+CPU vs CUDA) were judged indistinguishable -- including `Q5_K_MIXED`, whose
+blind-indistinguishability is recorded as a data point about the 0.01
+bound's conservatism at this margin, not a recalibration of the bound. A
+separate labelled description-control pass returned "yes, in the described
+direction" -- weak evidence, recorded as weak. **Task 8 wrote the card spec
+(`scripts/hf_cards/qwen3-tts-12hz-1-7b-voicedesign.yaml`) and the model page
+(`docs/models/qwen3-tts-12hz-1-7b-voicedesign.md`), shipping all four
+profiles -- `BF16`, `F16`, `Q8_MIXED` and `Q5_K_MIXED`.** This sentence read
+"shipping `BF16`, `F16` and `Q8_MIXED` and naming `Q5_K_MIXED` as
+measured-and-not-shipped" until jiangzhuo's 2026-08-20 ruling put the fourth
+profile on the roster; **it is the project's first profile published over a
+failing numerical gate**, and the card discloses the breach and the ruling
+in the same paragraph. Nothing has been uploaded: publication is a separate outward act
+requiring jiangzhuo's explicit, per-act confirmation naming the target
+repository, the same standing policy every other package in this family was
+published under. See "Stage 3: VoiceDesign Package, Plan 3 Task 2" through
+"...Task 8" below for the full record.
 
 **Until 2026-08-12 this line read "Q8_MIXED, the public backend control and
 stage 8 are not done. Port validation is not started."** All four clauses were
@@ -3438,9 +3477,13 @@ and a different case, but the closeness is a consistency signal rather than a
 coincidence, since both quantize the same autoregressive half.
 
 **CUDA buys about 6 % and that is the expected amount.** 11.60 s → 10.85 s on
-the same tree, RTF 3.15 → 2.95 — 6.5 % and 6.3 % respectively, which is what
-those two pairs divide out to. This paragraph read "about 8 %" until 2026-08-18,
-against its own numbers on the same line. Only the Stage 1 codec-decoder twin moves; the
+the same tree, RTF 3.15 → 2.95 — 6.5 % and 6.3 % respectively (6.47 % and
+6.35 % unrounded), which is what those two pairs give as a reduction against
+the CPU baseline, `(CPU - CUDA) / CPU`. This paragraph read "about 8 %" until
+2026-08-18, against its own numbers on the same line; it read "which is what
+those two pairs divide out to" until 2026-08-20, which named the wrong
+operation — dividing 11.60 by 10.85 gives 1.0691, a 6.91 % throughput
+increase, not the 6.5 % reduction reported here. Only the Stage 1 codec-decoder twin moves; the
 autoregressive half is held on the CPU by the discrete-outputs rule and
 dominates, and the two new graphs stay on the CPU by Task 12's measured
 decision. `docs/backends.md` requires performance measurement for support but no
@@ -3463,10 +3506,14 @@ median of the stable runs is reported, which is why the run counts are stated
 above.
 
 **What is not claimed.** These are one machine, one workload and one utterance
-length. `docs/testing.md` records that generated length is build-dependent, so
-an RTF computed from a frame count taken on another tree would be wrong; every
-figure here is same-tree. No listening judgement is implied -- Task 15 owns
-that, and a tolerance table is not audible evidence.
+length. This document's own build-dependent-length finding -- the
+"Generated length is build-dependent, and no frame count may be quoted
+without naming its build" paragraph above -- is why, not `docs/testing.md`, cited here until
+Task 5's fix round corrected it; that file documents a different claim, the
+Release/RelWithDebInfo speed gap -- so an RTF computed from a frame count
+taken on another tree would be wrong; every figure here is same-tree. No
+listening judgement is implied -- Task 15 owns that, and a tolerance table is
+not audible evidence.
 
 ### Does quantizing the speaker encoder pay? Measured 2026-08-17
 
@@ -3974,13 +4021,21 @@ in the file where the next person will hit it.
 
 ## Listening Audits
 
-Three have run for this family. Two on **2026-07-29** covered Stage 1's
+Five have run for this family. Two on **2026-07-29** covered Stage 1's
 CustomVoice variant and produced the `listening_audit: no_obvious_regression`
 that `scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml` carries; the
 **2026-08-13** audit is Stage 2's, on the Base variant's x-vector clone path,
 and is the first in this repository to put a question about resemblance to a
-listener. All three are one listener, non-statistical, and none moves
-`quality_evaluation` off `not_run` or changes any Validation Level.
+listener. The **2026-08-17** ICL audit is recorded under its own heading, "The
+first ICL Listening Audit, 2026-08-17: `no_obvious_regression`" (inside the
+Stage 2 Base Plan 3 section -- Plan 4 scheduled it, Plan 3's section holds it)
+rather than here, and the **2026-08-20** VoiceDesign audit -- the first
+with a description-control half, and the first to put a numerically-failed
+profile in front of a blind listener -- is recorded under "Stage 3: VoiceDesign
+Package, Plan 3 Task 7". (This paragraph said "three have run" until
+2026-08-20, a count the 2026-08-17 audit had already outdated.) All five are
+one listener, non-statistical, and none moves `quality_evaluation` off
+`not_run` or changes any Validation Level.
 
 ### Base, the x-vector clone path (Stage 2 Plan 2, 2026-08-13)
 
@@ -4032,8 +4087,10 @@ out of reach is ranking this model against any other, which is what
 `comparative` means everywhere else in this project's documents. Any speaker-similarity metric; the resemblance finding is one
 listener, one source clip, one clone, and is evidence rather than a property of
 the port. Anything about transcript-assisted (ICL) mode: the port did not
-implement it when this audit ran, and **it still has no Listening Audit** now
-that Plan 3 has built it — one is scheduled for Plan 4's ship-prep phase.
+implement it when this audit ran. (This bullet went on to say ICL "still has
+no Listening Audit"; that stopped being true on 2026-08-17, when the first ICL
+audit ran -- corrected 2026-08-20, the same day this section's own audit count
+was.)
 Anything about CUDA for the new graphs, which have only ever run on CPU — the
 port side of every pair here was CPU.
 
@@ -4722,6 +4779,1618 @@ then reverting and confirming clean (`git status --porcelain`, `git diff
   third.
 - `scripts/ci/clang-format.sh --fix` after `git add`, then `--check-diff`:
   clean.
+
+## Stage 3: VoiceDesign Package, Plan 3 Task 2
+
+Cuts `qwen3-tts-12hz-1-7b-voicedesign-F16.gguf` from the 4,295,891,904-byte BF16
+source and measures its size. **F16 is 283,136 bytes larger than the package it
+was cut from** -- the same direction as Base's own F16, whose reproducible
+current delta is **+184,288 bytes** (2,516,522,624 -> 2,516,706,912, both
+measured directly off the packages on disk today), not the +184,448 this
+document (`:22`, `:3356`) and `docs/quantization.md` still quote elsewhere.
+Both are real: Base's BF16 was re-converted on 2026-08-18 after the
+`code_predictor.intermediate_size` metadata key landed, moving the source by
++160 bytes, while Base's F16 was never re-cut against the new source -- so the
+two historical figures describe two different BF16 files with the same name,
+and 184,448 no longer reproduces against what is on disk now. 184,288 is what
+a fresh `stat` gives and is the figure a later task should anchor against.
+As the design anticipated, VoiceDesign's relative penalty is smaller than
+Base's either way (0.0066% of the source here against Base's 0.0073%), because
+the matrix half this variant halves is a larger share of a package whose
+sensitive half does not also grow.
+
+**This is a size result only, and it does not decide publication.** Whether
+F16 ships for this family is a **speed** question, not a size one --
+`docs/quantization.md`'s "F16 is 184,448 bytes LARGER than the package it
+was cut from" paragraph states the rule directly ("which is why F16 is a
+**speed** profile for this family rather than a size one"), and Base's own F16, also
+larger than its source, **was published** on 2026-08-17 on exactly that
+reasoning (see the Status paragraph above). The precedent this section
+originally cited was wrong on two counts: `Q5_K_MIXED` is withheld for
+CustomVoice, not Base ("Q5_K_MIXED is buildable and is not recommended",
+above), and for an **accuracy** reason -- talker logits cosine 0.9648 -- not a
+size one. Neither precedent supports a no-publish verdict from the size result
+above. **Whether F16 ships for VoiceDesign is left open here**: this task is
+forbidden from taking a timing figure (the global no-performance-figure rule),
+so it cannot answer the question that actually decides publication for this
+profile family-wide. Task 5 measures RTF on a `Release`-typed tree and settles
+it.
+
+**All figures below are from the `build` tree, `CMAKE_BUILD_TYPE=Release`,
+reconfigured mid-task from CLAUDE.md's default unit-gate settings
+(`-DSYNTH_BUILD_INTEGRATION_TESTS=OFF`) to `ON` -- the only way to obtain
+`synthesize-qwen3-tts-voicedesign-prefill-real`, which is registered behind
+that flag. No timing figure is taken from this build or claimed anywhere in
+this section; the global no-performance-figure rule for this task is
+unaffected by the reconfigure.**
+
+### Cutting it required a quantizer fix, not just a run
+
+The first `--quant F16` attempt refused outright:
+`synthesize-quantize: unknown qwen3-tts tensor:
+talker.code_predictor.small_to_mtp_projection.bias`. This is not a converted
+oracle gap -- `src/arch/qwen3-tts/catalog.cpp` has resolved this exact tensor
+pair since Stage 3 Task 6 ("A genuine architecture gap, found and closed, not
+converted around", above) -- it is `tools/synthesize-quantize/policy.cpp`
+never having been taught the name, because no prior task had ever run the
+quantizer against a package that carries it: `small_to_mtp_projection` is the
+width bridge a package needs only when the code predictor's hidden size
+differs from the talker's, which is true of no 0.6B package (Base,
+CustomVoice) and only of this 1.7B one (predictor 1024 against talker 2048).
+Fixed by adding one classifier arm to `classify_qwen3_talker`'s
+`code_predictor` branch, shaped identically to the already-existing
+`text_projection.linear_fcN` arm 27 lines above it in the same function --
+three other classifier arms apart (text_embedding/codec_embedding,
+model.norm, the model.layers dispatch), not three lines apart:
+the weight (a two-dimensional `Linear(talker.hidden_size, hidden_size)`,
+`Role::Matrix` at the runtime catalog) classifies `MatrixWeight`, the bias
+(one-dimensional) classifies `Sensitive`. Covered by two new cases in
+`tests/qwen3_tts_quantization_policy_test.cpp`'s existing by-name loops (one
+per role) and proved load-bearing by mutation: commenting out the new
+classifier arm and rebuilding reproduced the exact pre-fix failure shape
+(`check failed: resolve(*q8, name).type == GGML_TYPE_Q8_0` on the weight
+case), reverted and confirmed clean before the F16 cut below ran. This fix
+touches production code outside this task's own file list
+(`tools/synthesize-quantize/policy.cpp`,
+`tests/qwen3_tts_quantization_policy_test.cpp`) and is committed separately
+from the tolerance/doc commit this task otherwise produces, for the same
+reason Stage 3 Task 6's catalog fix stands on its own: cutting F16 at all had
+no other path.
+
+### Open item: the quantizer classifier and the runtime catalog have no shared pin
+
+`tools/synthesize-quantize/policy.cpp`'s classifier (`classify_qwen3_tts_tensor`
+and its family) and `src/arch/qwen3-tts/catalog.cpp`'s resolver are two
+independent, hand-maintained descriptions of the same tensor set. Both carry a
+comment saying the two "must not drift apart"
+(`src/arch/qwen3-tts/catalog.cpp:35,179`, `tools/synthesize-quantize/policy.cpp:701-702`)
+and neither has a mechanism enforcing it. This task's own
+`small_to_mtp_projection` gap above is exactly what happens when they do: the
+runtime has resolved that tensor pair since Stage 3 Task 6; the tool did not,
+until this task, because no earlier task had ever run the quantizer against a
+package that carries it. No CTest target loads a cut (non-BF16) package
+through `synth_model_load` for this family, so a classifier gap or a
+classifier/resolver shape disagreement is caught only by hand-running the
+quantizer against a real, multi-GB package -- as this task did, by accident of
+being the first to try it on VoiceDesign.
+
+A cheap partial pin exists and is not implemented here, because it touches
+`tests/qwen3_tts_catalog_test.cpp`, outside this task's file list: that file
+already builds synthetic F16/Q8_MIXED fixtures and types each tensor with its
+own local heuristic
+(`tests/qwen3_tts_catalog_test.cpp:579-583`: `matrix = entry.ne.size() >= 2 &&
+...`) rather than through the real classifier, and its own assertion is
+deliberately loose --
+`SYNTH_TEST_CHECK(status == SYNTH_OK || status == SYNTH_ERR_GGUF)`
+(`:590`) -- specifically because "this synthetic package's role split is a
+coarse approximation of the catalog's" (the file's own comment, `:586-588`).
+Compiling `policy.cpp` into `synthesize-qwen3-tts-catalog-test` and typing
+those same fixtures through the classifier instead of the local heuristic,
+then tightening the assertion to `SYNTH_OK` alone, would catch a classifier
+tensor the resolver accepts and the classifier doesn't (or the reverse) at
+unit-test speed, with no real package on disk required. It would not replace
+running the quantizer against a real package -- no synthetic fixture stands in
+for a genuine checkpoint's actual tensor names -- but it would have caught
+this exact class of gap earlier than this task did.
+
+### Size and tensor census
+
+| | BF16 (source) | F16 |
+|---|---|---|
+| bytes | 4,295,891,904 | 4,296,175,040 |
+| tensor count | 659 | 659 |
+| by type | 404 BF16 + 255 F32 | 267 F16 + 392 F32 |
+
+Delta: **+283,136 bytes**, F16 larger than its source. 137 tensors (404 - 267)
+moved from a two-byte type to F32 -- the Sensitive half widening from bf16 to
+f32 storage, the same mechanism Base's own F16 cell already documents, applied
+to a package whose matrix half (the talker + code predictor, halved) is a
+correspondingly larger share of the 4.30 GB total than Base's 2.5 GB package's
+own matrix half was.
+
+### Load, confirmed before any cell was filled
+
+The brief's own `synthesize-cli --list-voices` does not exist -- no such flag
+is defined anywhere in `examples/cli/` (`--help` lists `--text`, `--phonemes`,
+`--token-ids`, `--language`, `--voice`, `--seed`, `--rate`,
+`--max-output-frames`, `--backend`, `--device`, nothing that lists Voices).
+Confirmed instead with the already-built `synthesize-qwen3-tts-public-real`
+runner in `probe:description` mode, which calls `synth_model_load` before
+anything else and, since VoiceDesign supports `create_from_description`,
+completed the probe cleanly: `{"probe": "description", "status": 0}`, exit 0.
+The package loads.
+
+### The `replay` cell: the ordinary case loop has no reading for this variant
+
+`scripts/validate-qwen3-tts-replay.py --stage replay` (the brief's literal
+Step 5) fails for this variant at **every** profile, BF16 included -- run
+against the already-published, already-validated BF16 package it prints
+"no case produced a comparison: 13 selected, 13 skipped for missing oracle
+artifacts under build/goldens/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign" and
+exits 1. This is not an F16 defect: `run_case`'s oracle-artifact check
+(`oracle_root/<case-id>/codes/semantic.i32`) has nothing to find, because no
+prior task ever dumped per-case codes/waveform oracle payloads for this
+variant's thirteen manifest cases -- only the two explicit prefill cases
+(design section 6.2's stage grid for this rung: no codes, no waveform measured
+for this variant at any profile, stated already on this variant's BF16 `replay`
+cell). The BF16 `replay.prefill` probe was filled by invoking
+`tests/qwen3_tts_voicedesign_prefill_real.cpp` directly against
+`reports/porting/qwen3-tts/qwen3-tts-12hz-1-7b-voicedesign/oracle{,-instruct}/prefill.f32`,
+not through this script's ordinary case loop; F16's cell is filled the same
+way, for the same reason, reusing BF16's 0.01 bound rather than re-deriving one
+a profile change gave no reason to move:
+
+| case | BF16 p95_relative | F16 p95_relative |
+|---|---|---|
+| voicedesign-empty-instruct-en | 0.00269 | 0.002689 |
+| voicedesign-nonempty-instruct-en | 0.002903 | 0.002902 |
+
+Both F16 figures are within half a bf16 unit-roundoff of BF16's own, headroom
+3.72x and 3.45x against the unchanged 0.01 bound -- essentially identical to
+BF16's 3.72x/3.44x. Same reasoning as Base's own F16 `speaker.x_vector` cell:
+the residual is the *oracle's* bf16 storage, not the port's, so an F16 port
+weight (finer than bf16) costs nothing measurable here either.
+
+### The `public` cell: all eleven checks pass
+
+`scripts/validate-qwen3-tts-public.py --profile F16 --backend cpu` (the
+brief's Step 4 command, run as written -- both flag spellings checked out)
+against the two description instructs, after the `replay` cell above was
+filled first so relation 3's own citation ("an empty instruct reproduces the
+oracle within the replay stage's recorded tolerance") had a real F16 record to
+read rather than reporting unmeasured. All 11 checks passed, identical
+verdicts to BF16, same 3 skips (no Preset Voice catalogue, no dialect speaker):
+seed reporting and reproduction, a different seed and a different Voice both
+change the audio, the resolved language is reported, the empty-instruct
+public-seam smoke run (40320 frames), relation 3 above (p95_relative 0.002689
+against 0.01), and both package-support refusals
+(`SYNTH_ERR_UNSUPPORTED_VOICE` for `create_from_reference`,
+`SYNTH_ERR_UNSUPPORTED_INPUT` for a supplied description language tag). Report:
+`reports/validate/qwen3-tts/public-voicedesign-F16.json` (gitignored).
+
+### Verification
+
+- `synthesize-qwen3-tts-quantization-policy-test`: passes with the new
+  classifier arm; mutation (comment out the arm, rebuild) reproduces the exact
+  pre-fix refusal shape, reverted and confirmed clean before proceeding.
+- `synthesize-golden-manifest-contract` / `synthesize-tolerance-coverage`: both
+  pass -- the new F16 profile carries the same stage set as BF16
+  (`replay`, `public`), and `case_count` (13) is untouched by this task.
+- `synthesize-qwen3-tts-voicedesign-prefill-real` /
+  `-prefill-instruct-real` (the BF16-driven CTest golden gates): still pass,
+  unaffected by the quantizer-only fix.
+- Full unit gate, `build` tree (`SYNTH_BUILD_INTEGRATION_TESTS=ON` per the
+  reconfigure above): 104/106, the same two pre-existing, not-ours failures
+  (`synthesize-python-api-wheel-test`, `synthesize-vits-python-unit`'s sole
+  error `test_quantization_reports_match_current_artifacts`). No third.
+
+### Fix round 1, review of this task
+
+Code review found this section carrying a fabricated measurement and a wrong
+publication conclusion; both are corrected above rather than left with a note
+here, per this document's practice of superseding stale prose in place when
+the stale text is short-lived and never described a real interval (contrast
+the Status paragraph's own longer-lived corrections, which are kept as
+history). For the record: `tests/tolerances/qwen3-tts.json`'s F16 `replay`
+cell carried a `fault_injection_by_case` block copied verbatim from BF16's,
+dated 2026-08-18 -- two days before the F16 package existed -- and has been
+removed; no fault injection was run against F16, and BF16's own cell already
+carries the record for the port source this variant shares. The F16 stage
+`description` field, also BF16's verbatim and asserting "no instruct block
+exists in the port yet," has been rewritten -- Plan 2 shipped the instruct
+block before this task ran, and this cell's own `instruct_tokens: 19` already
+contradicted the old text.
+
+## Stage 3: VoiceDesign Package, Plan 3 Task 3
+
+Cuts `qwen3-tts-12hz-1-7b-voicedesign-Q8_MIXED.gguf` from the same
+4,295,891,904-byte BF16 source Task 2 cut F16 from, and measures its size and
+the two tolerance cells the plan asks for. **This is a size result and a
+tolerance-agreement result only -- it does not decide publication.** Whether
+Q8_MIXED ships for this variant is settled in Task 4 (against `Q5_K_MIXED`)
+and Task 5 (on speed, forbidden to this task by the global
+no-performance-figure rule), not here -- the same boundary Task 2 drew for F16
+after its own first attempt drew a conclusion this task's evidence could not
+support.
+
+**All figures below are from the `build` tree, `CMAKE_BUILD_TYPE=Release`,
+left at `-DSYNTH_BUILD_INTEGRATION_TESTS=ON` by Task 2's own reconfigure (the
+only way to obtain `synthesize-qwen3-tts-voicedesign-prefill-real`, used
+below). No timing figure is taken from this build or claimed anywhere in this
+section.**
+
+### Cutting it required no fix this time
+
+`--quant Q8_MIXED` ran and wrote the package on the first attempt --
+`talker.code_predictor.small_to_mtp_projection`, the tensor pair Task 2 had to
+teach the quantizer's classifier (`98d8b84`), is shared by both profiles'
+runs through the same classifier code, so Task 2's fix already covers this
+cut. No production code changed in this task.
+
+### Size and tensor census
+
+| | BF16 (source) | Q8_MIXED |
+|---|---|---|
+| bytes | 4,295,891,904 | 2,499,423,680 |
+| tensor count | 659 | 659 |
+| by type | 404 BF16 + 255 F32 | 267 Q8_0 + 392 F32 |
+
+Delta: **-1,796,468,224 bytes**, a ratio of **0.5818** against BF16 (58.18 %
+of the source's size, i.e. **41.82 % smaller**). This does **not** match
+`qwen3-tts-12hz-0-6b-base`'s own Q8_MIXED ratio of 0.663 (33.7 % smaller,
+2,516,522,624 -> 1,667,606,112) -- the brief warned against assuming it would,
+and it does not: VoiceDesign shrinks proportionally *more*. The 267/392
+tensor-type split is identical to F16's own 267/392 split (Task 2, above) --
+same classifier boundary, same 267 tensors take the profile's matrix type
+(F16 there, Q8_0 here) and the same 392 stay F32 -- which is the same
+mechanism Task 2 named for why VoiceDesign's F16 penalty is smaller than
+Base's: the matrix half this variant halves (or, here, quantizes to Q8_0) is
+a larger share of the package than it is in the 2.5 GB Base package, so a
+change to that half moves the total by proportionally more in either
+direction, larger when two-byte types cannot shrink (F16) and smaller when an
+8-bit block type can (Q8_MIXED).
+
+### Load, confirmed before either cell was filled
+
+The brief's own Step 3 literal is broken, independently of Task 2's
+`--list-voices` finding for the same step in the F16 task: it invokes
+`synthesize-qwen3-tts-public-real <model> probe:description en`, supplying
+only two positional arguments after the model path where the driver requires
+four (`<model.gguf> <out.pcm> <voice-id|...> <language-tag|-> <seed|random>
+[max-frames] [cpu|cuda] [threads]`, confirmed against
+`tests/qwen3_tts_public_real.c`'s own usage string). Running it as written
+exits 2 on a usage error rather than probing anything. Confirmed instead with
+the same substitute Task 2 used, with an explicit language tag and seed added
+since this task's own out.pcm path makes the argument count unambiguous:
+
+```
+build/bin/synthesize-qwen3-tts-public-real \
+  models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-Q8_MIXED.gguf \
+  /tmp/qwen3-tts-q8mixed-probe.pcm \
+  probe:description - 0 8192 cpu
+```
+
+`{"probe": "description", "status": 0}`, exit 0. The package loads and
+`create_from_description` works on the cut package.
+
+### The `replay` cell: same prefill-driver method as F16, same reason
+
+`scripts/validate-qwen3-tts-replay.py --stage replay` (the brief's own Step 5
+text already says not to try this, and Task 2's report is the source of that
+finding) is not re-verified here beyond re-reading Task 2's account -- it
+fails identically for every profile of this variant because no per-case
+oracle artifacts exist for it, a fact about the variant's Golden Manifest
+plumbing, not about any one profile. `stages.replay` is filled the same way
+Task 2 filled F16's: `tests/qwen3_tts_voicedesign_prefill_real.cpp`, built
+already (Task 2's reconfigure), invoked directly against the same two
+committed oracle dumps, reusing BF16's and F16's 0.01 bound:
+
+| case | BF16 p95_relative | F16 p95_relative | Q8_MIXED p95_relative |
+|---|---|---|---|
+| voicedesign-empty-instruct-en | 0.00269 | 0.002689 | 0.006130 |
+| voicedesign-nonempty-instruct-en | 0.002903 | 0.002902 | 0.006085 |
+
+Both pass (`gate_passed: true`, `shapes_match: true`), but visibly further
+from BF16/F16 than those two are from each other -- roughly 2.2-2.3x their
+residual, rather than half a bf16 ulp. This is the expected direction and
+rough size for the difference in kind, not just degree, between the two
+profiles: F16's matrix half stays a two-byte float, finer than the oracle's
+own bf16 storage, so its residual is attributable to the *oracle*. Q8_MIXED's
+matrix half is an 8-bit block type, coarser than bf16, so some of this
+residual is attributable to the *port* for the first time in this variant's
+profile history. `observed_max_relative` is the larger of the two (0.00613),
+giving **1.63x headroom** against the unchanged 0.01 bound -- positive and
+passing, but the thinnest headroom this variant's `replay.prefill` probe has
+recorded (BF16 **3.44x** -- its own committed two-case figure,
+`tests/tolerances/qwen3-tts.json`'s BF16 `prefill` cell, not the
+empty-instruct-only 3.72x Plan 1 recorded before the non-empty case existed;
+F16 3.45x, nearly identical to BF16's; Q8_MIXED 1.63x). No fault injection was
+run against Q8_MIXED; this cell carries no `fault_injection_by_case` block,
+matching the standing instruction not to carry one forward from a profile it
+was not measured on.
+
+### The `public` cell: eleven checks pass, filled after `replay`
+
+`scripts/validate-qwen3-tts-public.py --profile Q8_MIXED --backend cpu` (the
+brief's Step 4 command, run as written) against the same two description
+instructs Task 2 used. Run twice, in the same order Task 2 established for
+F16: once before `tests/tolerances/qwen3-tts.json` carried a Q8_MIXED
+`replay` cell (relation 3 -- "an empty instruct reproduces the oracle within
+the replay stage's recorded tolerance" -- read "unmeasured" and was skipped,
+a fourth skip beyond the usual three), and once after, so relation 3 had a
+real Q8_MIXED record of its own to cite instead of falling back to BF16's or
+F16's or reporting unmeasured. The second run is the one recorded: all 11
+checks passed, identical verdicts to BF16 and F16, the same 3 skips (no
+Preset Voice catalogue). Relation 3 read this same file's own Q8_MIXED
+`replay.prefill` probe (p95_relative 0.00613 against max_relative 0.01) and
+passed. Report: `reports/validate/qwen3-tts/public-voicedesign-Q8_MIXED.json`
+(gitignored).
+
+### Verification
+
+- `synthesize-qwen3-tts-quantization-policy-test`: passes, unchanged by this
+  task (no classifier edit was needed).
+- `synthesize-golden-manifest-contract` / `synthesize-tolerance-coverage`:
+  both pass -- the new Q8_MIXED profile carries the same stage set as BF16
+  and F16 (`replay`, `public`), and `case_count` (13) is untouched.
+- `synthesize-qwen3-tts-voicedesign-prefill-real` /
+  `-prefill-instruct-real` (the BF16-driven CTest golden gates): still pass,
+  unaffected -- this task changed no production code.
+- `scripts/ci/clang-format.sh --check-diff`: clean (only `.json`/`.md`
+  changed).
+- Full unit gate, `build` tree (`SYNTH_BUILD_INTEGRATION_TESTS=ON` per Task
+  2's still-standing reconfigure): 104/106, the same two pre-existing,
+  not-ours failures (`synthesize-python-api-wheel-test`,
+  `synthesize-vits-python-unit`'s sole error
+  `test_quantization_reports_match_current_artifacts`). No third.
+- `git status --porcelain` checked before staging; no `.gguf` or build
+  artifact staged. `models/` is a symlink outside the worktree, gitignored
+  via `/models`; `reports/validate/` is gitignored per the global
+  constraints.
+
+## Stage 3: VoiceDesign Package, Plan 3 Task 4
+
+Cuts `qwen3-tts-12hz-1-7b-voicedesign-Q5_K_MIXED.gguf` from the same
+4,295,891,904-byte BF16 source Tasks 2 and 3 cut F16 and Q8_MIXED from, and
+measures its size and the two tolerance cells the plan asks for. **This is
+this profile's first real evaluation for this variant -- the design spec's own
+words were that the extra shrink `Q5_K_MIXED` buys over `Q8_MIXED` did not
+change the recommendation at Base's/CustomVoice's ~2.4 GB source, but might at
+this variant's ~4.3 GB one.** It does not, but the reason is not the one that
+framing anticipated: the accuracy side moved further than the size side did.
+`docs/quantization.md`'s new "VoiceDesign's Q5_K_MIXED" section carries the
+full arithmetic and the recommendation; this section is the measurement
+record it draws on.
+
+**All figures below are from the `build` tree, `CMAKE_BUILD_TYPE=Release`,
+left at `-DSYNTH_BUILD_INTEGRATION_TESTS=ON` by Task 2's own reconfigure (the
+only way to obtain `synthesize-qwen3-tts-voicedesign-prefill-real`, used
+below). No timing figure is taken from this build or claimed anywhere in this
+section.**
+
+### Cutting it required no fix, and the load check matches the brief this time
+
+`--quant Q5_K_MIXED` ran and wrote the package on the first attempt, for the
+same reason Task 3's Q8_MIXED cut needed none: `talker.code_predictor.
+small_to_mtp_projection`, the tensor pair Task 2 taught the quantizer's
+classifier (`98d8b84`), is shared by every profile's run through the same
+classifier code. No production code changed in this task.
+
+Unlike Tasks 2 and 3's own Step 2/3 literals (a missing `--list-voices` flag
+and, separately, an under-supplied argument count), this task's brief gives
+the load check with all five positional arguments the driver actually
+requires:
+
+```
+build/bin/synthesize-qwen3-tts-public-real \
+  models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-Q5_K_MIXED.gguf \
+  /dev/null probe:description en 0
+```
+
+Ran verbatim, no substitution needed: `{"probe": "description", "status": 0}`,
+exit 0. The package loads and `create_from_description` works on the cut
+package.
+
+### Size and tensor census
+
+| | BF16 (source) | Q8_MIXED | Q5_K_MIXED |
+|---|---|---|---|
+| bytes | 4,295,891,904 | 2,499,423,680 | 1,780,723,136 |
+| tensor count | 659 | 659 | 659 |
+| by type | 404 BF16 + 255 F32 | 267 Q8_0 + 392 F32 | 267 Q5_K + 392 F32 |
+
+The 267/392 tensor-type split is identical to F16's and Q8_MIXED's own split
+(Tasks 2 and 3) -- the same classifier boundary, only the matrix half's target
+type changes (F16, then Q8_0, then Q5_K).
+
+**Against BF16:** delta -2,515,168,768 bytes, ratio 0.4145 (41.45 % of the
+source, 58.55 % smaller). **Against Q8_MIXED, the number this task exists to
+answer:** delta -718,700,544 bytes, ratio 0.7125 (71.25 % of Q8_MIXED, i.e.
+**28.75 % smaller**) -- close to but not exactly the design spec's own "~25 %"
+estimate. 718.7 MB is a much larger absolute cut than the same percentage
+would have bought at Base's/CustomVoice's ~2.4 GB source, which is exactly the
+scale-up the brief flagged as worth re-checking rather than assuming answered.
+
+### Load, confirmed before either cell was filled
+
+Covered above -- the brief's own Step 2 literal ran clean, unlike Tasks 2's
+and 3's own Step 2/3 literals.
+
+### The `replay` cell: same prefill-driver method, and this time it fails
+
+`scripts/validate-qwen3-tts-replay.py --stage replay` is not re-verified here
+beyond re-reading Task 2's account (the brief's own Step 4 text already says
+not to try it): it fails identically for every profile of this variant
+because no per-case oracle artifacts exist for it, a fact about the variant's
+Golden Manifest plumbing, not about any one profile. `stages.replay` is
+filled the same way Tasks 2 and 3 filled F16's and Q8_MIXED's:
+`tests/qwen3_tts_voicedesign_prefill_real.cpp`, already built (Task 2's
+reconfigure), invoked directly against the same two committed oracle dumps,
+against the same 0.01 bound:
+
+| case | BF16 | F16 | Q8_MIXED | Q5_K_MIXED |
+|---|---|---|---|---|
+| voicedesign-empty-instruct-en | 0.00269 | 0.002689 | 0.006130 | **0.031029** |
+| voicedesign-nonempty-instruct-en | 0.002903 | 0.002902 | 0.006085 | **0.030366** |
+
+**Both cases FAIL** -- `gate_passed: false` in the driver's own output, on
+both, reproduced byte-identically on a repeat run of the empty-instruct case.
+This is a different finding in kind from every other profile this variant has
+measured, not merely a further step down the same slope: BF16, F16 and
+Q8_MIXED all cleared 0.01 with headroom (3.44x, 3.45x, 1.63x respectively);
+Q5_K_MIXED's worst case (0.031029) is **3.10x OVER** the bound, giving a
+"headroom" of 0.32x -- the first cell in this variant's history where that
+number reads below 1. Scale check against the family's own progression:
+Q8_MIXED's residual was already ~2.2-2.3x BF16's/F16's own (Task 3's finding,
+attributed to Q8_0's 8-bit matrix half being coarser than the oracle's bf16
+storage); Q5_K_MIXED's residual here is a further ~5.06x/4.99x on top of
+Q8_MIXED's own (empty/nonempty respectively), and ~11.5x/10.5x BF16's --
+consistent in DIRECTION with a coarser matrix quantization (5-bit K-quant
+blocks against Q8_0's 8-bit ones) but a much larger jump than the F16 ->
+Q8_MIXED step was, not a linear continuation of it. The bound is left at the
+BF16-derived 0.01 rather than loosened to make this profile pass -- the bound
+describes what this family's own probes have judged an acceptable prefill
+deviation, and a probe failing it is the finding, not a reason to move the
+goalpost. No fault injection was run against this profile; this cell carries
+none, matching Task 3's own precedent of running fault injection only once,
+on the BF16 cell that established the technique.
+
+### The `public` cell: ten of eleven checks pass, filled after `replay`
+
+`scripts/validate-qwen3-tts-public.py --profile Q5_K_MIXED --backend cpu`
+(the brief's own Step 4 command block, run as written for the `public`
+half -- the `replay` half described in the same step is the one Task 2
+already established does not work for this variant, per the brief's own
+text). Run twice, in the same order Tasks 2 and 3 established: once before
+`tests/tolerances/qwen3-tts.json` carried a Q5_K_MIXED `replay` cell
+(relation 3's citation half read "unmeasured" and was skipped, a fourth skip
+beyond the usual three, 10 of 11 non-skip checks passing), and once after, so
+relation 3 had a real Q5_K_MIXED record of its own to cite. **The second run
+is the one recorded, and relation 3's citation half correctly FAILED**:
+`check_empty_instruct_within_tolerance` (`scripts/validate-qwen3-tts-public.py`)
+reads this same file's own Q5_K_MIXED `replay.prefill` probe (p95_relative
+0.031029 against max_relative 0.01) and returns `passed=False` because the
+committed observation genuinely exceeds the committed bound -- this is the
+script working correctly, not a defect in it. All ten other checks passed,
+including relation 3's OWN live smoke-run half ("an empty instruct
+synthesizes through the public seam": 30720 frames, nonzero) -- a package
+that loads and produces audio through the public seam is a different claim
+from one whose prefill matches the oracle within tolerance, and this package
+still does the former even though it fails the latter. Same 3 skips as every
+other profile (no Preset Voice catalogue). Report:
+`reports/validate/qwen3-tts/public-voicedesign-Q5_K_MIXED.json` (gitignored).
+
+### Recommendation
+
+**Do not publish `Q5_K_MIXED` for `qwen3-tts-12hz-1-7b-voicedesign`.** The
+standing precedent is CustomVoice's own `Q5_K_MIXED` (talker-logits cosine
+0.9648, deliberately unpublished on accuracy) -- this result matches that
+precedent's direction but is the stronger of the two: CustomVoice's number was
+a lower cosine on a probe with no committed pass/fail bound, while this is an
+explicit breach of a committed `max_relative` gate, on both of this variant's
+two measured `replay` cases. The size side of the question this task was
+written to answer -- whether a further 28.75 % shrink over `Q8_MIXED` matters
+more at 4.3 GB than an equivalent shrink did at Base's/CustomVoice's 2.4 GB --
+is answered "yes, noticeably more" (718.7 MB against a package that is itself
+larger to begin with), but that answer is moot once the accuracy side has
+moved even further than the size side did. Task 8's card should record
+`Q5_K_MIXED` as buildable and load-checked for this variant but not shipped,
+on accuracy -- but the CustomVoice card Task 8 might otherwise use as a
+template does not do this at all: the `quants:` block of
+`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml` ships `BF16`,
+`F16` and `Q8_MIXED`,
+omitting `Q5_K_MIXED` entirely rather than naming it measured-and-not-shipped.
+Task 8 has to establish this shape, not copy it. See "Open item: CustomVoice's
+card omits Q5_K_MIXED" below for the tracked gap.
+
+**Nothing mechanical currently enforces this recommendation.** No registered
+test reads any of `tests/tolerances/qwen3-tts.json`'s `headroom`,
+`observed_max_relative`, `all_passed`, `failed_checks` or `gate_passed`
+fields for this or any profile -- `tests/CMakeLists.txt:1347-1361` hardcodes
+`profiles BF16 stages replay probes "prefill" max_relative` for the prefill
+CTest gate, and the public-request CTest gate (`tests/CMakeLists.txt:2070-
+2081`) runs `--profile BF16 --backend cpu` against `SYNTH_QWEN3_TTS_TEST_MODEL`
+(`CMakeLists.txt:128-130`, the CustomVoice package). F16's and Q8_MIXED's
+cells for this variant are equally unread, so this is not a regression this
+task introduced -- but it does mean a future cut-and-ship of `Q5_K_MIXED`
+would not be caught by CTest; only this document, the porting record and the
+tolerance file's own prose stand between the measurement and a mistaken
+publication.
+
+**Recording the failing cell at all is a departure from both of this
+family's own precedents, made deliberately.** CustomVoice's `Q5_K_MIXED`
+negative lives only in prose (`docs/quantization.md`, this document) with no
+tolerance cell behind it; the Base variant's declined-CUDA negative (see "The
+Base variant carries no CUDA sub-grid" above) is a deliberate *absence* of a
+cell rather than a committed one that reads false. This task commits the
+cell anyway -- `gate_passed: false`, `all_passed: false`, `failed_checks`
+populated -- because an absent or prose-only record of a failure is strictly
+weaker evidence than a reproducible, machine-readable one sitting in the
+same grid a passing profile would occupy: a future reader, or a script
+written later that DOES check these fields, can find this result by looking
+at the grid rather than needing to already know to look for it in prose.
+
+### Open item: CustomVoice's card omits Q5_K_MIXED instead of naming it measured-and-not-shipped
+
+Found while writing this task's recommendation, not fixed here (out of this
+task's file list). This plan's own Global Constraints state that a profile
+which fails its own test belongs in the card "as measured-and-not-shipped
+... rather than omitted." CustomVoice's published card,
+the `quants:` block of
+`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml`, ships `BF16`, `F16` and
+`Q8_MIXED` -- `Q5_K_MIXED` (talker-logits cosine 0.9648, withheld on
+accuracy, recorded in `docs/quantization.md`'s "What each profile is for")
+is silently absent rather than named. A case-insensitive `grep -rn q5` across
+all of `scripts/hf_cards/` and `docs/models/` confirms no card anywhere in
+the tree names a withheld `Q5_K_MIXED`. This is a real, pre-existing gap
+against the plan's own rule -- not introduced by this task, and not
+something this task's file list (`tests/tolerances/qwen3-tts.json`,
+`docs/quantization.md`, `docs/porting/families/qwen3-tts.md`) authorizes
+fixing, since CustomVoice's card is already published and re-publishing it
+is a separate outward act requiring its own confirmation. Left for whoever
+next touches CustomVoice's card or Task 8's own card-writing work to close.
+
+**Cross-reference corrected, 2026-08-20 (PR #16).** This item was written
+expecting Task 8's VoiceDesign card to establish the
+measured-and-not-shipped shape that CustomVoice's card should then copy.
+That expectation is void: jiangzhuo ruled the same day that VoiceDesign's
+`Q5_K_MIXED` **ships**, with its gate failure disclosed on the card, so that
+card now establishes a *published-despite-gate-failure* shape and contains
+no unshipped profile at all. **The gap itself is unchanged** -- CustomVoice's
+`Q5_K_MIXED` is still silently absent from its card, and this item stays
+open -- but there is no longer an in-tree template for naming a withheld
+profile, and whoever closes this gap must settle CustomVoice's shape on
+CustomVoice's own evidence rather than copying a sibling. Note the two
+cases are not alike: CustomVoice's `Q5_K_MIXED` was withheld on a lower
+talker-logits cosine with no committed pass/fail bound, whereas
+VoiceDesign's breaches a committed `max_relative` gate outright.
+
+### Open item: three published cards carry `stages`/`cases_per_stage` numbers the record does not support, because the two fields have no agreed meaning
+
+Filed 2026-08-20 under PR #16's review, which re-derived every card's
+duration claim and found these while checking the same cards' surrounding
+numbers. **Not fixed here:** all three are already-published cards, and
+re-publishing one is its own outward act requiring jiangzhuo's per-act
+confirmation. This item names them, their correct values, and the reason
+they went wrong together.
+
+**The root cause is that `stages` and `cases_per_stage` are ambiguous
+family-wide.** Nothing in `scripts/hf_cards/generate.py` validates either
+field, and the template spends them in one sentence -- "{{ stages }} graph
+stages were replayed for {{ cases_per_stage }} cases" -- whose wording says
+GRAPH stages while four of the five families fill it from their TOLERANCE
+stage count. The two readings coincide for VITS and Kokoro and diverge for
+Qwen3-TTS and OmniVoice, which is why the errors below look unrelated and
+are not. Whoever fixes the numbers should settle the field semantics first,
+in the template and in `validate_spec`, or the next card will re-earn them.
+
+| card | field | committed | what the record supports |
+| --- | --- | ---: | --- |
+| `qwen3-tts-12hz-0-6b-base` | `cases_per_stage: 13` | 13 | No stage measures 13. `replay` measures 4 (`speaker.x_vector`) and 3 (`prompt.icl_embed`); `codec_encoder` measures 5. 13 is the Golden Manifest's case count, and `tests/tolerances/qwen3-tts.json`'s own Base note says so outright: "case_count (13) tracks this variant's manifest ..., **not a measurement**." |
+| `omnivoice-0-6b` | `stages: 8` | 8 | `tests/tolerances/omnivoice.json` carries **2** stages (`replay`, `public`), the count every sibling card's `stages` is filled from. No basis for 8 appears anywhere in the record; it entered in `573ba142` with no justifying comment. `cases_per_stage: 20` is true of `replay` only -- `public` is 13 checks. |
+| `qwen3-tts-12hz-0-6b-customvoice` | `cases_per_stage: 18` | 18 | The manifest holds **20** cases (`suite_version: 2`), and the tolerance file's `BF16/replay` measures all 20. Only `F16/replay` and `Q8_MIXED/replay` measure 18. So 18 describes two of the three shipped profiles and understates the source profile's own coverage. |
+| `qwen3-tts-12hz-0-6b-customvoice` | `stages: 3` | 3 | Its tolerance file carries **2** stages (`replay`, `public`). 3 is defensible only under the GRAPH-stage reading its own cuda note uses -- which is precisely the ambiguity this item names as the root cause, so it is the same confusion's fourth instance, not a separate defect. Flagged by the anchor-verification pass, 2026-08-20. |
+
+The Base row is the one worth reading twice: the tolerance file states in its
+own prose that the number is not a measurement, and the card nevertheless
+renders it into a sentence that says it was replayed for that many cases.
+That is the same failure mode as the duration claim PR #16 removed from this
+same card -- a number that is true of some artifact, rendered as though it
+were true of a measurement.
+
+### Verification
+
+- `synthesize-qwen3-tts-quantization-policy-test`: passes, unchanged by this
+  task (no classifier edit was needed).
+- `synthesize-golden-manifest-contract` / `synthesize-tolerance-coverage`:
+  both pass -- the new Q5_K_MIXED profile carries the same stage set as BF16,
+  F16 and Q8_MIXED (`replay`, `public`); neither test inspects `gate_passed`
+  or `all_passed` values, only stage-set presence, so a profile that measures
+  and FAILS is exactly as well-formed to these tests as one that measures and
+  passes. `case_count` (13) is untouched.
+- `synthesize-qwen3-tts-voicedesign-prefill-real` /
+  `-prefill-instruct-real` (the BF16-driven CTest golden gates, which run
+  against the pinned BF16 test model, not this cut): still pass, unaffected
+  -- this task changed no production code.
+- `scripts/ci/clang-format.sh --check-diff`: clean (only `.json`/`.md`
+  changed).
+- Full unit gate, `build` tree (`SYNTH_BUILD_INTEGRATION_TESTS=ON` per Task
+  2's still-standing reconfigure): 104/106, the same two pre-existing,
+  not-ours failures (`synthesize-python-api-wheel-test`,
+  `synthesize-vits-python-unit`'s sole error
+  `test_quantization_reports_match_current_artifacts`). No third.
+- `git status --porcelain` checked before staging; no `.gguf` or build
+  artifact staged. `models/` is a symlink outside the worktree, gitignored
+  via `/models`; `reports/validate/` is gitignored per the global
+  constraints.
+
+## Stage 3: VoiceDesign Package, Plan 3 Task 5
+
+Measures latency, RTF, load time and peak memory for the three profiles Tasks
+2-4 cut (`BF16`, `F16`, `Q8_MIXED`), and decides the question Task 2 was
+forbidden to answer: whether `F16`, which is *larger* than its `BF16` source
+(+283,136 bytes, Task 2), is fast enough on this variant to justify shipping
+it anyway. `docs/quantization.md`'s "F16 is 184,448 bytes LARGER than the
+package it was cut from" paragraph already records F16 as this
+family's speed profile rather than its size one; this task supplies the speed
+number. `Q5_K_MIXED` already failed its own accuracy gate in Task 4 (headroom
+0.32x) and is measured here for context only, not as a candidate.
+
+### The measurement tree
+
+`build/rel-dgx-spark` predated this plan's HEAD by three days (last configured
+2026-08-17, before Tasks 1-4 landed), so it was reconfigured and rebuilt
+before anything was timed:
+
+```
+cmake --preset rel-dgx-spark
+cmake --build --preset rel-dgx-spark -j 20
+```
+
+Confirmed before measuring anything:
+
+```
+$ grep CMAKE_BUILD_TYPE build/rel-dgx-spark/CMakeCache.txt
+CMAKE_BUILD_TYPE:STRING=Release
+```
+
+`sm_121a`, CUDA Toolkit 13.3, aarch64/GB10 (`GGML_SYSTEM_ARCH: ARM`, ggml
+commit `707321c4`) -- the same tree Base's own Task 14 used, rebuilt at this
+task's own HEAD rather than reused stale.
+
+### The workload, fixed and repeatable
+
+VoiceDesign has no reference audio and no ICL path (Stage 3 Plan 1), so
+Base's Task 14 workload -- a sentence through an ICL Voice Profile -- has no
+counterpart here; the analogous fixed point for this variant is a `desc:`
+Voice Profile built from a Description Text instruct, driven through
+`synthesize-qwen3-tts-public-real`. Text and description, seed and thread
+count are all fixed and repeated verbatim across every run in this table:
+
+- **Text** (delivered on stdin): `"This is a test of Qwen three T T S voice
+  design synthesis."` -- 13 words, chosen to mirror the length and cadence of
+  Base's own Task 14 sentence without borrowing its "voice cloning" claim,
+  which this variant cannot make.
+- **Description** (the `desc:` voice): `"A cheerful, bright female voice
+  speaking with fast pacing and high energy."` -- the same nonempty-instruct
+  description Tasks 2-4 already used for this variant's `public`/`replay`
+  checks, reused here rather than inventing a fourth string.
+- **Language tag:** `en`. **Seed:** `7` -- the same seed
+  `scripts/validate-qwen3-tts-public.py`'s own smoke run already uses for
+  this variant. **Threads:** `10`, fixed with the driver's own
+  `synth_context_set_threads`. **Backend:** `cpu`. **`max_output_frames`:**
+  left at the driver's own default, `983040`.
+
+```
+printf '%s' "This is a test of Qwen three T T S voice design synthesis." | \
+  /usr/bin/time -v build/rel-dgx-spark/bin/synthesize-qwen3-tts-public-real \
+  models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-<PROFILE>.gguf \
+  <out.pcm> \
+  "desc:A cheerful, bright female voice speaking with fast pacing and high energy." \
+  en 7 983040 cpu 10
+```
+
+`frames`, `load_seconds` and `synthesis_seconds` are read from the driver's
+own stdout JSON; peak RSS is `/usr/bin/time -v`'s `Maximum resident set
+size`. Three repetitions per profile, run back to back with nothing else
+compiling or synthesizing on the host; medians are reported.
+
+### Latency, RTF and peak memory, measured on Release 2026-08-20
+
+**Every figure below comes from `build/rel-dgx-spark`.**
+
+| profile | backend | frames | audio | synthesis | **RTF** | load | peak RSS |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| BF16 | CPU | 97,920 | 4.080 s | 19.30 s | **4.73** | 2.18 s | 4.95 GiB |
+| F16 | CPU | 103,680 | 4.320 s | 7.12 s | **1.65** | 2.13 s | 4.95 GiB |
+| Q8_MIXED | CPU | 120,960 | 5.040 s | 5.31 s | **1.05** | 1.41 s | 3.16 GiB |
+
+**The BF16 CPU row above was re-measured in Plan 3 Task 6** (n=8, median
+18.92 s / RTF 4.64, against this table's own n=3 / 19.30 s / RTF 4.73) as
+part of pairing it against a same-session CUDA run; see "Stage 3: VoiceDesign
+Package, Plan 3 Task 6" below for which figure to use and why they differ.
+Task 8's card should read from the later measurement.
+
+Medians of three runs per profile. RTF is each row's own synthesis time over
+its own audio length, never across rows -- the three profiles stop at
+different frame counts (97,920 / 103,680 / 120,960), which is a property of
+their weights, not an error: the autoregressive stop decision is what moves
+here too, the same one-clause mechanism this file's "Generated length is
+build-dependent" paragraph names ("The autoregressive stop decision is what
+moves") for why it
+moves between builds, just triggered by weight precision rather than a
+compiler's floating-point choices. Matches Base's own precedent that BF16 and
+Q8_MIXED need not agree on where they stop.
+
+**Two known contaminants, named beside the table rather than in a footnote.**
+The second BPE frontend costs about +45 MB of peak RSS and is inside every
+figure above -- carried forward from Base's own Task 14 measurement
+(carry-over §3.4: 5,594,676 to 5,639,716 KB), not independently
+re-measured against this package in this task, since isolating it would need
+a build variant this task does not have. And generated length is
+build-dependent (this file's "Generated length is build-dependent, and no
+frame count may be quoted without naming its build" paragraph, not
+`docs/testing.md`, which
+documents a different claim -- the Release/RelWithDebInfo speed gap): none of
+the frame counts above may be read against any other tree, including
+`build`'s own tolerance-cell runs, which use different requests and a
+different tree entirely.
+
+**Gate 6, repeated runs and cleanup.** Every repetition at the fixed seed
+produced byte-identical frame counts within its own profile -- 97,920 (BF16),
+103,680 (F16), 120,960 (Q8_MIXED) across all three reps each -- and peak RSS
+varied by under 0.01% between repetitions of the same configuration (BF16
+0.0006%, F16 0.009%, Q8_MIXED 0.0095%), all comfortably inside Base's own
+<0.03% bound. Synthesis-time spread within a profile's three reps stayed
+under 2.4% (tightest: F16 at 0.26%), nothing like the multi-times spread
+Base's Task 14 had to discard as contention -- **no run in this table was
+discarded**, unlike Base's, whose report is the reason this task checked for
+contention at all.
+
+**Sanity check against Base (brief Step 5).** Base measured BF16 RTF 3.15 on
+CPU at 0.6B. VoiceDesign's talker is 3.2x larger, and its BF16 RTF came out
+*worse*, not better: **4.73**, about 1.50x Base's own number
+(4.7305 / 3.15 = 1.502) -- the expected direction for a larger model doing
+more compute per generated frame, so the brief's re-measure trigger ("RTF
+better than Base's is surprising") did not fire and nothing was re-measured
+on that account. VoiceDesign's fastest profile, Q8_MIXED at RTF 1.05, is
+likewise slower than Base's own Q8_MIXED at 0.863 -- same direction, same
+reason.
+
+### Does F16 pay here? Yes -- decided on speed, since size already said no
+
+Task 2 measured F16 at +283,136 bytes against its BF16 source (0.0066%
+larger) and declined to draw a publication conclusion, because
+`docs/quantization.md`'s "F16 is 184,448 bytes LARGER than the package it
+was cut from" paragraph records F16 as this family's speed profile,
+not its size one -- Base's own F16 published despite the same larger-than-
+source shape. The question left for this task: **is F16 fast enough on this
+variant to justify a profile that saves no disk?**
+
+**Yes, decisively, on `build/rel-dgx-spark`.** F16 synthesizes 2.71x faster
+than BF16 for the same request -- 7.12 s median against 19.30 s. Because the
+two profiles stop at different frame counts (103,680 vs 97,920, the same
+autoregressive-stop-decision mechanism named above), the fair,
+audio-length-normalized comparison is RTF, not raw wall time: **4.73 -> 1.65,
+a 2.87x improvement** (4.7305 / 1.6482 = 2.870). That crosses real time with
+headroom to spare. Scored against this same table's own Q8_MIXED result (RTF
+4.73 -> 1.05, 4.49x), F16 alone captures **87% of Q8_MIXED's wall-clock time
+saved** (12.18 s of 13.99 s: `19.3006 - 7.1204` over `19.3006 - 5.3069`) and
+**84% of its RTF-point improvement** (3.08 of 3.68 points:
+`4.7305 - 1.6482` over `4.7305 - 1.0530`) -- F16 alone recovers most of what
+quantizing all the way to Q8_0 buys, while changing nothing about the
+package's on-disk footprint.
+
+**Why, mechanically -- a source-confirmed explanation, not asserted.** ggml's
+CPU backend (commit `707321c4`, `GGML_SYSTEM_ARCH: ARM` on this aarch64/GB10
+host) has no ARM-vectorized GEMM path for BF16 weights, and does have one for
+F16. `ggml/src/ggml-cpu/llamafile/sgemm.cpp`'s `case GGML_TYPE_BF16` (line
+3781) branches only on `__AVX512BF16__`, `__AVX512F__`, `__AVX2__`, `__MMA__`
+(POWER) and RISC-V's `__riscv_zvfbfwma` -- none of which this host defines --
+and falls through to `return false` when none match, which sends BF16
+matmuls to ggml's generic reference path instead of a tuned kernel.
+`case GGML_TYPE_F16` (line 3845), by contrast, has an additional
+`__ARM_NEON` branch that this host's build does take. The scalar dot product
+tells the same story: `ggml_vec_dot_bf16` (`ggml/src/ggml-cpu/vec.cpp:139`)
+vectorizes only under AVX512BF16/AVX512F/AVX2/AVX and RISC-V's
+`zvfbfwma` -- there is no ARM branch at all, so it falls to the scalar tail
+loop on this host, while F16's own dot product has broad ARM NEON support.
+This is an architecture/build fact about this ggml commit's CPU backend on
+this host, not a numerical-precision claim: Task 2 already showed F16 costs
+nothing measurable on accuracy either (replay headroom 3.45x, essentially
+identical to BF16's own 3.44x).
+
+**Verdict: recommend ship, subject to two gates this task does not clear.**
+This task's own measurement supports it on the evidence: **2.87x RTF
+improvement on this variant, for a package 0.0066% larger than its source.**
+That is the arithmetic that answers the question Task 2 could not -- F16 is
+faster by more than enough to justify shipping a profile that saves no disk.
+But two things stand between this recommendation and a shipped package, and
+neither is this task's to close: **Task 7's blind A/B listening audit
+explicitly covers BF16-vs-F16 and has not run yet**, and **publication itself
+needs jiangzhuo's per-act confirmation naming the target repository** (this
+plan's own Global Constraints). Task 8 should carry F16 in the card as a
+speed profile on this evidence once both gates clear -- not before.
+
+### Open item: Base's own F16 verdict rests on size alone, and was never speed-measured
+
+The `F16 | Base` row of `docs/quantization.md`'s "What each profile is for"
+table reads "**clears every
+gate and does not pay**", RTF "not measured" -- and this file's own Status
+paragraph (line 21) repeats it verbatim: "F16 clears every gate and does NOT
+pay -- it is 184,448 bytes *larger* than its source." Only the speed-profile
+*paragraph* just below that table ("F16 is 184,448 bytes LARGER than the
+package it was cut from", which ends "which is why F16 is a **speed**
+profile for this family rather than a size one") supports this task's
+own framing that F16 should be judged on speed; Base's recorded *verdict* is
+the opposite, and it was reached without an RTF number at all. This task does
+**not** claim VoiceDesign's result matches how Base's F16 is characterized --
+only the paragraph agrees; the verdict does not.
+
+This task's own mechanism finding makes the gap bigger than a wording
+mismatch. The ARM-vectorized-GEMM-for-F16-but-not-BF16 fact traced above
+(`ggml/src/ggml-cpu/llamafile/sgemm.cpp`, `ggml/src/ggml-cpu/vec.cpp`) is
+**host-wide**: it is a property of this ggml commit's CPU backend dispatch on
+this aarch64/GB10 host, not of VoiceDesign's weights specifically, so it
+would apply identically to Base's own BF16 and F16 packages on the same tree.
+That makes it likely -- **not measured here, and out of this task's scope to
+measure** -- that Base's committed "does not pay" verdict is itself
+wrong-and-unmeasured, in the same class of gap as CustomVoice's card silently
+omitting `Q5_K_MIXED` (Task 4's own "Open item," above): a real, pre-existing
+inconsistency this task found but does not fix. Left for whoever next touches
+Base's own quantization record or re-runs Task 14's measurement tree.
+
+### Q5_K_MIXED, measured for context only -- not a shipping candidate
+
+Q5_K_MIXED already failed its own accuracy gate in Task 4 (replay headroom
+0.32x, both cases breaching the committed 0.01 bound by roughly 3x) and
+Task 4's recommendation -- do not publish -- does not change on a speed
+result, so what follows is orientation, not a fourth row in the table above.
+Same workload, same tree:
+
+| profile | backend | frames | audio | synthesis | RTF | load | peak RSS |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Q5_K_MIXED (context; fails Task 4's accuracy gate) | CPU | 96,000 | 4.000 s | 4.30 s | 1.08 | 1.07 s | 2.40 GiB |
+
+Medians of three runs, byte-identical frame counts across all three, peak RSS
+varying under 0.015% between repetitions. Q5_K_MIXED lands slightly *behind*
+Q8_MIXED on RTF (1.08 vs 1.05) despite its smaller package -- both are well
+inside real time and the difference is not the deciding evidence either way,
+since Task 4's accuracy failure already settles this profile's publication
+question on its own.
+
+### What is not claimed
+
+One machine, one workload, one utterance length, one Description Text
+instruct. This document's own build-dependent-length finding -- the
+"Generated length is build-dependent, and no frame count may be quoted
+without naming its build" paragraph -- not `docs/testing.md`, is why an RTF computed
+from a frame count taken on another tree would be wrong; every figure above
+is same-tree. This section does not re-open Task 4's
+Q5_K_MIXED recommendation, does not claim CUDA placement (VoiceDesign has no
+new graphs to place -- see this plan's own "What This Variant Does NOT Have"),
+and implies no listening judgement -- a tolerance table and an RTF number are
+not audible evidence, and no VoiceDesign listening audit has run as of this
+task.
+
+### Verification
+
+- No production code, tolerance cell or tensor-classifier logic touched --
+  this task's whole diff is prose in this file.
+- `synthesize-golden-manifest-contract` / `synthesize-tolerance-coverage`:
+  unaffected, unchanged by this task.
+- Full unit gate, `build` tree (`SYNTH_BUILD_INTEGRATION_TESTS=ON` per Task
+  2's still-standing reconfigure, `CMAKE_BUILD_TYPE=Release`): the same two
+  pre-existing, not-ours failures (`synthesize-python-api-wheel-test`,
+  `synthesize-vits-python-unit`'s sole error
+  `test_quantization_reports_match_current_artifacts`). No third.
+- `scripts/ci/clang-format.sh --check-diff`: clean (only `.md` changed).
+- `git status --porcelain` checked before staging; no `.gguf`, `.pcm` or
+  `/usr/bin/time` log staged. `models/` is a symlink outside the worktree,
+  gitignored via `/models`.
+
+### Fix round 1, review of this task
+
+Spec passed; code quality review found four Important and four Minor
+findings, all in prose -- the reviewer independently re-ran all three
+profiles (largest delta -3.7% on BF16, well inside the review's own 15%
+trigger), confirmed frame counts byte-identical, and verified the ggml
+mechanism down to the preprocessor level (`__ARM_NEON` defined,
+`__ARM_FEATURE_FP16_VECTOR_ARITHMETIC` not, no `-march` flags -- the
+`#elif defined(__ARM_NEON)` arm at `sgemm.cpp:3872` really is the one this
+build takes). None of the four measured figures moved.
+
+**Important -- the stale-citation narrative was itself wrong, in the
+paragraph that claimed to have verified it.** The original text said the
+plan's own `docs/quantization.md:449-453` citation "was correct before Task
+4's edit inserted six lines above it." Re-verified with the reviewer's own
+named command (`git show b5046c8:docs/quantization.md`): line 449 there is
+**blank**, and the "F16 is a speed profile" paragraph has lived at **450-454**
+since the section was introduced (`b5046c8`, "Qwen3-TTS Stage 2 Plan 4 --
+quantization, backends and ship prep", PR #13) -- `:449-453` was never
+correct on this branch. The paragraph did not move in Task 4's own main
+commit (`6edf4b1`, confirmed still at 450-454 there); Task 4's *fix round*
+(`a5f6be4`) is what moved it, five lines down to 455-459 -- +1 from turning a
+two-sentence roster line into three, +4 from the four new VoiceDesign rows
+that commit added to the "What each profile is for" table (verified via
+`git diff 6edf4b1 a5f6be4 -- docs/quantization.md`). The false narrative is
+removed rather than corrected in place, since -- unlike the Status
+paragraph's own longer-lived corrections -- it never described a real
+interval, only a wrong derivation. A second, independent citation to the same
+paragraph, in this file's own Task 2 section, read `docs/quantization.md
+:450-454` -- correct when Task 2 wrote it, stale for the same reason -- and
+is now `:455-459` too, so this file no longer carries two different ranges
+for one paragraph.
+
+**Important -- `docs/testing.md` was cited for a claim it does not contain,
+in three places, one of them pre-existing.** Grepped: `docs/testing.md` never
+says "build-dependent" anywhere; its Release-preset section documents a
+different claim, the -O2/-O3 *speed* gap. The real source is this same file's
+"Generated length is build-dependent, and no frame
+count may be quoted without naming its build" paragraph. Fixed at both of this task's
+own citations and, since the reviewer traced the error to its origin, at
+Base's own Task 14 text too (its "What is not claimed" paragraph, which
+carried the same wrong citation as originally written) --
+that citation was already wrong before this task copied its shape into new
+prose.
+
+**Important -- the SHIP verdict read as settled; it is not, yet.** Two gates
+were absent from the verdict paragraph itself: Task 7's blind A/B audit
+explicitly covers BF16-vs-F16 and has not run, and publication needs
+jiangzhuo's own per-act confirmation naming the target repository (this
+plan's own Global Constraints). Task 3's and Task 4's own verdicts already
+got this right ("no publication conclusion drawn"; "do not publish") --
+Task 5's verdict now reads "recommend ship, subject to two gates this task
+does not clear," both gates named in the same paragraph rather than in a
+subsection thirty lines later.
+
+**Important -- claimed agreement with Base's own F16 characterization where
+none exists; recorded as a named tension instead.** The verdict originally
+said VoiceDesign's F16 result "match[es] how Base's own F16 is already
+characterized in `docs/quantization.md`." True only of the speed-profile
+*paragraph*; false of the table's own *verdict cell* for Base's F16
+("clears every gate and does not pay," RTF never measured) and of this
+file's own Status paragraph, which repeats that verdict verbatim. Removed
+the agreement claim and added "Open item: Base's own F16 verdict rests on
+size alone, and was never speed-measured," which states the tension plainly
+and goes further than a wording note: this task's own mechanism finding is
+host-wide, not VoiceDesign-specific, so it would very likely apply to Base's
+own BF16/F16 packages on the same tree -- making Base's committed "does not
+pay" verdict probably wrong-and-unmeasured, a gap in the same class as
+CustomVoice's card silently omitting `Q5_K_MIXED` (Task 4's own Open Item).
+Base is explicitly **not** re-measured here -- out of this task's scope --
+and the item is left for whoever next touches Base's own record.
+
+**Minors, all fixed.** The frame-count-divergence sentence now cross-references
+this file's "Generated length is build-dependent" paragraph and its
+one-clause mechanism ("The autoregressive stop decision
+is what moves") instead of asserting the divergence is non-alarming without
+saying why. The "Does F16 pay here?" subsection now names its build
+(`build/rel-dgx-spark`) in the sentence that first quotes frame counts,
+matching the Q5_K_MIXED subsection's own "same workload, same tree" framing.
+"2.71x shorter" (a duration) is now "2.71x faster" (a rate). And "F16 alone
+recovers roughly two-thirds of what Q8_0 buys" -- a ratio of speedup
+multipliers (2.870 / 4.4926 = 0.639) that understates F16's own contribution
+-- is replaced with the two framings that measure it directly: **87%** of
+Q8_MIXED's wall-clock time saved (12.18 s of 13.99 s) and **84%** of its
+RTF-point improvement (3.08 of 3.68 points), both with the subtraction shown.
+
+Re-ran `scripts/ci/clang-format.sh --check-diff` (clean) and confirmed
+`git status --porcelain` clean after this round. No measurement, table
+value, or arithmetic result changed -- every fix is in what the numbers were
+cited from or said to mean, matching the class of finding Tasks 2 and 3 each
+hit in their own fix rounds.
+
+## Stage 3: VoiceDesign Package, Plan 3 Task 6
+
+What CUDA buys this variant end to end, on Task 5's own fixed workload,
+reused verbatim for comparability. The design spec's expectation, with its
+reasoning: Stage 1's placement puts the codec decoder on the device and holds
+the autoregressive half on the CPU by the discrete-outputs rule; this
+variant's talker parameters run 3.2x larger than Base's per layer -- 15.73 M
+-> 50.33 M, attention 6.29 M -> 12.58 M and MLP 9.44 M -> 37.75 M, at an
+unchanged 28 layers (design spec D7,
+`docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md:227-229`) --
+so the AR half's share of wall clock grows, and CUDA's end-to-end gain is
+expected **smaller than Base's ~6%, not larger**. A smaller gain would
+confirm the model, not undermine it.
+
+### What CUDA reaches on this variant, before any number
+
+Unlike Base, this variant introduces no new graphs at all -- no
+reference-audio path, so no ECAPA speaker encoder and no codec encoder for
+ICL enrollment. It is Stage 1's own graph set (text frontend, talker, codec
+decoder) at the 1.7B talker's width. There is therefore no placement
+*decision* to make here, only a measurement of the one Stage 1 already made.
+
+This variant's tolerance grid tracks exactly two stages, and only one of them
+can move:
+
+| stage | does a CUDA run measure anything different? | why |
+| --- | --- | --- |
+| `public` | **yes** | the Stage 1 codec-decoder twin moves under `SYNTH_BACKEND_CUDA`, the same twin Base's own `public` cell exercises -- this variant's `synth_model_load` puts the same graph on the device |
+| `replay` (`prefill` probe only) | **no** | `tests/qwen3_tts_voicedesign_prefill_real.cpp:289` calls `ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)` directly, so today's driver has no backend argument to pass -- but the deeper reason a backend argument would not help is `src/arch/qwen3-tts/model.cpp:573-585`: the device-mirroring loop only copies tensors whose name starts with `codec.decoder.` (14 characters, `strncmp` at `:584`), so the talker's own weights are never mirrored onto the device at all. The prefill graph runs entirely on the talker, so it has no device-side weights to run against regardless of what the driver requests |
+
+One of this variant's two tolerance stages exercises CUDA, not Base's one of
+three -- fewer stages exist here because there are fewer graphs to begin
+with, not because more of them were declined.
+
+### The measurement: CPU vs CUDA, Task 5's fixed workload, same tree
+
+Every figure below comes from `build/rel-dgx-spark`, unchanged since Task 5's
+own measurement: the runner binary predates Task 5's first commit
+(`build/rel-dgx-spark/bin/synthesize-qwen3-tts-public-real` timestamped
+05:51:30, Task 5's own commit `f849f40` at 06:06:37 the same morning) and
+Task 5's fix round (`26609b2`) touched only prose, so the tree this task
+measures against is the one Task 5 already measured against, not a
+reconfigured one.
+
+**CPU was re-measured rather than reused.** Task 5's own CPU BF16 median was
+19.3006 s (n=3). This task's own CPU BF16 median, gathered fresh in the same
+session as the CUDA runs below (n=8: five untimed plus three wrapped in
+`/usr/bin/time -v` for peak RSS), is **18.9220 s** -- about 1.9% lower, inside
+the run-to-run variance Task 5's own report already characterized (spread
+under 2.4% within a profile) but large enough that pairing the CPU baseline
+with the CUDA measurement from the same sitting removes any session-to-session
+host drift as a possible confound in the backend comparison that follows.
+Task 5's figure is not used below; this task's own paired measurement is.
+
+```
+printf '%s' "This is a test of Qwen three T T S voice design synthesis." | \
+  build/rel-dgx-spark/bin/synthesize-qwen3-tts-public-real \
+  models/qwen3-tts-12hz-1-7b-voicedesign/qwen3-tts-12hz-1-7b-voicedesign-BF16.gguf \
+  <out.pcm> \
+  "desc:A cheerful, bright female voice speaking with fast pacing and high energy." \
+  en 7 983040 <cpu|cuda> 10
+```
+
+| profile | backend | frames | audio | synthesis | **RTF** | load | peak RSS | n |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| BF16 | CPU | 97,920 | 4.080 s | 18.92 s | **4.64** | 2.29 s | 4.95 GiB | 8 |
+| BF16 | CUDA | 97,920 | 4.080 s | 17.76 s | **4.35** | 2.37 s | 4.95 GiB | 8 |
+
+Medians. Frame counts are byte-identical across all sixteen runs -- unlike
+this plan's own named risk (the AR stop decision can move between CPU and
+CUDA numerics), that risk did not materialize on this workload, so no
+RTF-adjustment for differing audio length is needed here: both rows describe
+the same 4.080 s of audio. Peak RSS medians of the three `/usr/bin/time -v`
+runs per backend (CPU 5,185,860 KiB, CUDA 5,186,428 KiB -- a 0.011%
+difference, not material) both round to the same 4.95 GiB Task 5 already
+reported for this profile on CPU, a cross-check that this session's CPU
+measurement is the same population as Task 5's. Synthesis-time spread stayed
+under 2.4% for CPU (2.30%) and under 4.6% for CUDA (4.59%) -- wider than
+CPU's own but nothing like a contention signature (no run doubled, unlike
+Base's Task 14 discards), so no run was discarded.
+
+### The gain, arithmetic shown
+
+**18.92 s -> 17.76 s and RTF 4.64 -> 4.35**, which divide out to
+(18.92 - 17.76) / 18.92 = **6.13%** and (4.64 - 4.35) / 4.64 = **6.25%** using
+the table's own rounded figures -- the two percentages differ from each
+other only because of that rounding. Base's own family-record text -- the
+"CUDA buys about 6 % and that is the expected amount" paragraph above --
+records its own pair the same way, at one decimal
+place: "11.60 s -> 10.85 s ... RTF 3.15 -> 2.95 -- 6.5 % and 6.3 %
+respectively". The design spec's own erratum commits the same pair at two
+decimal places instead, verbatim:
+"11.60 s -> 10.85 s and RTF 3.15 -> 2.95, which divide out to 6.47% and
+6.35%" (`docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md:637`)
+-- both roundings of the same unrounded quotient are committed in this tree,
+one decimal place in the family record and two in the design spec, and the
+task brief's own "6.47% and 6.35%" citation is the spec's figure, not a
+fabrication. The precise, unrounded medians for this task -- 18.9220 s and
+17.7564 s (n=8 each) -- give **6.16%** as a reduction against the CPU
+baseline, `(CPU - CUDA) / CPU`, and RTF's own unrounded pair, 4.6377 ->
+4.3520, gives the identical **6.16%** under that same operation. (Dividing
+CPU by CUDA instead gives 1.0656 for both pairs -- a 6.56% throughput
+increase, a different quantity from the one reported here. This sentence
+read "divide to 6.16%" and "divides to the identical 6.16%" until
+2026-08-20, naming the wrong operation for the right number.) The agreement
+between the two pairs is not a coincidence but
+an algebraic identity, since both backends produced the same 97,920-frame,
+4.080 s audio for this workload, so RTF's shared denominator cancels and the
+two percentages restate one fraction rather than measuring two independent
+things that happen to agree.
+
+**Confirms the smaller-than-Base's-~6% prediction, narrowly.** 6.16% here
+against Base's own 6.47%/6.35% unrounded (6.5%/6.3% as the family record
+displays them, in its "CUDA buys about 6 % and that is the expected amount"
+paragraph) is smaller, in the direction the
+design spec's reasoning predicted -- but by about 0.2-0.3 percentage points,
+not by the large margin a literal reading of "the talker's per-layer
+parameters run 3.2x larger, so its share of wall clock grows 3.2x" might
+suggest. Stated plainly: the direction is right: **smaller, not larger**,
+but the model's single stated mechanism (AR share growing) does not by
+itself explain why the margin is this narrow.
+
+**Why the margin is narrow, not large -- inferred from a source-read fact,
+not independently re-derived.** The codec decoder -- the only graph CUDA
+moves here -- is byte-identical between **Base** (the variant this task's
+gain is measured against) and VoiceDesign: 255 tensors, 457,161,476 bytes,
+same shapes, in both (`gguf.GGUFReader` against the `codec.decoder.*`
+prefix -- one level up from an earlier draft of this paragraph, which named
+`codec.decoder.decoder.*` and thereby described only 118 of these 255
+tensors and 209,480,452 of these 457,161,476 bytes, a nested
+weight-normalized-conv submodule rather than the whole decoder; the reported
+counts were always the full-prefix ones, only the selector's own name was
+wrong). `codec.decoder.` (14 characters) is also the exact prefix
+`src/arch/qwen3-tts/model.cpp:584` mirrors onto the device, so this is the
+same tensor set the runtime twin actually moves. Re-hashed for this fix
+round rather than trusted from shape/size agreement alone: sha256 over
+tensor name and data for every `codec.decoder.*` tensor is
+`42772743b165...` identically across **all three** committed BF16
+packages -- CustomVoice, Base and VoiceDesign -- so the codec decoder is one
+shared, unmodified artifact across the whole family, not merely matched
+between the two variants this paragraph compares.
+
+The 3.2x figure this section opened with is a talker-parameter-count fact
+(design spec D7, `docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md:227-229`
+-- talker parameters per layer, 15.73 M -> 50.33 M) and does not touch the
+codec decoder at all. If the codec decoder's own per-frame cost -- and
+CUDA's saving from it -- tracks frame count rather than talker size, and
+this workload's frame counts are close between the two variants' own
+fixed-workload measurements (97,920 here against Base's 88,320, +10.9%),
+then the CUDA-accelerated numerator changes only a little between variants
+while the AR-dominated wall-clock denominator grows -- which points toward a
+small negative move in the percentage, not a large one. This is inferred
+from the tensor-identity finding and the two variants' own frame counts;
+this task did not isolate the codec decoder's own wall-clock cost in either
+build the way Stage 2 Plan 4 Task 12 isolated the speaker and codec
+*encoders*, so the size of the narrowing is not independently confirmed the
+way the direction is.
+
+### Structural agreement: CPU and CUDA disagree in bytes, as TF32 predicts
+
+Two independent pieces of evidence, both measured this task, not asserted:
+
+- `scripts/validate-qwen3-tts-public.py --backend cuda --profile BF16` against
+  the same two descriptions the CPU `public` cell already uses ("A cheerful,
+  bright female voice speaking with fast pacing and high energy." / "A deep,
+  calm male voice speaking slowly and quietly.", text `"Hi."`, its own
+  default): **all 11 checks pass, 3 skipped** for the same
+  `description_text`-package reasons the CPU cell already records -- one of
+  the eleven (the empty-instruct-vs-oracle relation) passes through the
+  `replay` stage's own CPU-only prefill-probe figure rather than recomputing
+  anything under CUDA, identically to how the CPU cell reports it. Seed 7's
+  own digest differs from the CPU cell's -- `dcc9279c69679412` (CUDA) against
+  `5e772fc5cc8b2a90` (CPU), reports at
+  `reports/validate/qwen3-tts/public-voicedesign-BF16-cuda.json` and
+  `reports/validate/qwen3-tts/public-voicedesign.json` -- which is what says
+  the request actually reached the device, the same shape Base's own Task 13
+  recorded.
+- On Task 5's own fixed workload (a different case from the validator's
+  `"Hi."` one, deliberately, so the agreement figure is not read off the same
+  text the structural checks used): comparing this task's own CPU and CUDA
+  seed-7 PCM output sample-for-sample (both 97,920 frames), **cosine
+  0.9999988, max_abs 0.002414**. That is on the ~1e-3 TF32-deviation scale
+  `docs/backends.md` predicts for a CUDA F32 matmul, and it is *not* the same
+  number as Stage 1's own `audio.pcm` CUDA-vs-CPU figure (cosine 0.999404,
+  max_abs 0.1602, a different package and a different case) -- cited here for
+  the same shape of comparison, not as an equal one.
+
+### The tolerance file: no CUDA sub-grid, for the same structural reason as Base
+
+`tests/python/test_tolerance_coverage.py`'s per-backend check
+(`:152-158`) requires any `backends.CUDA` sub-grid to carry the profile's
+full stage set exactly -- for this variant, {`public`, `replay`}. `replay`'s
+only probe is structurally CPU-only (previous section), so a `replay` cell
+under a `CUDA` key could only ever hold `replay`'s own CPU numbers copied
+over -- exactly the "recording CPU figures under a CUDA key" outcome Base's
+own Task 13 declined for the same coverage rule.
+
+**The sub-grid is therefore not committed.** `tests/tolerances/qwen3-tts.json`
+gains no `backends` key on any `qwen3-tts-12hz-1-7b-voicedesign` profile; a
+short paragraph was appended to the variant's own `note` field pointing here
+and at `docs/backends.md`'s own recorded-absence subsection for this variant.
+
+**No CUDA threshold was derived**, matching Base's own "nothing here needed
+one" reasoning, and for a simpler reason than Base's own: Base still had to
+say a threshold for a *hypothetical* future `codec_encoder` CUDA cell was
+not owed here (its declined speaker/codec-encoder twin might someday be
+revisited). This variant has no comparable third graph -- Step "What CUDA
+reaches" above exhausts its graph set at `public`'s codec decoder and
+`replay`'s prefill probe -- so there is no hypothetical cell to pre-derive
+a threshold for either. The cosine and max_abs figures measured above are
+recorded as evidence that the placement moves the audio, not as an input to
+any committed gate.
+
+### What is not claimed
+
+One machine, one workload, one build tree, one profile (BF16). F16,
+Q8_MIXED and Q5_K_MIXED were not measured under CUDA in this task -- Task 5
+already measured their CPU speed, and this task's own brief pins its Step 2
+command to `--profile BF16`, not a full profile x backend cross.
+No listening judgement is implied: a numeric agreement figure and an RTF
+number are not audible evidence, and no VoiceDesign CUDA listening comparison
+has run. No publication conclusion is drawn, and no movement of the
+Validation Level is claimed -- `quality_evaluation` stays deferred per
+ADR 0017.
+
+### Verification
+
+- No production code touched -- this task's diff is prose in this file and
+  in `docs/backends.md`, plus one appended paragraph in the
+  `qwen3-tts-12hz-1-7b-voicedesign` variant's own `note` field in
+  `tests/tolerances/qwen3-tts.json` (no tolerance cell, no `backends` key
+  added; round-tripped through `json.load`/`json.dumps(indent=2)` before
+  editing to confirm the file's existing formatting survives an
+  edit-and-reserialize).
+- Full unit gate, `build` tree (`SYNTH_BUILD_INTEGRATION_TESTS=ON`,
+  `CMAKE_BUILD_TYPE=Release`): the same two pre-existing, not-ours failures
+  (`synthesize-python-api-wheel-test`, `synthesize-vits-python-unit`'s sole
+  error `test_quantization_reports_match_current_artifacts`). No third.
+- `scripts/ci/clang-format.sh --check-diff`: clean (only `.md`/`.json`
+  changed).
+- `git status --porcelain` checked before staging: no `.gguf`, `.pcm` or
+  `/usr/bin/time` log staged; all scratch files for this task live under
+  `/tmp/qwen3-tts-task6/`, outside the worktree.
+
+### Fix round 1 (review response)
+
+Spec passed; code quality review found four Important and five Minor
+findings, all in prose -- the reviewer mutation-tested the coverage rule
+(confirmed a `public`-only `backends.CUDA` sub-grid fails
+`test_measured_families_cover_every_profile_backend_and_stage`), reproduced
+the CPU/CUDA runs within 1.15%/0.24% of this task's own medians, and
+reproduced the PCM cosine to seven decimal places. No measurement, table
+value, or arithmetic result changed in this round -- every fix is in what a
+number was cited from or said to mean, or a fact was attributed to the wrong
+selector or the wrong sibling package. Four Important findings, all
+addressed:
+
+1. **A fabricated quotation.** "this task's own brief scopes to 'at least
+   BF16'" put quote marks around a phrase that appears nowhere in the brief.
+   Replaced with what the brief actually does: its Step 2 command pins
+   `--profile BF16`.
+2. **The tensor-identity selector's own name didn't match its own numbers.**
+   The reported 255 tensors / 457,161,476 bytes are correct for
+   `codec.decoder.*` (the exact 14-character prefix
+   `src/arch/qwen3-tts/model.cpp:584` mirrors) but the prose named the
+   selector `codec.decoder.decoder.*`, a nested submodule that is only 118
+   of those tensors and 209,480,452 of those bytes -- confirmed by re-running
+   both selectors. The selector's name is fixed; the numbers were already
+   right.
+3. **Byte-identity proven against the wrong sibling.** The paragraph
+   explaining why the CUDA gain is close to Base's own compared VoiceDesign
+   against CustomVoice, not Base -- the variant this task's gain is actually
+   measured against. Re-hashed `codec.decoder.*` (tensor name and data,
+   sha256) across all three committed BF16 packages this round:
+   `42772743b165...` identically in CustomVoice, Base and VoiceDesign, so
+   the paragraph now states the identity against Base directly and cites the
+   three-way match.
+4. **"3.2x larger" cited to a line that records 2x.** Two citations pointed
+   at this file's architecture sketch line "hidden 1024 (0.6B) | 2048
+   (1.7B)" (a 2x fact) for the 3.2x
+   figure and called it "a talker-hidden-size fact". The real source is
+   design spec D7
+   (`docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md:227-229`):
+   talker parameters per layer, 15.73 M -> 50.33 M, a factor that comes from
+   attention (2x) and MLP (4x) scaling together, not hidden size alone.
+   Re-cited to D7 throughout; no longer called a hidden-size fact.
+
+Five Minors, all addressed: the brief's "6.47%/6.35%" is not a fabrication --
+the design spec's own erratum (`...design.md:637`) commits that exact pair
+verbatim, two decimal places where the family record's own text
+(its "CUDA buys about 6 % and that is the expected amount" paragraph)
+carries one (6.5%/6.3%); both are real citations
+to different committed documents, and the paragraph now says so instead of
+calling the brief's figure something the tree doesn't contain. The tolerance
+JSON's "as Base's own declined sub-grid above" pointed at this file, where
+Base's own entry records no such decline -- repointed to
+`docs/backends.md`'s "qwen3-tts-12hz-0-6b-base carries no CUDA sub-grid, on
+a measurement" section and this file's "The Base variant carries no CUDA
+sub-grid" section, where it actually lives.
+Both docs' `replay`-immobility explanation now cites the deeper structural
+fact, `model.cpp:573-585`'s device-mirroring loop copying only
+`codec.decoder.`-prefixed tensors (so the talker has no device-side weights
+regardless of what any driver requests), alongside the pre-existing
+driver-hardcoding fact. `docs/backends.md`'s "11 of 11 applicable checks
+pass" now notes that one of the eleven reuses a CPU-only prefill-probe
+figure rather than recomputing anything under CUDA (this file's own parallel
+sentence gained the same clause). Task 5's own BF16 CPU table row (19.30 s /
+RTF 4.73) now carries a forward pointer to this task's later re-measurement
+(18.92 s / RTF 4.64, same profile, later session), since Task 8 reads the
+card off these tables and would otherwise see two disagreeing rows with no
+signpost between them.
+
+Re-ran `scripts/ci/clang-format.sh --check-diff` (clean) and the full unit
+gate (98/106, same two pre-existing failures, no third) after this round.
+
+## Stage 3: VoiceDesign Package, Plan 3 Task 7
+
+**The VoiceDesign listening audit, in two halves weighted differently.
+Listener: jiangzhuo, count 1, 2026-08-20.** Delivered as two private claude.ai
+artifact pages (blind A/B and labelled description control, separate pages so
+the labelled half cannot masquerade as blind); verdicts returned as JSON and
+quoted verbatim at the end of this section.
+
+### Half one: blind A/B, quantization and backend regression (strong evidence)
+
+**Verdict: `no_obvious_regression` -- all four pairs "indistinguishable".**
+
+| # | comparison | A/B assignment (unblinded from the manifest after the verdicts) | verdict |
+| --- | --- | --- | --- |
+| 1 | BF16 vs F16, CPU | A=BF16, B=F16 (not swapped) | indistinguishable |
+| 2 | BF16 vs Q8_MIXED, CPU | A=Q8_MIXED, B=BF16 (swapped) | indistinguishable |
+| 3 | BF16 vs Q5_K_MIXED, CPU | A=BF16, B=Q5_K_MIXED (not swapped) | indistinguishable |
+| 4 | BF16 CPU vs BF16 CUDA | A=CPU, B=CUDA (not swapped) | indistinguishable |
+
+Every verdict being "indistinguishable", the A/B positions carry no
+interpretive weight; they are recorded so the audit is reconstructible.
+
+**Method.** Clips generated from `build/rel-dgx-spark`
+(`CMAKE_BUILD_TYPE=Release`, confirmed in the tree's CMakeCache before
+generation) on the family workload: text "This is a test of Qwen three T T S
+voice design synthesis.", description "A cheerful, bright female voice speaking
+with fast pacing and high energy.", language en, seed 7, threads 10. The
+public-seam runner writes raw little-endian float32 mono at 24,000 Hz
+(established from `tests/qwen3_tts_public_real.c`'s own `write_pcm`, not
+assumed); clips were wrapped to 16-bit PCM WAV and verified decodable before
+any page was built. **Every pair was verified to differ in bytes before anyone
+listened** -- a byte-identical pair would produce a meaningless
+"indistinguishable" -- with common-prefix max-abs sample differences of 0.7996
+(pair 1), 0.7056 (pair 2), 0.8519 (pair 3): large because the autoregressive
+paths diverge and the waveforms desynchronize, not because either side is
+degraded. Pair 4's clips are same-length with max-abs 0.002414 and cosine
+0.9999988, reproducing Plan 3 Task 6's own CPU-vs-CUDA measurement exactly.
+A/B positions were shuffled by per-pair coin flip from recorded seed 20260820;
+the key was withheld from the page and the listener, and lives in the
+gitignored `build/listening-voicedesign/manifest.json` beside the clips.
+
+**Two disclosed limitations.** First, the four profiles stop at different
+lengths on this build -- 4.080 s (BF16), 4.320 s (F16), 5.040 s (Q8_MIXED),
+4.000 s (Q5_K_MIXED), Release figures, never invariants -- so pairing identity
+can in principle leak through duration; the page disclosed this and instructed
+"judge on sound, not on duration", and trimming or padding was rejected because
+altered audio would defeat the audit. Second, a caveat line in the generated
+page originally named Pair 4's identity ("CPU vs CUDA, same profile"); it was
+found in a pre-delivery check and removed BEFORE the listener saw the page.
+All four pairs were delivered blind as to IDENTITY -- no profile, backend or
+pair identity appears in the visible text -- with one structural hint
+remaining that rewording cannot remove: the audio players display durations,
+so a listener can see which single pair shares a length.
+
+### The Q5_K_MIXED result, separately
+
+Pair 3 carried the profile that **fails its numerical gate** -- Plan 3 Task 4
+measured the replay cases at 0.031029 and 0.030366 against the 0.01 bound, headroom 0.32x --
+included in the blind half by jiangzhuo's ruling of 2026-08-20, unlabelled like
+every other pair, precisely to ask the question the numbers cannot answer:
+does a 3x tolerance breach audibly manifest? On this clip it did not: blind,
+Q5_K_MIXED was indistinguishable from BF16.
+
+What that establishes, at its actual strength: the 0.01 prefill bound is
+conservative relative to audibility **at this margin, on one clip, one
+sentence, one seed, one listener**. It is a data point about the gate's
+calibration, not a recalibration. Task 4's do-not-publish recommendation is
+unchanged by the audit itself; whether an inaudible breach changes the
+publication decision is jiangzhuo's call at Task 8, exactly as the ruling
+reserved it.
+
+### Half two: description control (labelled, weak evidence, recorded as weak)
+
+**Verdict: "yes, in the described direction."** Same sentence, same seed, BF16
+on CPU, two descriptions differing in a stated direction -- "A cheerful,
+bright female voice speaking with fast pacing and high energy." against "A
+deep, calm male voice speaking slowly and quietly." -- each clip labelled with
+its full description. This half is labelled because the label is the question;
+it is weak evidence and is recorded as weak.
+
+The design's own standing rule -- if descriptions do not control the voice in
+any recognizable way, the honest output is a recorded negative, not a
+published package -- **does not trigger**.
+
+### What this audit does and does not move
+
+`listening_audit: no_obvious_regression` is what Task 8's card carries for the
+quantization half, with `listening_audit_detail` (profiles, listeners, method,
+dates) filled from this section and the description control recorded beside it
+at its stated strength. The weak half also has one objective datum worth
+carrying: the deep/calm/slow description produced 6.160 s (147,840 frames,
+Release build) against the bright/fast description's 4.080 s -- 51% longer,
+directionally consistent with "speaking slowly" -- though the manifest carries
+no structured entry for the control clips, only the two description strings. Neither half moves `quality_evaluation` off `not_run` (ADR
+0017) or changes any Validation Level. Task 5's ship-F16 recommendation had
+two open gates; this audit closes the blind-A/B one for F16 (pair 1,
+indistinguishable). Publication remains a separate act requiring jiangzhuo's
+confirmation, naming the target repository.
+
+**Verbatim verdicts as returned, 2026-08-20:**
+
+```json
+{"pair1": {"verdict": "indistinguishable", "notes": ""},
+ "pair2": {"verdict": "indistinguishable", "notes": ""},
+ "pair3": {"verdict": "indistinguishable", "notes": ""},
+ "pair4": {"verdict": "indistinguishable", "notes": ""}}
+```
+
+```json
+{"verdict": "yes, in the described direction", "notes": ""}
+```
+
+## Stage 3: VoiceDesign Package, Plan 3 Task 8
+
+Ship-prep, and the plan's last task: a card spec, a model page, and the two
+docs closures this section records. **Artifacts prepared. Nothing
+uploaded.**
+
+### The roster, and the shape this family had never recorded before
+
+`scripts/hf_cards/qwen3-tts-12hz-1-7b-voicedesign.yaml` ships **all four**
+profiles: `BF16`, `F16`, `Q8_MIXED` and `Q5_K_MIXED`. `Q5_K_MIXED` fails its
+own `replay`-stage tolerance gate roughly 3x over the committed 0.01 bound
+(Task 4) and was blind-indistinguishable from `BF16` on one clip (Task 7),
+and both facts are recorded at their own strength -- a real gate failure on
+reproducible numbers; a weak, single-clip audio data point about the gate's
+conservatism, not a recalibration of it -- in the card's own rendered
+Downloads section, so a reader meets the breach and the ruling together.
+
+**CLOSED 2026-08-20 (PR #16): jiangzhuo ruled that `Q5_K_MIXED` ships.**
+This passage read "`Q5_K_MIXED` ... is absent from `quants:` and named in a
+`downloads_note` as measured-and-not-shipped", and closed with "Whether
+jiangzhuo revises the recommendation after reading the audit is still open;
+nothing here decided it, per the dispatch's own conservative default." That
+question is now decided, in the direction of shipping, on the audit. The
+measurement is untouched -- `gate_passed` remains `false` in
+`tests/tolerances/qwen3-tts.json`, headroom remains 0.32x -- and Task 4's
+do-not-publish recommendation is retained as history in
+`docs/quantization.md` under that document's supersede-don't-rewrite
+convention. **This is the project's first profile published over a failing
+numerical gate.**
+
+CustomVoice's own published card
+(the `quants:` block of
+`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml`,
+`BF16`/`F16`/`Q8_MIXED`) still omits `Q5_K_MIXED` entirely -- the gap
+Task 4 tracked as an open item, unchanged by this ruling and still not fixed
+here, since that card is already published and re-publishing it is its own
+outward act. What did change is that this card no longer supplies a
+measured-and-not-shipped template for that gap to copy; see the open item
+itself for the corrected cross-reference.
+
+### Digests, computed directly against the four packages on disk
+
+`sha256sum` against `models/qwen3-tts-12hz-1-7b-voicedesign/*.gguf` -- no
+other place in the tree records these:
+
+| profile | bytes | sha256 |
+| --- | ---: | --- |
+| BF16 | 4,295,891,904 | `d0af76177b5d2e2cdbd39b5deae7b4493f89990f372055e932b3b6877c295524` |
+| F16 | 4,296,175,040 | `5a6f52d3bc48bdd46527b675edcfec5aff0e800a463181b82faa17e94dcb1465` |
+| Q8_MIXED | 2,499,423,680 | `f8540471d2d7a9b353bd5c6d165e9caaf9bed3b90a20a4ec8fe410f993fdf92a` |
+| Q5_K_MIXED (measured, not shipped) | 1,780,723,136 | `a47479d90a61a32e7b2fb5f6b8bd3d47405aac1cc98cf278ab3fc0c2d1c282bb` |
+
+All four byte counts match this document's own Task 2-4 tables exactly. The
+card generator's own `validate_artifacts` (`scripts/hf_cards/generate.py`)
+re-checks the three shipped digests against the same files at render time,
+so a future re-cut that changes any of them fails the render rather than
+silently going stale.
+
+### A found-but-uncorrected discrepancy: `token_ids` is not declared, here or on the two published cards
+
+Checking this variant's own `capabilities.input_kinds` against its GGUF
+metadata directly (`synthesize.capabilities.input_flags`, read from the raw
+GGUF key-value bytes rather than assumed) found `1`
+(`SYNTH_INPUT_SUPPORT_TEXT_UTF8` only) on all three shipped VoiceDesign
+files. `scripts/convert-qwen3-tts.py:669` confirms why: it writes
+`INPUT_TEXT_UTF8` unconditionally, with no family-wide or per-variant path
+that also sets `SYNTH_INPUT_SUPPORT_TOKEN_IDS`. `src/synthesis-request.cpp:162-170`
+refuses a token-ID request whenever that bit is unset. This card therefore
+declares `input_kinds: [text_utf8]` alone.
+
+**The same check against Base's genuinely-published `F16` and `Q8_MIXED`
+files, and CustomVoice's genuinely-published `BF16`, returns the identical
+`input_flags = 1`.** Base's own local `BF16` is deliberately excluded from
+this check: it is the 2026-08-18 re-cut this document's own Status
+paragraph records above (sha256 `76275beb...` against the published
+`993f4cd1...`), re-confirmed for this check by re-hashing the local file
+and comparing against the `sha256:` line of the BF16 entry in
+`scripts/hf_cards/qwen3-tts-12hz-0-6b-base.yaml`'s `quants:` block, its
+committed digest -- they disagree, so the local file does not speak to what
+is actually live. Base's `F16` (`e7484194...`) and `Q8_MIXED` (`808667ae...`)
+are unchanged since 2026-08-17 and match their own card's committed digests
+exactly, confirmed the same way; CustomVoice's local `BF16` (`01dfad52...`)
+likewise matches its card's committed digest. Yet both families' published
+cards (`scripts/hf_cards/qwen3-tts-12hz-0-6b-base.yaml`,
+`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml`) declare
+`input_kinds: [text_utf8, token_ids]`. Either those two cards have
+overclaimed a capability their own packages never had, or `token_ids`
+reaches this family through some path this task did not find. Not resolved
+here -- both cards are already published, correcting them is its own
+outward act, and this task's file list does not reach either one. Left as
+an open item for whoever next touches either card, or the family's own
+input-flags handling.
+
+**The missing mechanism, named rather than built.** `scripts/hf_cards/generate.py`'s
+`validate_artifacts` re-verifies each quant's size and sha256 against the
+real GGUF at render time, but nothing in the generator cross-checks a
+spec's declared `capabilities.input_kinds` against the package's own
+`synthesize.capabilities.input_flags` metadata -- the discrepancy above
+would render silently on any card, on any family, with no failure anywhere
+in the pipeline. A `validate_artifacts` extension that reads this key
+(the same raw-bytes read this task used by hand) and compares it against
+the declared `input_kinds` would have caught this at generation time
+instead of by manual inspection. Not built here -- named as a real gap, not
+implemented.
+
+Two more gaps of the same shape, found by this plan's final whole-branch
+review and likewise named rather than built. First:
+`validation.replay_duration_exact` -- the opt-in field this task added so the
+shared card template stops rendering "Duration structure was exact in every
+case" onto variants whose records do not support it -- is UNGUARDED on the
+two cards whose records do: deleting the field from
+`qwen3-tts-12hz-0-6b-base.yaml` or `...customvoice.yaml` fails no test
+(verified by mutation; the other four cards are caught only incidentally, by
+tests keyed to gitignored local READMEs), so a published card could silently
+lose a true sentence on its next regeneration. Second: line-number citations
+between documents this project edits have now produced five separate defect
+rounds on this branch alone (nineteen stale at the final review, plus the
+:210/:219 and :585/:584 rounds caught by hand) -- a checker that resolves
+each `doc:line` citation and asserts the cited line carries a quoted anchor
+would have caught every one at commit time. Both are generator/CI work, out
+of this plan's file list.
+
+### A ratio that does not survive a baseline swap: `F16`'s speedup against which `BF16`
+
+Task 5 computed `F16`'s speedup as 2.87x against its own n=3 `BF16` pass
+(RTF 4.7305). Task 6's later, paired n=8 `BF16` re-measurement (RTF 4.6377)
+is the one "Stage 3: VoiceDesign Package, Plan 3 Task 6" instructs this task
+to read the table from -- but `F16` itself was never re-measured, so
+pairing the newer `BF16` row with the unchanged `F16` figure and still
+calling it "2.87x" would quote a number computed from a `BF16` figure this
+card's own table no longer carries. Recomputed: 4.6377 / 1.6482 = **2.81x**,
+about 2% lower, consistent with the ~1.9% drop Task 6 already characterized
+between its own paired `BF16` pass and Task 5's. Both figures are real,
+from the same tree, computed at different times against different `BF16`
+passes; the card and this variant's `docs/quantization.md` section state
+"roughly 2.8x" and, where the earlier 2.87x figure is cited for its own
+sake, say plainly which `BF16` pass it was computed against.
+
+### Docs closures
+
+`docs/quantization.md`'s VoiceDesign row set (`F16`, `Q8_MIXED` RTF and peak
+RSS) was filled from Tasks 5 and 6, replacing three "not measured (Task 5)"
+placeholders and the one "forbidden to this task" `Q5_K_MIXED` cell; its
+top `Status:` paragraph gained a sentence naming this variant. Its
+Publication section's "No Base package is published" line was stale -- the
+Base variant published 2026-08-17, recorded in that variant's own card and
+in this document's own Status paragraph above -- and this task's own brief
+(Step 5) named it directly and asked for the fix. This task's dispatch
+separately claimed the line "was already corrected in an earlier plan" and
+asked for verification rather than trust; reading the file found the claim
+false -- the line was still stale at the moment this task started -- so it
+is corrected here, naming the date it became untrue, matching what the
+brief asked for from the start.
+
+### Verification
+
+- `uv run --script scripts/hf_cards/generate.py scripts/hf_cards/qwen3-tts-12hz-1-7b-voicedesign.yaml --stdout`: exits 0, `validate_artifacts` passes against the four real files on disk.
+- `tests/python/test_hf_card_generator.py` gained one regression test
+  (`test_qwen3_tts_voicedesign_ships_three_profiles_and_names_q5_k_mixed_as_not_shipped`),
+  registered by the file's own `unittest discover`, not by name in any
+  CMake list -- confirmed by running the module directly:
+  `uv run --project scripts/envs/vits --locked python -m unittest
+  tests.python.test_hf_card_generator -v`, 49 tests: 46 passed (the fix round's three new `replay_duration_exact` tests moved this from 46/43), 1
+  pre-existing error (`test_quantization_reports_match_current_artifacts`,
+  unrelated to this variant), 2 skipped (OmniVoice, not materialized in
+  this worktree).
+- `scripts/ci/clang-format.sh --check-diff`: clean -- this task's diff is
+  `.yaml`, `.md` and one `.py` test file, nothing `clang-format` touches.
+- Full unit gate: the same two pre-existing, not-ours failures
+  (`synthesize-python-api-wheel-test`,
+  `synthesize-vits-python-unit`'s sole error
+  `test_quantization_reports_match_current_artifacts`). No third.
+- `git status --porcelain` checked before staging; nothing under `models/`
+  or `build/` staged.
+
+### Completion gate, met
+
+The audit is recorded, both halves, at their stated strengths. The
+artifacts are prepared: three cuts measured, cells filled, card rendered,
+model page written. **Upload awaits separate confirmation and has not
+happened** -- nothing in this task pushed anything to
+`jiangzhuo9357/qwen3-tts-12hz-1-7b-voicedesign-gguf` or any other
+repository.
 
 ## Open Questions for Intake
 

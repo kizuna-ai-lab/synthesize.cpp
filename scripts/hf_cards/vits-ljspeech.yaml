@@ -64,6 +64,37 @@ validation:
   implementation_revision: workspace-snapshot-2026-07-27
   cases_per_stage: 12
   stages: 7
+  # Set 2026-08-20 (Task 8 fix round), KEPT under PR #16's review after
+  # re-derivation, with the citation corrected. The review challenged this
+  # field on two sibling cards and both were removed; this one survives the
+  # same stricter reading, but the original citation did not.
+  #
+  # The claim is about GENERATED duration structure across all 12 cases, and
+  # for this family it is exactly that. The oracle replays only the noise
+  # (duration_noise.f32, latent_noise.f32); the port still runs its own
+  # stochastic duration predictor and its own ceil. The continuous precursor
+  # genuinely drifts -- docs/porting/families/vits.md's worst-observed table
+  # records duration.logw at 1.7452985e-5 -- while duration.w_ceil,
+  # duration.y_length and duration.attention all land exact. The claim is
+  # falsifiable and HAS been falsified: vits.md records that with the FP32
+  # gate removed, CUDA ceiled one token differently on the 315-token
+  # ljs-long case, moving the frame count by exactly one 256-sample hop.
+  #
+  # CITATION CORRECTED. This comment previously cited docs/quantization.md's
+  # "12/12 duration structures preserved", which is the weakest available
+  # source: it sits under "## VITS Q8_MIXED Profile", so it scopes to one
+  # profile; it names neither variant, covering both only by inference from
+  # the preceding paragraph; and "preserved" means preserved-under-
+  # quantization (against the F32 package), not exact-against-the-oracle,
+  # which is what the rendered sentence says. The direct sources are
+  # docs/porting/families/vits.md's LJSpeech section ("Duration structure is
+  # exact on every platform", F16 and Q8_MIXED, all seven 12-case stages),
+  # its F32 worst-observed table (w_ceil / y_length / attention "all exact |
+  # 0 | 0"), its CUDA section ("structural_exact across all twelve cases"),
+  # and docs/quantization.md's F16 domain note, which does name both
+  # variants: "restores exact duration structure in all 12 port-validation
+  # cases for both current VITS variants".
+  replay_duration_exact: true
   columns:
     - key: cpu_pcm_max_abs
       title: CPU max PCM drift

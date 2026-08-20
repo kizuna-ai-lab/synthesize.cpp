@@ -74,8 +74,8 @@ travel with the package. Verify each digest before relying on its contents.
 
 {% set cuda_placement = validation.cuda_placement | default("not_recorded") -%}
 {{ validation.stages }} graph stages were replayed for {{ validation.cases_per_stage }} cases on
-{{ validation.platforms | join(", ") }}. Duration structure was exact in every
-case.{% if cuda_placement == "full" %} CUDA placement contained zero executable CPU fallback nodes.{% elif cuda_placement == "partial" %} {{ validation.cuda_placement_note }}{% elif cuda_placement == "not_recorded" %} Which stages run on CUDA was not recorded for this package.{% endif %}
+{{ validation.platforms | join(", ") }}.{% if validation.replay_duration_exact | default(false) %} Duration structure was exact in every
+case.{% endif %}{% if cuda_placement == "full" %} CUDA placement contained zero executable CPU fallback nodes.{% elif cuda_placement == "partial" %} {{ validation.cuda_placement_note }}{% elif cuda_placement == "not_recorded" %} Which stages run on CUDA was not recorded for this package.{% endif %}
 
 | Profile |{% for column in validation.columns %} {{ column.title }} |{% endfor %}
 | --- |{% for column in validation.columns %} ---: |{% endfor %}

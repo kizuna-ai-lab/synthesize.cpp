@@ -85,6 +85,30 @@ validation:
   implementation_revision: workspace-snapshot-2026-07-26
   cases_per_stage: 15
   stages: 7
+  # Set 2026-08-20 (Task 8 fix round), KEPT under PR #16's review after
+  # re-derivation. The review challenged this field on two sibling cards and
+  # both were removed; this one holds under the same stricter reading, which
+  # asks whether the record supports a claim about GENERATED duration
+  # structure across all 15 cases. It does, on three independent lines.
+  #
+  #   - The probes are exact-GATED, verbatim, in docs/porting/families/
+  #     kokoro.md's "Required Probe Set": duration.pred_dur [T] exact,
+  #     duration.y_length scalar exact, duration.alignment [T, Y] exact.
+  #     (That section is a fenced probe listing, not a markdown table; this
+  #     comment previously called it a "shapes table", which it is not.)
+  #   - The scope is stated for the whole suite: kokoro.md records the
+  #     durations, frame count and alignment "exact on all three profiles
+  #     and all fifteen cases", matching this card's own stages: 7 and
+  #     cases_per_stage: 15 and both declared platforms. All 15 manifest
+  #     cases carry structural_exactness in their checks array and declare
+  #     all three duration artifacts.
+  #   - They are GENERATED, not input-shaped: resolve_durations rounds the
+  #     predictor's own logits to integer frame counts and every later
+  #     stage's shape follows from that integer. Only source.rand_ini and
+  #     source.noise are replayed, both downstream of duration. The claim is
+  #     falsifiable and has been falsified once -- kokoro.md records a CUDA
+  #     hold that moved y_length from 376 to 377.
+  replay_duration_exact: true
   columns:
     - key: cpu_pcm_correlation
       title: CPU waveform correlation

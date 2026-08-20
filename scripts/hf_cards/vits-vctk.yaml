@@ -64,6 +64,34 @@ validation:
   implementation_revision: workspace-snapshot-2026-07-27
   cases_per_stage: 12
   stages: 7
+  # Set 2026-08-20 (Task 8 fix round), KEPT under PR #16's review after
+  # re-derivation, with the citation corrected. The review challenged this
+  # field on two sibling cards and both were removed; this one survives the
+  # same stricter reading, but the original citation did not.
+  #
+  # The claim is about GENERATED duration structure across all 12 cases, and
+  # for this family it is exactly that. The oracle replays only the noise
+  # (duration_noise.f32, latent_noise.f32); the port still runs its own
+  # stochastic duration predictor and its own ceil. The continuous precursor
+  # genuinely drifts while duration.w_ceil, duration.y_length and
+  # duration.attention land exact, and the claim is falsifiable: vits.md
+  # records CUDA ceiling one token differently, by exactly one 256-sample
+  # hop, when the FP32 gate was removed.
+  #
+  # CITATION CORRECTED, and this variant now cites its OWN evidence. This
+  # comment previously carried text identical byte-for-byte to
+  # vits-ljspeech.yaml's, citing docs/quantization.md's "12/12 duration
+  # structures preserved" -- a line scoped to "## VITS Q8_MIXED Profile"
+  # that names neither variant, and whose "preserved" means preserved-
+  # under-quantization rather than exact-against-the-oracle. The direct,
+  # VCTK-specific sources are docs/porting/families/vits.md's VCTK section
+  # ("Duration structure is exact on every platform and the public
+  # multi-speaker API remains deterministic for a fixed request", F16 and
+  # Q8_MIXED, all seven 12-case stages), its F32 VCTK paragraph ("The
+  # duration path is structurally exact in every case"), and its CUDA
+  # section, which reports both variants structural_exact across all twelve
+  # cases with frame counts matching CPU exactly (156,416 for vctk-long).
+  replay_duration_exact: true
   columns:
     - key: cpu_pcm_max_abs
       title: CPU max PCM drift

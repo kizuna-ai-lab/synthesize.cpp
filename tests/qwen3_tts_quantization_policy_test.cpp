@@ -28,6 +28,7 @@
 using synth::quantize::find_profile;
 using synth::quantize::Profile;
 using synth::quantize::profile_applies_to_architecture;
+using synth::quantize::qwen3_tts_tensor_is_conv_kernel;
 using synth::quantize::resolve_qwen3_tts_target_spec;
 using synth::quantize::TargetSpec;
 using synth::quantize::TensorLayout;
@@ -335,6 +336,16 @@ int main() {
              "talker.code_predictor.model.layers.0.mlp.gate_proj.weight",
              "talker.code_predictor.lm_head.7.weight",
              "talker.code_predictor.model.codec_embedding.3.weight",
+             // The width bridge a package carries only when the predictor's
+             // hidden size differs from the talker's -- absent from every
+             // 0.6B package (Base, CustomVoice), present on the 1.7B
+             // VoiceDesign checkpoint this task's own quantization run first
+             // met. Real name, from src/arch/qwen3-tts/catalog.cpp's own
+             // resolution of it (Role::Matrix) and confirmed against a live
+             // `--quant F16` run of the VoiceDesign package, which refused
+             // with "unknown qwen3-tts tensor" on this exact name before this
+             // classifier arm existed.
+             "talker.code_predictor.small_to_mtp_projection.weight",
          }) {
         SYNTH_TEST_CHECK(resolve(*q8, name).type == GGML_TYPE_Q8_0);
         SYNTH_TEST_CHECK(resolve(*q5, name).type == GGML_TYPE_Q5_K);
@@ -348,6 +359,9 @@ int main() {
              "talker.model.layers.5.input_layernorm.weight",
              "talker.model.layers.5.self_attn.q_norm.weight",
              "talker.code_predictor.model.layers.1.post_attn_norm.weight",
+             // small_to_mtp_projection's own bias, the Sensitive half of the
+             // pair added above.
+             "talker.code_predictor.small_to_mtp_projection.bias",
          }) {
         SYNTH_TEST_CHECK(resolve(*q8, name).type == GGML_TYPE_F32);
         SYNTH_TEST_CHECK(resolve(*q5, name).type == GGML_TYPE_F32);
@@ -509,6 +523,89 @@ int main() {
     // alone rather than on the pair would have taken that away.
     SYNTH_TEST_CHECK(profile_applies_to_architecture("omnivoice", *bf16, reason));
     SYNTH_TEST_CHECK(reason.empty());
+
+    // Design spec section 7: "a package with no speaker encoder resolves no
+    // ConvKernel". Asserted on the ROLE, not on the resolved type: under F16
+    // the ConvKernel column (profile.transpose_weight_type) and the
+    // MatrixWeight column are both GGML_TYPE_F16, so a type-only check cannot
+    // tell a misclassified tensor from a correct one and would pass on the
+    // bug it exists to catch.
+    //
+    // The names below are real tensor names from the shipped CustomVoice
+    // package (reports/porting/qwen3-tts/qwen3-tts-12hz-0-6b-customvoice/intake.json
+    // and src/arch/qwen3-tts/catalog.cpp), covering a talker block, the
+    // talker's own output head, a code predictor block, the code predictor's
+    // per-group output head, and the codec decoder's input and output
+    // convolutions -- no speaker_encoder.* tensor anywhere. VoiceDesign
+    // carries this same shape; Base is the only variant with a speaker
+    // encoder.
+    for (const char * name : {
+             "talker.model.layers.0.self_attn.q_proj.weight",
+             "talker.model.layers.12.mlp.gate_proj.weight",
+             "talker.codec_head.weight",
+             "talker.code_predictor.model.layers.2.self_attn.k_proj.weight",
+             "talker.code_predictor.lm_head.3.weight",
+             "codec.decoder.decoder.0.conv.weight",
+             "codec.decoder.decoder.6.conv.weight",
+         }) {
+        SYNTH_TEST_CHECK(!qwen3_tts_tensor_is_conv_kernel(name));
+    }
+
+    // Three more negatives the loop above does not reach, each failing for a
+    // DIFFERENT reason, so a regression in any one of the three guards shows
+    // up here rather than hiding behind the others:
+    //
+    //   - `talker.code_predictor.small_to_mtp_projection.weight` is this
+    //     branch's own new classifier arm (src/arch/qwen3-tts/catalog.cpp
+    //     resolves it at Role::Matrix; classify_qwen3_talker returns
+    //     MatrixWeight). It is a Linear weight that reaches ConvKernel only
+    //     if a future edit widens the conv rule past the talker guard. The
+    //     positive half of this pair is already asserted above -- the arm
+    //     resolves to Q8_0/Q5_K/F16 under the three profiles -- so this is
+    //     the assertion that it is not ALSO taken for a convolution.
+    //
+    //   - The empty name. split_name("") yields one empty token, which every
+    //     one of the three classifiers rejects on its own size or prefix
+    //     guard (talker needs >= 2 tokens, speaker_encoder needs tokens[0] to
+    //     match, codec needs >= 3). A classifier that indexed before checking
+    //     size would fault here rather than return false.
+    //
+    //   - `speaker_encoder.blocks.x.conv.weight` is a genuine near-miss: it
+    //     has the right prefix, the right `.conv.` wrapper segment and the
+    //     right `weight` leaf, and differs from the real
+    //     `speaker_encoder.blocks.1.conv.weight` stem ONLY in that `x` is not
+    //     an index. is_index() rejects it, so classify_qwen3_speaker_encoder
+    //     falls through every arm and returns Unknown -- NOT ConvKernel. This
+    //     is what keeps the "requiring it is what keeps a future
+    //     non-convolution tensor under this prefix an error rather than
+    //     something that inherits a convolution's role by position" comment
+    //     in policy.cpp true: position alone must not confer the role.
+    //
+    // MUTATION-TESTER'S NOTE, on the order of the two guards for that last
+    // name. `speaker_encoder.blocks.x.conv.weight` is ALREADY asserted
+    // earlier in this same test, through resolve_qwen3_tts_target_spec in
+    // the "plausible-looking tensor that is not one of the 237" block. That
+    // assertion runs FIRST, so a mutation to is_index() kills the test there
+    // and never reaches this line -- crediting the kill to this assertion is
+    // a misattribution (PR #16's fix round made exactly that mistake). This
+    // assertion is independently load-bearing only once the earlier one is
+    // neutralized, and it tests a different predicate: the earlier block
+    // asserts the name RESOLVES to nothing, this one asserts it is not
+    // classified ConvKernel specifically. Both are wanted; neutralize the
+    // earlier one before mutation-testing this one.
+    for (const char * name : {
+             "talker.code_predictor.small_to_mtp_projection.weight",
+             "",
+             "speaker_encoder.blocks.x.conv.weight",
+         }) {
+        SYNTH_TEST_CHECK(!qwen3_tts_tensor_is_conv_kernel(name));
+    }
+
+    // The control, a real speaker-encoder convolution weight from
+    // kSpeakerEncoderConvWeights above. Without it the loop above passes on a
+    // build where the function always returns false, which is the same
+    // failure the loop is written to catch, spelled the other way.
+    SYNTH_TEST_CHECK(qwen3_tts_tensor_is_conv_kernel("speaker_encoder.blocks.1.tdnn1.conv.weight"));
 
     return 0;
 }

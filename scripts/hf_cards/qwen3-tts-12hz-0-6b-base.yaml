@@ -82,6 +82,37 @@ validation:
   level: port_validated
   cases_per_stage: 13
   stages: 3
+  # `replay_duration_exact` is DELIBERATELY ABSENT here. It was set true on
+  # 2026-08-20 (Task 8 fix round) and REMOVED the same day under PR #16's
+  # review, which challenged it; re-deriving it from the record showed the
+  # claim was not supported and the justification was wrong on its facts.
+  #
+  # The template renders the field as "Duration structure was exact in every
+  # case.", immediately after "3 graph stages were replayed for 13 cases" --
+  # so the claim is about GENERATED duration structure, across all 13 cases.
+  # This package's replay evidence is neither.
+  #
+  #   - The probes are input-shaped, not generated. `speaker.x_vector` is a
+  #     fixed-dimension ECAPA-TDNN embedding; `speaker.mel` follows the
+  #     reference clip's own length; `prompt.icl_embed` is T2 x 1024 where
+  #     T2 counts input tokens. None of the three is a duration this port
+  #     predicts, so none can be exact or inexact about one.
+  #   - The removed comment claimed `compare()` gates all three. It does
+  #     not: `icl_embed` appears nowhere in scripts/validate-qwen3-tts-
+  #     replay.py (it is compared by tests/qwen3_tts_icl_prompt_real.cpp),
+  #     and that script's own comment says `speaker.mel` is reported
+  #     "without gating them, since there is no committed speaker.mel
+  #     tolerance". `--compare-mel` and `--compare-x-vector` each return
+  #     before the ordinary loop, so the three are never scored together.
+  #   - The generative path that could disagree on length never runs for
+  #     this package. run_case() gates on `oracle/codes/semantic.i32`, and
+  #     the tolerance file records this variant's talker/audio probes as
+  #     still unmeasured (`partial-measurement-conditioning-path-only`).
+  #
+  # docs/porting/families/qwen3-tts.md's own Task 8 section already noted the
+  # field is unguarded in both directions -- no test catches its removal, and
+  # none caught its unjustified presence. The regression test added under
+  # PR #16 now pins its ABSENCE from this card.
   date: 2026-08-17
   reference: the pinned upstream PyTorch implementation at bfloat16 on CUDA
   platforms:

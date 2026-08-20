@@ -1,6 +1,6 @@
 # Execution Backend Policy
 
-Status: Confirmed, last updated on 2026-08-17.
+Status: Confirmed, last updated on 2026-08-20.
 
 ## Shared Inference Graph
 
@@ -532,3 +532,64 @@ CPU audio as the codec decoder's TF32 arithmetic predicts.
 
 This is a placement-and-agreement result only. Gate 5's latency, real-time factor
 and peak memory are not claimed for it.
+
+### qwen3-tts-12hz-1-7b-voicedesign carries no CUDA sub-grid either, on the same measured shape
+
+Recorded 2026-08-20 by Stage 3 Plan 3 Task 6. Unlike Base, this variant
+introduces no new graphs at all -- no reference-audio path, so no speaker
+encoder and no codec encoder for ICL enrollment. It is Stage 1's own graph
+set (text frontend, talker, codec decoder) at the 1.7B talker's width, so
+there was no placement decision to make here, only a measurement of the one
+Stage 1 already made.
+
+This variant's tolerance grid tracks two stages, and only one of them can
+move under CUDA. `public` does, through the same Stage 1 codec-decoder twin
+Base's own `public` cell exercises. `replay` does not: its only probe is
+`prefill`, and `tests/qwen3_tts_voicedesign_prefill_real.cpp:289` calls
+`ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)` directly, so today's
+driver has no backend argument to pass -- but the deeper reason a backend
+argument would not help is `src/arch/qwen3-tts/model.cpp:573-585`: the
+device-mirroring loop only copies tensors whose name starts with
+`codec.decoder.`, so the talker's own weights, which the prefill graph runs
+entirely on, are never mirrored onto the device at all.
+
+Since `tests/python/test_tolerance_coverage.py` requires a `backends`
+sub-grid to carry a variant's full stage set, and `replay` cannot move, a
+`backends.CUDA` sub-grid here would face the identical choice the Base
+subsection above declined: fabricate a `replay` CUDA cell out of `replay`'s
+own CPU numbers, or leave the sub-grid uncommitted. **It is left
+uncommitted**, and the one real measurement is recorded in
+`docs/porting/families/qwen3-tts.md` ("Stage 3: VoiceDesign Package, Plan 3
+Task 6") instead: on the family's own fixed VoiceDesign measurement workload
+(text, description, language, seed and thread count reused verbatim from
+Plan 3 Task 5), BF16 synthesizes in 18.92 s on CPU against 17.76 s on CUDA
+(RTF 4.64 -> 4.35), a **6.16%** end-to-end gain -- the quantity is the
+reduction against the CPU baseline, `(CPU - CUDA) / CPU`, not the ratio of
+the two: computed from the unrounded medians, `(18.9220 - 17.7564) /
+18.9220` and `(4.6377 - 4.3520) / 4.6377` both give 6.16%, while dividing
+CPU by CUDA gives 1.0656, a 6.56% throughput increase over the same pair.
+(The display-rounded pairs shown here reduce to 6.13%/6.25% by the same
+`(CPU - CUDA) / CPU`, reconciled in the family record's Plan 3 Task 6
+section.) This is smaller than Base's own
+~6.5%/6.3% (the "CUDA buys about 6 % and that is the expected amount"
+paragraph in `docs/porting/families/qwen3-tts.md`; 6.47%/6.35% unrounded,
+the same CPU-baseline reduction), which is the
+direction Stage 3's design spec predicted for a talker whose per-layer
+parameter count runs 3.2x larger than Base's (D7,
+`docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md:227-229`),
+held on the CPU by the discrete-outputs rule the same way. 11 of 11
+applicable `public`-seam checks pass under CUDA -- one of the eleven (the
+empty-instruct-vs-oracle relation) passes through a figure the `replay`
+stage's own CPU-only prefill probe already measured rather than recomputing
+anything under CUDA, the same way it does for the CPU cell -- and the CUDA
+waveform differs from the CPU one in bytes (cosine 0.9999988, max_abs
+0.002414 against the same seed and workload), which is the codec decoder's
+TF32 arithmetic showing up exactly as gate 2's own tolerance model predicts,
+on a different package and case than Base's own comparison and not claimed
+to reproduce it exactly.
+
+No CUDA threshold was derived for this variant either. Unlike Base, there is
+also no hypothetical future graph within it to pre-derive one for -- its
+graph set is exhausted by the codec decoder and the prefill probe -- so the
+measured cosine and max_abs figures above stand as agreement evidence only,
+not as an input to any committed gate.

@@ -916,6 +916,45 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cuda_placement"):
             self.generator.validate_spec(spec)
 
+    # -- Stage 3 Plan 3 Task 8: the VoiceDesign spec ---------------------
+
+    def test_qwen3_tts_voicedesign_ships_three_profiles_and_names_q5_k_mixed_as_not_shipped(
+        self,
+    ) -> None:
+        # Regression for the real spec, and for this plan's own standing
+        # rule: Q5_K_MIXED fails its own replay-stage tolerance gate for this
+        # variant (Stage 3 Plan 3 Task 4, headroom 0.32x against the
+        # committed 0.01 bound) and must stay ABSENT from `quants` while
+        # still being named in the card as measured-and-not-shipped, rather
+        # than silently omitted the way CustomVoice's own published card
+        # gets this wrong -- see docs/porting/families/qwen3-tts.md's "Open
+        # item: CustomVoice's card omits Q5_K_MIXED" for that separate,
+        # pre-existing gap this spec does not inherit.
+        spec = self.generator.load_spec(
+            ROOT / "scripts" / "hf_cards" / "qwen3-tts-12hz-1-7b-voicedesign.yaml"
+        )
+        self.generator.validate_spec(spec)
+        self.assertEqual(
+            [quant["name"] for quant in spec["quants"]], ["BF16", "F16", "Q8_MIXED"]
+        )
+        self.assertEqual(spec["capabilities"]["input_kinds"], ["text_utf8"])
+        self.assertEqual(
+            spec["capabilities"]["voice_profile_sources"], ["description_text"]
+        )
+
+        model_dir = ROOT / "models" / "qwen3-tts-12hz-1-7b-voicedesign"
+        if not model_dir.is_dir():
+            self.skipTest("the VoiceDesign packages have not been materialized locally")
+        self.generator.validate_artifacts(spec, model_dir)
+
+        card = self.generator.render(spec, self.generator.load_upstream_card(spec))
+        self.assertIn("Q5_K_MIXED", card)
+        self.assertIn("NOT published here", card)
+        self.assertNotIn("| Q5_K_MIXED |", card)
+        self.assertIn("accepts raw UTF-8 text", card)
+        self.assertNotIn("also accepts exact token", card)
+        self.assertIn("no preset speaker catalog", card)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -119,6 +119,40 @@ why, so the live artifact stops claiming a loadability it does not have. That
 correction also carried a second one: the CUDA end-to-end figure read "about
 8 %" against numbers that divide out to 6.5 %.
 
+**Stage 3 Plan 3 (quantization, backends, ship-prep) is done as of
+2026-08-20, all eight tasks; artifacts are prepared and NOT published.**
+Tasks 2-4 cut and measured all four Quantization Profiles against the
+4,295,891,904-byte BF16 source: `F16` is 283,136 bytes larger than its
+source (the same shape Base's own F16 already showed, at a smaller relative
+penalty here); `Q8_MIXED` is 2,499,423,680 bytes, 58.18 % of source, its own
+`replay`-prefill headroom the thinnest of the three shipped profiles at
+1.63x; and `Q5_K_MIXED`, cut at 1,780,723,136 bytes, **fails its own
+`replay`-stage tolerance gate roughly 3x over the committed 0.01 bound**
+(headroom 0.32x) and is recommended not to publish. Task 5 measured RTF on
+`build/rel-dgx-spark` (Release) and settled `F16`'s publication question on
+speed: 2.87x faster than `BF16` on that task's own pass (recomputed against
+Task 6's later, paired `BF16` re-measurement, roughly 2.8x), recommending
+`F16` ship despite saving no disk. Task 6 measured CUDA's end-to-end gain at
+6.16 % (narrower than Base's own ~6.5 %/6.3 %, in the direction the design
+predicted) and confirmed no CUDA sub-grid is owed here, for the same
+structural reason as Base. Task 7 ran the Listening Audit on 2026-08-20: all
+four blind pairs (`BF16` vs `F16`, vs `Q8_MIXED`, vs `Q5_K_MIXED`, and `BF16`
+CPU vs CUDA) were judged indistinguishable -- including `Q5_K_MIXED`, whose
+blind-indistinguishability is recorded as a data point about the 0.01
+bound's conservatism at this margin, not a recalibration of Task 4's
+do-not-publish recommendation, which stands. A separate labelled
+description-control pass returned "yes, in the described direction" -- weak
+evidence, recorded as weak. **Task 8 wrote the card spec
+(`scripts/hf_cards/qwen3-tts-12hz-1-7b-voicedesign.yaml`) and the model page
+(`docs/models/qwen3-tts-12hz-1-7b-voicedesign.md`), shipping `BF16`, `F16`
+and `Q8_MIXED` and naming `Q5_K_MIXED` as measured-and-not-shipped -- the
+first card in this family to record that shape rather than silently omit
+it.** Nothing has been uploaded: publication is a separate outward act
+requiring jiangzhuo's explicit, per-act confirmation naming the target
+repository, the same standing policy every other package in this family was
+published under. See "Stage 3: VoiceDesign Package, Plan 3 Task 2" through
+"...Task 8" below for the full record.
+
 **Until 2026-08-12 this line read "Q8_MIXED, the public backend control and
 stage 8 are not done. Port validation is not started."** All four clauses were
 false, and each was contradicted by a later section of this same document —
@@ -6090,6 +6124,133 @@ confirmation, naming the target repository.
 {"verdict": "yes, in the described direction", "notes": ""}
 ```
 
+## Stage 3: VoiceDesign Package, Plan 3 Task 8
+
+Ship-prep, and the plan's last task: a card spec, a model page, and the two
+docs closures this section records. **Artifacts prepared. Nothing
+uploaded.**
+
+### The roster, and the shape this family had never recorded before
+
+`scripts/hf_cards/qwen3-tts-12hz-1-7b-voicedesign.yaml` ships `BF16`, `F16`
+and `Q8_MIXED`. `Q5_K_MIXED` -- which fails its own `replay`-stage tolerance
+gate roughly 3x over the committed 0.01 bound (Task 4) and was
+blind-indistinguishable from `BF16` on one clip (Task 7) -- is absent from
+`quants:` and named in a `downloads_note` as measured-and-not-shipped, with
+both facts recorded at their own strength (a real gate failure on
+reproducible numbers; a weak, single-clip audio data point about the gate's
+conservatism, not a recalibration of it). This is the first card in this
+family to record that shape at all: CustomVoice's own published card
+(`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml:84`, `profiles: [F16,
+Q8_MIXED]`) omits `Q5_K_MIXED` entirely, the gap Task 4 tracked as an open
+item and this task does not fix -- that card is already published, and
+re-publishing it is its own outward act. Whether jiangzhuo revises the
+recommendation after reading the audit is still open; nothing here decided
+it, per the dispatch's own conservative default.
+
+### Digests, computed directly against the four packages on disk
+
+`sha256sum` against `models/qwen3-tts-12hz-1-7b-voicedesign/*.gguf` -- no
+other place in the tree records these:
+
+| profile | bytes | sha256 |
+| --- | ---: | --- |
+| BF16 | 4,295,891,904 | `d0af76177b5d2e2cdbd39b5deae7b4493f89990f372055e932b3b6877c295524` |
+| F16 | 4,296,175,040 | `5a6f52d3bc48bdd46527b675edcfec5aff0e800a463181b82faa17e94dcb1465` |
+| Q8_MIXED | 2,499,423,680 | `f8540471d2d7a9b353bd5c6d165e9caaf9bed3b90a20a4ec8fe410f993fdf92a` |
+| Q5_K_MIXED (measured, not shipped) | 1,780,723,136 | `a47479d90a61a32e7b2fb5f6b8bd3d47405aac1cc98cf278ab3fc0c2d1c282bb` |
+
+All four byte counts match this document's own Task 2-4 tables exactly. The
+card generator's own `validate_artifacts` (`scripts/hf_cards/generate.py`)
+re-checks the three shipped digests against the same files at render time,
+so a future re-cut that changes any of them fails the render rather than
+silently going stale.
+
+### A found-but-uncorrected discrepancy: `token_ids` is not declared, here or on the two published cards
+
+Checking this variant's own `capabilities.input_kinds` against its GGUF
+metadata directly (`synthesize.capabilities.input_flags`, read from the raw
+GGUF key-value bytes rather than assumed) found `1`
+(`SYNTH_INPUT_SUPPORT_TEXT_UTF8` only) on all three shipped VoiceDesign
+files. `scripts/convert-qwen3-tts.py:669` confirms why: it writes
+`INPUT_TEXT_UTF8` unconditionally, with no family-wide or per-variant path
+that also sets `SYNTH_INPUT_SUPPORT_TOKEN_IDS`. `src/synthesis-request.cpp:162-168`
+refuses a token-ID request whenever that bit is unset. This card therefore
+declares `input_kinds: [text_utf8]` alone.
+
+**The same check against Base's and CustomVoice's own published BF16 files
+returns the identical `input_flags = 1`**, yet both families' published
+cards (`scripts/hf_cards/qwen3-tts-12hz-0-6b-base.yaml`,
+`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml`) declare
+`input_kinds: [text_utf8, token_ids]`. Either those two cards have
+overclaimed a capability their own packages never had, or `token_ids`
+reaches this family through some path this task did not find. Not resolved
+here -- both cards are already published, correcting them is its own
+outward act, and this task's file list does not reach either one. Left as
+an open item for whoever next touches either card, or the family's own
+input-flags handling.
+
+### A ratio that does not survive a baseline swap: `F16`'s speedup against which `BF16`
+
+Task 5 computed `F16`'s speedup as 2.87x against its own n=3 `BF16` pass
+(RTF 4.7305). Task 6's later, paired n=8 `BF16` re-measurement (RTF 4.6377)
+is the one "Stage 3: VoiceDesign Package, Plan 3 Task 6" instructs this task
+to read the table from -- but `F16` itself was never re-measured, so
+pairing the newer `BF16` row with the unchanged `F16` figure and still
+calling it "2.87x" would quote a number computed from a `BF16` figure this
+card's own table no longer carries. Recomputed: 4.6377 / 1.6482 = **2.81x**,
+about 2% lower, consistent with the ~1.9% drop Task 6 already characterized
+between its own paired `BF16` pass and Task 5's. Both figures are real,
+from the same tree, computed at different times against different `BF16`
+passes; the card and this variant's `docs/quantization.md` section state
+"roughly 2.8x" and, where the earlier 2.87x figure is cited for its own
+sake, say plainly which `BF16` pass it was computed against.
+
+### Docs closures
+
+`docs/quantization.md`'s VoiceDesign row set (`F16`, `Q8_MIXED` RTF and peak
+RSS) was filled from Tasks 5 and 6, replacing three "not measured (Task 5)"
+placeholders and the one "forbidden to this task" `Q5_K_MIXED` cell; its
+top `Status:` paragraph gained a sentence naming this variant. Its
+Publication section's "No Base package is published" line was stale -- the
+Base variant published 2026-08-17, recorded in that variant's own card and
+in this document's own Status paragraph above -- and this task's own brief
+(Step 5) named it directly and asked for the fix. This task's dispatch
+separately claimed the line "was already corrected in an earlier plan" and
+asked for verification rather than trust; reading the file found the claim
+false -- the line was still stale at the moment this task started -- so it
+is corrected here, naming the date it became untrue, matching what the
+brief asked for from the start.
+
+### Verification
+
+- `uv run --script scripts/hf_cards/generate.py scripts/hf_cards/qwen3-tts-12hz-1-7b-voicedesign.yaml --stdout`: exits 0, `validate_artifacts` passes against the four real files on disk.
+- `tests/python/test_hf_card_generator.py` gained one regression test
+  (`test_qwen3_tts_voicedesign_ships_three_profiles_and_names_q5_k_mixed_as_not_shipped`),
+  registered by the file's own `unittest discover`, not by name in any
+  CMake list -- confirmed by running the module directly:
+  `uv run --project scripts/envs/vits --locked python -m unittest
+  tests.python.test_hf_card_generator -v`, 46 tests: 43 passed, 1
+  pre-existing error (`test_quantization_reports_match_current_artifacts`,
+  unrelated to this variant), 2 skipped (OmniVoice, not materialized in
+  this worktree).
+- `scripts/ci/clang-format.sh --check-diff`: clean -- this task's diff is
+  `.yaml`, `.md` and one `.py` test file, nothing `clang-format` touches.
+- Full unit gate: the same two pre-existing, not-ours failures
+  (`synthesize-python-api-wheel-test`,
+  `synthesize-vits-python-unit`'s sole error
+  `test_quantization_reports_match_current_artifacts`). No third.
+- `git status --porcelain` checked before staging; nothing under `models/`
+  or `build/` staged.
+
+### Completion gate, met
+
+The audit is recorded, both halves, at their stated strengths. The
+artifacts are prepared: three cuts measured, cells filled, card rendered,
+model page written. **Upload awaits separate confirmation and has not
+happened** -- nothing in this task pushed anything to
+`jiangzhuo9357/qwen3-tts-12hz-1-7b-voicedesign-gguf` or any other
+repository.
 
 ## Open Questions for Intake
 

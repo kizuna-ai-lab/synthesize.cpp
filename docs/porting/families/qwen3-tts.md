@@ -3982,8 +3982,10 @@ CustomVoice variant and produced the `listening_audit: no_obvious_regression`
 that `scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml` carries; the
 **2026-08-13** audit is Stage 2's, on the Base variant's x-vector clone path,
 and is the first in this repository to put a question about resemblance to a
-listener. The **2026-08-17** ICL audit is recorded in its own Stage 2 Plan 4
-section rather than here, and the **2026-08-20** VoiceDesign audit -- the first
+listener. The **2026-08-17** ICL audit is recorded under its own heading, "The
+first ICL Listening Audit, 2026-08-17: `no_obvious_regression`" (inside the
+Stage 2 Base Plan 3 section -- Plan 4 scheduled it, Plan 3's section holds it)
+rather than here, and the **2026-08-20** VoiceDesign audit -- the first
 with a description-control half, and the first to put a numerically-failed
 profile in front of a blind listener -- is recorded under "Stage 3: VoiceDesign
 Package, Plan 3 Task 7". (This paragraph said "three have run" until
@@ -4041,8 +4043,10 @@ out of reach is ranking this model against any other, which is what
 `comparative` means everywhere else in this project's documents. Any speaker-similarity metric; the resemblance finding is one
 listener, one source clip, one clone, and is evidence rather than a property of
 the port. Anything about transcript-assisted (ICL) mode: the port did not
-implement it when this audit ran, and **it still has no Listening Audit** now
-that Plan 3 has built it — one is scheduled for Plan 4's ship-prep phase.
+implement it when this audit ran. (This bullet went on to say ICL "still has
+no Listening Audit"; that stopped being true on 2026-08-17, when the first ICL
+audit ran -- corrected 2026-08-20, the same day this section's own audit count
+was.)
 Anything about CUDA for the new graphs, which have only ever run on CPU — the
 port side of every pair here was CPU.
 
@@ -6022,13 +6026,16 @@ can in principle leak through duration; the page disclosed this and instructed
 "judge on sound, not on duration", and trimming or padding was rejected because
 altered audio would defeat the audit. Second, a caveat line in the generated
 page originally named Pair 4's identity ("CPU vs CUDA, same profile"); it was
-found in a pre-delivery check and removed BEFORE the listener saw the page, so
-all four pairs were delivered blind.
+found in a pre-delivery check and removed BEFORE the listener saw the page.
+All four pairs were delivered blind as to IDENTITY -- no profile, backend or
+pair identity appears in the visible text -- with one structural hint
+remaining that rewording cannot remove: the audio players display durations,
+so a listener can see which single pair shares a length.
 
 ### The Q5_K_MIXED result, separately
 
 Pair 3 carried the profile that **fails its numerical gate** -- Plan 3 Task 4
-measured both replay cases at ~0.031 against the 0.01 bound, headroom 0.32x --
+measured the replay cases at 0.031029 and 0.030366 against the 0.01 bound, headroom 0.32x --
 included in the blind half by jiangzhuo's ruling of 2026-08-20, unlabelled like
 every other pair, precisely to ask the question the numbers cannot answer:
 does a 3x tolerance breach audibly manifest? On this clip it did not: blind,
@@ -6058,8 +6065,13 @@ published package -- **does not trigger**.
 ### What this audit does and does not move
 
 `listening_audit: no_obvious_regression` is what Task 8's card carries for the
-quantization half, with the description control recorded beside it at its
-stated strength. Neither half moves `quality_evaluation` off `not_run` (ADR
+quantization half, with `listening_audit_detail` (profiles, listeners, method,
+dates) filled from this section and the description control recorded beside it
+at its stated strength. The weak half also has one objective datum worth
+carrying: the deep/calm/slow description produced 6.160 s (147,840 frames,
+Release build) against the bright/fast description's 4.080 s -- 51% longer,
+directionally consistent with "speaking slowly" -- though the manifest carries
+no structured entry for the control clips, only the two description strings. Neither half moves `quality_evaluation` off `not_run` (ADR
 0017) or changes any Validation Level. Task 5's ship-F16 recommendation had
 two open gates; this audit closes the blind-A/B one for F16 (pair 1,
 indistinguishable). Publication remains a separate act requiring jiangzhuo's

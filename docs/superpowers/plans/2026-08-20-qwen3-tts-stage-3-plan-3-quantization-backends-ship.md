@@ -522,7 +522,7 @@ This audit carries a question the family's previous three did not. Earlier audit
 
 Neither moves the Validation Level.
 
-There is no tooling for this. All three prior audits were done by hand, with artifacts under `build/` (gitignored) and results recorded in two committed places. Follow that, and do not commit the artifacts.
+There is no tooling for this. All four prior audits were done by hand (this said three at authoring, a count the 2026-08-17 ICL audit had already outdated), with artifacts under `build/` (gitignored) and results recorded in two committed places. Follow that, and do not commit the artifacts.
 
 **Files:**
 - Create: `build/listening-voicedesign/` (uncommitted — artifacts only)

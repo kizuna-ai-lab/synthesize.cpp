@@ -6186,7 +6186,7 @@ files, and CustomVoice's genuinely-published `BF16`, returns the identical
 this check: it is the 2026-08-18 re-cut this document's own Status
 paragraph records above (sha256 `76275beb...` against the published
 `993f4cd1...`), re-confirmed for this check by re-hashing the local file
-and comparing against `scripts/hf_cards/qwen3-tts-12hz-0-6b-base.yaml:210`'s
+and comparing against `scripts/hf_cards/qwen3-tts-12hz-0-6b-base.yaml:219`'s
 committed digest -- they disagree, so the local file does not speak to what
 is actually live. Base's `F16` (`e7484194...`) and `Q8_MIXED` (`808667ae...`)
 are unchanged since 2026-08-17 and match their own card's committed digests

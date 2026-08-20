@@ -125,10 +125,13 @@ Tasks 2-4 cut and measured all four Quantization Profiles against the
 4,295,891,904-byte BF16 source: `F16` is 283,136 bytes larger than its
 source (the same shape Base's own F16 already showed, at a smaller relative
 penalty here); `Q8_MIXED` is 2,499,423,680 bytes, 58.18 % of source, its own
-`replay`-prefill headroom the thinnest of the three shipped profiles at
+`replay`-prefill headroom the thinnest PASSING margin of the four at
 1.63x; and `Q5_K_MIXED`, cut at 1,780,723,136 bytes, **fails its own
 `replay`-stage tolerance gate roughly 3x over the committed 0.01 bound**
-(headroom 0.32x) and is recommended not to publish. Task 5 measured RTF on
+(headroom 0.32x). Task 4 recommended not publishing it; **jiangzhuo
+overruled that on 2026-08-20 after the Task 7 audit, and it ships with the
+gate failure disclosed on the card** (see the closure note under "Task 8"
+below). Task 5 measured RTF on
 `build/rel-dgx-spark` (Release) and settled `F16`'s publication question on
 speed: 2.87x faster than `BF16` on that task's own pass (recomputed against
 Task 6's later, paired `BF16` re-measurement, roughly 2.8x), recommending
@@ -139,15 +142,17 @@ structural reason as Base. Task 7 ran the Listening Audit on 2026-08-20: all
 four blind pairs (`BF16` vs `F16`, vs `Q8_MIXED`, vs `Q5_K_MIXED`, and `BF16`
 CPU vs CUDA) were judged indistinguishable -- including `Q5_K_MIXED`, whose
 blind-indistinguishability is recorded as a data point about the 0.01
-bound's conservatism at this margin, not a recalibration of Task 4's
-do-not-publish recommendation, which stands. A separate labelled
-description-control pass returned "yes, in the described direction" -- weak
-evidence, recorded as weak. **Task 8 wrote the card spec
+bound's conservatism at this margin, not a recalibration of the bound. A
+separate labelled description-control pass returned "yes, in the described
+direction" -- weak evidence, recorded as weak. **Task 8 wrote the card spec
 (`scripts/hf_cards/qwen3-tts-12hz-1-7b-voicedesign.yaml`) and the model page
-(`docs/models/qwen3-tts-12hz-1-7b-voicedesign.md`), shipping `BF16`, `F16`
-and `Q8_MIXED` and naming `Q5_K_MIXED` as measured-and-not-shipped -- the
-first card in this family to record that shape rather than silently omit
-it.** Nothing has been uploaded: publication is a separate outward act
+(`docs/models/qwen3-tts-12hz-1-7b-voicedesign.md`), shipping all four
+profiles -- `BF16`, `F16`, `Q8_MIXED` and `Q5_K_MIXED`.** This sentence read
+"shipping `BF16`, `F16` and `Q8_MIXED` and naming `Q5_K_MIXED` as
+measured-and-not-shipped" until jiangzhuo's 2026-08-20 ruling put the fourth
+profile on the roster; **it is the project's first profile published over a
+failing numerical gate**, and the card discloses the breach and the ruling
+in the same paragraph. Nothing has been uploaded: publication is a separate outward act
 requiring jiangzhuo's explicit, per-act confirmation naming the target
 repository, the same standing policy every other package in this family was
 published under. See "Stage 3: VoiceDesign Package, Plan 3 Task 2" through
@@ -3472,9 +3477,13 @@ and a different case, but the closeness is a consistency signal rather than a
 coincidence, since both quantize the same autoregressive half.
 
 **CUDA buys about 6 % and that is the expected amount.** 11.60 s → 10.85 s on
-the same tree, RTF 3.15 → 2.95 — 6.5 % and 6.3 % respectively, which is what
-those two pairs divide out to. This paragraph read "about 8 %" until 2026-08-18,
-against its own numbers on the same line. Only the Stage 1 codec-decoder twin moves; the
+the same tree, RTF 3.15 → 2.95 — 6.5 % and 6.3 % respectively (6.47 % and
+6.35 % unrounded), which is what those two pairs give as a reduction against
+the CPU baseline, `(CPU - CUDA) / CPU`. This paragraph read "about 8 %" until
+2026-08-18, against its own numbers on the same line; it read "which is what
+those two pairs divide out to" until 2026-08-20, which named the wrong
+operation — dividing 11.60 by 10.85 gives 1.0691, a 6.91 % throughput
+increase, not the 6.5 % reduction reported here. Only the Stage 1 codec-decoder twin moves; the
 autoregressive half is held on the CPU by the discrete-outputs rule and
 dominates, and the two new graphs stay on the CPU by Task 12's measured
 decision. `docs/backends.md` requires performance measurement for support but no
@@ -5339,6 +5348,21 @@ fixing, since CustomVoice's card is already published and re-publishing it
 is a separate outward act requiring its own confirmation. Left for whoever
 next touches CustomVoice's card or Task 8's own card-writing work to close.
 
+**Cross-reference corrected, 2026-08-20 (PR #16).** This item was written
+expecting Task 8's VoiceDesign card to establish the
+measured-and-not-shipped shape that CustomVoice's card should then copy.
+That expectation is void: jiangzhuo ruled the same day that VoiceDesign's
+`Q5_K_MIXED` **ships**, with its gate failure disclosed on the card, so that
+card now establishes a *published-despite-gate-failure* shape and contains
+no unshipped profile at all. **The gap itself is unchanged** -- CustomVoice's
+`Q5_K_MIXED` is still silently absent from its card, and this item stays
+open -- but there is no longer an in-tree template for naming a withheld
+profile, and whoever closes this gap must settle CustomVoice's shape on
+CustomVoice's own evidence rather than copying a sibling. Note the two
+cases are not alike: CustomVoice's `Q5_K_MIXED` was withheld on a lower
+talker-logits cosine with no committed pass/fail bound, whereas
+VoiceDesign's breaches a committed `max_relative` gate outright.
+
 ### Verification
 
 - `synthesize-qwen3-tts-quantization-policy-test`: passes, unchanged by this
@@ -6134,21 +6158,36 @@ uploaded.**
 
 ### The roster, and the shape this family had never recorded before
 
-`scripts/hf_cards/qwen3-tts-12hz-1-7b-voicedesign.yaml` ships `BF16`, `F16`
-and `Q8_MIXED`. `Q5_K_MIXED` -- which fails its own `replay`-stage tolerance
-gate roughly 3x over the committed 0.01 bound (Task 4) and was
-blind-indistinguishable from `BF16` on one clip (Task 7) -- is absent from
-`quants:` and named in a `downloads_note` as measured-and-not-shipped, with
-both facts recorded at their own strength (a real gate failure on
+`scripts/hf_cards/qwen3-tts-12hz-1-7b-voicedesign.yaml` ships **all four**
+profiles: `BF16`, `F16`, `Q8_MIXED` and `Q5_K_MIXED`. `Q5_K_MIXED` fails its
+own `replay`-stage tolerance gate roughly 3x over the committed 0.01 bound
+(Task 4) and was blind-indistinguishable from `BF16` on one clip (Task 7),
+and both facts are recorded at their own strength -- a real gate failure on
 reproducible numbers; a weak, single-clip audio data point about the gate's
-conservatism, not a recalibration of it). This is the first card in this
-family to record that shape at all: CustomVoice's own published card
+conservatism, not a recalibration of it -- in the card's own rendered
+Downloads section, so a reader meets the breach and the ruling together.
+
+**CLOSED 2026-08-20 (PR #16): jiangzhuo ruled that `Q5_K_MIXED` ships.**
+This passage read "`Q5_K_MIXED` ... is absent from `quants:` and named in a
+`downloads_note` as measured-and-not-shipped", and closed with "Whether
+jiangzhuo revises the recommendation after reading the audit is still open;
+nothing here decided it, per the dispatch's own conservative default." That
+question is now decided, in the direction of shipping, on the audit. The
+measurement is untouched -- `gate_passed` remains `false` in
+`tests/tolerances/qwen3-tts.json`, headroom remains 0.32x -- and Task 4's
+do-not-publish recommendation is retained as history in
+`docs/quantization.md` under that document's supersede-don't-rewrite
+convention. **This is the project's first profile published over a failing
+numerical gate.**
+
+CustomVoice's own published card
 (`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml:176-209`'s `quants:`
-block, `BF16`/`F16`/`Q8_MIXED`) omits `Q5_K_MIXED` entirely, the gap Task 4 tracked as an open
-item and this task does not fix -- that card is already published, and
-re-publishing it is its own outward act. Whether jiangzhuo revises the
-recommendation after reading the audit is still open; nothing here decided
-it, per the dispatch's own conservative default.
+block, `BF16`/`F16`/`Q8_MIXED`) still omits `Q5_K_MIXED` entirely -- the gap
+Task 4 tracked as an open item, unchanged by this ruling and still not fixed
+here, since that card is already published and re-publishing it is its own
+outward act. What did change is that this card no longer supplies a
+measured-and-not-shipped template for that gap to copy; see the open item
+itself for the corrected cross-reference.
 
 ### Digests, computed directly against the four packages on disk
 

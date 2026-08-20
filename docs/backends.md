@@ -563,11 +563,16 @@ uncommitted**, and the one real measurement is recorded in
 Task 6") instead: on the family's own fixed VoiceDesign measurement workload
 (text, description, language, seed and thread count reused verbatim from
 Plan 3 Task 5), BF16 synthesizes in 18.92 s on CPU against 17.76 s on CUDA
-(RTF 4.64 -> 4.35), a **6.16%** end-to-end gain -- computed from the
-unrounded medians (18.9220/17.7564 and 4.6377/4.3520 both divide to
-6.16%; the display-rounded pairs shown here divide to 6.13%/6.25%,
-reconciled in the family record's Plan 3 Task 6 section) -- smaller than Base's own
-~6.5%/6.3% (`qwen3-tts.md:3474-3475`; 6.47%/6.35% unrounded), which is the
+(RTF 4.64 -> 4.35), a **6.16%** end-to-end gain -- the quantity is the
+reduction against the CPU baseline, `(CPU - CUDA) / CPU`, not the ratio of
+the two: computed from the unrounded medians, `(18.9220 - 17.7564) /
+18.9220` and `(4.6377 - 4.3520) / 4.6377` both give 6.16%, while dividing
+CPU by CUDA gives 1.0656, a 6.56% throughput increase over the same pair.
+(The display-rounded pairs shown here reduce to 6.13%/6.25% by the same
+`(CPU - CUDA) / CPU`, reconciled in the family record's Plan 3 Task 6
+section.) This is smaller than Base's own
+~6.5%/6.3% (`qwen3-tts.md:3474-3475`; 6.47%/6.35% unrounded, the same
+CPU-baseline reduction), which is the
 direction Stage 3's design spec predicted for a talker whose per-layer
 parameter count runs 3.2x larger than Base's (D7,
 `docs/superpowers/specs/2026-08-18-qwen3-tts-stage-3-design.md:227-229`),

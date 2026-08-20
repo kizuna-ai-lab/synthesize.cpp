@@ -551,6 +551,43 @@ int main() {
         SYNTH_TEST_CHECK(!qwen3_tts_tensor_is_conv_kernel(name));
     }
 
+    // Three more negatives the loop above does not reach, each failing for a
+    // DIFFERENT reason, so a regression in any one of the three guards shows
+    // up here rather than hiding behind the others:
+    //
+    //   - `talker.code_predictor.small_to_mtp_projection.weight` is this
+    //     branch's own new classifier arm (src/arch/qwen3-tts/catalog.cpp
+    //     resolves it at Role::Matrix; classify_qwen3_talker returns
+    //     MatrixWeight). It is a Linear weight that reaches ConvKernel only
+    //     if a future edit widens the conv rule past the talker guard. The
+    //     positive half of this pair is already asserted above -- the arm
+    //     resolves to Q8_0/Q5_K/F16 under the three profiles -- so this is
+    //     the assertion that it is not ALSO taken for a convolution.
+    //
+    //   - The empty name. split_name("") yields one empty token, which every
+    //     one of the three classifiers rejects on its own size or prefix
+    //     guard (talker needs >= 2 tokens, speaker_encoder needs tokens[0] to
+    //     match, codec needs >= 3). A classifier that indexed before checking
+    //     size would fault here rather than return false.
+    //
+    //   - `speaker_encoder.blocks.x.conv.weight` is a genuine near-miss: it
+    //     has the right prefix, the right `.conv.` wrapper segment and the
+    //     right `weight` leaf, and differs from the real
+    //     `speaker_encoder.blocks.1.conv.weight` stem ONLY in that `x` is not
+    //     an index. is_index() rejects it, so classify_qwen3_speaker_encoder
+    //     falls through every arm and returns Unknown -- NOT ConvKernel. This
+    //     is what keeps the "requiring it is what keeps a future
+    //     non-convolution tensor under this prefix an error rather than
+    //     something that inherits a convolution's role by position" comment
+    //     in policy.cpp true: position alone must not confer the role.
+    for (const char * name : {
+             "talker.code_predictor.small_to_mtp_projection.weight",
+             "",
+             "speaker_encoder.blocks.x.conv.weight",
+         }) {
+        SYNTH_TEST_CHECK(!qwen3_tts_tensor_is_conv_kernel(name));
+    }
+
     // The control, a real speaker-encoder convolution weight from
     // kSpeakerEncoderConvWeights above. Without it the loop above passes on a
     // build where the function always returns false, which is the same

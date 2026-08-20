@@ -950,6 +950,101 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
         card = self.generator.render(spec, "# stub")
         self.assertIn("Duration structure was exact in every\ncase.", card)
 
+    def test_replay_duration_exact_false_omits_the_sentence(self) -> None:
+        # Explicit False is a different statement from omission -- it says
+        # "this card considered the claim and declines it" -- and it must
+        # reach the same rendered result: no sentence.
+        spec = base_fixture_spec()
+        spec["validation"]["replay_duration_exact"] = False
+        self.generator.validate_spec(spec)
+        card = self.generator.render(spec, "# stub")
+        self.assertNotIn("Duration structure was exact", card)
+
+    def test_replay_duration_exact_rejects_non_boolean_values(self) -> None:
+        """PR #16 finding: `validate_spec` did not check this field at all.
+
+        The template gates the sentence on Jinja truthiness
+        (`| default(false)`), so before this guard a YAML author could write
+        any value and get a silent, wrong answer. The worst case is not the
+        obvious one: `replay_duration_exact: "false"` -- a quoted string a
+        YAML author could easily produce -- is a NON-EMPTY STRING, which is
+        truthy, so it RENDERED the claim it was written to deny. `1` and
+        `"true"` rendered it too, and `0.0` silently dropped it. All of
+        these must now be type errors rather than guesses.
+        """
+        for bad in ("true", "false", 1, 0, 0.0, [], "yes"):
+            with self.subTest(value=bad):
+                spec = base_fixture_spec()
+                spec["validation"]["replay_duration_exact"] = bad
+                with self.assertRaisesRegex(ValueError, "replay_duration_exact"):
+                    self.generator.validate_spec(spec)
+
+    # -- Stage 3 Plan 3 Task 8 fix round / PR #16: the field is guarded on
+    # -- the real cards, in BOTH directions ------------------------------
+
+    # The family record noted that `replay_duration_exact` was UNGUARDED both
+    # ways: no test caught deleting it from a card whose record supports it,
+    # and none caught its unjustified presence on a card whose record does
+    # not. PR #16's review found exactly that second failure on two cards.
+    # This table is the guard. Each entry was re-derived from the family's
+    # own committed record, not propagated from a sibling card:
+    #
+    #   kokoro-v1-0      True -- duration.pred_dur / y_length / alignment are
+    #                    exact-GATED probes, the record states "exact on all
+    #                    three profiles and all fifteen cases", and they are
+    #                    generated (resolve_durations rounds the predictor's
+    #                    own logits; a CUDA hold once moved y_length 376->377).
+    #   vits-ljspeech    True -- the port runs its own stochastic duration
+    #   vits-vctk        predictor and its own ceil (only the noise is
+    #                    replayed); w_ceil / y_length / attention land exact
+    #                    across all 12 cases on both variants, and the claim
+    #                    has been falsified once and fixed.
+    #   qwen3-tts-...-base        ABSENT -- its probes (x_vector, mel,
+    #                    icl_embed) are input-shaped, and the generative path
+    #                    that could disagree on length never runs.
+    #   qwen3-tts-...-customvoice ABSENT -- parity replays the ORACLE's codes,
+    #                    so frame count is the oracle's by construction. True,
+    #                    but vacuous: it reports nothing about the port.
+    #   omnivoice-0-6b   ABSENT -- "17/17" is 17 of 17 GREEDY cases, not 17 of
+    #                    20; the 3 sampled cases have no oracle grid to be
+    #                    exact against and are never compared.
+    #   qwen3-tts-...-voicedesign ABSENT -- its replay stage runs no duration
+    #                    comparison of any kind.
+    REPLAY_DURATION_EXACT_BY_CARD = {
+        "kokoro-v1-0": True,
+        "vits-ljspeech": True,
+        "vits-vctk": True,
+        "qwen3-tts-12hz-0-6b-base": None,
+        "qwen3-tts-12hz-0-6b-customvoice": None,
+        "omnivoice-0-6b": None,
+        "qwen3-tts-12hz-1-7b-voicedesign": None,
+    }
+
+    def test_every_shipped_card_declares_the_expected_duration_claim(self) -> None:
+        cards_dir = ROOT / "scripts" / "hf_cards"
+        found = sorted(path.stem for path in cards_dir.glob("*.yaml"))
+        self.assertEqual(
+            found,
+            sorted(self.REPLAY_DURATION_EXACT_BY_CARD),
+            "a card was added or removed without deciding its duration claim",
+        )
+        for stem, expected in sorted(self.REPLAY_DURATION_EXACT_BY_CARD.items()):
+            with self.subTest(card=stem):
+                spec = self.generator.load_spec(cards_dir / f"{stem}.yaml")
+                self.generator.validate_spec(spec)
+                self.assertEqual(
+                    spec["validation"].get("replay_duration_exact"),
+                    expected,
+                    f"{stem}: duration claim changed without re-deriving it from the record",
+                )
+                # ...and that the spec value actually reaches the render.
+                card = self.generator.render(spec, "# stub")
+                self.assertEqual(
+                    "Duration structure was exact" in card,
+                    expected is True,
+                    f"{stem}: rendered sentence disagrees with the spec field",
+                )
+
     def test_replay_duration_exact_does_not_disturb_the_cuda_sentence_join(self) -> None:
         # When the duration sentence is absent, the surrounding punctuation
         # must still read correctly -- the platform sentence's period
@@ -968,55 +1063,136 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
 
     # -- Stage 3 Plan 3 Task 8: the VoiceDesign spec ---------------------
 
-    def test_qwen3_tts_voicedesign_ships_three_profiles_and_names_q5_k_mixed_as_not_shipped(
-        self,
-    ) -> None:
-        # Regression for the real spec, and for this plan's own standing
-        # rule: Q5_K_MIXED fails its own replay-stage tolerance gate for this
-        # variant (Stage 3 Plan 3 Task 4, headroom 0.32x against the
-        # committed 0.01 bound) and must stay ABSENT from `quants` while
-        # still being named in the card as measured-and-not-shipped, rather
-        # than silently omitted the way CustomVoice's own published card
-        # gets this wrong -- see docs/porting/families/qwen3-tts.md's "Open
-        # item: CustomVoice's card omits Q5_K_MIXED" for that separate,
-        # pre-existing gap this spec does not inherit.
+    def _voicedesign_spec(self) -> dict:
         spec = self.generator.load_spec(
             ROOT / "scripts" / "hf_cards" / "qwen3-tts-12hz-1-7b-voicedesign.yaml"
         )
         self.generator.validate_spec(spec)
+        return spec
+
+    def test_qwen3_tts_voicedesign_ships_four_profiles_including_the_failing_q5(
+        self,
+    ) -> None:
+        """Rendered-content regression. Runs WITHOUT any local artifacts.
+
+        PR #16 finding: this test used to `skipTest` on a missing
+        `models/` directory BEFORE rendering, so a checkout without the
+        ~12 GB of packages never exercised the card's publication claims at
+        all -- the assertions below silently did not run on most machines.
+        Rendering needs no artifact: `validate_artifacts` is a separate
+        function that `main()` happens to call in sequence, and the upstream
+        card is an argument to `render`. So this test renders against a stub
+        upstream card and asserts unconditionally; the digest verification
+        moved to `test_qwen3_tts_voicedesign_artifacts_match_declared_digests`
+        below, which is the only part that legitimately skips.
+        """
+        spec = self._voicedesign_spec()
+        # FOUR profiles as of jiangzhuo's 2026-08-20 ruling. This assertion
+        # read ["BF16", "F16", "Q8_MIXED"] until then, pinning Q5_K_MIXED as
+        # measured-and-not-shipped. The ruling published it despite its
+        # failing gate, so the roster and the disclosure both changed.
         self.assertEqual(
-            [quant["name"] for quant in spec["quants"]], ["BF16", "F16", "Q8_MIXED"]
+            [quant["name"] for quant in spec["quants"]],
+            ["BF16", "F16", "Q8_MIXED", "Q5_K_MIXED"],
         )
         self.assertEqual(spec["capabilities"]["input_kinds"], ["text_utf8"])
         self.assertEqual(
             spec["capabilities"]["voice_profile_sources"], ["description_text"]
         )
 
-        model_dir = ROOT / "models" / "qwen3-tts-12hz-1-7b-voicedesign"
-        if not model_dir.is_dir():
-            self.skipTest("the VoiceDesign packages have not been materialized locally")
-        self.generator.validate_artifacts(spec, model_dir)
+        card = self.generator.render(spec, "# stub upstream card")
 
-        card = self.generator.render(spec, self.generator.load_upstream_card(spec))
-        self.assertIn("Q5_K_MIXED", card)
-        self.assertIn("NOT published here", card)
-        self.assertNotIn("| Q5_K_MIXED |", card)
+        # Q5_K_MIXED is IN the downloads table now, not merely named in prose.
+        self.assertIn("| Q5_K_MIXED |", card)
+        self.assertNotIn("NOT published here", card)
+
+        # The dual record: the breach and the ruling must BOTH be rendered,
+        # and a reader must meet them together. Anchoring on each half
+        # separately means dropping either one fails this test.
+        self.assertIn("FAILS A COMMITTED ACCURACY GATE AND IS PUBLISHED ANYWAY", card)
+        self.assertIn("0.031029", card)
+        self.assertIn("0.030366", card)
+        self.assertIn("headroom 0.32x", card)
+        self.assertIn("gate_passed", card)
+        self.assertIn("jiangzhuo ruled on 2026-08-20", card)
+        self.assertIn("one clip, one sentence, one seed, one listener", card)
+        # The gate failure must also be visible in the table row itself, not
+        # only in the paragraph below it.
+        self.assertIn("FAILS the 0.01 bound", card)
+
         self.assertIn("accepts raw UTF-8 text", card)
         self.assertNotIn("also accepts exact token", card)
         self.assertIn("no preset speaker catalog", card)
         # This variant's replay stage never runs a duration comparison of any
         # kind (see this spec's own validation.metric_note): the card must
         # not carry the shared template's "Duration structure was exact"
-        # claim, which it never earned. Regression for the fix round that
-        # found this rendering unconditionally.
+        # claim, which it never earned.
         self.assertNotIn("Duration structure was exact", card)
         # The Q5_K_MIXED evidence must be IN the rendered card, not behind a
         # pointer to a field the template never emits (listening_audit_detail
         # has no template emitter at all -- template.md.j2's only
         # `listening_audit` references are the boolean-ish top-level field).
-        self.assertIn("blind half", card)
         self.assertIn("20260820", card)
         self.assertNotIn("listening_audit_detail", card)
+
+    def test_qwen3_tts_voicedesign_discloses_its_partial_measurement_scope(self) -> None:
+        """PR #16 P1 resolution: the level stays, the scope must be loud.
+
+        jiangzhuo ruled 2026-08-20 that this card keeps
+        `level: port_validated` and that the partial-measurement scope must
+        be impossible to miss on the RENDERED card rather than discoverable
+        only through the tolerance ledger or the model page. The verbatim
+        ledger label is the anchor, so the card and the ledger cannot drift
+        into describing the same status in different words.
+        """
+        spec = self._voicedesign_spec()
+        self.assertEqual(spec["validation"]["level"], "port_validated")
+        card = self.generator.render(spec, "# stub upstream card")
+
+        self.assertIn("partial-measurement-prefill-and-public-only", card)
+        # What was run, and what was not -- both halves stated.
+        self.assertIn("WHAT WAS RUN", card)
+        self.assertIn("WHAT WAS NOT RUN", card)
+        self.assertIn("none of them carries an\noracle payload", card)
+
+        # Prominence is the point: the disclosure must sit inside the
+        # validation section, immediately under its table -- not trailing the
+        # document, and not merely somewhere on the page. Positions are
+        # measured WITHIN the validation section, because "| Q5_K_MIXED |"
+        # also matches the Downloads table far above.
+        section = card[
+            card.index("## Validation status") : card.index("## Voices and input")
+        ]
+        self.assertIn(
+            "partial-measurement-prefill-and-public-only",
+            section,
+            "the scope disclosure must render inside the Validation status section",
+        )
+        label_at = section.index("partial-measurement-prefill-and-public-only")
+        last_row_at = section.index("| Q5_K_MIXED |")
+        self.assertLess(
+            last_row_at,
+            label_at,
+            "the disclosure must follow the validation table, not precede it",
+        )
+        self.assertLess(
+            label_at - last_row_at,
+            600,
+            "the scope disclosure must render directly beneath the validation table",
+        )
+
+    def test_qwen3_tts_voicedesign_artifacts_match_declared_digests(self) -> None:
+        # The only half of the VoiceDesign coverage that needs the ~12 GB of
+        # local packages. Split out of the content test above so that a
+        # checkout without them still verifies everything the card CLAIMS.
+        spec = self._voicedesign_spec()
+        model_dir = ROOT / "models" / "qwen3-tts-12hz-1-7b-voicedesign"
+        if not model_dir.is_dir():
+            self.skipTest("the VoiceDesign packages have not been materialized locally")
+        self.generator.validate_artifacts(spec, model_dir)
+        # The real upstream card also lives under models/, so it belongs on
+        # this side of the skip rather than in the content test.
+        self.assertTrue(self.generator.load_upstream_card(spec))
 
 
 if __name__ == "__main__":

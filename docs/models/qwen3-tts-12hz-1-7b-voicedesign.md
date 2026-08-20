@@ -1,23 +1,30 @@
 # Qwen3-TTS 12 Hz 1.7B VoiceDesign
 
-Status: Confirmed 2026-08-20. **Prepared, not published.** Three GGUFs
-(`BF16`, `F16`, `Q8_MIXED`) and this page's own card spec
+Status: Confirmed 2026-08-20. **Prepared, not published.** Four GGUFs
+(`BF16`, `F16`, `Q8_MIXED`, `Q5_K_MIXED`) and this page's own card spec
 (`scripts/hf_cards/qwen3-tts-12hz-1-7b-voicedesign.yaml`) are ready; nothing
 has been pushed to `jiangzhuo9357/qwen3-tts-12hz-1-7b-voicedesign-gguf` or
 anywhere else. Publication is a separate outward act requiring jiangzhuo's
 explicit, per-act confirmation naming the target repository.
 
-`Q8_MIXED` is the smallest and fastest of the three shipped profiles --
-41.82 % smaller than `BF16` at RTF 1.05 -- with the thinnest replay headroom
-of the three (1.63x) but still comfortably clearing the committed 0.01
+`Q8_MIXED` is the smallest and fastest profile that CLEARS its accuracy gate
+-- 41.82 % smaller than `BF16` at RTF 1.05 -- with the thinnest passing
+replay headroom (1.63x), still comfortably above the committed 0.01
 bound. `F16` is **larger** than its `BF16` source (+283,136 bytes, 0.0066 %)
 and ships anyway, on speed: roughly 2.8x faster on the host this was
 measured on (RTF 4.64 -> 1.65), the same "speed profile, not a size one"
-shape the Base variant's own `F16` already established for this family. A
-fourth profile, `Q5_K_MIXED`, was cut and measured and is **not**
-published: its `replay` prefill probe exceeds the committed 0.01 bound on
-both measured cases, roughly 3x over (headroom 0.32x) -- see "Package,"
-below, for why it is still named here rather than silently absent.
+shape the Base variant's own `F16` already established for this family.
+
+A fourth profile, `Q5_K_MIXED`, **fails its accuracy gate and ships
+anyway** -- its `replay` prefill probe exceeds the committed 0.01 bound on
+both measured cases, roughly 3x over (headroom 0.32x). It is on the roster
+on jiangzhuo's explicit ruling of 2026-08-20, taken after the blind
+listening audit found it indistinguishable from `BF16` on one clip, one
+sentence, one seed, one listener. This page said `Q5_K_MIXED` was "**not**
+published" until that ruling. The measurement did not change and has not
+been recalibrated; the publication decision did. **It is the project's
+first profile published over a failing numerical gate**, and both facts are
+disclosed together on the card itself. See "Q5_K_MIXED," below.
 
 **The VoiceDesign Listening Audit ran 2026-08-20 and recorded
 `no_obvious_regression`.** Four blind pairs -- `BF16` vs `F16`, `BF16` vs
@@ -67,10 +74,13 @@ variant's 1.7B width needs and no 0.6B package carries.
 | BF16 | 4,295,891,904 | 404 BF16 + 255 F32 | -- (source) | yes |
 | F16 | 4,296,175,040 | 267 F16 + 392 F32 | +283,136 B larger | yes |
 | Q8_MIXED | 2,499,423,680 | 267 Q8_0 + 392 F32 | 58.18 % (41.82 % smaller) | yes |
-| Q5_K_MIXED | 1,780,723,136 | 267 Q5_K + 392 F32 | 41.45 % (58.55 % smaller) | **no** |
+| Q5_K_MIXED | 1,780,723,136 | 267 Q5_K + 392 F32 | 41.45 % (58.55 % smaller) | yes — **gate FAILED, shipped by ruling** |
 
 Digests: BF16 `d0af7617…5524`, F16 `5a6f52d3…1465`, Q8_MIXED
-`f8540471…f92a`, Q5_K_MIXED (measured, not shipped) `a47479d9…82bb`.
+`f8540471…f92a`, Q5_K_MIXED `a47479d9…82bb` (full digest
+`a47479d90a61a32e7b2fb5f6b8bd3d47405aac1cc98cf278ab3fc0c2d1c282bb`,
+recomputed 2026-08-20 against the file on disk when the profile joined the
+published roster).
 
 **F16 being larger than its source is not a defect.** BF16 and F16 are both
 two-byte types, so the matrix weights do not shrink while the sensitive
@@ -79,7 +89,7 @@ shows, applied to a package whose matrix half is a proportionally larger
 share of the total, which is also why `Q8_MIXED` shrinks proportionally
 *more* here than it does on Base (58.18 % of source against Base's 66.3 %).
 
-### Q5_K_MIXED: measured, and named rather than omitted
+### Q5_K_MIXED: fails its gate, and ships anyway on an explicit ruling
 
 `Q5_K_MIXED` saves a further 718,700,544 bytes over `Q8_MIXED` -- 28.75 %,
 close to the design's own "~25 %" estimate -- but its `replay` prefill probe
@@ -95,19 +105,38 @@ prefill-tolerance relation itself), and a 2026-08-20 blind listening pass on
 one clip could not tell it apart from `BF16` -- a data point about the
 gate's conservatism at this margin, not a recalibration.
 
-**Recommendation: do not publish.** This matches the precedent CustomVoice's
-own `Q5_K_MIXED` set (talker-logits cosine 0.9648, withheld on accuracy) but
-is the stronger finding: that was a low cosine against no committed
-pass/fail bound; this is an explicit breach of a committed gate, on both
-measured cases, reproduced on a repeat run. **This is the first card in this
-family to record a profile as measured-and-not-shipped rather than leaving
-it out.** CustomVoice's own published card omits `Q5_K_MIXED` entirely --
-its `quants:` block (`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml:176-209`)
-ships `BF16`, `F16` and `Q8_MIXED`, three profiles, none of them
-`Q5_K_MIXED` -- a separate, pre-existing gap this page does not fix, since
-that card is already published and re-publishing it is its own outward act.
-See `docs/quantization.md`'s "VoiceDesign's Q5_K_MIXED" section for the full
-arithmetic.
+**Task 4's recommendation was: do not publish.** It matched the precedent
+CustomVoice's own `Q5_K_MIXED` set (talker-logits cosine 0.9648, withheld on
+accuracy) but was the stronger finding: that was a low cosine against no
+committed pass/fail bound; this is an explicit breach of a committed gate,
+on both measured cases, reproduced on a repeat run. That recommendation is
+retained as history in `docs/quantization.md` rather than rewritten.
+
+**SUPERSEDED 2026-08-20: jiangzhuo ruled the profile ships.** The ruling was
+taken after the blind listening audit, with the gate failure in view, and it
+requires that failure be disclosed wherever the profile is offered -- which
+the card does, stating the breach and the ruling in the same paragraph of
+its rendered Downloads section. Nothing about the measurement moved:
+`gate_passed` is still `false` in `tests/tolerances/qwen3-tts.json`, the
+observed values are still 0.031029/0.030366, the bound is still 0.01, and
+headroom is still 0.32x. What the audit supports is narrow -- one clip, one
+sentence, one seed, one listener -- and it is not a recalibration of the
+bound, not a Quality Evaluation (ADR 0017, still deferred), and not a
+general finding that a 3x breach of this probe is inaudible. Readers who
+need the gate cleared should take `Q8_MIXED`.
+
+**This is the project's first profile published over a failing numerical
+gate**, so this page establishes a *published-despite-gate-failure* shape,
+not the measured-and-not-shipped shape an earlier draft claimed. That
+matters for the tracked CustomVoice gap: CustomVoice's own published card
+still omits `Q5_K_MIXED` entirely -- its `quants:` block
+(`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml:176-209`) ships
+`BF16`, `F16` and `Q8_MIXED`, three profiles, none of them `Q5_K_MIXED` -- a
+separate, pre-existing gap this page does not fix, since that card is
+already published and re-publishing it is its own outward act. This page no
+longer supplies a template for naming a withheld profile, because it no
+longer withholds one. See `docs/quantization.md`'s "VoiceDesign's
+Q5_K_MIXED" section for the full arithmetic and the dated supersession.
 
 ## Measured
 
@@ -187,8 +216,13 @@ CPU under the discrete-outputs rule, because a sampled codec token
 conditions the next step and the sequence length itself.
 
 Measured on this variant's own fixed workload, BF16, n=8 medians: **18.9220
-s -> 17.7564 s and RTF 4.6377 -> 4.3520, both dividing to 6.16 % end to
-end.** Narrower than the Base variant's own 6.47 %/6.35 % (~6.5 %/6.3 %), in
+s -> 17.7564 s and RTF 4.6377 -> 4.3520, a 6.16 % end-to-end gain.** The
+quantity is the reduction against the CPU baseline, `(CPU - CUDA) / CPU`:
+both pairs give 6.16 % under that operation. Dividing CPU by CUDA instead
+gives 1.0656 -- a 6.56 % throughput increase over the same measurement, a
+different quantity from the one reported here. Narrower than the Base
+variant's own 6.47 %/6.35 % (~6.5 %/6.3 %, the same CPU-baseline
+reduction), in
 the direction the design predicted: this variant's talker runs 3.2x larger
 per layer than Base's, so the CPU-bound autoregressive half's share of wall
 clock grows and CUDA's relative gain shrinks -- though the margin (about
@@ -235,8 +269,12 @@ precisely to ask the question the numbers cannot: does the breach audibly
 manifest? On this clip it did not. **What that establishes, at its actual
 strength: the 0.01 bound is conservative relative to audibility at this
 margin, on one clip, one seed, one listener -- a data point about the
-gate's calibration, not a recalibration.** Task 4's do-not-publish
-recommendation for `Q5_K_MIXED` is unchanged by the audit itself.
+gate's calibration, not a recalibration.** The audit did not by itself
+change anything. This paragraph closed "Task 4's do-not-publish
+recommendation for `Q5_K_MIXED` is unchanged by the audit itself" until
+later the same day, when jiangzhuo, having read it, **ruled that the profile
+ships** -- a decision taken on this evidence, not a conclusion drawn by it.
+See "Q5_K_MIXED," above.
 
 The labelled half (row L1) used the same sentence and seed on BF16/CPU, two
 descriptions differing in a stated direction ("bright, fast" against "deep,
@@ -293,11 +331,15 @@ Golden suite's reference-recording provenance applies here.
 
 ## Publication
 
-**Not published.** The three GGUFs above and their card spec
+**Not published.** The four GGUFs above and their card spec
 (`scripts/hf_cards/qwen3-tts-12hz-1-7b-voicedesign.yaml`) are prepared;
 nothing has been uploaded to `jiangzhuo9357/qwen3-tts-12hz-1-7b-voicedesign-gguf`
 or any other repository. Publishing is a separate outward act that requires
 jiangzhuo's explicit, per-act confirmation naming the target repository --
 the same standing policy every other package in this family was published
-under. `Q5_K_MIXED` is not a candidate for that confirmation on the evidence
-above; the other three profiles are, pending that confirmation.
+under. **All four profiles are candidates for that confirmation**, including
+`Q5_K_MIXED`: this line read "`Q5_K_MIXED` is not a candidate for that
+confirmation on the evidence above; the other three profiles are" until
+jiangzhuo's 2026-08-20 ruling put it on the roster. That ruling settled
+WHICH profiles the card describes. It is not itself the per-act
+confirmation to upload, which remains outstanding for all four.

@@ -98,12 +98,33 @@ validation:
   implementation_revision: workspace-snapshot-2026-07-29
   cases_per_stage: 18
   stages: 3
-  # Set explicitly 2026-08-20 (Task 8 fix round, Stage 3 Plan 3): this
-  # package's replay methodology replays the ORACLE's own codes through the
-  # port's downstream stages (this card's own metric_note, above), so every
-  # replayed case's frame count is the oracle's own by construction -- codes
-  # replayed cannot desynchronize in length, only in per-sample value.
-  replay_duration_exact: true
+  # `replay_duration_exact` is DELIBERATELY ABSENT here. It was set true on
+  # 2026-08-20 (Task 8 fix round) and REMOVED the same day under PR #16's
+  # review. The removed justification was accurate and is the reason the
+  # field had to go: it argued that "every replayed case's frame count is
+  # the oracle's own BY CONSTRUCTION -- codes replayed cannot desynchronize
+  # in length, only in per-sample value."
+  #
+  # That is true, and it is exactly why the sentence must not render. A
+  # property that holds by construction is not a validation result. This
+  # package's parity replays the ORACLE's codes through the port's
+  # downstream stages (this card's own metric_note: "reproducing the same
+  # codes is neither possible nor the claim"), so the frame count of the
+  # decode is arithmetic on an input, not an output of the port's own
+  # duration behaviour. The comparison set -- audio.pcm, talker.logits,
+  # talker.final, talker.hidden_l{0,7,14,21,27} -- contains no duration,
+  # frame-count or code-length probe, and compare()'s shape_mismatch branch
+  # cannot fire on a length difference because both sides' lengths derive
+  # from the same replayed array.
+  #
+  # The harm is not falsehood, it is transfer: a reader who has seen the
+  # SAME sentence on the Kokoro and VITS cards -- where it reports a
+  # genuine, falsifiable, exact-gated result over independently generated
+  # duration structures, and where it has actually been falsified once and
+  # fixed -- will reasonably read it here as answering the question this
+  # card's own metric_note says is "neither possible nor the claim": whether
+  # this autoregressive talker terminates at the right length. Rendering a
+  # vacuous truth in the words of a substantive one is the misleading part.
   columns:
     - key: cpu_pcm_cosine
       title: CPU waveform cosine

@@ -18,9 +18,12 @@ Qwen3-TTS `qwen3-tts-12hz-1-7b-voicedesign`'s three shipped profiles (`BF16`,
 bytes over its source, `Q8_MIXED` pays on both size and speed at this
 variant's thinnest replay headroom of the three. A fourth profile,
 `Q5_K_MIXED`, was measured the same day and fails its own `replay`-stage
-tolerance roughly 3× over the committed bound; it is recorded as
-measured-and-not-shipped rather than omitted, the first card in this family
-to record that shape at all. See "Qwen3-TTS Profiles," below, and
+tolerance roughly 3× over the committed bound — and **is published anyway**,
+on jiangzhuo's explicit 2026-08-20 ruling after the blind listening audit,
+with the gate failure disclosed on the card itself. That makes four shipped
+profiles, and makes this the project's first profile published over a
+failing numerical gate. This paragraph described `Q5_K_MIXED` as
+"measured-and-not-shipped" until that ruling. See "Qwen3-TTS Profiles," below, and
 `docs/porting/families/qwen3-tts.md` for the full record.
 
 ## Validation Sequence
@@ -460,7 +463,7 @@ it gave — the speaker encoder does not shrink under any profile this family ha
 | BF16 | VoiceDesign | 4,295,891,904 B | 4.64 | 4.95 GiB | the source, prepared, not published |
 | F16 | VoiceDesign | 4,296,175,040 B | **1.65** | 4.95 GiB | **pays on speed, prepared, not published** — roughly 2.8x faster on the measured host, larger than source |
 | Q8_MIXED | VoiceDesign | 2,499,423,680 B | **1.05** | 3.16 GiB | **pays on both size and speed, prepared, not published** — thinnest replay headroom of the three (1.63x) |
-| Q5_K_MIXED | VoiceDesign | 1,780,723,136 B | 1.08 (context only) | 2.40 GiB | **fails replay tolerance — not published, see below** |
+| Q5_K_MIXED | VoiceDesign | 1,780,723,136 B | 1.08 (context only) | 2.40 GiB | **fails replay tolerance (headroom 0.32x) — PUBLISHED ANYWAY on jiangzhuo's 2026-08-20 ruling, breach disclosed on the card, see below** |
 
 **F16 is 184,448 bytes LARGER than the package it was cut from.** Both BF16 and
 F16 are two-byte types, so the matrix weights do not shrink while the sensitive
@@ -560,7 +563,25 @@ own 0.00613 (itself already the thinnest of the three), and about 11.5× BF16's
 own 0.00269 — a much larger jump than the F16 → Q8_MIXED step was, not a
 continuation of the same slope.
 
-**Recommendation: do not publish `Q5_K_MIXED` for `qwen3-tts-12hz-1-7b-voicedesign`.**
+> **SUPERSEDED 2026-08-20 — this profile IS published.** jiangzhuo ruled the
+> same day, after the blind listening audit below found `Q5_K_MIXED`
+> indistinguishable from `BF16` (one clip, one sentence, one seed, one
+> listener), that it ships. The recommendation immediately following is kept
+> as history, not rewritten, under this document's own convention of
+> superseding rather than deleting: it was the correct reading of the
+> measurement, and the measurement has not changed. `gate_passed` is still
+> `false`, the observed 0.031029/0.030366 still breach the committed 0.01
+> bound, and headroom is still 0.32x. What changed is a publication
+> decision taken with the breach in view, and it is disclosed on the
+> published card itself — `scripts/hf_cards/qwen3-tts-12hz-1-7b-voicedesign.yaml`
+> states the gate failure and the ruling together in the Downloads section.
+> **This is the project's first profile published over a failing numerical
+> gate**, and it does not establish that a 3x breach of this probe is
+> generally acceptable.
+
+**Recommendation (2026-08-20 Task 4, SUPERSEDED the same day by the ruling
+above — retained as history): do not publish `Q5_K_MIXED` for
+`qwen3-tts-12hz-1-7b-voicedesign`.**
 The precedent this result matches is CustomVoice's own `Q5_K_MIXED` (talker-logits
 cosine 0.9648, deliberately unpublished on accuracy, see "What each profile is
 for" above) — but this is the stronger of the two findings: CustomVoice's number
@@ -579,7 +600,19 @@ measured-and-not-shipped ... rather than omitted." Task 8 has no existing
 template to copy for this shape and must establish it, for both packages;
 CustomVoice's card gap is a separate, pre-existing item, not something this
 task fixes (see `docs/porting/families/qwen3-tts.md`'s "Open item:
-CustomVoice's card omits Q5_K_MIXED" for the tracked gap). The size question
+CustomVoice's card omits Q5_K_MIXED" for the tracked gap).
+
+> **The card shape this paragraph asked for was never established, because
+> the ruling overtook it (2026-08-20).** The VoiceDesign card does not record
+> `Q5_K_MIXED` as measured-and-not-shipped; it SHIPS the profile with the
+> gate failure disclosed. So this card establishes a
+> published-despite-gate-failure shape, not the measured-and-not-shipped
+> shape. CustomVoice's omission remains an open gap either way — but the
+> open item can no longer point at this card for the shape it should copy,
+> because this card no longer has an unshipped profile to model. Whoever
+> closes that gap must decide the shape for CustomVoice on its own evidence.
+
+The size question
 this task was written to answer — whether a further 28.75 % shrink over
 `Q8_MIXED` matters more at 4.3 GB than an equivalent shrink did at 2.4 GB —
 is answered "yes, noticeably more," but that answer is moot once the
@@ -613,9 +646,13 @@ in prose.
 **Addendum, 2026-08-20, Stage 3 Plan 3 Task 7.** A blind listening pass
 included this exact profile, unlabelled, beside `BF16` — and could not tell
 them apart on one clip, one seed, one listener. That is a data point about
-this 0.01 bound's conservatism at this margin, not a recalibration of it:
-the do-not-publish recommendation above stands, and whether the audit
-outcome changes it is jiangzhuo's call, not settled by the audit itself. See
+this 0.01 bound's conservatism at this margin, not a recalibration of it.
+This addendum read "the do-not-publish recommendation above stands, and
+whether the audit outcome changes it is jiangzhuo's call, not settled by the
+audit itself" until later the same day, when **jiangzhuo made that call and
+ruled the profile ships** — see the superseding note above the
+recommendation. The audit remains what it was; the decision taken on it is
+what is new, and the gate failure is disclosed on the published card. See
 `docs/porting/families/qwen3-tts.md`'s "Stage 3: VoiceDesign Package, Plan 3
 Task 7" for the full audit record, including the separate labelled
 description-control half.
@@ -628,14 +665,17 @@ variant's `BF16`, `F16` and `Q8_MIXED` were published 2026-08-17** to
 package is published" from Stage 2 Plan 4 until Stage 3 Plan 3 Task 8
 corrected it, three days stale. **No `qwen3-tts-12hz-1-7b-voicedesign`
 package is published, as of this writing.** Stage 3 Plan 3 measured and
-prepared all three shipped profiles (`BF16`, `F16`, `Q8_MIXED`; card spec at
+prepared **four** shipped profiles (`BF16`, `F16`, `Q8_MIXED` and
+`Q5_K_MIXED`; card spec at
 `scripts/hf_cards/qwen3-tts-12hz-1-7b-voicedesign.yaml`, model page at
-`docs/models/qwen3-tts-12hz-1-7b-voicedesign.md`); `Q5_K_MIXED` is not a
-publication candidate at all, because it fails its own `replay`-stage
-tolerance, per the recommendation above, unchanged by the listening audit.
-Publication of the other three is a separate outward act requiring
+`docs/models/qwen3-tts-12hz-1-7b-voicedesign.md`). This paragraph said
+`Q5_K_MIXED` "is not a publication candidate at all" until jiangzhuo's
+2026-08-20 ruling put it on the roster despite its `replay`-stage gate
+failure; that failure stands as measured and is disclosed on the card.
+Publication of all four is a separate outward act requiring
 jiangzhuo's explicit, per-act confirmation naming the target repository —
-nothing described in this section has been uploaded.
+the ruling settled which profiles the card describes, not whether to upload,
+and nothing described in this section has been uploaded.
 
 ## Validation
 

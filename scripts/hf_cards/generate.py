@@ -88,6 +88,26 @@ def validate_spec(spec: dict) -> None:
     if spec["validation"].get("level") not in {"port_validated", "quality_evaluated"}:
         raise ValueError("validation level must be port_validated or quality_evaluated")
 
+    # `replay_duration_exact` gates a positive claim about GENERATED duration
+    # structure -- "Duration structure was exact in every case." -- across the
+    # whole of `cases_per_stage`. It is opt-in, and it must be a real boolean.
+    #
+    # The template tests it with Jinja's `| default(false)` truthiness, so
+    # before this check a spec saying `replay_duration_exact: "false"` or
+    # `: 0.0` would have rendered the claim (a non-empty string is truthy) or
+    # silently dropped it, with no error either way. A YAML author writing
+    # `"true"` or `1` means the boolean and should be told the type is wrong
+    # rather than having a claim about the port's own duration prediction
+    # decided by Python truthiness. `isinstance(True, int)` is True in Python,
+    # so this must test `bool` specifically -- `1` is rejected, `True` is not.
+    if "replay_duration_exact" in spec["validation"]:
+        if not isinstance(spec["validation"]["replay_duration_exact"], bool):
+            raise ValueError(
+                "validation.replay_duration_exact must be a boolean (true or false), "
+                "not a string or a number: it gates a positive claim about generated "
+                "duration structure across every case"
+            )
+
     # Three voice modes. `preset_catalog` selects a named Preset Voice from a
     # non-empty catalog. `fixed_default` has one fixed, untrained-to-vary
     # Voice and no catalog at all. `seed_default_with_profiles` is a third

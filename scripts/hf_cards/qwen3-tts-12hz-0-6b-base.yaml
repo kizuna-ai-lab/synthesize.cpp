@@ -82,6 +82,15 @@ validation:
   level: port_validated
   cases_per_stage: 13
   stages: 3
+  # Set explicitly 2026-08-20 (Task 8 fix round, Stage 3 Plan 3):
+  # scripts/validate-qwen3-tts-replay.py's shared `compare()` helper gates
+  # every probe (speaker.mel, speaker.x_vector, prompt.icl_embed) on an
+  # exact shape match against the oracle before scoring anything else, and
+  # no case measured for this package has ever recorded a `shape_mismatch`.
+  # Unlike qwen3-tts-12hz-1-7b-voicedesign, whose replay stage never runs
+  # this comparison at all (all manifest cases skipped for missing oracle
+  # artifacts), this package's replayed cases genuinely go through it.
+  replay_duration_exact: true
   date: 2026-08-17
   reference: the pinned upstream PyTorch implementation at bfloat16 on CUDA
   platforms:

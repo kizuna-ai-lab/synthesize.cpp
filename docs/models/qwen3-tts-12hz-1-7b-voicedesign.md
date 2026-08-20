@@ -101,12 +101,13 @@ is the stronger finding: that was a low cosine against no committed
 pass/fail bound; this is an explicit breach of a committed gate, on both
 measured cases, reproduced on a repeat run. **This is the first card in this
 family to record a profile as measured-and-not-shipped rather than leaving
-it out.** CustomVoice's own published card omits `Q5_K_MIXED` entirely
-(`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml` lists `profiles:
-[F16, Q8_MIXED]`) -- a separate, pre-existing gap this page does not fix,
-since that card is already published and re-publishing it is its own
-outward act. See `docs/quantization.md`'s "VoiceDesign's Q5_K_MIXED" section
-for the full arithmetic.
+it out.** CustomVoice's own published card omits `Q5_K_MIXED` entirely --
+its `quants:` block (`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml:176-209`)
+ships `BF16`, `F16` and `Q8_MIXED`, three profiles, none of them
+`Q5_K_MIXED` -- a separate, pre-existing gap this page does not fix, since
+that card is already published and re-publishing it is its own outward act.
+See `docs/quantization.md`'s "VoiceDesign's Q5_K_MIXED" section for the full
+arithmetic.
 
 ## Measured
 
@@ -142,6 +143,18 @@ pass -- 19.3006 s BF16 against this table's later n=8 18.92 s, the two
 figures within the run-to-run variance both tasks already characterized)
 while changing nothing about the package's on-disk footprint -- the
 arithmetic that answers why `F16` ships despite saving no disk.
+
+**Why, mechanically, on this host.** `ggml`'s CPU backend (this build's
+commit `707321c4`, `GGML_SYSTEM_ARCH: ARM` on this aarch64/GB10 host) has a
+NEON-vectorized GEMM path for `F16` weights and none for `BF16`:
+`ggml/src/ggml-cpu/llamafile/sgemm.cpp`'s `GGML_TYPE_BF16` case branches
+only on x86/POWER/RISC-V feature macros this host does not define and falls
+through to the generic reference path, while its `GGML_TYPE_F16` case has an
+additional `__ARM_NEON` branch this host's build takes. This is a property
+of this `ggml` commit's CPU backend dispatch on this specific host, not a
+numerical-precision claim -- a future porter measuring on a different host
+(x86 with AVX512BF16, for instance) should expect a different, possibly
+absent, gap.
 
 | case | BF16 | F16 | Q8_MIXED | Q5_K_MIXED |
 | --- | ---: | ---: | ---: | ---: |

@@ -85,6 +85,12 @@ validation:
   implementation_revision: workspace-snapshot-2026-07-26
   cases_per_stage: 15
   stages: 7
+  # Set explicitly 2026-08-20 (Task 8 fix round, Stage 3 Plan 3):
+  # duration.pred_dur, duration.y_length and duration.alignment are gated
+  # exact probes in this family's own Golden suite (docs/porting/families/
+  # kokoro.md's shapes table), so every replayed case's frame count and
+  # alignment structure matches the oracle exactly.
+  replay_duration_exact: true
   columns:
     - key: cpu_pcm_correlation
       title: CPU waveform correlation

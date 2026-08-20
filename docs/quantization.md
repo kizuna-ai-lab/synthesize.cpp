@@ -457,9 +457,9 @@ it gave — the speaker encoder does not shrink under any profile this family ha
 | F16 | Base | 2,516,706,912 B | not measured | — | **clears every gate and does not pay** |
 | Q8_MIXED | Base | 1,667,606,112 B | **0.863** | 2.23 GiB | **pays on both size and speed** |
 | Q5_K_MIXED | CustomVoice | 1035 MiB | 0.82 | — | buildable, deliberately unpublished |
-| BF16 | VoiceDesign | 4,295,891,904 B | 4.64 | 4.95 GiB | the source |
-| F16 | VoiceDesign | 4,296,175,040 B | **1.65** | 4.95 GiB | **ships on speed** — roughly 2.8x faster on the measured host, larger than source |
-| Q8_MIXED | VoiceDesign | 2,499,423,680 B | **1.05** | 3.16 GiB | **pays on both size and speed** — thinnest replay headroom of the three (1.63x) |
+| BF16 | VoiceDesign | 4,295,891,904 B | 4.64 | 4.95 GiB | the source, prepared, not published |
+| F16 | VoiceDesign | 4,296,175,040 B | **1.65** | 4.95 GiB | **pays on speed, prepared, not published** — roughly 2.8x faster on the measured host, larger than source |
+| Q8_MIXED | VoiceDesign | 2,499,423,680 B | **1.05** | 3.16 GiB | **pays on both size and speed, prepared, not published** — thinnest replay headroom of the three (1.63x) |
 | Q5_K_MIXED | VoiceDesign | 1,780,723,136 B | 1.08 (context only) | 2.40 GiB | **fails replay tolerance — not published, see below** |
 
 **F16 is 184,448 bytes LARGER than the package it was cut from.** Both BF16 and
@@ -476,17 +476,24 @@ less package and 1.06 GiB less peak RSS.
 deliberately unpublished — 1035 MiB and RTF 0.82 on CustomVoice, but talker
 logits cosine 0.9648.
 
-**`F16` ships on speed for the VoiceDesign variant, not size.** Measured
-2026-08-20, Stage 3 Plan 3 Task 5: it is 283,136 bytes larger than its BF16
-source, but measures roughly 2.8× faster on the aarch64/GB10 host it was
-measured on (RTF 4.64 → 1.65 on `rel-dgx-spark`), recovering most of what
-quantizing all the way to `Q8_MIXED` buys while changing nothing about the
-package's on-disk footprint. The mechanism is the same host fact Base's own
-F16 pattern already suggests — `ggml`'s CPU backend has a NEON-vectorized
-GEMM path for F16 and none for BF16 on this host — measured directly for
-the first time on this variant rather than inferred. See
-`docs/porting/families/qwen3-tts.md`'s "Stage 3: VoiceDesign Package, Plan 3
-Task 5" for the full arithmetic and the mechanism trace.
+**`F16` ships on speed for the VoiceDesign variant, not size.** Cut and
+measured by Task 5 (2026-08-20, Stage 3 Plan 3): it is 283,136 bytes larger
+than its BF16 source, but measures 2.87× faster on the aarch64/GB10 host it
+was measured on, against Task 5's own BF16 pass (RTF 4.73 → 1.65,
+`rel-dgx-spark`) — the pairing that produced Task 5's ship recommendation.
+Task 6 later re-measured BF16 in the same session as its own CUDA run (n=8,
+RTF 4.64, the figure this table's own row above carries); pairing that
+later BF16 figure with F16's unchanged 1.65 instead gives roughly 2.8×, a
+recomputation Task 8 made rather than either task's own reported ratio —
+both figures are real, from different BF16 passes. Either way F16 recovers
+most of what quantizing all the way to `Q8_MIXED` buys while changing
+nothing about the package's on-disk footprint. The mechanism is the same
+host fact Base's own F16 pattern already suggests — `ggml`'s CPU backend
+has a NEON-vectorized GEMM path for F16 and none for BF16 on this host —
+measured directly for the first time on this variant by Task 5, rather than
+inferred. See `docs/porting/families/qwen3-tts.md`'s "Stage 3: VoiceDesign
+Package, Plan 3 Task 5" for the full arithmetic and the mechanism trace, and
+"...Task 6" for the later BF16 pass.
 
 `Q8_MIXED` crosses real time on the VoiceDesign variant too: RTF 4.64 →
 1.05, with 41.82 % less package — proportionally more shrink than Base's own
@@ -564,8 +571,8 @@ should record `Q5_K_MIXED` as buildable and load-checked (`synth_model_load` and
 `synth_voice_profile_create_from_description` both succeed against the cut
 package) but not shipped for this variant, on accuracy. **This is NOT
 "exactly as CustomVoice's own card already does"** — `scripts/hf_cards/
-qwen3-tts-12hz-0-6b-customvoice.yaml:84` reads `profiles: [F16, Q8_MIXED]`;
-CustomVoice's `Q5_K_MIXED` is **omitted** from its card, not named as
+qwen3-tts-12hz-0-6b-customvoice.yaml:176-209`'s `quants:` block ships `BF16`,
+`F16` and `Q8_MIXED`; CustomVoice's `Q5_K_MIXED` is **omitted** from its card, not named as
 measured-and-not-shipped, which is itself a departure from this plan's own
 rule that a profile failing its own test "belongs in the card as
 measured-and-not-shipped ... rather than omitted." Task 8 has no existing

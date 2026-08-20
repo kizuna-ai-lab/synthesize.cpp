@@ -251,6 +251,12 @@ validation:
   implementation_revision: workspace-snapshot-2026-08-07
   cases_per_stage: 20
   stages: 8
+  # Set explicitly 2026-08-20 (Task 8 fix round, Stage 3 Plan 3): this
+  # family's greedy token grids stayed byte-exact against the CPU oracle in
+  # all seventeen measured cases (docs/porting/families/omnivoice.md,
+  # "token grids exact: 17/17"), and token count is frame count for this
+  # architecture, so exact-token implies exact duration structure.
+  replay_duration_exact: true
   columns:
     - key: cpu_pcm_cosine
       title: CPU waveform cosine

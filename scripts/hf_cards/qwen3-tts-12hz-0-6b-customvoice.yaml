@@ -98,6 +98,12 @@ validation:
   implementation_revision: workspace-snapshot-2026-07-29
   cases_per_stage: 18
   stages: 3
+  # Set explicitly 2026-08-20 (Task 8 fix round, Stage 3 Plan 3): this
+  # package's replay methodology replays the ORACLE's own codes through the
+  # port's downstream stages (this card's own metric_note, above), so every
+  # replayed case's frame count is the oracle's own by construction -- codes
+  # replayed cannot desynchronize in length, only in per-sample value.
+  replay_duration_exact: true
   columns:
     - key: cpu_pcm_cosine
       title: CPU waveform cosine

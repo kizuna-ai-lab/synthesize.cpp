@@ -71,6 +71,14 @@ def base_fixture_spec() -> dict:
             # Required, and deliberately the weakest value: a fixture must not
             # be the reason a card asserts full GPU execution.
             "cuda_placement": "not_recorded",
+            # The fixture stands in for a normal, well-validated family whose
+            # replay methodology genuinely checks duration/shape parity (see
+            # test_replay_duration_exact_is_opt_in below for the field's own
+            # coverage) -- Task 8's fix round (Stage 3 Plan 3) added this
+            # field after finding the sentence it gates rendered unconditionally
+            # even for qwen3-tts-12hz-1-7b-voicedesign, whose replay stage
+            # never runs a duration comparison of any kind.
+            "replay_duration_exact": True,
         },
         "architecture_label": "Fixture",
         "license_note": "Upstream terms apply: [licence]({{ license_link }}).",
@@ -916,6 +924,48 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cuda_placement"):
             self.generator.validate_spec(spec)
 
+    # -- Stage 3 Plan 3 Task 8 fix round: `replay_duration_exact` is opt-in -
+
+    def test_replay_duration_exact_is_opt_in_and_omitted_by_default(self) -> None:
+        """The regression this field exists to prevent.
+
+        The template used to assert "Duration structure was exact in every
+        case." unconditionally for every card, including
+        qwen3-tts-12hz-1-7b-voicedesign, whose replay stage never runs a
+        duration comparison of any kind (its metric_note says so, and its
+        13-case Golden Manifest is entirely skipped for missing oracle
+        artifacts). A spec that does not set `replay_duration_exact` must not
+        get the sentence by default.
+        """
+        spec = base_fixture_spec()
+        del spec["validation"]["replay_duration_exact"]
+        self.generator.validate_spec(spec)
+        card = self.generator.render(spec, "# stub")
+        self.assertNotIn("Duration structure was exact", card)
+
+    def test_replay_duration_exact_true_renders_the_sentence(self) -> None:
+        spec = base_fixture_spec()
+        spec["validation"]["replay_duration_exact"] = True
+        self.generator.validate_spec(spec)
+        card = self.generator.render(spec, "# stub")
+        self.assertIn("Duration structure was exact in every\ncase.", card)
+
+    def test_replay_duration_exact_does_not_disturb_the_cuda_sentence_join(self) -> None:
+        # When the duration sentence is absent, the surrounding punctuation
+        # must still read correctly -- the platform sentence's period
+        # followed directly by the next clause's own leading space, not a
+        # double space or a missing one.
+        spec = base_fixture_spec()
+        del spec["validation"]["replay_duration_exact"]
+        spec["validation"]["cuda_placement"] = "full"
+        self.generator.validate_spec(spec)
+        card = self.generator.render(spec, "# stub")
+        self.assertIn(
+            "CPU, CUDA. CUDA placement contained zero executable CPU fallback nodes.",
+            card,
+        )
+        self.assertNotIn("  CUDA placement", card)
+
     # -- Stage 3 Plan 3 Task 8: the VoiceDesign spec ---------------------
 
     def test_qwen3_tts_voicedesign_ships_three_profiles_and_names_q5_k_mixed_as_not_shipped(
@@ -954,6 +1004,19 @@ class HuggingFaceCardGeneratorTests(unittest.TestCase):
         self.assertIn("accepts raw UTF-8 text", card)
         self.assertNotIn("also accepts exact token", card)
         self.assertIn("no preset speaker catalog", card)
+        # This variant's replay stage never runs a duration comparison of any
+        # kind (see this spec's own validation.metric_note): the card must
+        # not carry the shared template's "Duration structure was exact"
+        # claim, which it never earned. Regression for the fix round that
+        # found this rendering unconditionally.
+        self.assertNotIn("Duration structure was exact", card)
+        # The Q5_K_MIXED evidence must be IN the rendered card, not behind a
+        # pointer to a field the template never emits (listening_audit_detail
+        # has no template emitter at all -- template.md.j2's only
+        # `listening_audit` references are the boolean-ish top-level field).
+        self.assertIn("blind half", card)
+        self.assertIn("20260820", card)
+        self.assertNotIn("listening_audit_detail", card)
 
 
 if __name__ == "__main__":

@@ -212,13 +212,24 @@ downloads_note: >-
   on both measured cases (0.031029 and 0.030366, roughly 3x over, headroom
   0.32x) -- a real gate failure, not a thinner margin. It loads and
   synthesizes through the public seam (`synth_model_load` and
-  `synth_voice_profile_create_from_description` both succeed against it), and
-  a 2026-08-20 blind listening pass could not distinguish it from `BF16` on
-  one clip, one seed, one listener -- evidence about the gate's conservatism
-  at this margin, not a basis for shipping it. See `docs/quantization.md`'s
-  "VoiceDesign's Q5_K_MIXED" section for the full arithmetic and the
-  recommendation, and this card's own `listening_audit_detail` above for the
-  audit record.
+  `synth_voice_profile_create_from_description` both succeed against it),
+  though the `public` stage's own `all_passed` reads false for this profile:
+  10 of its 11 non-skipped checks pass, the one failure being the
+  prefill-tolerance relation itself.
+
+
+  The 2026-08-20 listening audit included this exact profile in its blind
+  half, unlabelled like the other three pairs it was shuffled among (`BF16`
+  vs `F16`, `BF16` vs `Q8_MIXED`, `BF16` CPU vs CUDA), A/B positions shuffled
+  from a recorded seed (20260820), every pair confirmed to differ in bytes
+  before anyone listened. On one clip, one seed, one listener, `Q5_K_MIXED`
+  was indistinguishable from `BF16` -- evidence about the gate's
+  conservatism at this margin, not a basis for shipping it. A separate,
+  labelled description-control pass (same sentence and seed, two
+  contrasting descriptions) returned "yes, in the described direction" --
+  weak evidence by design, recorded as weak, and does not bear on this
+  profile's own recommendation. See `docs/quantization.md`'s "VoiceDesign's
+  Q5_K_MIXED" section for the full arithmetic and the recommendation.
 
 quants:
   - name: BF16

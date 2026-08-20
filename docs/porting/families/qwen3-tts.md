@@ -5286,7 +5286,8 @@ moved even further than the size side did. Task 8's card should record
 `Q5_K_MIXED` as buildable and load-checked for this variant but not shipped,
 on accuracy -- but the CustomVoice card Task 8 might otherwise use as a
 template does not do this at all: `scripts/hf_cards/
-qwen3-tts-12hz-0-6b-customvoice.yaml:84` reads `profiles: [F16, Q8_MIXED]`,
+qwen3-tts-12hz-0-6b-customvoice.yaml:176-209`'s `quants:` block ships `BF16`,
+`F16` and `Q8_MIXED`,
 omitting `Q5_K_MIXED` entirely rather than naming it measured-and-not-shipped.
 Task 8 has to establish this shape, not copy it. See "Open item: CustomVoice's
 card omits Q5_K_MIXED" below for the tracked gap.
@@ -5324,8 +5325,9 @@ Found while writing this task's recommendation, not fixed here (out of this
 task's file list). This plan's own Global Constraints state that a profile
 which fails its own test belongs in the card "as measured-and-not-shipped
 ... rather than omitted." CustomVoice's published card,
-`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml:84`, reads `profiles:
-[F16, Q8_MIXED]` -- `Q5_K_MIXED` (talker-logits cosine 0.9648, withheld on
+`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml:176-209`'s `quants:`
+block, ships `BF16`, `F16` and
+`Q8_MIXED` -- `Q5_K_MIXED` (talker-logits cosine 0.9648, withheld on
 accuracy, recorded in `docs/quantization.md`'s "What each profile is for")
 is silently absent rather than named. A case-insensitive `grep -rn q5` across
 all of `scripts/hf_cards/` and `docs/models/` confirms no card anywhere in
@@ -6141,8 +6143,8 @@ both facts recorded at their own strength (a real gate failure on
 reproducible numbers; a weak, single-clip audio data point about the gate's
 conservatism, not a recalibration of it). This is the first card in this
 family to record that shape at all: CustomVoice's own published card
-(`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml:84`, `profiles: [F16,
-Q8_MIXED]`) omits `Q5_K_MIXED` entirely, the gap Task 4 tracked as an open
+(`scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml:176-209`'s `quants:`
+block, `BF16`/`F16`/`Q8_MIXED`) omits `Q5_K_MIXED` entirely, the gap Task 4 tracked as an open
 item and this task does not fix -- that card is already published, and
 re-publishing it is its own outward act. Whether jiangzhuo revises the
 recommendation after reading the audit is still open; nothing here decided
@@ -6174,12 +6176,22 @@ GGUF key-value bytes rather than assumed) found `1`
 (`SYNTH_INPUT_SUPPORT_TEXT_UTF8` only) on all three shipped VoiceDesign
 files. `scripts/convert-qwen3-tts.py:669` confirms why: it writes
 `INPUT_TEXT_UTF8` unconditionally, with no family-wide or per-variant path
-that also sets `SYNTH_INPUT_SUPPORT_TOKEN_IDS`. `src/synthesis-request.cpp:162-168`
+that also sets `SYNTH_INPUT_SUPPORT_TOKEN_IDS`. `src/synthesis-request.cpp:162-170`
 refuses a token-ID request whenever that bit is unset. This card therefore
 declares `input_kinds: [text_utf8]` alone.
 
-**The same check against Base's and CustomVoice's own published BF16 files
-returns the identical `input_flags = 1`**, yet both families' published
+**The same check against Base's genuinely-published `F16` and `Q8_MIXED`
+files, and CustomVoice's genuinely-published `BF16`, returns the identical
+`input_flags = 1`.** Base's own local `BF16` is deliberately excluded from
+this check: it is the 2026-08-18 re-cut this document's own Status
+paragraph records above (sha256 `76275beb...` against the published
+`993f4cd1...`), re-confirmed for this check by re-hashing the local file
+and comparing against `scripts/hf_cards/qwen3-tts-12hz-0-6b-base.yaml:210`'s
+committed digest -- they disagree, so the local file does not speak to what
+is actually live. Base's `F16` (`e7484194...`) and `Q8_MIXED` (`808667ae...`)
+are unchanged since 2026-08-17 and match their own card's committed digests
+exactly, confirmed the same way; CustomVoice's local `BF16` (`01dfad52...`)
+likewise matches its card's committed digest. Yet both families' published
 cards (`scripts/hf_cards/qwen3-tts-12hz-0-6b-base.yaml`,
 `scripts/hf_cards/qwen3-tts-12hz-0-6b-customvoice.yaml`) declare
 `input_kinds: [text_utf8, token_ids]`. Either those two cards have
@@ -6189,6 +6201,18 @@ here -- both cards are already published, correcting them is its own
 outward act, and this task's file list does not reach either one. Left as
 an open item for whoever next touches either card, or the family's own
 input-flags handling.
+
+**The missing mechanism, named rather than built.** `scripts/hf_cards/generate.py`'s
+`validate_artifacts` re-verifies each quant's size and sha256 against the
+real GGUF at render time, but nothing in the generator cross-checks a
+spec's declared `capabilities.input_kinds` against the package's own
+`synthesize.capabilities.input_flags` metadata -- the discrepancy above
+would render silently on any card, on any family, with no failure anywhere
+in the pipeline. A `validate_artifacts` extension that reads this key
+(the same raw-bytes read this task used by hand) and compares it against
+the declared `input_kinds` would have caught this at generation time
+instead of by manual inspection. Not built here -- named as a real gap, not
+implemented.
 
 ### A ratio that does not survive a baseline swap: `F16`'s speedup against which `BF16`
 

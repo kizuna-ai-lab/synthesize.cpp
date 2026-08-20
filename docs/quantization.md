@@ -1,6 +1,6 @@
 # Quantization Policy
 
-Status: Confirmed 2026-08-20.
+Status: Confirmed 2026-08-20; updated 2026-08-21 for the VoiceDesign publication.
 VITS F16 and Q8_MIXED version 1 functionally validated on 2026-07-23;
 both profiles re-cut on 2026-07-27 with transpose-convolution weights held at F32.
 Kokoro F16 and Q8_MIXED version 1 functionally validated on 2026-07-26.
@@ -12,9 +12,11 @@ codec-half profiles `F16_CODEC` and `Q8_CODEC_MIXED` are blocked on the
 exact-token gate. See "OmniVoice Profiles," below. The Q4/Q5 precondition under
 "VITS Q8_MIXED Profile" was settled explicitly on the same date, in the
 paragraph that follows it.
-Qwen3-TTS `qwen3-tts-12hz-1-7b-voicedesign`'s three shipped profiles (`BF16`,
-`F16`, `Q8_MIXED`) were measured 2026-08-20 by Stage 3 Plan 3 and are
-**prepared, not published** — `F16` ships on speed despite costing 283,136
+Qwen3-TTS `qwen3-tts-12hz-1-7b-voicedesign`'s four profiles were measured
+2026-08-20 by Stage 3 Plan 3 and **published 2026-08-21** to
+`jiangzhuo9357/qwen3-tts-12hz-1-7b-voicedesign-gguf` (commit `0dcbe6df83b1`,
+all four LFS sha256 oids verified remotely after upload; this sentence said
+"prepared, not published" until publication day) — `F16` ships on speed despite costing 283,136
 bytes over its source, `Q8_MIXED` pays on both size and speed at this
 variant's thinnest replay headroom of the three. A fourth profile,
 `Q5_K_MIXED`, was measured the same day and fails its own `replay`-stage
@@ -460,10 +462,10 @@ it gave — the speaker encoder does not shrink under any profile this family ha
 | F16 | Base | 2,516,706,912 B | not measured | — | **clears every gate and does not pay** |
 | Q8_MIXED | Base | 1,667,606,112 B | **0.863** | 2.23 GiB | **pays on both size and speed** |
 | Q5_K_MIXED | CustomVoice | 1035 MiB | 0.82 | — | buildable, deliberately unpublished |
-| BF16 | VoiceDesign | 4,295,891,904 B | 4.64 | 4.95 GiB | the source, prepared, not published |
-| F16 | VoiceDesign | 4,296,175,040 B | **1.65** | 4.95 GiB | **pays on speed, prepared, not published** — roughly 2.8x faster on the measured host, larger than source |
-| Q8_MIXED | VoiceDesign | 2,499,423,680 B | **1.05** | 3.16 GiB | **pays on both size and speed, prepared, not published** — thinnest replay headroom of the three (1.63x) |
-| Q5_K_MIXED | VoiceDesign | 1,780,723,136 B | 1.08 (context only) | 2.40 GiB | **fails replay tolerance (headroom 0.32x) — PUBLISHED ANYWAY on jiangzhuo's 2026-08-20 ruling, breach disclosed on the card, see below** |
+| BF16 | VoiceDesign | 4,295,891,904 B | 4.64 | 4.95 GiB | the source, **published 2026-08-21** |
+| F16 | VoiceDesign | 4,296,175,040 B | **1.65** | 4.95 GiB | **pays on speed, published 2026-08-21** — roughly 2.8x faster on the measured host, larger than source |
+| Q8_MIXED | VoiceDesign | 2,499,423,680 B | **1.05** | 3.16 GiB | **pays on both size and speed, published 2026-08-21** — thinnest replay headroom of the three gate-clearing profiles (1.63x; Q5_K_MIXED fails the gate outright) |
+| Q5_K_MIXED | VoiceDesign | 1,780,723,136 B | 1.08 (context only) | 2.40 GiB | **fails replay tolerance (headroom 0.32x) — published 2026-08-21 on jiangzhuo's 2026-08-20 ruling, breach disclosed on the card, see below** |
 
 **F16 is 184,448 bytes LARGER than the package it was cut from.** Both BF16 and
 F16 are two-byte types, so the matrix weights do not shrink while the sensitive
@@ -501,7 +503,8 @@ Package, Plan 3 Task 5" for the full arithmetic and the mechanism trace, and
 `Q8_MIXED` crosses real time on the VoiceDesign variant too: RTF 4.64 →
 1.05, with 41.82 % less package — proportionally more shrink than Base's own
 Q8_MIXED (58.18 % of source against Base's 66.3 %) — and the thinnest
-replay-prefill headroom of this variant's three shipped profiles, 1.63×
+replay-prefill headroom of this variant's three gate-clearing profiles
+(the fourth, Q5_K_MIXED, ships by ruling while failing the gate), 1.63×
 against BF16's 3.44× and F16's 3.45×, still comfortably clearing the 0.01
 bound.
 

@@ -1,11 +1,12 @@
 # Qwen3-TTS 12 Hz 1.7B VoiceDesign
 
-Status: Confirmed 2026-08-20. **Prepared, not published.** Four GGUFs
-(`BF16`, `F16`, `Q8_MIXED`, `Q5_K_MIXED`) and this page's own card spec
-(`scripts/hf_cards/qwen3-tts-12hz-1-7b-voicedesign.yaml`) are ready; nothing
-has been pushed to `jiangzhuo9357/qwen3-tts-12hz-1-7b-voicedesign-gguf` or
-anywhere else. Publication is a separate outward act requiring jiangzhuo's
-explicit, per-act confirmation naming the target repository.
+Status: Confirmed 2026-08-20; published 2026-08-21. **Published** to
+[jiangzhuo9357/qwen3-tts-12hz-1-7b-voicedesign-gguf](https://huggingface.co/jiangzhuo9357/qwen3-tts-12hz-1-7b-voicedesign-gguf)
+(commit `0dcbe6df83b1`), on jiangzhuo's explicit per-act confirmation: four
+GGUFs (`BF16`, `F16`, `Q8_MIXED`, `Q5_K_MIXED`) plus the rendered card. All
+four files' LFS sha256 oids were verified remotely against this page's own
+digests after the upload landed. This line read "Prepared, not published"
+until publication day.
 
 `Q8_MIXED` is the smallest and fastest profile that CLEARS its accuracy gate
 -- 41.82 % smaller than `BF16` at RTF 1.05 -- with the thinnest passing
